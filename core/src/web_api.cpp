@@ -13,6 +13,7 @@
 #include "hc/json_document.h"
 #include "hc/rules/value.h"
 #include "hc/live_feed.h"
+#include "hc/language_packs.h"
 #include "hc/network_settings.h"
 #include "hc/tz.h"
 #include "hc/update_check.h"
@@ -75,6 +76,7 @@ constexpr SettingInfo kShownSettings[] = {
 	{setting::kTimeZone, true},
 	{setting::kNtpServer, true},
 	{setting::kUpdateUrl, true},
+	{setting::kUiLang, true},
 	{setting::kWifiSsid, false},
 };
 
@@ -432,8 +434,10 @@ void WebApi::auth_session(const WebRequest& request, WebResponse& response) {
 	json.member("device", host_.device_name())
 		.member("version", kVersion)
 		.member("ws_port", static_cast<uint32_t>(host_.websocket_port()))
-		.member("min_password", static_cast<uint32_t>(Auth::kMinPassword))
-		.end_object();
+		.member("min_password", static_cast<uint32_t>(Auth::kMinPassword));
+	char lang[setting::kMaxUiLangLength + 1];
+	read_ui_lang(controller_.settings(), lang, kTag);
+	json.member("lang", lang).end_object();
 	finish(response, json);
 }
 
@@ -849,6 +853,12 @@ void WebApi::settings(WebResponse& response) {
 			status = SettingsStatus::ok;
 		} else if (std::strcmp(info.key, setting::kNtpServer) == 0) {
 			fallback = setting::kDefaultNtpServer;
+		} else if (std::strcmp(info.key, setting::kUiLang) == 0) {
+			fallback = setting::kDefaultUiLang;
+			char lang[setting::kMaxUiLangLength + 1];
+			read_ui_lang(store, lang, kTag);
+			std::snprintf(value, sizeof(value), "%s", lang);
+			status = SettingsStatus::ok;
 		}
 		json.begin_object().member("key", info.key);
 		json.key("value");
@@ -859,7 +869,13 @@ void WebApi::settings(WebResponse& response) {
 		}
 		json.member("default", fallback).member("editable", info.editable).end_object();
 	}
-	json.end_array().end_object();
+	json.end_array();
+	if (packs_ != nullptr) {
+		json.key("i18n").begin_object();
+		packs_->write_json(json);
+		json.end_object();
+	}
+	json.end_object();
 	finish(response, json);
 }
 
@@ -895,6 +911,20 @@ bool WebApi::apply_setting(const char* key, const char* value, const char** code
 	}
 	if (std::strcmp(key, setting::kUpdateUrl) == 0) {
 		return host_.set_update_url(value, error);
+	}
+	if (std::strcmp(key, setting::kUiLang) == 0) {
+		if (!ui_lang_valid(value, error)) {
+			return false;
+		}
+		if (!store_ui_lang(controller_.settings(), value, error)) {
+			*code = "settings.storage_error";
+			return false;
+		}
+		Log::info(kTag, "UI language set to %s", value);
+		if (packs_ != nullptr) {
+			packs_->language_changed();
+		}
+		return true;
 	}
 	*code = "settings.unknown";
 	*error = "no such setting";

@@ -5,7 +5,7 @@
 
 import { api, onAuthProblem, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
-import { t, applyI18n } from "/i18n.js";
+import { t, applyI18n, setLanguage } from "/i18n.js";
 import { Live } from "/live.js";
 import { renderLogin, renderOnboarding } from "/auth.js";
 import { renderOverview } from "/overview.js";
@@ -37,6 +37,7 @@ const ctx = {
 	live: new Live(),
 	navigate,
 	refreshSession,
+	setLanguage: changeLanguage,
 	deviceName: "",
 };
 
@@ -51,6 +52,13 @@ async function refreshSession() {
 	ctx.session = await api("GET", "/api/auth/session");
 	ctx.deviceName = ctx.session.device || "";
 	return ctx.session;
+}
+
+/// Switches the UI to `lang` (after the device stored it as ui.lang) and redraws the page.
+async function changeLanguage(lang) {
+	const found = await setLanguage(lang);
+	render();
+	return found;
 }
 
 function navigate(path, replaceState = false) {
@@ -150,6 +158,7 @@ async function start() {
 	for (;;) {
 		try {
 			await refreshSession();
+			await setLanguage(ctx.session.lang);
 			break;
 		} catch (error) {
 			replace(content, h("p", { class: "message error" }, errorText(error)), h("p", { class: "muted" }, t("app.offline")));

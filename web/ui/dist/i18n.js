@@ -1,318 +1,88 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
-// Every user-visible text of the UI goes through t(key). The base language (English) is compiled in
-// below; language packs (issue #24) will add tables per locale, loaded lazily, and their strings are
-// untrusted: they are only ever set as textContent, never as HTML. The API's error codes are keys
-// too ("auth.wrong_password"), so a refusal shows in the UI's language; the API's English reason is
-// the fallback for codes this table does not know.
+// Every user-visible text of the UI goes through t(key) (doc/i18n.md). The base language, English,
+// is /lang/en.json in the UI bundle, loaded before anything renders; it is the key set every pack
+// follows and the fallback for a key a pack lacks. The device's ui.lang selects a language pack:
+// the one bundled with the UI (/lang/<code>.json) and the one the device downloaded for its release
+// (/i18n/<code>.json, preferred key by key). Pack strings are untrusted input: only strings are
+// taken, and they are only ever set as textContent or attribute values, never parsed as HTML. The
+// API's error codes are keys too ("auth.wrong_password"), so a refusal shows in the UI's language;
+// the API's English reason is the fallback for codes the table does not know.
 
-const base = {
-	"app.title": "HomeControl",
-	"app.loading": "Loading…",
-	"app.noscript": "HomeControl needs JavaScript.",
-	"app.offline": "The device does not answer. Retrying…",
-
-	"nav.overview": "Overview",
-	"nav.settings": "Settings",
-	"nav.log": "Log",
-	"nav.rules": "Rules",
-	"nav.schedules": "Schedules",
-	"nav.menu": "Menu",
-
-	"live.connected": "Live",
-	"live.connecting": "Connecting…",
-	"live.refused": "Live updates refused: {reason}",
-
-	"auth.onboarding.title": "Welcome",
-	"auth.onboarding.text": "Set the device password. It protects this controller on your network; you need it to log in from every browser.",
-	"auth.password": "Password",
-	"auth.password.repeat": "Repeat the password",
-	"auth.password.hint": "At least {min} characters.",
-	"auth.password.too_short": "The password needs at least {min} characters.",
-	"auth.password.too_long": "The password may have at most 64 characters.",
-	"auth.password.mismatch": "The two passwords differ.",
-	"auth.onboarding.submit": "Set password",
-	"auth.login.title": "Log in",
-	"auth.login.text": "Enter the device password of {device}.",
-	"auth.login.submit": "Log in",
-	"auth.login.working": "Checking…",
-	"auth.login.attempts": "{left} more attempts before a pause.",
-	"auth.login.wait": "Try again in {seconds} s.",
-	"auth.logout": "Log out",
-
-	"overview.title": "Overview",
-	"overview.datapoints": "Datapoints",
-	"overview.empty": "No datapoints yet. They come with the project E-Home deploys to this controller.",
-	"overview.waiting": "Waiting for live values…",
-	"overview.elsewhere": "Elsewhere",
-	"overview.no_image": "No project is deployed yet: these are the controller's own datapoints. The dashboard of rooms and functions appears when E-Home deploys a project.",
-	"overview.no_functions": "Project {name}, revision {revision}, declares no functions: its datapoints are shown as they are.",
-	"overview.no_image_service": "This controller runs without a project (demo or test mode): its datapoints are shown as they are.",
-	"overview.no_model": "The project's rooms could not be read: its datapoints are shown as they are.",
-
-	"value.on": "On",
-	"value.off": "Off",
-	"value.unknown": "—",
-	"value.stale": "stale",
-	"value.control": "control",
-
-	"tile.toggle": "Switch {name}",
-	"tile.activate": "Activate {name}",
-	"tile.press": "Press {name}",
-	"tile.level": "Level of {name}",
-	"tile.position": "Position of {name}",
-	"tile.up": "{name} up",
-	"tile.down": "{name} down",
-	"tile.stop": "Stop {name}",
-	"tile.colder": "Lower the setpoint of {name}",
-	"tile.warmer": "Raise the setpoint of {name}",
-	"tile.setpoint": "Set to {value}",
-	"tile.no_setpoint": "The current setpoint is not known yet.",
-	"tile.heating": "heating",
-	"tile.blind": "Blind",
-	"tile.scene": "Scene {scene}",
-	"tile.pressed": "Pressed {ago}",
-	"tile.not_pressed": "Not pressed yet",
-	"tile.last_known": "last known {ago}",
-
-	"kind.light": "Light",
-	"kind.dimmer": "Dimmer",
-	"kind.blind": "Blind",
-	"kind.switch": "Switch",
-	"kind.sensor": "Sensor",
-	"kind.climate": "Climate",
-	"kind.scene": "Scene",
-	"kind.button": "Push button",
-
-	"role.command": "Command",
-	"role.state": "State",
-	"role.levelCommand": "Set level",
-	"role.level": "Level",
-	"role.move": "Up/down",
-	"role.stop": "Stop",
-	"role.position": "Position",
-	"role.positionCommand": "Set position",
-	"role.slat": "Slats",
-	"role.slatCommand": "Set slats",
-	"role.value": "Value",
-	"role.temperature": "Temperature",
-	"role.setpoint": "Setpoint",
-	"role.setpointCommand": "Set setpoint",
-	"role.mode": "Mode",
-	"role.modeCommand": "Set mode",
-	"role.heating": "Heating",
-	"role.press": "Press",
-
-	"sheet.close": "Close",
-	"sheet.values": "Values",
-	"sheet.history": "History",
-	"sheet.binding": "Technology",
-	"technology.knx": "KNX",
-	"technology.zigbee": "Zigbee",
-	"technology.scheduler": "The scheduler",
-	"binding.knx": "KNX",
-	"binding.dpt": "DPT {dpt}",
-	"binding.send": "sends to {address}",
-	"binding.listen": "listens to {addresses}",
-	"binding.virtual": "a value of the controller",
-	"binding.scheduler": "set by a schedule",
-	"binding.none": "no technology",
-
-	"history.day": "24 h",
-	"history.week": "7 days",
-	"history.range": "Time range",
-	"history.none_yet": "No history yet",
-	"history.empty": "No history in this range yet.",
-	"history.summary": "History from {min} to {max}, last {last}",
-	"history.tip": "{when}: {value}",
-	"history.tip.range": "{when}: {value} ({min} – {max})",
-	"history.none": "This datapoint keeps no history.",
-	"history.no_time": "The controller's clock is not synchronized yet.",
-	"history.bad_query": "The history request was malformed.",
-
-	"rules.title": "Rules",
-	"rules.intro": "What the project automates. You can switch rules on and off and adjust what the project lets you adjust; everything else is engineered in E-Home.",
-	"rules.empty": "The project has no rules.",
-	"rules.no_image_service": "This controller runs without a project (demo or test mode).",
-	"rules.enabled": "On",
-	"rules.disabled": "Off",
-	"rules.state": "State",
-	"rules.last_trigger": "Last trigger",
-	"rules.last_action": "Last action",
-	"rules.never": "not yet",
-	"rules.timer": "Timer {id}",
-	"rules.timer_left": "{duration} left",
-	"rules.errors": "Problems",
-	"rules.errors_value": "{count}",
-	"rules.fixed": "fixed by the project",
-	"rules.not_editable_here": "cannot be edited here",
-	"rules.range": "{min} to {max}",
-	"rules.default": "default {value}",
-	"rules.changed": "changed",
-	"rules.reset": "Reset to {value}",
-	"rules.saving": "Saving…",
-	"rule.unknown": "This rule no longer exists.",
-	"rule.unknown_parameter": "This parameter no longer exists.",
-	"rule.not_adjustable": "The project does not allow changing this.",
-	"rule.invalid_value": "Not accepted: {reason}",
-	"rule.value_missing": "The request was malformed.",
-
-	"schedules.title": "Schedules",
-	"schedules.intro": "The project's time schedules. Switch an entry off to skip it until you switch it on again.",
-	"schedules.empty": "The project has no schedules.",
-	"schedules.next": "Next: {when}",
-	"schedules.last": "Last: {when}",
-	"schedules.none": "none planned",
-	"schedules.skipped": "Switched off: skipped until switched on",
-	"schedules.no_time": "waiting for the clock",
-	"schedules.on": "On",
-	"schedules.off": "Off",
-	"schedules.fixed": "Always on as the project defines.",
-	"schedule.kind.weekly": "Weekly",
-	"schedule.kind.yearly": "Yearly",
-	"schedule.kind.dates": "On dates",
-	"schedule.kind.astro": "By the sun",
-	"schedule.kind.interval": "Repeating",
-	"schedule.kind.once": "Once",
-	"schedule.unknown": "This schedule entry no longer exists.",
-	"schedule.not_adjustable": "The project does not allow switching this entry.",
-	"schedule.value_missing": "The request was malformed.",
-
-	"image.section": "Project",
-	"image.title": "Deployed project",
-	"image.none": "No project is deployed. E-Home deploys one to this controller.",
-	"image.unavailable": "This controller runs without a project (demo or test mode).",
-	"image.project": "Project",
-	"image.revision": "Revision",
-	"image.generated": "Generated",
-	"image.generator": "Generator",
-	"image.deployed": "Deployed",
-	"image.deployed.value": "{ago}, {source}",
-	"image.stored": "Kept after restart",
-	"image.not_stored": "no: the previous project loads after a restart",
-	"image.source.boot": "loaded at start",
-	"image.source.api": "pushed over the network",
-	"image.source.console": "loaded on the console",
-	"image.source.file": "loaded from a file",
-	"image.source.restore": "restored after a failed update",
-	"image.forget": "Forget project",
-	"image.forget.hint": "Removes the project with its stored values and history; the controller waits for a new one.",
-	"image.forget.confirm": "Forget the project {name}? Its rooms, rules, schedules and stored values are removed from this controller.",
-	"image.storage_error": "The project was unloaded but its stored copy could not be removed.",
-	"model.no_memory": "The controller has not enough memory to show this project's rooms.",
-	"model.changing": "The project changed while it was read: reload the page.",
-
-	"theme.title": "Appearance",
-	"theme.label": "Theme",
-	"theme.auto": "Like the device",
-	"theme.dark": "Dark",
-	"theme.light": "Light",
-
-	"ago.now": "just now",
-	"ago.past": "{duration} ago",
-	"ago.future": "in {duration}",
-
-	"settings.title": "Settings",
-	"settings.status": "Status",
-	"settings.network": "Network",
-	"settings.time": "Time",
-	"settings.update": "Firmware update",
-	"settings.versions": "Versions",
-	"settings.system": "System",
-	"settings.web": "Web access",
-	"settings.editable": "Settings",
-	"settings.save": "Save",
-	"settings.saved": "Saved.",
-	"settings.default": "Default: {value}",
-	"settings.readonly": "Change it on the device's console.",
-	"settings.key.tz": "Time zone (POSIX TZ)",
-	"settings.key.ntp.server": "Time server (NTP)",
-	"settings.key.update.url": "Update source",
-	"settings.key.wifi.ssid": "WiFi network",
-
-	"status.state": "State",
-	"status.ip": "Address",
-	"status.mdns": "Name",
-	"status.mode": "Mode",
-	"status.local": "Local time",
-	"status.synchronized": "Synchronized",
-	"status.not_synchronized": "Not synchronized",
-	"status.tz": "Time zone",
-	"status.ntp": "Time server",
-	"status.firmware": "Firmware",
-	"status.build": "Build",
-	"status.ui": "Web UI",
-	"status.uptime": "Uptime",
-	"status.heap": "Free memory",
-	"status.heap.value": "{free} (lowest {min})",
-	"status.improv": "Improv Wi-Fi",
-	"status.improv.active": "offered, ends in {seconds} s",
-	"status.improv.ended": "ended",
-	"status.led": "Status LED",
-	"status.sessions": "Sessions",
-	"status.tokens": "API tokens",
-	"status.ws": "Live connections",
-	"status.datapoints": "Datapoints",
-	"status.update.source": "Source",
-	"status.update.partition": "Partition",
-	"status.update.last": "Last result",
-	"status.update.next": "Next check",
-	"status.update.unavailable": "This build does not update itself.",
-	"status.none": "none",
-	"state.link.down": "down",
-	"state.link.connecting": "connecting",
-	"state.link.up": "connected",
-	"state.mode.unprovisioned": "no WiFi credentials (WPS)",
-	"state.mode.re-pairing": "re-pairing (WPS)",
-	"state.mode.failsafe (pairing)": "failsafe: listening for WPS",
-	"state.mode.failsafe (stored credentials)": "failsafe: retrying the stored network",
-	"state.led.pairing": "pairing (fast blink)",
-	"state.led.connecting": "connecting (slow blink)",
-	"state.led.setup": "online, no project yet (short pulse)",
-	"state.led.degraded": "degraded",
-	"state.led.ready": "ready (solid)",
-	"status.yes": "yes",
-	"status.no": "no",
-
-	"log.title": "Log",
-	"log.follow": "Follow",
-	"log.empty": "No log lines yet.",
-	"log.dropped": "{count} lines were dropped while the log was busy.",
-
-	"duration.s": "{s} s",
-	"duration.m": "{m} min",
-	"duration.h": "{h} h {m} min",
-	"duration.d": "{d} d {h} h",
-	"duration.hh": "{h} h",
-	"duration.dd": "{d} d",
-
-	"error.network": "The device cannot be reached.",
-	"error.unknown": "Something went wrong ({status}).",
-
-	"auth.onboarding_required": "No device password is set yet: set one first.",
-	"auth.password_set": "The device password is already set.",
-	"auth.wrong_password": "Wrong password.",
-	"auth.rate_limited": "Too many failed logins from this device: please wait.",
-	"auth.password_invalid": "The password must have 8 to 64 characters and no control characters.",
-	"auth.password_changed": "The password changed meanwhile: try again.",
-	"auth.required": "Please log in.",
-	"auth.csrf": "The request was refused (missing X-Requested-With header).",
-	"auth.session_ended": "Your session ended. Please log in again.",
-	"auth.storage_error": "The device could not store the password.",
-	"api.bad_json": "The request was malformed.",
-	"api.not_found": "Unknown API endpoint.",
-	"dp.not_writable": "This datapoint cannot be switched.",
-	"dp.wrong_type": "The value does not fit this datapoint.",
-	"dp.refused": "The device refused the command.",
-	"dp.refused.by": "{technology} refused the command; the Log page says why (is the connection up?).",
-	"dp.unknown_id": "This datapoint no longer exists.",
-	"dp.busy": "Busy: try again.",
-	"settings.invalid": "Invalid value: {reason}",
-	"settings.not_editable": "This setting cannot be changed here.",
-	"ws.too_many_clients": "Too many live connections: close another tab or app.",
-	"ws.foreign_origin": "Live updates refused for this page.",
+/// The packs bundled with this UI, by their own name (not translated). A language pack the device
+/// downloads later is offered by the device's manifest instead (GET /api/settings, "i18n").
+export const bundled = {
+	"en": "English",
+	"de": "Deutsch",
 };
 
-let table = base;
+const kTag = /^[a-z]{2}(-[A-Z]{2})?$/;
+
+/// Whether `lang` is a language tag the device accepts for ui.lang.
+export function validLanguage(lang) {
+	return typeof lang === "string" && kTag.test(lang);
+}
+
+/// The strings of a parsed pack: own members whose values are strings, nothing else.
+function strings(pack) {
+	const result = Object.create(null);
+	if (pack && typeof pack === "object" && !Array.isArray(pack)) {
+		for (const [key, value] of Object.entries(pack)) {
+			if (typeof value === "string") {
+				result[key] = value;
+			}
+		}
+	}
+	return result;
+}
+
+async function loadPack(url) {
+	try {
+		const response = await fetch(url, { credentials: "same-origin" });
+		return response.ok ? strings(await response.json()) : null;
+	} catch (e) {
+		return null;
+	}
+}
+
+const base = (await loadPack("/lang/en.json")) || Object.create(null);
+let table = Object.create(null);
+let current = "en";
+let found = true;
+
+/// Switches to `lang` (the device's ui.lang): loads its bundled and its downloaded pack, fills the
+/// static texts of the page. Resolves with whether a translation was found (English always is);
+/// without one the texts stay English.
+export async function setLanguage(lang) {
+	current = validLanguage(lang) ? lang : "en";
+	found = true;
+	const next = Object.create(null);
+	const base = current.split("-")[0];
+	if (base !== "en") {
+		// A regional tag ("de-AT") layers its own packs over the base language's bundled one ("de");
+		// the device downloads the base language's pack when the release has none for the region.
+		const [shippedBase, shipped, downloaded] = await Promise.all([
+			base !== current ? loadPack(`/lang/${base}.json`) : null,
+			loadPack(`/lang/${current}.json`),
+			loadPack(`/i18n/${current}.json`),
+		]);
+		Object.assign(next, shippedBase || {}, shipped || {}, downloaded || {});
+		found = !!(shippedBase || shipped || downloaded);
+	}
+	table = next;
+	document.documentElement.lang = found ? current : "en";
+	applyI18n();
+	return found;
+}
+
+/// The UI language (a tag), also the locale of number and date formats.
+export function language() {
+	return current;
+}
+
+/// Whether a pack for the UI language was found (false: the texts are English).
+export function languageFound() {
+	return found;
+}
 
 /// The text of `key` with `{name}` placeholders filled from `params` (values as given, never HTML).
 export function t(key, params) {

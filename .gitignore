@@ -22,3 +22,6 @@ __pycache__/
 homecontrol.settings
 # Web flasher: local copies of the firmware (scripts/flasher-local.sh), never versioned
 /web/flasher/firmware/
+# Language packs copied by the POSIX build from web/ui/lang (doc/i18n.md); only the base is versioned here
+/web/ui/dist/lang/*
+!/web/ui/dist/lang/en.json

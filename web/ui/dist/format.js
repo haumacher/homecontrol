@@ -1,9 +1,28 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
 // Formats datapoint values (spec/api.md "Values") and durations for display.
 
-import { t } from "/i18n.js";
+import { t, language } from "/i18n.js";
 
-const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+// Number and date formats follow the UI language (created on first use per language).
+const formats = new Map();
+
+function format(kind, options) {
+	const key = `${language()}|${kind}`;
+	let formatter = formats.get(key);
+	if (!formatter) {
+		let locale = language();
+		try {
+			formatter = kind.startsWith("date") ? new Intl.DateTimeFormat(locale, options) : new Intl.NumberFormat(locale, options);
+		} catch (e) {
+			locale = undefined;
+			formatter = kind.startsWith("date") ? new Intl.DateTimeFormat(locale, options) : new Intl.NumberFormat(locale, options);
+		}
+		formats.set(key, formatter);
+	}
+	return formatter;
+}
+
+const number = { format: (value) => format("number2", { maximumFractionDigits: 2 }).format(value) };
 
 function two(n) {
 	return String(n).padStart(2, "0");
@@ -98,8 +117,8 @@ export function formatDurationShort(seconds) {
 	return t("duration.dd", { d: Math.round(s / 86400) });
 }
 
-const dateTime = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
-const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+const dateTime = { format: (date) => format("date-short", { weekday: "short", hour: "2-digit", minute: "2-digit" }).format(date) };
+const fullDate = { format: (date) => format("date-full", { dateStyle: "medium", timeStyle: "short" }).format(date) };
 
 /// A UTC time (seconds) as local weekday and time, or with the date when it is more than 6 days away.
 export function formatWhen(seconds, now) {
@@ -112,6 +131,6 @@ export function formatNumber(value, unit, digits = 1) {
 	if (value === null || value === undefined || Number.isNaN(value)) {
 		return t("value.unknown");
 	}
-	const text = new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(value);
+	const text = format(`number${digits}`, { maximumFractionDigits: digits }).format(value);
 	return unit ? `${text} ${unit}` : text;
 }

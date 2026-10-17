@@ -119,3 +119,8 @@ partition_table_add_check_size_target(hc_app_check_size
 	BINARY_PATH "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"
 	PARTITION_TYPE app PARTITION_SUBTYPE ota_0)
 add_dependencies(app hc_app_check_size)
+
+# The language packs (doc/i18n.md): gen_ui_image.py takes them from web/ui/lang; a changed pack
+# restages the UI image.
+file(GLOB hc_ui_packs CONFIGURE_DEPENDS "${hc_ui_dist}/../lang/*.json")
+add_custom_command(OUTPUT "${hc_ui_stage}/ui/VERSION" APPEND DEPENDS ${hc_ui_packs})

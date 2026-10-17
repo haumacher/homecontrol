@@ -3,7 +3,7 @@
 
 import { api, errorText } from "/api.js";
 import { h } from "/dom.js";
-import { t } from "/i18n.js";
+import { t, language } from "/i18n.js";
 
 const kPollMs = 3000;
 const kMaxLines = 1000;
@@ -11,7 +11,11 @@ const kMaxLines = 1000;
 function time(ms, nowMs) {
 	// Device monotonic time -> wall clock of this browser (good enough to read the log).
 	const date = new Date(Date.now() - (nowMs - ms));
-	return date.toLocaleTimeString(undefined, { hour12: false });
+	try {
+		return date.toLocaleTimeString(language(), { hour12: false });
+	} catch (e) {
+		return date.toLocaleTimeString(undefined, { hour12: false });
+	}
 }
 
 export function renderLog(content) {

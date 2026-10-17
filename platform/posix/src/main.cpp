@@ -11,8 +11,8 @@
 // the WebSocket on the port above; --demo loads simulated datapoints for UI development. With the
 // setting knx.gateway it keeps a KNXnet/IP tunnel to that gateway (doc/knx.md). --image loads a
 // runtime image (spec/runtime-image.md) at start; PUT /api/image replaces it. The blobs (the stored
-// image, persisted values, history rings) are kept in RAM until the POSIX blob store is merged:
-// nothing of them survives a restart.
+// image, persisted values, history rings, the UI's language pack) live in a directory beside the
+// settings file (doc/persistence.md).
 
 #include <cerrno>
 #include <csignal>
@@ -29,6 +29,8 @@
 #include "hc/demo.h"
 #include "hc/external_values.h"
 #include "hc/image/image_service.h"
+#include "hc/language_packs.h"
+#include "hc/version.h"
 #include "hc/posix/file_blob_store.h"
 #include "hc/posix/httplib_fetcher.h"
 #include "hc/image/memory_blob_store.h"
@@ -235,6 +237,9 @@ int main(int argc, char** argv) {
 	hc::posix::HttplibFetcher fetcher(executor);
 	hc::ExternalValues external(controller.loop(), controller.time(), settings, controller.connectivity(), model, fetcher);
 	image.set_external(&external);
+	// The web UI's language pack for ui.lang, fetched from the update server (doc/i18n.md).
+	hc::LanguagePacks packs(controller.loop(), controller.time(), settings, controller.connectivity(), fetcher, blobs,
+		hc::kVersion);
 	bool knx = !gateway.empty();
 	if (knx) {
 		adapter.start();
@@ -256,6 +261,7 @@ int main(int argc, char** argv) {
 	} else {
 		blobs.start();
 		image.start();
+		packs.start();
 		if (image_path != nullptr) {
 			std::string text;
 			if (!read_image_file(image_path, text)) {
@@ -271,6 +277,7 @@ int main(int argc, char** argv) {
 		web.reset(new hc::posix::WebServer(controller, model, executor, static_cast<uint16_t>(http_port), www_dir));
 		if (!demo) {
 			web->set_image(&image);
+			web->set_language_packs(&packs, &blobs);
 		}
 		if (!web->start()) {
 			return 1;

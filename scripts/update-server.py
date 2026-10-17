@@ -15,9 +15,15 @@
 # version: bump kVersion in core/include/hc/version.h for that test; `update now` installs anything.
 # The files are copied into <build>/ota-serve/ when the server starts; rebuild and restart the
 # server to publish a new build.
+#
+# Next to the firmware it serves the release's language packs (doc/i18n.md) the way a release
+# publishes them: <base>/<version>/i18n/manifest.json and lang-<code>.json.gz, made from web/ui/lang
+# by scripts/i18n-pack.py. A device with `update url set <base>` downloads the pack of its ui.lang
+# from there (console `lang status`, `lang sync`). --no-i18n leaves them out.
 
 import argparse
 import hashlib
+import importlib.util
 import http.server
 import json
 import os
@@ -60,6 +66,7 @@ def main():
 	parser.add_argument('--build', default=os.path.join(REPO, 'platform', 'esp', 'build-esp32c6'),
 						help='application build directory (default: platform/esp/build-esp32c6)')
 	parser.add_argument('--port', type=int, default=8070, help='HTTP port (default 8070)')
+	parser.add_argument('--no-i18n', action='store_true', help='do not serve the language packs')
 	args = parser.parse_args()
 
 	image_path = os.path.join(args.build, 'homecontrol.bin')
@@ -85,12 +92,25 @@ def main():
 		json.dump(manifest, f, indent=2)
 		f.write('\n')
 
+	release = version.split('+')[0]
+	i18n_dir = os.path.join(serve, release, 'i18n')
+	if os.path.isdir(i18n_dir):
+		shutil.rmtree(i18n_dir)
+	if not args.no_i18n:
+		spec = importlib.util.spec_from_file_location('i18n_pack', os.path.join(REPO, 'scripts', 'i18n-pack.py'))
+		i18n_pack = importlib.util.module_from_spec(spec)
+		spec.loader.exec_module(i18n_pack)
+		if i18n_pack.cmd_manifest(argparse.Namespace(dir=os.path.join(serve, release), version=version)) != 0:
+			print('warning: some language packs were refused (above); the others are served')
+
 	base = 'http://%s:%d' % (local_address(), args.port)
 	print('serving %s (%s, %d bytes, sha256 %s...) from %s' % (image_path, version, len(data),
 															   manifest['sha256'][:16], serve))
 	print('on the device console:')
 	print('  update now %s            install this build, whatever its version' % base)
 	print('  update url set %s        then: update check (installs only a newer version)' % base)
+	if not args.no_i18n:
+		print('language packs: %s/%s/i18n/manifest.json (console: lang sync)' % (base, release))
 	print('stop with Ctrl-C')
 	sys.stdout.flush()
 
