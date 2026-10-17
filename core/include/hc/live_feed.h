@@ -10,6 +10,7 @@
 #include "hc/auth.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
+#include "hc/monitor_feed.h"
 #include "hc/web_api.h"
 
 namespace hc {
@@ -38,6 +39,13 @@ protected:
 /// once) and a posted flush sends one {"type":"datapoints"} message with their current values. The
 /// status is pushed when one of its discrete fields changes and as a heartbeat every
 /// kHeartbeatMs. A client that misses a message (no send buffer) gets a full snapshot again.
+///
+/// The monitor stream (spec/api.md, "Monitor"): the feed owns the MonitorFeed and attaches it to
+/// the image service's sources (WebApi::image()) at start() and after every model change. A client
+/// that sent {"type":"monitor","subscribe":true} gets the events from its cursor on, batched per
+/// event-loop turn into messages of at most kMessageSize; a client that falls behind the ring gets a
+/// gap marker, never a queue. Monitor messages that cannot be sent wait for writable() or the next
+/// tick (they do not trigger a datapoint resync).
 ///
 /// Threading: the event loop's thread; the platform calls open/message/closed/writable there.
 class LiveFeed : public DatapointListener {
@@ -84,6 +92,9 @@ public:
 
 	void datapoint_updated(const DatapointUpdate& update) override;
 
+	/// The monitor stream (GET /api/monitor reads it through WebApi).
+	MonitorFeed& monitor() { return monitor_; }
+
 	/// Whether `origin` ("http://host[:port]") names the same host as `host` ("host[:port]"),
 	/// ignoring the ports (the POSIX build serves /ws on its own port).
 	static bool same_origin(const char* origin, const char* host);
@@ -101,6 +112,8 @@ private:
 		bool subscribed = false;
 		size_t snapshot_next = 0; ///< Next datapoint id of the snapshot; SIZE_MAX when none runs.
 		uint64_t opened_ms = 0;
+		bool monitor = false;      ///< Subscribed to the monitor stream.
+		uint32_t monitor_next = 0; ///< The next monitor event it gets.
 	};
 
 	Client* find(uint32_t handle);
@@ -110,6 +123,10 @@ private:
 	void authenticate_token(Client& client, const JsonSpan& message);
 	void command(Client& client, const JsonSpan& message);
 	void subscribe(Client& client);
+	void monitor_message(Client& client, const JsonSpan& message);
+	void monitor_flush();
+	void schedule_monitor_flush();
+	void attach_monitor();
 	void send_status(Client* only);
 	void tick();
 	void flush();
@@ -148,6 +165,8 @@ private:
 	StatusSignature last_signature_;
 	uint64_t last_status_ms_ = 0;
 	char out_[kMessageSize] = {};
+	MonitorFeed monitor_;
+	bool monitor_posted_ = false;
 };
 
 } // namespace hc

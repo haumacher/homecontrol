@@ -108,6 +108,11 @@ public:
 	/// Reads still to be sent from the last tunnel up.
 	size_t reads_pending() const;
 
+	/// The tunnel and the telegram log (nullptr if none) it was given (the monitor stream sends and
+	/// listens there).
+	KnxTunnel& tunnel() { return tunnel_; }
+	TelegramLog* telegram_log() { return log_; }
+
 	// Technology
 	const char* name() const override { return "knx"; }
 	bool command(const Datapoint& datapoint, const Value& value) override;

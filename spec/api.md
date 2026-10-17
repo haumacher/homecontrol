@@ -381,6 +381,7 @@ Server to client:
 | `datapoints` | `now_ms`, `updates`: `[{"id", "value", "quality", "updated_ms"}]`. After `subscribe`: a snapshot in chunks with `snapshot: true`, `count`, `from`, `done` and the full datapoints (as in the REST API); then the changes, batched per event-loop turn (each datapoint once, with its latest value) |
 | `result` | answer to `command`: `id`, `ref` (echoed), `ok`, and on refusal `error` and `code` (the `dp.*` codes of the REST command) |
 | `pong` | answer to `ping` |
+| `monitor` | the monitor stream: the answer to a `monitor` message, and the event batches (see "Monitor") |
 | `error` | `error`, `code`: `ws.bad_message`, `ws.unknown_type`, and the refusals before a close |
 
 Client to server:
@@ -391,10 +392,119 @@ Client to server:
 | `subscribe` | start the snapshot and the updates |
 | `command` | `id`, `value`, optional `ref` (any JSON value, echoed in the result) |
 | `ping` | keep-alive; the UI sends one every 20 s (the ESP server purges the least recently used connection when its sockets run out) |
+| `monitor` | `subscribe` (with `since`), `send` or `read` (see "Monitor") |
 
 A client that misses a message (the server's send buffers were full) gets a fresh snapshot. Close
 codes: 1007 invalid UTF-8, 1008 policy (authentication, origin), 1009 message longer than 1024
 bytes, 1003 binary or fragmented messages, 1013 too many clients or the controller busy.
+
+## Monitor
+
+The monitor stream (issue #19) is what E-Home's group monitor shows: the group telegrams of the KNX
+bus, the Zigbee frames, and what the controller did itself (the rules' commands, the commands from
+the UI and the API, the image loads), with the datapoint names of the loaded image. The device keeps
+the last 128 events in RAM, each with a sequence number (0 at start, counting up; a restart begins
+at 0 again). A reader asks for the events from a sequence number on; one that asks for events that
+were overwritten gets a gap marker first, never an error.
+
+### Events
+
+Every event has `seq`, `ms` (monotonic), `t` (seconds since the epoch, only while the wall clock is
+synchronized), `kind`, and, when it concerns a datapoint of the current model, `dp` (its id) and
+`name`; `value` (in the datapoint's JSON form, as in "Datapoints") when it carries one. After a model
+change (an image load or a reload of the providers' datapoints) the older events lose `dp` and
+`name` (the ids may mean other datapoints) and keep their `value`.
+
+```json
+{"seq": 812, "ms": 80211, "t": 1792231392, "kind": "knx", "dir": "rx", "src": "1.1.10", "dst": "1/2/3",
+ "service": "write", "data": "0C 33", "prio": 3, "hops": 6, "dp": 4, "name": "living.temperature", "value": 21.5}
+{"seq": 813, "ms": 80240, "kind": "knx", "dir": "tx", "src": "1.1.250", "dst": "1/0/1", "service": "write",
+ "data": "01", "short": true, "prio": 3, "hops": 6, "origin": "monitor", "dp": 0, "name": "living.light", "value": true}
+{"seq": 814, "ms": 80300, "kind": "zigbee", "event": "report", "ieee": "00124b0001020304", "short": 6699,
+ "ep": 11, "cluster": 6, "attr": 0, "dp": 21, "name": "zigbee.00124b0001020304.11.on", "value": true}
+{"seq": 815, "ms": 80310, "kind": "zigbee", "event": "action", "ieee": "000b57fffe112233", "ep": 1,
+ "cluster": 6, "cmd": 2, "dp": 22, "name": "hall.button", "value": 2}
+{"seq": 816, "ms": 80320, "kind": "rule", "rule": "hall-presence-light", "dp": 3, "name": "hall.light", "value": true}
+{"seq": 817, "ms": 80400, "kind": "command", "origin": "ws", "via": "session", "dp": 5, "name": "living.setpoint", "value": 21}
+{"seq": 818, "ms": 90000, "kind": "image", "event": "load", "project": "example-house", "revision": 7, "source": "api"}
+{"kind": "gap", "seq": 700, "count": 12}
+```
+
+- `knx`: a group telegram, `dir` `rx` (from the bus) or `tx` (sent by the controller, reported when
+  the gateway confirmed it). `src` the individual address, `dst` the group address, `service`
+  `write`, `response`, `read` (or `other`), `data` the application data in hex octets separated by
+  spaces (for a short telegram one octet with the 6-bit value, `short: true`; `""` for a read),
+  `prio` 0 (system) to 3 (low), `hops` the routing counter, `repeated: true` for a repetition,
+  `origin: "monitor"` for a telegram a monitor client sent. `dp`/`name`/`value`: the first datapoint
+  listening on the address and the value it took (for a received telegram the decoded value, absent
+  when the data did not decode; for a sent one the datapoint's value).
+- `zigbee`: `event` `report` (an attribute report or read response record; `attr` the attribute),
+  `action` (a cluster command the device sent, a button or a zone change; `cmd` the ZCL command id)
+  or `command` (a command the controller sent for a datapoint; `cmd` the ZCL command id). `ieee`
+  (16 hex digits), `short` (the network address, when known), `ep` the endpoint, `cluster`. `value`
+  is the datapoint's value, or for an attribute no datapoint maps its decoded number or string.
+- `rule`: a rule commanded a datapoint; `rule` is its id (cut to 27 bytes).
+- `command`: a datapoint was commanded from outside the rules; `origin` `ws` (a WebSocket client's
+  `command`), `api` (`POST /api/datapoints/<id>/command`) or `app` (the controller itself: the
+  console, a component); `via` `session` or `token` for `ws` and `api`. A command reaches the
+  technology first: a Zigbee `command` event precedes the `command` event that caused it.
+- `image`: `event` `load` (an image was applied), `reload` (the model was rebuilt for the providers'
+  datapoints, e.g. a Zigbee device joined) or `unload`; `project`, `revision`, `source` (as in
+  /api/status) when an image is loaded.
+- `gap` (only in a reply, never stored): the events from `seq` on, `count` of them, were overwritten
+  before the reader got them.
+
+### Over the WebSocket
+
+After authentication (see "WebSocket"):
+
+- `{"type": "monitor", "subscribe": true, "since": <n>}` turns the stream on for this connection.
+  Without `since` it starts with the next event; with `since` it starts at that event (a catch-up
+  after a reconnect: the client sends the `next` of the last batch it got); a `since` beyond the
+  newest event (a sequence of an earlier run of the device) starts at the oldest event held and the
+  answer says `reset: true`. Answer: `{"type": "monitor", "subscribed": true, "since", "first",
+  "next", "capacity": 128}` (`first` the oldest event held, `next` the sequence the next event
+  gets). `{"type": "monitor", "subscribe": false}` turns it off (answer `"subscribed": false`).
+  Both echo a `ref` (number or string) if given. The datapoint subscription (`subscribe`) is
+  independent.
+- The events follow as `{"type": "monitor", "now_ms", "events": [...], "next": <n>}`: what happened
+  in one event-loop turn, in messages of at most 1400 bytes (up to 4 messages per client and turn;
+  the rest follows in the next turns). `next` is the sequence after the last event of the message.
+  A client whose connection cannot take messages (send buffers full) is not queued for: the batch
+  is retried, and once the ring has overtaken the client's position the next batch starts with a
+  `gap` marker.
+- `{"type": "monitor", "send": {"knx": {"address": "1/2/3", "dpt": "9.001", "value": 21.5}}, "ref": 7}`
+  sends a group write of the value encoded as the DPT (the value in the JSON form of the DPT's
+  value type). `"service": "response"` sends a group response instead. Instead of `dpt` and
+  `value`, `"data": "0C 33"` sends the octets after the APCI as they are (1 to 14), and
+  `"data": "01", "short": true` a 6-bit value in the APCI octet (what E-Home's own encoder
+  produces).
+- `{"type": "monitor", "read": {"knx": {"address": "1/2/3"}}}` sends a group read; the response comes
+  as an `rx` event with `service: "response"`.
+- Both answer `{"type": "monitor", "result": "send" | "read", "ok": true, "ref"}` when the tunnel took
+  the telegram (its `tx` event, marked `origin: "monitor"`, follows when the gateway confirms), or
+  `ok: false` with `error` and `code`: `monitor.tunnel_down` (the KNX tunnel is not up),
+  `monitor.queue_full` (try again), `monitor.knx_unavailable` (the controller has no KNX tunnel),
+  `monitor.bad_address`, `monitor.bad_dpt` (unknown or unsupported DPT), `monitor.value_missing`,
+  `monitor.bad_value` (with the codec's reason), `monitor.bad_request` (not `{"knx": {...}}`, or a
+  service other than write and response), `monitor.unsupported` (a Zigbee target: command the
+  datapoint instead). Sending needs the same authentication as a command; there is no confirmation
+  of the bus devices beyond the gateway's.
+- A malformed `monitor` message (none of `subscribe`, `send`, `read`; `since` not a sequence number)
+  is answered with an `error` message `ws.bad_message`.
+
+### `GET /api/monitor[?since=<n>][&limit=<m>]`
+
+The same events for tools without a WebSocket. Without `since` it starts with the oldest event held;
+`limit` is 1 to 128 (default 50). The page holds as many events as fit the response buffer:
+
+```json
+{"first": 700, "next": 828, "since": 812, "events": [...], "next_since": 828, "more": false}
+```
+
+Continue with `since=<next_since>` while `more` is true. A `since` beyond `next` starts at `first`
+with `reset: true`; one below `first` gets a `gap` marker first. Refusals: 400 `monitor.bad_query`,
+404 `monitor.unavailable` (a server without the live feed), 405 `api.method_not_allowed`.
 
 ## Examples
 
@@ -413,6 +523,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/model"
 curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/history?ids=4&points=24"
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"value": 600000}' $DEV/api/rules/hall-presence-light/parameters/timeout
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"enabled": false}' $DEV/api/schedules/workdayMorning
+curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/monitor?since=0&limit=20"
 ```
 
 ## Diagnostics

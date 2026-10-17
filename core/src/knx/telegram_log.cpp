@@ -25,6 +25,9 @@ void TelegramLog::append(const TelegramRecord& record) {
 	stored.wall_seconds = wall.seconds;
 	stored.wall_synchronized = wall.synchronized;
 	++total_;
+	if (listener_ != nullptr) {
+		listener_->telegram_logged(stored, total_ - 1);
+	}
 }
 
 const TelegramRecord* TelegramLog::at(size_t index) const {

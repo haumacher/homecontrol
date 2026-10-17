@@ -106,6 +106,7 @@ public:
 	/// The runtime image service: /api/image and the "image" member of /api/status (doc/image.md).
 	/// The runtime image behind /api/image and the status; its changes resync the live feed.
 	void set_image(image::ImageService* image);
+	image::ImageService* image() const { return image_; }
 
 	/// The largest body a request may carry: kMaxBody, the image size limit for PUT /api/image.
 	/// The platforms refuse longer bodies with 413 before they read them.

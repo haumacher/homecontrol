@@ -53,6 +53,37 @@ struct NetworkStatus {
 	uint64_t permit_until_ms = 0;
 };
 
+/// One frame the adapter handled, for the monitor stream (hc::MonitorFeed).
+struct ZigbeeTraffic {
+	enum class Kind : uint8_t {
+		report,  ///< An attribute report or read response record (`code` the attribute).
+		action,  ///< A cluster command the device sent (`code` the command id).
+		command, ///< A command the adapter sent for a datapoint (`code` the ZCL command id).
+	};
+	static constexpr uint16_t kNoDatapoint = 0xFFFF;
+
+	Kind kind = Kind::report;
+	Ieee ieee = 0;
+	uint16_t short_addr = kNoShortAddress;
+	uint8_t endpoint = 0;
+	uint16_t cluster = 0;
+	uint16_t code = 0;
+	/// The datapoint reported or commanded; kNoDatapoint when the frame maps to none.
+	uint16_t datapoint = kNoDatapoint;
+	/// The datapoint's value (or the attribute's decoded value when unmapped); nullptr if none.
+	const Value* value = nullptr;
+};
+
+/// Told about every frame the adapter handled (ZigbeeAdapter::set_traffic_listener()). Called on the
+/// event loop's thread after the datapoint was reported.
+class ZigbeeTrafficListener {
+public:
+	virtual void zigbee_traffic(const ZigbeeTraffic& traffic) = 0;
+
+protected:
+	~ZigbeeTrafficListener() = default;
+};
+
 /// The Zigbee technology adapter (doc/zigbee.md): keeps the device database, interviews joining
 /// devices, maps their clusters to datapoints (generic rules or the runtime image's bindings),
 /// configures their reporting, turns attribute reports and button commands into datapoint reports,
@@ -175,6 +206,11 @@ public:
 	/// Whether the datapoints are in the model (start() or the last reload succeeded).
 	bool loaded() const { return loaded_; }
 
+	/// The one traffic listener (the monitor stream); nullptr: none. It must outlive the adapter or be
+	/// removed first.
+	void set_traffic_listener(ZigbeeTrafficListener* listener) { traffic_ = listener; }
+	ZigbeeTrafficListener* traffic_listener() const { return traffic_; }
+
 	/// {"network": {...}, "devices": [{ieee, short, manufacturer, model, label, interviewed, stale,
 	/// last_seen, datapoints: [names]}]} for the console, the API and E-Home's pairing view
 	/// (spec/zigbee.md).
@@ -230,7 +266,10 @@ private:
 	void check_stale();
 	void refresh_due();
 	void schedule_refresh();
-	void report_point(const ZigbeeDevice& device, uint8_t endpoint, Function function, const Value& value);
+	/// Reports the value of the mapped point; the datapoint's id, kNoId when unmapped.
+	uint16_t report_point(const ZigbeeDevice& device, uint8_t endpoint, Function function, const Value& value);
+	void traffic(ZigbeeTraffic::Kind kind, const ZigbeeDevice& device, uint8_t endpoint, uint16_t cluster, uint16_t code,
+		uint16_t datapoint, const Value* value);
 	long find_point(Ieee ieee, uint8_t endpoint, Function function) const;
 	bool device_has_overrides(Ieee ieee) const;
 	void free_overrides();
@@ -261,6 +300,7 @@ private:
 	uint64_t start_ms_ = 0;
 	TimerHandle check_timer_;
 	TimerHandle refresh_timer_;
+	ZigbeeTrafficListener* traffic_ = nullptr;
 };
 
 } // namespace zigbee

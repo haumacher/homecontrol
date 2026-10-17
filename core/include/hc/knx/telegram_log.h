@@ -43,6 +43,17 @@ struct TelegramRecord {
 	uint16_t datapoint = kNoDatapoint;
 };
 
+/// Told about every record a TelegramLog stores (the monitor stream, hc::MonitorFeed). Called on the
+/// event loop's thread right after the record was stored.
+class TelegramListener {
+public:
+	/// `record` is the stored copy (with its times); `sequence` its sequence number.
+	virtual void telegram_logged(const TelegramRecord& record, uint64_t sequence) = 0;
+
+protected:
+	~TelegramListener() = default;
+};
+
 /// The last kCapacity group telegrams, for the console (`knx log`) and E-Home's monitor (issue #19).
 /// A fixed ring inside the object: no heap. Every record gets a sequence number (0, 1, 2, ...), so
 /// a reader can ask for what it has not seen yet.
@@ -78,6 +89,10 @@ public:
 
 	void clear();
 
+	/// The one listener (nullptr: none); it must outlive the log or be removed first.
+	void set_listener(TelegramListener* listener) { listener_ = listener; }
+	TelegramListener* listener() const { return listener_; }
+
 	/// Longest line format() writes including the NUL.
 	static constexpr size_t kMaxLine = 192;
 
@@ -91,6 +106,7 @@ private:
 	size_t head_ = 0; ///< Index of the oldest record.
 	size_t count_ = 0;
 	uint64_t total_ = 0;
+	TelegramListener* listener_ = nullptr;
 };
 
 } // namespace knx
