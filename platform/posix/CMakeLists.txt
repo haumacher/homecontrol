@@ -120,3 +120,17 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/rules_unit_test.cpp"
 	"${HC_REPO_DIR}/core/test/rules_probe_test.cpp"
 )
+# External values (issue #17, doc/external.md): the core's tests, and the HTTP fetcher on cpp-httplib in
+# the web library (it shares the vendored header and the LoopExecutor). HTTPS needs OpenSSL's development
+# files; without them the fetcher speaks plain HTTP and refuses https:// with that reason.
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/external_values_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/external_probe_test.cpp")
+target_sources(hc_posix_web PRIVATE src/httplib_fetcher.cpp)
+find_package(OpenSSL 3.0 QUIET)
+if(OPENSSL_FOUND)
+	target_compile_definitions(hc_posix_web PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+	target_link_libraries(hc_posix_web PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+	message(STATUS "External values: HTTPS through OpenSSL ${OPENSSL_VERSION}")
+else()
+	message(STATUS "External values: OpenSSL development files not found: the POSIX fetcher speaks HTTP only")
+endif()

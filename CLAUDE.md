@@ -20,7 +20,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   astronomy and the scheduler (`doc/time.md`), the KNX time master, last-value persistence and
   short-term history over the platform's `BlobStore` (`ValueStore`, `History`, `doc/persistence.md`),
   the web server's portable half (JSON API `WebApi`, WebSocket feed `LiveFeed` and codec `websocket`,
-  `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); the rule interpreter (`hc::rules`, `doc/rules.md`); later the runtime image. Plain C++17, no ESP-IDF or POSIX
+  `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); the rule interpreter (`hc::rules`, `doc/rules.md`); external values from HTTP JSON sources such as Open-Meteo (`ExternalValues` over the platform's `HttpFetcher`, ESP component `hc_external`, `doc/external.md`); later the runtime image. Plain C++17, no ESP-IDF or POSIX
   includes; everything the platform provides (clock, settings, time zone, network driver, status
   light, logging, the Improv serial port, the WiFi scan) is an interface in `core/include/hc/platform/`. Unit tests in `core/test/`.
   `core/hc_core.cmake` is the single source list of both builds; the event loop model is in
