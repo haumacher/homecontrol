@@ -4,18 +4,26 @@
 // of another generation (the image changed meanwhile) restarts the fetch.
 
 import { api } from "/api.js";
+import { language } from "/i18n.js";
 
-const lang = (navigator.language || "en").toLowerCase();
+const browser = (navigator.language || "en").toLowerCase();
 
-/// The text of an image label: a string, or an object of language tags to strings (the browser's
-/// language, then its base language, then English, then the first one).
+/// The text of an image label: a string, or an object of language tags to strings (the UI
+/// language, its base language, the browser's language and its base, then English, then the first
+/// one). The labels come from the image (E-Home) and are not translated here.
 export function label(value, fallback = "") {
 	if (typeof value === "string") {
 		return value;
 	}
 	if (value && typeof value === "object") {
-		const base = lang.split("-")[0];
-		return value[lang] ?? value[base] ?? value.en ?? Object.values(value)[0] ?? fallback;
+		const ui = language();
+		for (const tag of [ui, ui.toLowerCase(), ui.split("-")[0], browser, browser.split("-")[0], "en"]) {
+			if (typeof value[tag] === "string") {
+				return value[tag];
+			}
+		}
+		const first = Object.values(value).find((v) => typeof v === "string");
+		return first ?? fallback;
 	}
 	return fallback;
 }

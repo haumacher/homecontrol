@@ -24,6 +24,8 @@
 #include "hc/network_settings.h"
 #include "hc/update_check.h"
 #include "hc/websocket.h"
+#include "hc/language_packs.h"
+#include "littlefs_blob_store.h"
 #include "storage.h"
 
 namespace hc {
@@ -845,6 +847,52 @@ esp_err_t WebServer::file_handler(httpd_req_t* req) {
 	return g_server->handle_file(req);
 }
 
+/// A language pack the device downloaded for its release (doc/i18n.md): GET /i18n/<lang>.json is
+/// the blob `i18n.<lang>.json.gz` of the LanguagePacks, sent as stored (gzip). Read straight from
+/// the blob store's directory (LittleFS serializes the access; the blob is replaced atomically by a
+/// rename, so a reader sees the old or the new pack). 404 when there is none: the UI then uses the
+/// pack bundled with it, or English. Not cached: a new pack can arrive at any time.
+static esp_err_t send_language_pack(httpd_req_t* req, const char* uri) {
+	static constexpr const char kPrefix[] = "/i18n/";
+	char lang[setting::kMaxUiLangLength + 1] = {};
+	const char* code = uri + sizeof(kPrefix) - 1;
+	const char* dot = std::strchr(code, '.');
+	size_t length = dot != nullptr ? static_cast<size_t>(dot - code) : 0;
+	char name[BlobStore::kMaxNameLength + 1];
+	FILE* file = nullptr;
+	if (dot != nullptr && std::strcmp(dot, ".json") == 0 && length < sizeof(lang)) {
+		std::memcpy(lang, code, length);
+		if (LanguagePacks::blob_name(lang, name, sizeof(name))) {
+			char path[64 + sizeof(name)]; // "/storage/state/" + the blob name
+			std::snprintf(path, sizeof(path), "%s/%s", LittleFsBlobStore::kDirectory, name);
+			file = std::fopen(path, "rb");
+		}
+	}
+	if (file == nullptr) {
+		httpd_resp_set_status(req, status_line(404));
+		httpd_resp_set_type(req, "text/plain; charset=utf-8");
+		httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+		return httpd_resp_sendstr(req, "no downloaded language pack\n");
+	}
+	httpd_resp_set_type(req, "application/json");
+	httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+	httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+	httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+	esp_err_t err = ESP_OK;
+	for (;;) {
+		size_t n = std::fread(g_file_chunk, 1, sizeof(g_file_chunk), file);
+		if (n == 0) {
+			break;
+		}
+		err = httpd_resp_send_chunk(req, g_file_chunk, static_cast<ssize_t>(n));
+		if (err != ESP_OK) {
+			break;
+		}
+	}
+	std::fclose(file);
+	return err != ESP_OK ? err : httpd_resp_send_chunk(req, nullptr, 0);
+}
+
 esp_err_t WebServer::handle_file(httpd_req_t* req) {
 	static const char kMissing[] =
 		"<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" "
@@ -869,6 +917,9 @@ esp_err_t WebServer::handle_file(httpd_req_t* req) {
 		httpd_resp_set_status(req, status_line(400));
 		httpd_resp_set_type(req, "text/plain; charset=utf-8");
 		return httpd_resp_sendstr(req, "bad path\n");
+	}
+	if (std::strncmp(uri, "/i18n/", 6) == 0) {
+		return send_language_pack(req, uri);
 	}
 	const char* name = uri[1] == '\0' || uri[std::strlen(uri) - 1] == '/' ? "index.html" : "";
 	std::snprintf(path, sizeof(path), "%s%s%s.gz", kUiDir, uri, name);

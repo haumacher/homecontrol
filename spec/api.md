@@ -43,10 +43,11 @@ with a bearer token need no such header.
 
 ```json
 {"onboarded": true, "authenticated": true, "via": "session", "device": "homecontrol-a1b2c3",
- "version": "0.1.0-dev", "ws_port": 0, "min_password": 8}
+ "version": "0.1.0-dev", "ws_port": 0, "min_password": 8, "lang": "de"}
 ```
 
-`via` is `"session"`, `"token"` or `null`.
+`via` is `"session"`, `"token"` or `null`. `lang` is the UI language `ui.lang` (doc/i18n.md), open
+like the rest of this answer so that the login page speaks it too.
 
 ### `POST /api/auth/onboard` (open, only while not onboarded)
 
@@ -171,19 +172,39 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
 {"settings": [{"key": "tz", "value": "CET-1CEST,M3.5.0,M10.5.0/3", "default": "CET-1CEST,M3.5.0,M10.5.0/3", "editable": true},
               {"key": "ntp.server", "value": null, "default": "pool.ntp.org", "editable": true},
               {"key": "update.url", "value": null, "default": "", "editable": true},
-              {"key": "wifi.ssid", "value": "...", "default": "", "editable": false}]}
+              {"key": "ui.lang", "value": "de", "default": "en", "editable": true},
+              {"key": "wifi.ssid", "value": "...", "default": "", "editable": false}],
+ "i18n": {"lang": "de", "state": "installed", "detail": "pack 'de' of release 0.2.0 installed (5035 bytes)",
+          "release": "0.2.0", "offered": [{"code": "de", "name": "Deutsch"}]}}
 ```
 
-`value` is `null` when the setting is not stored (the default applies). Secrets (`wifi.psk`, the
-password and token hashes `web.*`) never appear.
+`value` is `null` when the setting is not stored (the default applies); `ui.lang` and `tz` always
+show the value in use. Secrets (`wifi.psk`, the password and token hashes `web.*`) never appear.
+`i18n` (only on a device that downloads language packs, i.e. not the POSIX build) is the state of
+the language pack of `ui.lang` (doc/i18n.md): `state` one of `builtin` (English, nothing to
+download), `waiting` (a condition is missing, `detail` says which), `fetching`, `installed`,
+`not_offered` (the release has no pack for the language), `failed` (`detail` gives the reason; a
+retry follows); `offered` the languages the release's manifest lists, by their own names.
 
 ### `PUT /api/settings/<key>`
 
 Body `{"value": "<string, at most 127 bytes>"}`; `""` erases `update.url`. Validated as on the
-console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.url` an http(s) URL; doc/ota.md)
-and applied at once. 200 with the settings list as for GET. Refusals: 404 `settings.unknown`, 403
+console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.url` an http(s) URL; doc/ota.md;
+`ui.lang` a language tag `[a-z]{2}(-[A-Z]{2})?`, doc/i18n.md) and applied at once (a new `ui.lang`
+starts the download of its language pack). 200 with the settings list as for GET. Refusals: 404 `settings.unknown`, 403
 `settings.not_editable`, 400 `settings.value_missing`, 422 `settings.invalid` (with the reason),
 500 `settings.storage_error`.
+
+## Language packs (static files, not under `/api/`)
+
+Open like the UI files; the strings are display text and untrusted input (doc/i18n.md).
+
+- `GET /lang/<code>.json` — a pack in the UI bundle: `en.json` (the base, every key) and the
+  committed packs (`de.json`); a flat JSON object of key to string. 404 for a language the bundle
+  does not carry.
+- `GET /i18n/<code>.json` — the pack the device downloaded for its release (the same format,
+  `Content-Encoding: gzip`, `Cache-Control: no-store`); 404 when there is none (always on the POSIX
+  build). The UI takes its keys in preference to the bundled pack's.
 
 ## Runtime image
 

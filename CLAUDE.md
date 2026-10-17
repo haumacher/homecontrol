@@ -21,7 +21,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   short-term history over the platform's `BlobStore` (`ValueStore`, `History`, `doc/persistence.md`),
   the web server's portable half (JSON API `WebApi`, WebSocket feed `LiveFeed` and codec `websocket`,
   `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); the rule interpreter (`hc::rules`, `doc/rules.md`); the runtime image (`hc::image`: `Loader`,
-  `ImageService`, `ImageStore`, the RAM stand-in `MemoryBlobStore`; `doc/image.md`). external values from HTTP JSON sources (`ExternalValues`, `doc/external.md`); Plain C++17, no ESP-IDF or POSIX
+  `ImageService`, `ImageStore`, the RAM stand-in `MemoryBlobStore`; `doc/image.md`). external values from HTTP JSON sources (`ExternalValues`, `doc/external.md`); the language packs of the web UI (`LanguagePacks`, the `ui.lang` setting; `doc/i18n.md`); Plain C++17, no ESP-IDF or POSIX
   `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); the monitor stream for E-Home's group monitor (`MonitorFeed`: KNX, Zigbee and the controller's actions, spec/api.md "Monitor"); the rule interpreter (`hc::rules`, `doc/rules.md`); the Zigbee adapter (`hc::zigbee`: `ZigbeeAdapter`, `DeviceDatabase`, the cluster mapping, over the platform's `ZigbeeDriver`, `doc/zigbee.md`), the runtime image (`hc::image`, `doc/image.md`; dynamic datapoints of providers such as the Zigbee adapter, `DynamicSpecProvider`). Plain C++17, no ESP-IDF or POSIX
   includes; everything the platform provides (clock, settings, time zone, network driver, status
   light, logging, the Improv serial port, the WiFi scan, the diagnostics) is an interface in `core/include/hc/platform/`. Unit tests in `core/test/`.
@@ -44,7 +44,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   the updater; `hc_ota` the application's side of the OTA update: confirmation, update check,
   hand-over to the updater; `hc_web` the web server: esp_http_server with the core's API and
   WebSocket feed, the UI files from the LittleFS image, the `web` console command; `hc_knx` the
-  KNX tunnel; `hc_image` the `image` console command and its download; `hc_zigbee` the coordinator; `hc_storage` the LittleFS mount and the blob store; `hc_external` the HTTP fetcher), `updater/` (the small OTA updater app of the
+  KNX tunnel; `hc_image` the `image` console command and its download; `hc_zigbee` the coordinator; `hc_storage` the LittleFS mount and the blob store; `hc_external` the HTTP fetcher; `hc_i18n` the language pack download and the `lang` console command), `updater/` (the small OTA updater app of the
   WebSocket feed, the UI files from the LittleFS image, the `web` console command; `hc_storage` the
   one mount of the LittleFS `storage` partition at `/storage` and the BlobStore in `/storage/state`
   (`LittleFsBlobStore`, the `storage` console command, `doc/persistence.md`); later knx,
@@ -60,14 +60,18 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
 - `web/` — the device web UI in `web/ui/dist/` (plain ES modules and CSS, no framework, no build
   step; `doc/web.md`), gzip-compressed into the LittleFS image `storage.bin` by
   `platform/esp/tools/gen_ui_image.py` during the firmware build; the REST and WebSocket API is
-  `spec/api.md`;
+  `spec/api.md`; every text goes through `t(key)` over the English base `web/ui/dist/lang/en.json`,
+  the committed language packs are `web/ui/lang/<code>.json` (German first; same key set, checked by
+  `scripts/i18n-pack.py check` and the host test; `doc/i18n.md`);
   `web/flasher/` the web flasher (ESP Web Tools page and manifest; local firmware copies from
   `scripts/flasher-local.sh` in `web/flasher/firmware/` are not versioned).
 - `scripts/` — developer helpers (`flasher-local.sh`, `update-server.py`: the development OTA update
-  server).
+  server, also serving the release's language packs; `i18n-pack.py`: pack check, DeepL fill-in with
+  `DEEPL_AUTH_KEY`, the per-release i18n manifest).
 - `doc/` — design notes; `doc/hardware.md` for boards, flash sizes, partition tables and wiring,
   `doc/diagnostics.md` for the reset reason, the boot record, core dumps, the watchdog and the console,
-  `doc/core.md` for the core and its event loop, `doc/ota.md` for the OTA update.
+  `doc/core.md` for the core and its event loop, `doc/ota.md` for the OTA update, `doc/i18n.md` for
+  the UI languages and language packs.
 - `third_party/` — vendored code with its license (doctest, the unit test framework; cpp-httplib,
   the POSIX build's HTTP server).
 - `.github/workflows/ci.yml` — host build with tests; the esp32c6 firmware build (partition table

@@ -22,6 +22,9 @@
 #include "hc/web_api.h"
 
 namespace hc {
+
+class BlobStore;
+class LanguagePacks;
 namespace posix {
 
 /// Secure random bytes from getrandom() and the core's software PBKDF2.
@@ -97,6 +100,12 @@ public:
 	Auth& auth() { return auth_; }
 	/// The runtime image behind /api/image and the status (call before start()).
 	void set_image(image::ImageService* image) { api_.set_image(image); }
+	/// The language packs behind ui.lang's sync and GET /i18n/<lang>.json, which serves the pack
+	/// stored in `store` (call before start()).
+	void set_language_packs(LanguagePacks* packs, const BlobStore* store) {
+		api_.set_language_packs(packs);
+		packs_store_ = store;
+	}
 
 	// WebHost (loop thread)
 	const char* device_name() const override { return device_name_; }
@@ -129,6 +138,7 @@ private:
 	LiveFeed feed_;
 	uint16_t port_;
 	std::string www_dir_;
+	const BlobStore* packs_store_ = nullptr;
 	char device_name_[64] = {};
 	char ui_version_[24] = {};
 

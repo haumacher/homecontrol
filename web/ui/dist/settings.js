@@ -1,11 +1,12 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
 // Settings: the device status (network, time, update, versions, system) live from the WebSocket,
-// the settings the UI may change (validated by the device exactly as on the console), and logout.
+// the settings the UI may change (validated by the device exactly as on the console), the UI
+// language (ui.lang, doc/i18n.md), and logout.
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
 import { formatAgo, formatBytes, formatDuration } from "/format.js";
-import { t, tv, has } from "/i18n.js";
+import { t, tv, has, bundled, language, languageFound } from "/i18n.js";
 import { loadModel } from "/model.js";
 import { currentTheme, setTheme } from "/theme.js";
 
@@ -103,6 +104,58 @@ function settingRow(setting, onSaved) {
 	);
 }
 
+/// The UI language: the bundled packs and the ones the release's manifest offers, by their own
+/// names; a change is stored as ui.lang and applied at once. The device's pack state below it.
+function languageRow(setting, i18n, ctx, reload) {
+	const id = "setting-ui.lang";
+	const names = { ...bundled };
+	for (const offer of (i18n && i18n.offered) || []) {
+		if (typeof offer.code === "string" && typeof offer.name === "string" && !(offer.code in names)) {
+			names[offer.code] = offer.name;
+		}
+	}
+	const value = setting.value || setting.default || "en";
+	if (!(value in names)) {
+		names[value] = value;
+	}
+	const select = h("select", { id, disabled: !setting.editable },
+		Object.entries(names).map(([code, name]) => h("option", { value: code, selected: code === value }, name)));
+	const feedback = h("span", { class: "hint", role: "status" });
+	const state = i18n && i18n.lang === value ? i18n : null;
+	const describe = () => {
+		if (!setting.editable) {
+			return t("settings.readonly");
+		}
+		const parts = [];
+		if (value !== language() || !languageFound()) {
+			parts.push(t("lang.missing", { lang: names[value] }));
+		}
+		if (state) {
+			parts.push(has(`lang.state.${state.state}`) ? t(`lang.state.${state.state}`, { detail: state.detail || "" }) : state.detail);
+		}
+		return parts.join(" ");
+	};
+	feedback.textContent = describe();
+	select.addEventListener("change", async () => {
+		select.disabled = true;
+		feedback.className = "hint";
+		try {
+			await api("PUT", "/api/settings/ui.lang", { value: select.value });
+			// Redraws the page in the new language (and comes back here).
+			await ctx.setLanguage(select.value);
+		} catch (error) {
+			feedback.className = "error-text";
+			feedback.textContent = errorText(error);
+			select.disabled = false;
+		}
+	});
+	// While the device downloads the pack, look again until it is there.
+	if (state && (state.state === "waiting" || state.state === "fetching") && reload) {
+		reload.schedule();
+	}
+	return h("div", { class: "field" }, h("label", { for: id }, t("settings.key.ui.lang")), select, feedback);
+}
+
 /// The deployed image: project, revision, when and how it came; "forget image" removes it.
 function imageCard(ctx, rerender) {
 	const card = h("section", { class: "card" }, h("h2", null, t("image.title")), h("p", { class: "muted" }, t("app.loading")));
@@ -165,8 +218,27 @@ export function renderSettings(content, ctx) {
 		});
 	}
 
+	// A pack the device is downloading: the settings are read again every 3 s (at most 20 times),
+	// and the page switches to the pack once it is installed.
+	let polls = 0;
+	let pollTimer = null;
+	const reload = {
+		schedule() {
+			if (polls++ < 20) {
+				clearTimeout(pollTimer);
+				pollTimer = setTimeout(() => loadSettings(), 3000);
+			}
+		},
+	};
+	let lastState = null;
 	const loadSettings = () => api("GET", "/api/settings").then((data) => {
-		replace(editable, data.settings.map((s) => settingRow(s, () => {})));
+		const i18n = data.i18n || null;
+		if (lastState && i18n && lastState !== "installed" && i18n.state === "installed" && i18n.lang === language()) {
+			ctx.setLanguage(i18n.lang); // the downloaded pack replaces the bundled texts
+			return;
+		}
+		lastState = i18n ? i18n.state : null;
+		replace(editable, data.settings.map((s) => (s.key === "ui.lang" ? languageRow(s, i18n, ctx, reload) : settingRow(s, () => {}))));
 	}).catch((error) => {
 		replace(editable, h("p", { class: "message error" }, errorText(error)));
 	});
@@ -198,5 +270,9 @@ export function renderSettings(content, ctx) {
 	content.appendChild(h("h2", { class: "section-title" }, t("settings.editable")));
 	content.appendChild(editable);
 	content.appendChild(logout);
-	return () => ctx.live.removeEventListener("status", onStatus);
+	return () => {
+		ctx.live.removeEventListener("status", onStatus);
+		clearTimeout(pollTimer);
+		polls = 20;
+	};
 }

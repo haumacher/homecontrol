@@ -97,6 +97,50 @@ bool host_name_valid(const char* name, const char** error) {
 	return true;
 }
 
+bool ui_lang_valid(const char* lang, const char** error) {
+	static const char kRule[] = "a language is two lower-case letters, optionally '-' and two upper-case letters (de, pt-BR)";
+	if (lang == nullptr || lang[0] == '\0') {
+		return refuse(error, "the language is empty");
+	}
+	size_t length = std::strlen(lang);
+	if (length != 2 && length != 5) {
+		return refuse(error, kRule);
+	}
+	auto lower = [](char c) { return c >= 'a' && c <= 'z'; };
+	auto upper = [](char c) { return c >= 'A' && c <= 'Z'; };
+	if (!lower(lang[0]) || !lower(lang[1])) {
+		return refuse(error, kRule);
+	}
+	if (length == 5 && (lang[2] != '-' || !upper(lang[3]) || !upper(lang[4]))) {
+		return refuse(error, kRule);
+	}
+	return true;
+}
+
+void read_ui_lang(const Settings& settings, char (&buffer)[setting::kMaxUiLangLength + 1], const char* tag) {
+	// A buffer one byte longer than the longest tag would truncate "en-GBX" to a valid "en-GB":
+	// read into a setting-sized buffer and validate the whole value.
+	char value[Settings::kMaxStringLength + 1];
+	read_string_setting(settings, setting::kUiLang, setting::kDefaultUiLang, value, sizeof(value), tag, &ui_lang_valid);
+	size_t length = std::strlen(value); // valid, or the default: at most kMaxUiLangLength
+	if (length > setting::kMaxUiLangLength) {
+		length = setting::kMaxUiLangLength;
+	}
+	std::memcpy(buffer, value, length);
+	buffer[length] = '\0';
+}
+
+bool store_ui_lang(Settings& settings, const char* lang, const char** error) {
+	if (!ui_lang_valid(lang, error)) {
+		return false;
+	}
+	SettingsStatus status = settings.set_string(setting::kUiLang, lang);
+	if (status != SettingsStatus::ok) {
+		return refuse(error, settings_status_name(status));
+	}
+	return true;
+}
+
 bool store_wifi_credentials(Settings& settings, const char* ssid, const char* psk, const char** error) {
 	if (!wifi_ssid_valid(ssid, error)) {
 		return false;

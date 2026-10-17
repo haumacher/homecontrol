@@ -17,10 +17,16 @@ constexpr const char* kWifiSsid = "wifi.ssid";
 constexpr const char* kWifiPsk = "wifi.psk";
 constexpr const char* kTimeZone = "tz";
 constexpr const char* kNtpServer = "ntp.server";
+/// The language of the web UI (doc/i18n.md): a tag `[a-z]{2}(-[A-Z]{2})?`, default kDefaultUiLang.
+constexpr const char* kUiLang = "ui.lang";
 
 /// Central European time with its EU DST rules.
 constexpr const char* kDefaultTimeZone = "CET-1CEST,M3.5.0,M10.5.0/3";
 constexpr const char* kDefaultNtpServer = "pool.ntp.org";
+/// The base language, built into the web UI.
+constexpr const char* kDefaultUiLang = "en";
+/// Longest language tag ("pt-BR").
+constexpr size_t kMaxUiLangLength = 5;
 
 /// Longest SSID in bytes (IEEE 802.11).
 constexpr size_t kMaxSsidLength = 32;
@@ -39,6 +45,18 @@ bool wifi_psk_valid(const char* psk, const char** error = nullptr);
 /// A host name or IPv4 literal for a server: 1 to Settings::kMaxStringLength characters of
 /// [A-Za-z0-9.-], labels of 1 to 63 characters.
 bool host_name_valid(const char* name, const char** error = nullptr);
+
+/// A UI language tag: two lower-case letters, optionally `-` and two upper-case letters ("de",
+/// "pt-BR"). Safe to splice into a URL or a file name. On refusal `error` names the problem.
+bool ui_lang_valid(const char* lang, const char** error = nullptr);
+
+/// The UI language from the settings: ui.lang if it is stored and valid, else kDefaultUiLang (an
+/// invalid stored value is logged under `tag`). `buffer` holds kMaxUiLangLength + 1 bytes.
+void read_ui_lang(const Settings& settings, char (&buffer)[setting::kMaxUiLangLength + 1], const char* tag);
+
+/// Validates and stores ui.lang (the web API and the console use it). False with `error` pointing
+/// to the reason if the tag is invalid or the write fails (nothing stored then).
+bool store_ui_lang(Settings& settings, const char* lang, const char** error);
 
 /// Validates and stores WiFi credentials the one way every provisioning path (the console's
 /// `wifi set`, WPS) uses: wifi.ssid, and wifi.psk or, for an open network (`psk` null or empty),

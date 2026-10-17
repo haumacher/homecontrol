@@ -158,3 +158,20 @@ target_sources(hc_posix PRIVATE src/posix_diagnostics.cpp)
 target_sources(hc_tests PRIVATE test/posix_diagnostics_test.cpp)
 # Dynamic datapoints in the image-loaded model: providers, the Zigbee bindings of the image (issue #29).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_dynamic_test.cpp")
+# Internationalization (issue #24, doc/i18n.md): the language pack decision, the ui.lang setting, the pack key sets.
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/language_packs_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/language_packs_probe_test.cpp")
+target_compile_definitions(hc_tests PRIVATE HC_WEB_DIR="${HC_REPO_DIR}/web")
+# The committed language packs (web/ui/lang/<code>.json) are copied next to the base language
+# (web/ui/dist/lang/en.json), where the POSIX server serves them; the copies are not versioned. The ESP
+# build packs them into storage.bin itself (tools/gen_ui_image.py).
+file(GLOB hc_lang_packs CONFIGURE_DEPENDS "${HC_REPO_DIR}/web/ui/lang/*.json")
+set(hc_lang_copies "")
+foreach(pack ${hc_lang_packs})
+	get_filename_component(pack_name "${pack}" NAME)
+	set(copy "${HC_REPO_DIR}/web/ui/dist/lang/${pack_name}")
+	add_custom_command(OUTPUT "${copy}" COMMAND ${CMAKE_COMMAND} -E copy_if_different "${pack}" "${copy}"
+		DEPENDS "${pack}" VERBATIM)
+	list(APPEND hc_lang_copies "${copy}")
+endforeach()
+add_custom_target(hc_lang_packs ALL DEPENDS ${hc_lang_copies})

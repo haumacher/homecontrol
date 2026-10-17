@@ -106,3 +106,5 @@ list(APPEND HC_CORE_SOURCES
 )
 # Diagnostics: the reset reason and the boot facts of the platform in the status (issue #4, doc/diagnostics.md).
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/diagnostics.cpp")
+# Language packs that ship after the firmware (issue #24, doc/i18n.md).
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/language_packs.cpp")

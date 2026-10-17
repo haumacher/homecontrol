@@ -16,6 +16,7 @@
 
 namespace hc {
 
+class LanguagePacks;
 class LiveFeed;
 
 namespace image {
@@ -103,6 +104,10 @@ public:
 	/// The live feed, for its client count in /api/status.
 	void set_feed(LiveFeed* feed) { feed_ = feed; }
 
+	/// The language packs (doc/i18n.md): a changed ui.lang starts their sync; GET /api/settings
+	/// reports their state as "i18n". Optional (the POSIX build serves the bundled packs only).
+	void set_language_packs(LanguagePacks* packs) { packs_ = packs; }
+
 	/// The runtime image service: /api/image and the "image" member of /api/status (doc/image.md).
 	/// The runtime image behind /api/image and the status; its changes resync the live feed.
 	void set_image(image::ImageService* image);
@@ -128,7 +133,7 @@ public:
 	/// Writes {"error": text, "code": code} and the status.
 	static void refuse(WebResponse& response, int status, const char* code, const char* text);
 
-	/// Validates and applies one of the UI-editable settings (tz, ntp.server, update.url). On
+	/// Validates and applies one of the UI-editable settings (tz, ntp.server, update.url, ui.lang). On
 	/// refusal returns false with the code and reason.
 	bool apply_setting(const char* key, const char* value, const char** code, const char** error);
 
@@ -170,6 +175,7 @@ private:
 	WebHost& host_;
 	LiveFeed* feed_ = nullptr;
 	image::ImageService* image_ = nullptr;
+	LanguagePacks* packs_ = nullptr;
 	/// A consistent copy of the controller's log ring for GET /api/log.
 	LogRing log_copy_;
 };

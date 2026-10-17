@@ -114,7 +114,7 @@ it, a script cannot without a preflight the device never grants). The WebSocket 
 
 REST under `/api/` for everything that is a request (status, datapoints, commands, log, settings,
 authentication, the image's model, history, rules and schedules) and one WebSocket for what changes by itself (datapoint values, the status). The
-settings the UI may change are a whitelist: `tz`, `ntp.server`, `update.url`; `wifi.ssid` is shown
+settings the UI may change are a whitelist: `tz`, `ntp.server`, `update.url`, `ui.lang`; `wifi.ssid` is shown
 read-only; secrets never appear. `knx.gateway` joins the whitelist with the KNX package (issue #7),
 which is not on this branch. Rejected: everything over the WebSocket (no curl, no caching
 semantics, no status codes); server-sent events (a second mechanism for commands would still be
@@ -155,8 +155,9 @@ authentication as the commands; its telegrams come back as `tx` events marked `"
 ### The UI: static files from LittleFS, no framework
 
 `web/ui/dist/` is the UI as it is served: `index.html`, one stylesheet and ES modules (router,
-pages, the tiles, the detail sheet, the charts, the live connection, the text table), about 124 KB,
-42 KB gzip-compressed (19 KB before the dashboard; the budget is 120 KB). No framework and
+pages, the tiles, the detail sheet, the charts, the live connection, the text lookup) and the
+language packs, about 148 KB, 49 KB gzip-compressed (42 KB before the language packs, 19 KB before
+the dashboard; the budget is 120 KB). No framework and
 no bundler: browsers load ES modules natively, the code stays readable in the device's own files,
 and there is no node toolchain in the build. Rejected: Preact/Lit (another dependency and a build
 step for a handful of pages); server-rendered pages (state on the device, a reload per action);
@@ -248,13 +249,17 @@ the device (engineering is E-Home's job).
 
 ### Texts
 
-Every user-visible string goes through one lookup, `t(key)` in `web/ui/dist/i18n.js`, over an
-inline English table (`nav.overview`, `auth.password.too_short`, ...); static HTML marks its texts
-with `data-i18n`. The API answers refusals with a stable `code` that is a key of the same table
-and the English reason alongside, which the UI shows only for codes it does not know. Language
-packs follow the phoneblock approach of issue #24: a `ui.lang` setting, English compiled in, JSON
-packs per language loaded lazily, and pack strings treated as untrusted (only ever set as
-`textContent`, never interpolated into HTML). The packs themselves are not part of this change.
+Every user-visible string goes through one lookup, `t(key)` in `web/ui/dist/i18n.js`; static HTML
+marks its texts with `data-i18n` (`data-i18n-label` for an aria label). The base table is
+`web/ui/dist/lang/en.json`, part of the UI bundle and loaded before anything renders; the device's
+`ui.lang` (read from `GET /api/auth/session`, chosen on the Settings page) selects a language pack:
+the one bundled with the UI (`/lang/<code>.json`, committed in `web/ui/lang/`, German first) and the
+one the device downloaded from its release's update server (`/i18n/<code>.json`, preferred key by
+key). Number and date formats follow the UI language. The API answers refusals with a stable `code`
+that is a key of the same table and the English reason alongside, which the UI shows only for codes
+it does not know. Pack strings are untrusted: only strings are taken, and they are only ever set as
+`textContent` or attribute values, never parsed as HTML. The mechanism, what is translated and what
+is not, and how to add a language are in `doc/i18n.md`.
 
 ### POSIX: the same API, the WebSocket on its own port
 
