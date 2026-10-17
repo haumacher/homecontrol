@@ -1,0 +1,111 @@
+{
+	"title": "Arithmetic: precedence, integer and real, / is real division, %, overflow, division by zero",
+	"datapoints": [
+		{"name": "a.int", "type": "signed"},
+		{"name": "a.real1", "type": "real"},
+		{"name": "a.int2", "type": "signed"},
+		{"name": "a.int3", "type": "signed"},
+		{"name": "a.real2", "type": "real"},
+		{"name": "a.int4", "type": "signed"},
+		{"name": "a.int5", "type": "signed"},
+		{"name": "a.real3", "type": "real"},
+		{"name": "a.unsigned", "type": "unsigned"},
+		{"name": "a.real4", "type": "real"},
+		{"name": "a.int6", "type": "signed"},
+		{"name": "a.real5", "type": "real"},
+		{"name": "a.in", "type": "unsigned"}
+	],
+	"initial": {"a.in": 5},
+	"rules": [
+		{
+			"id": "ops",
+			"name": "Arithmetic",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "a.int",
+							"value": {"kind": "binary", "op": "-", "left": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "integer", "value": 7}, "right": {"kind": "binary", "op": "*", "left": {"kind": "literal", "type": "integer", "value": 3}, "right": {"kind": "literal", "type": "integer", "value": 2}}}, "right": {"kind": "binary", "op": "/", "left": {"kind": "literal", "type": "integer", "value": 10}, "right": {"kind": "literal", "type": "integer", "value": 5}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.real1",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "literal", "type": "integer", "value": 7}, "right": {"kind": "literal", "type": "integer", "value": 2}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.int2",
+							"value": {"kind": "binary", "op": "%", "left": {"kind": "literal", "type": "integer", "value": -7}, "right": {"kind": "literal", "type": "integer", "value": 3}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.int3",
+							"value": {"kind": "binary", "op": "%", "left": {"kind": "literal", "type": "integer", "value": 7}, "right": {"kind": "literal", "type": "integer", "value": -3}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.real2",
+							"value": {"kind": "binary", "op": "-", "left": {"kind": "binary", "op": "*", "left": {"kind": "literal", "type": "integer", "value": 2}, "right": {"kind": "literal", "type": "real", "value": 3.5}}, "right": {"kind": "literal", "type": "integer", "value": 1}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.int4",
+							"value": {"kind": "binary", "op": "*", "left": {"kind": "unary", "op": "-", "operand": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "integer", "value": 2}, "right": {"kind": "literal", "type": "integer", "value": 3}}}, "right": {"kind": "literal", "type": "integer", "value": 4}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.int5",
+							"value": {"kind": "binary", "op": "-", "left": {"kind": "binary", "op": "-", "left": {"kind": "literal", "type": "integer", "value": 10}, "right": {"kind": "literal", "type": "integer", "value": 4}}, "right": {"kind": "literal", "type": "integer", "value": 3}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.real3",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "literal", "type": "integer", "value": 1}, "right": {"kind": "literal", "type": "integer", "value": 3}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.unsigned",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "integer", "value": -1}, "right": {"kind": "literal", "type": "integer", "value": 0}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.real4",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "literal", "type": "real", "value": 7.0}, "right": {"kind": "literal", "type": "integer", "value": 0}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.int6",
+							"value": {"kind": "binary", "op": "*", "left": {"kind": "literal", "type": "integer", "value": 9007199254740991}, "right": {"kind": "literal", "type": "integer", "value": 9007199254740991}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "a.real5",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "datapoint", "name": "a.in"}, "right": {"kind": "literal", "type": "integer", "value": 2}}
+						}
+					]
+				}
+			]
+		}
+	],
+	"end": 1000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "ops", "datapoint": "a.int", "value": 11},
+			{"at": 0, "rule": "ops", "datapoint": "a.real1", "value": 3.5},
+			{"at": 0, "rule": "ops", "datapoint": "a.int2", "value": -1},
+			{"at": 0, "rule": "ops", "datapoint": "a.int3", "value": 1},
+			{"at": 0, "rule": "ops", "datapoint": "a.real2", "value": 6.0},
+			{"at": 0, "rule": "ops", "datapoint": "a.int4", "value": -20},
+			{"at": 0, "rule": "ops", "datapoint": "a.int5", "value": 3},
+			{"at": 0, "rule": "ops", "datapoint": "a.real3", "value": 0.3333333333333333},
+			{"at": 0, "rule": "ops", "datapoint": "a.real5", "value": 2.5}
+		],
+		"logs": [
+			{"at": 0, "rule": "ops", "code": "writeRefused"},
+			{"at": 0, "rule": "ops", "code": "evalError"},
+			{"at": 0, "rule": "ops", "code": "evalError"}
+		]
+	}
+}

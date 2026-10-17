@@ -1,0 +1,105 @@
+{
+	"title": "Cascade order: a FIFO queue, rule order per event, expressions read current values",
+	"description": "r1 writes a and b before any rule sees a; r5 (after r1 in rule order) sees a already written; r2, processing the event of a, already sees b.",
+	"datapoints": [
+		{"name": "src", "type": "unsigned"},
+		{"name": "a", "type": "unsigned"},
+		{"name": "b", "type": "unsigned"},
+		{"name": "c", "type": "unsigned"}
+	],
+	"rules": [
+		{
+			"id": "r1",
+			"name": "Writer",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "src"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "a",
+							"value": {"kind": "literal", "type": "integer", "value": 1}
+						},
+						{
+							"kind": "write",
+							"datapoint": "b",
+							"value": {"kind": "literal", "type": "integer", "value": 1}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "r2",
+			"name": "On a",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "a"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": ["a sees b=", {"kind": "datapoint", "name": "b"}]
+						},
+						{
+							"kind": "write",
+							"datapoint": "c",
+							"value": {"kind": "literal", "type": "integer", "value": 1}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "r3",
+			"name": "On b",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "b"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["b"]}]
+				}
+			]
+		},
+		{
+			"id": "r4",
+			"name": "On c",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "c"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["c"]}]
+				}
+			]
+		},
+		{
+			"id": "r5",
+			"name": "Also on src",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "src"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": ["r5 sees a=", {"kind": "datapoint", "name": "a"}]
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [{"at": 1000, "report": {"datapoint": "src", "value": 1}}],
+	"end": 2000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "r1", "datapoint": "a", "value": 1},
+			{"at": 1000, "rule": "r1", "datapoint": "b", "value": 1},
+			{"at": 1000, "rule": "r2", "datapoint": "c", "value": 1}
+		],
+		"logs": [
+			{"at": 1000, "rule": "r5", "code": "log", "level": "info", "message": "r5 sees a=1"},
+			{"at": 1000, "rule": "r2", "code": "log", "level": "info", "message": "a sees b=1"},
+			{"at": 1000, "rule": "r3", "code": "log", "level": "info", "message": "b"},
+			{"at": 1000, "rule": "r4", "code": "log", "level": "info", "message": "c"}
+		]
+	}
+}

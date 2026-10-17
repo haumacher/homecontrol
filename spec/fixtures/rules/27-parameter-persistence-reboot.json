@@ -1,0 +1,101 @@
+{
+	"title": "Persisted parameter values: loaded at boot, kept across a reboot, reset when a new image narrows the range; undeclared overrides deleted",
+	"datapoints": [{"name": "room.setpoint", "type": "real"}],
+	"persisted": {"heat/comfort": {"type": "real", "value": 22.0}, "heat/old": {"type": "integer", "value": 5}},
+	"rules": [
+		{
+			"id": "heat",
+			"name": "Heating",
+			"parameters": [
+				{
+					"id": "comfort",
+					"label": "Comfort",
+					"type": "real",
+					"default": 21.0,
+					"min": 16.0,
+					"max": 26.0,
+					"unit": "°C"
+				},
+				{
+					"id": "setback",
+					"label": "Setback",
+					"type": "real",
+					"default": 17.0,
+					"min": 12.0,
+					"max": 20.0,
+					"unit": "°C"
+				}
+			],
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}, {"kind": "parameter", "parameter": "comfort"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "room.setpoint",
+							"value": {"kind": "parameter", "id": "comfort"}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "setParameter": {"rule": "heat", "parameter": "setback", "value": 16.0}},
+		{"at": 2000, "reboot": true},
+		{"at": 2500, "check": {"parameters": {"heat/setback": 16.0}}},
+		{
+			"at": 3000,
+			"image": {
+				"rules": [
+					{
+						"id": "heat",
+						"name": "Heating",
+						"parameters": [
+							{
+								"id": "comfort",
+								"label": "Comfort",
+								"type": "real",
+								"default": 21.0,
+								"min": 16.0,
+								"max": 26.0,
+								"unit": "°C"
+							},
+							{
+								"id": "setback",
+								"label": "Setback",
+								"type": "real",
+								"default": 17.0,
+								"min": 16.5,
+								"max": 20.0,
+								"unit": "°C"
+							}
+						],
+						"reactions": [
+							{
+								"triggers": [{"kind": "start"}, {"kind": "parameter", "parameter": "comfort"}],
+								"actions": [
+									{
+										"kind": "write",
+										"datapoint": "room.setpoint",
+										"value": {"kind": "parameter", "id": "comfort"}
+									}
+								]
+							}
+						]
+					}
+				]
+			}
+		}
+	],
+	"end": 4000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "heat", "datapoint": "room.setpoint", "value": 22.0},
+			{"at": 2000, "rule": "heat", "datapoint": "room.setpoint", "value": 22.0},
+			{"at": 3000, "rule": "heat", "datapoint": "room.setpoint", "value": 22.0}
+		],
+		"logs": [{"at": 3000, "rule": "heat", "code": "parameterReset"}],
+		"final": {"parameters": {"heat/comfort": 22.0, "heat/setback": 17.0}, "persisted": {"heat/comfort": 22.0}}
+	}
+}

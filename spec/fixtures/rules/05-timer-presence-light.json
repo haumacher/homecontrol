@@ -1,0 +1,93 @@
+{
+	"title": "Timer trigger: presence light with a switch-off delay (worked example 1)",
+	"note": "Worked example 1 of spec/rules.md.",
+	"datapoints": [
+		{"name": "hall.presence", "type": "boolean"},
+		{"name": "hall.lux", "type": "real"},
+		{"name": "hall.light", "type": "boolean"}
+	],
+	"initial": {"hall.light": false, "hall.lux": 50.0},
+	"rules": [
+		{
+			"id": "hall-presence-light",
+			"name": "Hall light by presence",
+			"description": "Switch on when someone is present and it is dark (or the light is on already); switch off $timeout after the last presence.",
+			"parameters": [
+				{
+					"id": "timeout",
+					"label": "Switch-off delay",
+					"type": "duration",
+					"default": 180000,
+					"min": 30000,
+					"max": 3600000,
+					"step": 30000,
+					"unit": "min"
+				},
+				{
+					"id": "darkBelow",
+					"label": "Dark below",
+					"type": "real",
+					"default": 80.0,
+					"min": 0.0,
+					"max": 2000.0,
+					"step": 10,
+					"unit": "lx"
+				}
+			],
+			"timers": [{"id": "off", "duration": {"kind": "parameter", "id": "timeout"}}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "hall.presence"}],
+					"condition": {"kind": "binary", "op": "and", "left": {"kind": "datapoint", "name": "hall.presence"}, "right": {"kind": "binary", "op": "or", "left": {"kind": "datapoint", "name": "hall.light"}, "right": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "hall.lux"}, "right": {"kind": "parameter", "id": "darkBelow"}}}},
+					"actions": [
+						{"kind": "cancelTimer", "timer": "off"},
+						{
+							"kind": "write",
+							"datapoint": "hall.light",
+							"value": {"kind": "literal", "type": "boolean", "value": true},
+							"onlyOnChange": true
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "hall.presence"}],
+					"condition": {"kind": "unary", "op": "not", "operand": {"kind": "datapoint", "name": "hall.presence"}},
+					"actions": [{"kind": "restartTimer", "timer": "off"}]
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "off"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "hall.light",
+							"value": {"kind": "literal", "type": "boolean", "value": false}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "hall.presence", "value": true}},
+		{"at": 2000, "report": {"datapoint": "hall.presence", "value": false}},
+		{"at": 60000, "report": {"datapoint": "hall.presence", "value": true}},
+		{"at": 70000, "report": {"datapoint": "hall.presence", "value": false}},
+		{"at": 100000, "check": {"timers": {"hall-presence-light/off": 150000}}},
+		{"at": 260000, "report": {"datapoint": "hall.lux", "value": 500.0}},
+		{"at": 270000, "report": {"datapoint": "hall.presence", "value": true}},
+		{"at": 280000, "report": {"datapoint": "hall.presence", "value": false}}
+	],
+	"end": 300000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "hall-presence-light", "datapoint": "hall.light", "value": true},
+			{"at": 250000, "rule": "hall-presence-light", "datapoint": "hall.light", "value": false}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {"hall.light": false},
+			"timers": {"hall-presence-light/off": 160000},
+			"firings": {"hall-presence-light": 7}
+		}
+	}
+}

@@ -1,0 +1,29 @@
+{
+	"title": "Load refusal: a time function in a match condition",
+	"datapoints": [{"name": "out.flag", "type": "boolean"}],
+	"rules": [
+		{
+			"id": "bad",
+			"name": "Bad",
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "match",
+							"condition": {"kind": "binary", "op": ">", "left": {"kind": "call", "function": "time", "args": []}, "right": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 20, "minute": 0, "second": 0}}}
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "out.flag",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						}
+					]
+				}
+			]
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "forbidden"}
+}

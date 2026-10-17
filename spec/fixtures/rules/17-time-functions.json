@@ -1,0 +1,138 @@
+{
+	"title": "Wall-clock functions: weekday, time, inWindow across midnight, sunrise and sunset, no value when not synchronized",
+	"description": "The wall clock starts at Monday 2026-10-19 07:00:00 local time; sunrise 07:45, sunset 18:20.",
+	"datapoints": [
+		{"name": "t.weekday", "type": "unsigned"},
+		{"name": "t.time", "type": "timeOfDay"},
+		{"name": "t.light", "type": "boolean"},
+		{"name": "t.night", "type": "boolean"},
+		{"name": "t.minutes", "type": "unsigned"},
+		{"name": "t.date", "type": "date"}
+	],
+	"schedules": ["tick"],
+	"clock": {"start": "2026-10-19T07:00:00", "synchronized": true},
+	"astro": {"sunrise": {"hour": 7, "minute": 45, "second": 0}, "sunset": {"hour": 18, "minute": 20, "second": 0}},
+	"rules": [
+		{
+			"id": "t",
+			"name": "Time",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "tick"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "t.weekday",
+							"value": {"kind": "call", "function": "weekday", "args": []}
+						},
+						{
+							"kind": "write",
+							"datapoint": "t.time",
+							"value": {"kind": "call", "function": "time", "args": []}
+						},
+						{
+							"kind": "write",
+							"datapoint": "t.light",
+							"value": {"kind": "unary", "op": "not", "operand": {"kind": "call", "function": "inWindow", "args": [{"kind": "call", "function": "time", "args": []}, {"kind": "call", "function": "sunrise", "args": []}, {"kind": "call", "function": "sunset", "args": []}]}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "t.night",
+							"value": {"kind": "call", "function": "inWindow", "args": [{"kind": "call", "function": "time", "args": []}, {"kind": "literal", "type": "timeOfDay", "value": {"hour": 22, "minute": 0, "second": 0}}, {"kind": "literal", "type": "timeOfDay", "value": {"hour": 6, "minute": 0, "second": 0}}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "t.minutes",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "binary", "op": "*", "left": {"kind": "call", "function": "hour", "args": [{"kind": "call", "function": "now", "args": []}]}, "right": {"kind": "literal", "type": "integer", "value": 60}}, "right": {"kind": "call", "function": "minute", "args": [{"kind": "call", "function": "now", "args": []}]}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "t.date",
+							"value": {"kind": "call", "function": "today", "args": []}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "schedule": "tick"},
+		{"at": 3600000, "schedule": "tick"},
+		{"at": 54000000, "schedule": "tick"},
+		{"at": 61200000, "schedule": "tick"},
+		{"at": 61300000, "clockSync": false},
+		{"at": 61400000, "schedule": "tick"}
+	],
+	"end": 61500000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "t", "datapoint": "t.weekday", "value": 1},
+			{
+				"at": 1000,
+				"rule": "t",
+				"datapoint": "t.time",
+				"value": {"hour": 7, "minute": 0, "second": 1, "dayOfWeek": 1}
+			},
+			{"at": 1000, "rule": "t", "datapoint": "t.light", "value": true},
+			{"at": 1000, "rule": "t", "datapoint": "t.night", "value": false},
+			{"at": 1000, "rule": "t", "datapoint": "t.minutes", "value": 420},
+			{"at": 1000, "rule": "t", "datapoint": "t.date", "value": {"year": 2026, "month": 10, "day": 19}},
+			{"at": 3600000, "rule": "t", "datapoint": "t.weekday", "value": 1},
+			{
+				"at": 3600000,
+				"rule": "t",
+				"datapoint": "t.time",
+				"value": {"hour": 8, "minute": 0, "second": 0, "dayOfWeek": 1}
+			},
+			{"at": 3600000, "rule": "t", "datapoint": "t.light", "value": false},
+			{"at": 3600000, "rule": "t", "datapoint": "t.night", "value": false},
+			{"at": 3600000, "rule": "t", "datapoint": "t.minutes", "value": 480},
+			{
+				"at": 3600000,
+				"rule": "t",
+				"datapoint": "t.date",
+				"value": {"year": 2026, "month": 10, "day": 19}
+			},
+			{"at": 54000000, "rule": "t", "datapoint": "t.weekday", "value": 1},
+			{
+				"at": 54000000,
+				"rule": "t",
+				"datapoint": "t.time",
+				"value": {"hour": 22, "minute": 0, "second": 0, "dayOfWeek": 1}
+			},
+			{"at": 54000000, "rule": "t", "datapoint": "t.light", "value": true},
+			{"at": 54000000, "rule": "t", "datapoint": "t.night", "value": true},
+			{"at": 54000000, "rule": "t", "datapoint": "t.minutes", "value": 1320},
+			{
+				"at": 54000000,
+				"rule": "t",
+				"datapoint": "t.date",
+				"value": {"year": 2026, "month": 10, "day": 19}
+			},
+			{"at": 61200000, "rule": "t", "datapoint": "t.weekday", "value": 2},
+			{
+				"at": 61200000,
+				"rule": "t",
+				"datapoint": "t.time",
+				"value": {"hour": 0, "minute": 0, "second": 0, "dayOfWeek": 2}
+			},
+			{"at": 61200000, "rule": "t", "datapoint": "t.light", "value": true},
+			{"at": 61200000, "rule": "t", "datapoint": "t.night", "value": true},
+			{"at": 61200000, "rule": "t", "datapoint": "t.minutes", "value": 0},
+			{
+				"at": 61200000,
+				"rule": "t",
+				"datapoint": "t.date",
+				"value": {"year": 2026, "month": 10, "day": 20}
+			}
+		],
+		"logs": [
+			{"at": 61400000, "rule": "t", "code": "valueNoValue"},
+			{"at": 61400000, "rule": "t", "code": "valueNoValue"},
+			{"at": 61400000, "rule": "t", "code": "valueNoValue"},
+			{"at": 61400000, "rule": "t", "code": "valueNoValue"},
+			{"at": 61400000, "rule": "t", "code": "valueNoValue"},
+			{"at": 61400000, "rule": "t", "code": "valueNoValue"}
+		]
+	}
+}

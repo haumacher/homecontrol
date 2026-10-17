@@ -1,0 +1,245 @@
+{
+	"title": "Image swap: state and running timers survive by id; removed timers and rules are cancelled; a lost state is reset",
+	"note": "Review: the swap keeps datapoint values (assumption on the image loader of issue #8, open question 2); this case does not depend on it.",
+	"datapoints": [
+		{"name": "go.cmd", "type": "boolean"},
+		{"name": "m.busy", "type": "boolean"},
+		{"name": "m.done", "type": "boolean"},
+		{"name": "g.out", "type": "boolean"}
+	],
+	"schedules": ["never"],
+	"rules": [
+		{
+			"id": "m",
+			"name": "Machine",
+			"timers": [
+				{"id": "t1", "duration": {"kind": "literal", "type": "duration", "value": 600000}},
+				{"id": "t2", "duration": {"kind": "literal", "type": "duration", "value": 600000}}
+			],
+			"states": [
+				{
+					"id": "idle",
+					"entry": [
+						{
+							"kind": "write",
+							"datapoint": "m.busy",
+							"value": {"kind": "literal", "type": "boolean", "value": false}
+						}
+					]
+				},
+				{
+					"id": "busy",
+					"entry": [
+						{
+							"kind": "write",
+							"datapoint": "m.busy",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						}
+					]
+				}
+			],
+			"initialState": "idle",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "go.cmd", "on": "update"}],
+					"actions": [{"kind": "restartTimer", "timer": "t1"}, {"kind": "restartTimer", "timer": "t2"}],
+					"from": ["idle"],
+					"to": "busy"
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "t1"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "m.done",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						}
+					],
+					"from": ["busy"],
+					"to": "idle"
+				}
+			]
+		},
+		{
+			"id": "gone",
+			"name": "Gone",
+			"timers": [{"id": "g", "duration": {"kind": "literal", "type": "duration", "value": 60000}}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "go.cmd", "on": "update"}],
+					"actions": [{"kind": "restartTimer", "timer": "g"}]
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "g"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "g.out",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "go.cmd", "value": true}},
+		{
+			"at": 2000,
+			"image": {
+				"rules": [
+					{
+						"id": "m",
+						"name": "Machine",
+						"timers": [{"id": "t1", "duration": {"kind": "literal", "type": "duration", "value": 600000}}],
+						"states": [
+							{
+								"id": "idle",
+								"entry": [
+									{
+										"kind": "write",
+										"datapoint": "m.busy",
+										"value": {"kind": "literal", "type": "boolean", "value": false}
+									}
+								]
+							},
+							{
+								"id": "busy",
+								"entry": [
+									{
+										"kind": "write",
+										"datapoint": "m.busy",
+										"value": {"kind": "literal", "type": "boolean", "value": true}
+									}
+								]
+							}
+						],
+						"initialState": "idle",
+						"reactions": [
+							{
+								"triggers": [{"kind": "datapoint", "datapoint": "go.cmd", "on": "update"}],
+								"actions": [{"kind": "restartTimer", "timer": "t1"}],
+								"from": ["idle"],
+								"to": "busy"
+							},
+							{
+								"triggers": [{"kind": "timer", "timer": "t1"}],
+								"actions": [
+									{
+										"kind": "write",
+										"datapoint": "m.done",
+										"value": {"kind": "literal", "type": "boolean", "value": true}
+									}
+								],
+								"from": ["busy"],
+								"to": "idle"
+							},
+							{
+								"triggers": [{"kind": "start", "reasons": ["image"]}],
+								"actions": [
+									{
+										"kind": "log",
+										"level": "info",
+										"message": [
+											"kept ",
+											{"kind": "call", "function": "state", "args": []},
+											" ",
+											{"kind": "call", "function": "remaining", "args": [{"kind": "timer", "id": "t1"}]}
+										]
+									}
+								],
+								"from": ["busy"]
+							}
+						]
+					},
+					{
+						"id": "fresh",
+						"name": "Fresh",
+						"states": [
+							{"id": "x", "entry": [{"kind": "log", "level": "info", "message": ["fresh"]}]},
+							{"id": "y"}
+						],
+						"initialState": "x",
+						"reactions": [{"triggers": [{"kind": "schedule", "schedule": "never"}], "actions": []}]
+					}
+				]
+			}
+		},
+		{
+			"at": 650000,
+			"image": {
+				"rules": [
+					{
+						"id": "m",
+						"name": "Machine",
+						"timers": [{"id": "t1", "duration": {"kind": "literal", "type": "duration", "value": 600000}}],
+						"states": [
+							{"id": "rest", "entry": [{"kind": "log", "level": "info", "message": ["rest"]}]},
+							{
+								"id": "busy",
+								"entry": [
+									{
+										"kind": "write",
+										"datapoint": "m.busy",
+										"value": {"kind": "literal", "type": "boolean", "value": true}
+									}
+								]
+							}
+						],
+						"initialState": "rest",
+						"reactions": [
+							{
+								"triggers": [{"kind": "datapoint", "datapoint": "go.cmd", "on": "update"}],
+								"actions": [{"kind": "restartTimer", "timer": "t1"}],
+								"from": ["rest"],
+								"to": "busy"
+							},
+							{
+								"triggers": [{"kind": "timer", "timer": "t1"}],
+								"actions": [
+									{
+										"kind": "write",
+										"datapoint": "m.done",
+										"value": {"kind": "literal", "type": "boolean", "value": true}
+									}
+								],
+								"from": ["busy"],
+								"to": "rest"
+							}
+						]
+					},
+					{
+						"id": "fresh",
+						"name": "Fresh",
+						"states": [
+							{"id": "x", "entry": [{"kind": "log", "level": "info", "message": ["fresh"]}]},
+							{"id": "y"}
+						],
+						"initialState": "x",
+						"reactions": [{"triggers": [{"kind": "schedule", "schedule": "never"}], "actions": []}]
+					}
+				]
+			}
+		}
+	],
+	"end": 700000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "m", "datapoint": "m.busy", "value": false},
+			{"at": 1000, "rule": "m", "datapoint": "m.busy", "value": true},
+			{"at": 601000, "rule": "m", "datapoint": "m.done", "value": true},
+			{"at": 601000, "rule": "m", "datapoint": "m.busy", "value": false}
+		],
+		"logs": [
+			{"at": 2000, "rule": "m", "code": "log", "level": "info", "message": "kept busy 9min59s"},
+			{"at": 2000, "rule": "fresh", "code": "log", "level": "info", "message": "fresh"},
+			{"at": 650000, "rule": "m", "code": "stateReset"},
+			{"at": 650000, "rule": "m", "code": "log", "level": "info", "message": "rest"}
+		],
+		"final": {
+			"states": {"m": "rest", "fresh": "x"},
+			"datapoints": {"g.out": null},
+			"firings": {"m": 3, "fresh": 0}
+		}
+	}
+}

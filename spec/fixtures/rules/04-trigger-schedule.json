@@ -1,0 +1,77 @@
+{
+	"title": "Schedule trigger",
+	"datapoints": [{"name": "night.mode", "type": "boolean"}, {"name": "out.light", "type": "boolean"}],
+	"schedules": ["evening", "morning", "unused"],
+	"rules": [
+		{
+			"id": "evening",
+			"name": "Evening",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "evening"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "night.mode",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						},
+						{
+							"kind": "write",
+							"datapoint": "out.light",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "morning",
+			"name": "Morning",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "morning"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "night.mode",
+							"value": {"kind": "literal", "type": "boolean", "value": false}
+						},
+						{
+							"kind": "write",
+							"datapoint": "out.light",
+							"value": {"kind": "literal", "type": "boolean", "value": false}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "other",
+			"name": "Never",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "unused"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["never"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "schedule": "evening"},
+		{"at": 2000, "schedule": "morning"},
+		{"at": 3000, "schedule": "evening"}
+	],
+	"end": 4000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "evening", "datapoint": "night.mode", "value": true},
+			{"at": 1000, "rule": "evening", "datapoint": "out.light", "value": true},
+			{"at": 2000, "rule": "morning", "datapoint": "night.mode", "value": false},
+			{"at": 2000, "rule": "morning", "datapoint": "out.light", "value": false},
+			{"at": 3000, "rule": "evening", "datapoint": "night.mode", "value": true},
+			{"at": 3000, "rule": "evening", "datapoint": "out.light", "value": true}
+		],
+		"logs": [],
+		"final": {"firings": {"evening": 2, "morning": 1, "other": 0}}
+	}
+}

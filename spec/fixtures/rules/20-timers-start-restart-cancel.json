@@ -1,0 +1,99 @@
+{
+	"title": "startTimer does not extend, restartTimer does, cancelTimer stops; remaining and running; expiry order; refused duration",
+	"datapoints": [
+		{"name": "in.start", "type": "boolean"},
+		{"name": "in.cancel", "type": "boolean"},
+		{"name": "in.short", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "t",
+			"name": "Timers",
+			"timers": [
+				{"id": "a", "duration": {"kind": "literal", "type": "duration", "value": 10000}},
+				{"id": "b", "duration": {"kind": "literal", "type": "duration", "value": 10000}}
+			],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.start", "on": "update"}],
+					"actions": [
+						{"kind": "startTimer", "timer": "a"},
+						{"kind": "restartTimer", "timer": "b"},
+						{
+							"kind": "log",
+							"level": "info",
+							"message": [
+								"a ",
+								{"kind": "call", "function": "remaining", "args": [{"kind": "timer", "id": "a"}]},
+								" b ",
+								{"kind": "call", "function": "remaining", "args": [{"kind": "timer", "id": "b"}]}
+							]
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.cancel", "on": "update"}],
+					"actions": [
+						{"kind": "cancelTimer", "timer": "a"},
+						{
+							"kind": "log",
+							"level": "info",
+							"message": [
+								"cancel ",
+								{"kind": "call", "function": "running", "args": [{"kind": "timer", "id": "a"}]}
+							]
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "a"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": [
+								"a expired ",
+								{"kind": "call", "function": "running", "args": [{"kind": "timer", "id": "a"}]}
+							]
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "b"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["b expired"]}]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.short", "on": "update"}],
+					"actions": [
+						{
+							"kind": "restartTimer",
+							"timer": "a",
+							"duration": {"kind": "literal", "type": "duration", "value": 50}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "in.start", "value": true}},
+		{"at": 5000, "report": {"datapoint": "in.start", "value": true}},
+		{"at": 12000, "report": {"datapoint": "in.start", "value": true}},
+		{"at": 13000, "report": {"datapoint": "in.cancel", "value": true}},
+		{"at": 14000, "report": {"datapoint": "in.short", "value": true}}
+	],
+	"end": 30000,
+	"expected": {
+		"commands": [],
+		"logs": [
+			{"at": 1000, "rule": "t", "code": "log", "level": "info", "message": "a 10s b 10s"},
+			{"at": 5000, "rule": "t", "code": "log", "level": "info", "message": "a 6s b 10s"},
+			{"at": 11000, "rule": "t", "code": "log", "level": "info", "message": "a expired false"},
+			{"at": 12000, "rule": "t", "code": "log", "level": "info", "message": "a 10s b 10s"},
+			{"at": 13000, "rule": "t", "code": "log", "level": "info", "message": "cancel false"},
+			{"at": 14000, "rule": "t", "code": "timerRefused"},
+			{"at": 22000, "rule": "t", "code": "log", "level": "info", "message": "b expired"}
+		],
+		"final": {"timers": {"t/a": null, "t/b": null}, "firings": {"t": 7}}
+	}
+}

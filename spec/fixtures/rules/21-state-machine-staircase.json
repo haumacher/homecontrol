@@ -1,0 +1,129 @@
+{
+	"title": "State machine: staircase light with a warning phase (worked example 4); self-transition restarts the timer",
+	"datapoints": [{"name": "stairs.button", "type": "boolean"}, {"name": "stairs.light", "type": "real"}],
+	"rules": [
+		{
+			"id": "stairs",
+			"name": "Staircase light",
+			"description": "A press switches on for $onTime (a press while on restarts it); then dims to $warnLevel for $warnTime as a warning, then off.",
+			"parameters": [
+				{
+					"id": "onTime",
+					"label": "On time",
+					"type": "duration",
+					"default": 180000,
+					"min": 30000,
+					"max": 1800000,
+					"step": 30000,
+					"unit": "min"
+				},
+				{
+					"id": "warnLevel",
+					"label": "Warning brightness",
+					"type": "real",
+					"default": 20.0,
+					"min": 5.0,
+					"max": 50.0,
+					"step": 5,
+					"unit": "%"
+				},
+				{
+					"id": "warnTime",
+					"label": "Warning time",
+					"type": "duration",
+					"default": 30000,
+					"min": 10000,
+					"max": 120000,
+					"step": 10000,
+					"unit": "s"
+				}
+			],
+			"timers": [{"id": "t", "duration": {"kind": "parameter", "id": "onTime"}}],
+			"states": [
+				{
+					"id": "off",
+					"entry": [
+						{
+							"kind": "write",
+							"datapoint": "stairs.light",
+							"value": {"kind": "literal", "type": "real", "value": 0.0}
+						}
+					]
+				},
+				{
+					"id": "on",
+					"entry": [
+						{
+							"kind": "write",
+							"datapoint": "stairs.light",
+							"value": {"kind": "literal", "type": "real", "value": 100.0}
+						},
+						{"kind": "restartTimer", "timer": "t"}
+					]
+				},
+				{
+					"id": "warning",
+					"entry": [
+						{
+							"kind": "write",
+							"datapoint": "stairs.light",
+							"value": {"kind": "parameter", "id": "warnLevel"}
+						},
+						{
+							"kind": "restartTimer",
+							"timer": "t",
+							"duration": {"kind": "parameter", "id": "warnTime"}
+						}
+					]
+				}
+			],
+			"initialState": "off",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "stairs.button", "on": "update"}],
+					"condition": {"kind": "datapoint", "name": "stairs.button"},
+					"actions": [],
+					"to": "on"
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "t"}],
+					"actions": [],
+					"from": ["on"],
+					"to": "warning"
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "t"}],
+					"actions": [],
+					"from": ["warning"],
+					"to": "off"
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "stairs.button", "value": true}},
+		{"at": 2000, "report": {"datapoint": "stairs.button", "value": false}},
+		{"at": 100000, "report": {"datapoint": "stairs.button", "value": true}},
+		{"at": 285000, "check": {"states": {"stairs": "warning"}, "timers": {"stairs/t": 25000}}},
+		{"at": 290000, "report": {"datapoint": "stairs.button", "value": true}}
+	],
+	"end": 600000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "stairs", "datapoint": "stairs.light", "value": 0.0},
+			{"at": 1000, "rule": "stairs", "datapoint": "stairs.light", "value": 100.0},
+			{"at": 100000, "rule": "stairs", "datapoint": "stairs.light", "value": 100.0},
+			{"at": 280000, "rule": "stairs", "datapoint": "stairs.light", "value": 20.0},
+			{"at": 290000, "rule": "stairs", "datapoint": "stairs.light", "value": 100.0},
+			{"at": 470000, "rule": "stairs", "datapoint": "stairs.light", "value": 20.0},
+			{"at": 500000, "rule": "stairs", "datapoint": "stairs.light", "value": 0.0}
+		],
+		"logs": [],
+		"final": {
+			"states": {"stairs": "off"},
+			"datapoints": {"stairs.light": 0.0},
+			"timers": {"stairs/t": null},
+			"firings": {"stairs": 7}
+		}
+	}
+}

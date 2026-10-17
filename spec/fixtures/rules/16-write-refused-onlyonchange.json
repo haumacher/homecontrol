@@ -1,0 +1,65 @@
+{
+	"title": "Write: exact conversion or refusal, technology refusal, onlyOnChange",
+	"description": "d.relay's technology refuses every command. The UI command at 4000 is not a rule command and is not listed.",
+	"datapoints": [
+		{"name": "in.value", "type": "real"},
+		{"name": "d.level", "type": "unsigned"},
+		{"name": "d.dim", "type": "real"},
+		{"name": "d.relay", "type": "boolean", "refuseCommands": true}
+	],
+	"rules": [
+		{
+			"id": "w",
+			"name": "Writes",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.value"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "d.level",
+							"value": {"kind": "datapoint", "name": "in.value"}
+						},
+						{
+							"kind": "write",
+							"datapoint": "d.dim",
+							"value": {"kind": "datapoint", "name": "in.value"},
+							"onlyOnChange": true
+						},
+						{
+							"kind": "write",
+							"datapoint": "d.relay",
+							"value": {"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "in.value"}, "right": {"kind": "literal", "type": "integer", "value": 50}}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "in.value", "value": 40.0}},
+		{"at": 2000, "report": {"datapoint": "in.value", "value": 40.5}},
+		{"at": 4000, "command": {"datapoint": "d.dim", "value": 60.0}},
+		{"at": 5000, "report": {"datapoint": "in.value", "value": 60.0}},
+		{"at": 6000, "report": {"datapoint": "in.value", "value": -5.0}}
+	],
+	"end": 7000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "w", "datapoint": "d.level", "value": 40},
+			{"at": 1000, "rule": "w", "datapoint": "d.dim", "value": 40.0},
+			{"at": 2000, "rule": "w", "datapoint": "d.dim", "value": 40.5},
+			{"at": 5000, "rule": "w", "datapoint": "d.level", "value": 60},
+			{"at": 6000, "rule": "w", "datapoint": "d.dim", "value": -5.0}
+		],
+		"logs": [
+			{"at": 1000, "rule": "w", "code": "writeRefused"},
+			{"at": 2000, "rule": "w", "code": "writeRefused"},
+			{"at": 2000, "rule": "w", "code": "writeRefused"},
+			{"at": 5000, "rule": "w", "code": "writeRefused"},
+			{"at": 6000, "rule": "w", "code": "writeRefused"},
+			{"at": 6000, "rule": "w", "code": "writeRefused"}
+		],
+		"final": {"datapoints": {"d.level": 60, "d.dim": -5.0, "d.relay": null}}
+	}
+}

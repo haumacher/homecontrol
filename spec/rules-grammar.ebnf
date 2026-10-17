@@ -1,0 +1,140 @@
+(*
+ * HomeControl rule expression language: the text syntax.
+ *
+ * Specification: spec/rules.md, section "The expression language". The runtime image stores the
+ * JSON AST, never this text; E-Home parses and prints it. This grammar is the single definition of
+ * the text form; the canonical printer (spec/rules.md, "Canonical text") produces exactly one text
+ * for every AST.
+ *
+ * Notation: ISO/IEC 14977 EBNF. "=" defines, "," concatenates, "|" separates alternatives,
+ * "[ ]" is optional, "{ }" repeats zero or more times, "( )" groups, "- " excepts, quoted text is a
+ * terminal, "(* *)" is a comment, "? ?" is a special sequence described in prose.
+ *
+ * Tokens are separated by optional white space (space, tab, CR, LF). The lexer takes the longest
+ * token that matches at the current position; the token rules are marked "lexical" and contain no
+ * white space.
+ *)
+
+(* ---------------------------------------------------------------- syntax *)
+
+expression     = or expression ;
+
+or expression  = and expression , { "or" , and expression } ;              (* left associative *)
+
+and expression = not expression , { "and" , not expression } ;            (* left associative *)
+
+not expression = "not" , not expression
+               | comparison ;
+
+comparison     = additive , [ comparison operator , additive ] ;           (* not associative *)
+
+comparison operator = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+
+additive       = multiplicative , { ( "+" | "-" ) , multiplicative } ;     (* left associative *)
+
+multiplicative = unary , { ( "*" | "/" | "%" ) , unary } ;                (* left associative *)
+
+unary          = "-" , unary                                               (* folded into a literal
+                                                                              when applied directly to
+                                                                              an integer, real or
+                                                                              duration literal *)
+               | primary ;
+
+primary        = literal
+               | datapoint reference
+               | parameter reference
+               | timer call
+               | function call
+               | "(" , expression , ")" ;
+
+timer call     = ( "running" | "remaining" ) , "(" , identifier , ")" ;   (* the identifier names a
+                                                                              timer of the rule *)
+
+function call  = identifier - ( "running" | "remaining" ) ,
+                 "(" , [ expression , { "," , expression } ] , ")" ;
+
+literal        = "true" | "false"
+               | integer literal
+               | real literal
+               | duration literal
+               | time literal
+               | date literal
+               | date time literal
+               | string literal
+               | color literal
+               | raw literal ;
+
+datapoint reference = "@" , ( datapoint name | string literal ) ;         (* lexical *)
+
+parameter reference = "$" , identifier ;                                  (* lexical *)
+
+(* ---------------------------------------------------------------- lexical *)
+
+keyword        = "and" | "or" | "not" | "true" | "false" ;
+
+identifier     = ( letter | "_" ) , { letter | digit | "_" } ;           (* lexical; not a keyword *)
+
+datapoint name = identifier , { "." , ( letter | digit | "_" ) , { letter | digit | "_" } } ;
+                                                                           (* lexical; a datapoint name
+                                                                              that does not match is
+                                                                              written as a string *)
+
+integer literal = digit , { digit } ;                                      (* lexical; no sign; at most
+                                                                              9007199254740991 *)
+
+real literal   = digit , { digit } , "." , digit , { digit } ,
+                 [ ( "e" | "E" ) , [ "+" | "-" ] , digit , { digit } ] ;  (* lexical; finite *)
+
+duration literal = duration part , { duration part } ;                     (* lexical; the units in
+                                                                              strictly decreasing
+                                                                              order, each at most
+                                                                              once *)
+
+duration part  = digit , { digit } , duration unit ;
+
+duration unit  = "d" | "h" | "min" | "s" | "ms" ;                         (* day = 24 h; no "m" *)
+
+time literal   = digit , [ digit ] , ":" , digit , digit , [ ":" , digit , digit ] ;
+                                                                           (* lexical; 0..23 : 0..59
+                                                                              [ : 0..59 ] *)
+
+date literal   = 4 * digit , "-" , 2 * digit , "-" , 2 * digit ;          (* lexical; a valid
+                                                                              Gregorian date, year
+                                                                              1900..2155 *)
+
+date time literal = date literal , "T" , 2 * digit , ":" , 2 * digit , [ ":" , 2 * digit ] ;
+                                                                           (* lexical *)
+
+string literal = '"' , { string character | escape } , '"' ;              (* lexical; at most 28
+                                                                              bytes UTF-8 after
+                                                                              unescaping *)
+
+string character = ? any Unicode character except '"', '\' and the control characters U+0000..U+001F ? ;
+
+escape         = "\" , ( '"' | "\" | "n" | "t" ) ;
+
+color literal  = "#" , 6 * hex digit , [ 2 * hex digit ] ;                (* lexical; #rrggbb or
+                                                                              #rrggbbww *)
+
+raw literal    = "x" , '"' , { hex digit , hex digit } , '"' ;            (* lexical; at most 14
+                                                                              bytes *)
+
+letter         = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
+               | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+               | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m"
+               | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" ;
+
+digit          = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+
+hex digit      = digit | "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b" | "c" | "d" | "e" | "f" ;
+
+(*
+ * Lexer disambiguation (longest match, then this order for tokens starting with a digit):
+ * date time literal, date literal, time literal, duration literal, real literal, integer literal.
+ * Consequences:
+ *   2026-10-17      is a date, never 2026 - 10 - 17 (write the subtraction with spaces).
+ *   30min           is a duration; 30 min is an error (an integer followed by an identifier).
+ *   1.5e3           is a real; 1e3 is an error (an integer followed by an identifier).
+ *   x"0AFF"         is a raw literal; x is otherwise an ordinary identifier.
+ *   @a.b-1          is the datapoint a.b minus 1: "-" does not belong to a bare datapoint name.
+ *)

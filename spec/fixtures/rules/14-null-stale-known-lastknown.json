@@ -1,0 +1,69 @@
+{
+	"title": "Stale and unknown datapoints: known, lastKnown, quality, coalesce; a write without value is skipped and logged once",
+	"datapoints": [
+		{"name": "sensor.temp", "type": "real"},
+		{"name": "out.known", "type": "boolean"},
+		{"name": "out.last", "type": "real"},
+		{"name": "out.quality", "type": "string"},
+		{"name": "out.coalesce", "type": "real"}
+	],
+	"rules": [
+		{
+			"id": "show",
+			"name": "Show",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}, {"kind": "datapoint", "datapoint": "sensor.temp"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "out.known",
+							"value": {"kind": "call", "function": "known", "args": [{"kind": "datapoint", "name": "sensor.temp"}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "out.last",
+							"value": {"kind": "call", "function": "lastKnown", "args": [{"kind": "datapoint", "name": "sensor.temp"}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "out.quality",
+							"value": {"kind": "call", "function": "quality", "args": [{"kind": "datapoint", "name": "sensor.temp"}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "out.coalesce",
+							"value": {"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "sensor.temp"}, {"kind": "literal", "type": "real", "value": -100.0}]}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "sensor.temp", "value": 21.5}},
+		{"at": 2000, "stale": "sensor.temp"},
+		{"at": 3000, "report": {"datapoint": "sensor.temp", "value": 22.0}}
+	],
+	"end": 4000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "show", "datapoint": "out.known", "value": false},
+			{"at": 0, "rule": "show", "datapoint": "out.quality", "value": "unknown"},
+			{"at": 0, "rule": "show", "datapoint": "out.coalesce", "value": -100.0},
+			{"at": 1000, "rule": "show", "datapoint": "out.known", "value": true},
+			{"at": 1000, "rule": "show", "datapoint": "out.last", "value": 21.5},
+			{"at": 1000, "rule": "show", "datapoint": "out.quality", "value": "good"},
+			{"at": 1000, "rule": "show", "datapoint": "out.coalesce", "value": 21.5},
+			{"at": 2000, "rule": "show", "datapoint": "out.known", "value": false},
+			{"at": 2000, "rule": "show", "datapoint": "out.last", "value": 21.5},
+			{"at": 2000, "rule": "show", "datapoint": "out.quality", "value": "stale"},
+			{"at": 2000, "rule": "show", "datapoint": "out.coalesce", "value": -100.0},
+			{"at": 3000, "rule": "show", "datapoint": "out.known", "value": true},
+			{"at": 3000, "rule": "show", "datapoint": "out.last", "value": 22.0},
+			{"at": 3000, "rule": "show", "datapoint": "out.quality", "value": "good"},
+			{"at": 3000, "rule": "show", "datapoint": "out.coalesce", "value": 22.0}
+		],
+		"logs": [{"at": 0, "rule": "show", "code": "valueNoValue"}]
+	}
+}
