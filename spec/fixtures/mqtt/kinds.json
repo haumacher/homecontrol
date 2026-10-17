@@ -1,0 +1,437 @@
+{
+	"image": {
+		"schemaVersion": "1.0",
+		"projectId": "mqtt-kinds",
+		"revision": 1,
+		"name": "Fixture house"
+	},
+	"datapoints": [
+		{
+			"id": "light.cmd",
+			"type": "boolean",
+			"writable": true
+		},
+		{
+			"id": "light.state",
+			"type": "boolean"
+		},
+		{
+			"id": "dim.level.cmd",
+			"type": "real",
+			"unit": "%",
+			"writable": true
+		},
+		{
+			"id": "dim.level",
+			"type": "real",
+			"unit": "%"
+		},
+		{
+			"id": "dim.cmd",
+			"type": "boolean",
+			"writable": true
+		},
+		{
+			"id": "dim.state",
+			"type": "boolean"
+		},
+		{
+			"id": "dim2.level.cmd",
+			"type": "unsigned",
+			"unit": "%",
+			"writable": true
+		},
+		{
+			"id": "dim2.level",
+			"type": "unsigned",
+			"unit": "%"
+		},
+		{
+			"id": "blind.move",
+			"type": "boolean",
+			"writable": true
+		},
+		{
+			"id": "blind.stop",
+			"type": "boolean",
+			"writable": true
+		},
+		{
+			"id": "blind.position",
+			"type": "real",
+			"unit": "%"
+		},
+		{
+			"id": "blind.position.cmd",
+			"type": "real",
+			"unit": "%",
+			"writable": true
+		},
+		{
+			"id": "blind.slat",
+			"type": "real",
+			"unit": "%"
+		},
+		{
+			"id": "blind.slat.cmd",
+			"type": "real",
+			"unit": "%",
+			"writable": true
+		},
+		{
+			"id": "switch.cmd",
+			"type": "boolean",
+			"writable": true
+		},
+		{
+			"id": "switch.state",
+			"type": "boolean"
+		},
+		{
+			"id": "sensor.temperature",
+			"type": "real",
+			"unit": "°C",
+			"history": {
+				"retention": 3600,
+				"spacing": 60
+			}
+		},
+		{
+			"id": "sensor.humidity",
+			"type": "unsigned",
+			"unit": "%"
+		},
+		{
+			"id": "sensor.lux",
+			"type": "real",
+			"unit": "lx"
+		},
+		{
+			"id": "sensor.power",
+			"type": "real",
+			"unit": "kW"
+		},
+		{
+			"id": "sensor.energy",
+			"type": "real",
+			"unit": "kWh"
+		},
+		{
+			"id": "sensor.window",
+			"type": "boolean",
+			"history": {
+				"retention": 3600,
+				"spacing": 10
+			}
+		},
+		{
+			"id": "sensor.text",
+			"type": "string"
+		},
+		{
+			"id": "sensor.time",
+			"type": "timeOfDay"
+		},
+		{
+			"id": "sensor.date",
+			"type": "date"
+		},
+		{
+			"id": "sensor.clock",
+			"type": "dateTime"
+		},
+		{
+			"id": "sensor.code",
+			"type": "enumeration"
+		},
+		{
+			"id": "sensor.count",
+			"type": "signed"
+		},
+		{
+			"id": "sensor/odd+name#1",
+			"type": "real"
+		},
+		{
+			"id": "climate.temperature",
+			"type": "real",
+			"unit": "°C"
+		},
+		{
+			"id": "climate.setpoint",
+			"type": "real",
+			"unit": "°C"
+		},
+		{
+			"id": "climate.setpoint.cmd",
+			"type": "real",
+			"unit": "°C",
+			"writable": true
+		},
+		{
+			"id": "climate.mode",
+			"type": "enumeration"
+		},
+		{
+			"id": "climate.heating",
+			"type": "boolean"
+		},
+		{
+			"id": "scene.number",
+			"type": "unsigned",
+			"writable": true
+		},
+		{
+			"id": "scene.control",
+			"type": "controlled",
+			"writable": true
+		},
+		{
+			"id": "button.press",
+			"type": "boolean",
+			"writable": true
+		},
+		{
+			"id": "button.ctl",
+			"type": "controlled",
+			"writable": true
+		},
+		{
+			"id": "button.wall",
+			"type": "boolean"
+		},
+		{
+			"id": "button.wall.state",
+			"type": "boolean"
+		}
+	],
+	"functions": [
+		{
+			"id": "light",
+			"label": "Light",
+			"kind": "light",
+			"datapoints": {
+				"command": "light.cmd",
+				"state": "light.state"
+			}
+		},
+		{
+			"id": "dimmer",
+			"label": "Dimmer",
+			"kind": "dimmer",
+			"datapoints": {
+				"levelCommand": "dim.level.cmd",
+				"level": "dim.level",
+				"command": "dim.cmd",
+				"state": "dim.state"
+			}
+		},
+		{
+			"id": "dimmer-level",
+			"label": "Level-only dimmer",
+			"kind": "dimmer",
+			"datapoints": {
+				"levelCommand": "dim2.level.cmd",
+				"level": "dim2.level"
+			}
+		},
+		{
+			"id": "blind",
+			"label": "Blind",
+			"kind": "blind",
+			"datapoints": {
+				"move": "blind.move",
+				"stop": "blind.stop",
+				"position": "blind.position",
+				"positionCommand": "blind.position.cmd",
+				"slat": "blind.slat",
+				"slatCommand": "blind.slat.cmd"
+			}
+		},
+		{
+			"id": "switch",
+			"label": "Switch",
+			"kind": "switch",
+			"datapoints": {
+				"command": "switch.cmd",
+				"state": "switch.state"
+			}
+		},
+		{
+			"id": "temperature",
+			"label": {
+				"de": "Temperatur",
+				"en": "Temperature"
+			},
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.temperature"
+			}
+		},
+		{
+			"id": "humidity",
+			"label": "Humidity",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.humidity"
+			}
+		},
+		{
+			"id": "lux",
+			"label": "Brightness",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.lux"
+			}
+		},
+		{
+			"id": "power",
+			"label": "Power",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.power"
+			}
+		},
+		{
+			"id": "energy",
+			"label": "Energy",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.energy"
+			},
+			"unit": "kWh"
+		},
+		{
+			"id": "window",
+			"label": {
+				"de": "Fenster"
+			},
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.window"
+			}
+		},
+		{
+			"id": "text",
+			"label": "Text",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.text"
+			}
+		},
+		{
+			"id": "time",
+			"label": "Time",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.time"
+			}
+		},
+		{
+			"id": "date",
+			"label": "Date",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.date"
+			}
+		},
+		{
+			"id": "clock",
+			"label": "Clock",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.clock"
+			}
+		},
+		{
+			"id": "code",
+			"label": "Code",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.code"
+			}
+		},
+		{
+			"id": "count",
+			"label": "Count",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor.count"
+			}
+		},
+		{
+			"id": "odd",
+			"label": "Odd name",
+			"kind": "sensor",
+			"datapoints": {
+				"value": "sensor/odd+name#1"
+			}
+		},
+		{
+			"id": "climate",
+			"label": "Heating",
+			"kind": "climate",
+			"datapoints": {
+				"temperature": "climate.temperature",
+				"setpoint": "climate.setpoint",
+				"setpointCommand": "climate.setpoint.cmd",
+				"mode": "climate.mode",
+				"heating": "climate.heating"
+			}
+		},
+		{
+			"id": "scene",
+			"label": "Evening",
+			"kind": "scene",
+			"datapoints": {
+				"command": "scene.number"
+			},
+			"scene": 3
+		},
+		{
+			"id": "scene-control",
+			"label": "Night",
+			"kind": "scene",
+			"datapoints": {
+				"command": "scene.control"
+			},
+			"scene": 12
+		},
+		{
+			"id": "button",
+			"label": "Bell",
+			"kind": "button",
+			"datapoints": {
+				"press": "button.press"
+			}
+		},
+		{
+			"id": "button-control",
+			"label": "Step",
+			"kind": "button",
+			"datapoints": {
+				"press": "button.ctl"
+			}
+		},
+		{
+			"id": "wall",
+			"label": "Wall button",
+			"kind": "button",
+			"datapoints": {
+				"press": "button.wall",
+				"state": "button.wall.state"
+			}
+		}
+	],
+	"mqtt": {
+		"broker": "mqtt://broker.example:1883",
+		"username": "homecontrol",
+		"baseTopic": "house/main",
+		"discovery": {
+			"prefix": "ha"
+		},
+		"history": {
+			"interval": 5
+		}
+	}
+}

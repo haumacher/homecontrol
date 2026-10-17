@@ -176,3 +176,18 @@ foreach(pack ${hc_lang_packs})
 	list(APPEND hc_lang_copies "${copy}")
 endforeach()
 add_custom_target(hc_lang_packs ALL DEPENDS ${hc_lang_copies})
+
+# The MQTT client's core tests (issue #18, doc/mqtt.md).
+target_sources(hc_tests PRIVATE
+	"${HC_REPO_DIR}/core/test/mqtt_codec_test.cpp"
+	"${HC_REPO_DIR}/core/test/mqtt_test.cpp"
+)
+# The POSIX MQTT client (a small MQTT 3.1.1 client over TCP, in the web library for the LoopExecutor) and
+# its test against an in-process broker speaking the core's codec.
+target_sources(hc_posix_web PRIVATE src/mqtt_client.cpp)
+add_executable(hc_posix_mqtt_tests "${HC_REPO_DIR}/core/test/test_main.cpp" test/posix_mqtt_client_test.cpp)
+target_include_directories(hc_posix_mqtt_tests SYSTEM PRIVATE "${HC_REPO_DIR}/third_party/doctest")
+target_include_directories(hc_posix_mqtt_tests PRIVATE "${HC_REPO_DIR}/core/test")
+target_link_libraries(hc_posix_mqtt_tests PRIVATE hc_posix_web)
+target_compile_definitions(hc_posix_mqtt_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
+doctest_discover_tests(hc_posix_mqtt_tests)
