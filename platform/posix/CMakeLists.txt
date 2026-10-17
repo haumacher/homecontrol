@@ -120,3 +120,7 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/rules_unit_test.cpp"
 	"${HC_REPO_DIR}/core/test/rules_probe_test.cpp"
 )
+# The BlobStore on files (issue #21, doc/persistence.md).
+target_sources(hc_posix PRIVATE src/file_blob_store.cpp)
+target_sources(hc_tests PRIVATE test/file_blob_store_test.cpp)
+target_sources(hc_tests PRIVATE test/blob_store_probe_test.cpp)

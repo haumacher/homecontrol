@@ -54,18 +54,49 @@ namespace of the store's own (a directory nobody else writes); a name is never a
 return a status and are logged by the implementation, never abort. Not thread-safe: the core calls
 it on the event loop's thread. Writes may take milliseconds; the callers rate-limit them.
 
-What the platforms must implement (a follow-up issue; not part of this package):
+## The two implementations
 
-- **ESP**: on the LittleFS `storage` partition (312 KB on the 4 MB board, `doc/ota.md`), which the
-  web server package mounts at `/storage`; the blobs in the directory `/storage/state`. `write()`
-  writes `/storage/state/.<name>.tmp` (the leading dot cannot clash with a blob name), closes it
-  (LittleFS commits on close) and renames it over `<name>`; LittleFS's rename is atomic. `visit()`
-  skips dot files and deletes stale temporaries at mount.
-- **POSIX**: a directory (proposed: `state/` next to the settings file, a `--state <dir>` option):
-  write `.<name>.tmp`, `fsync`, `rename`, `fsync` the directory.
-- Both: a mount or directory failure leaves the store refusing every call with `storage_error`
-  (logged once); the value store and the history then log their write failures and keep running
-  from RAM.
+Both write the same way: a blob is the file `<name>` in a directory of the store's own; `write()`
+writes `.<name>.tmp` (a dot name, which no blob can have, so a blob named `x.tmp` is an ordinary
+blob), syncs and closes it, and renames it over `<name>`. A power cut leaves the old or the new
+blob plus, at worst, an orphaned temporary file, which the store deletes when it opens the
+directory (logged: "deleted N unfinished write(s)"). `visit()` lists only names that pass
+`check_name()` and are regular files: dot files, subdirectories and foreign names are ignored.
+
+The directory is opened by `start()` or the first call. If that fails (the partition is not
+mounted, the directory cannot be created or opened), every call refuses with `storage_error` and
+the cause is logged once ("blob store unusable: ..."); the value store and the history then log
+their write failures and keep running from RAM. Error mapping: `ENOENT` on read, size and remove is
+`not_found`; `ENOSPC` (and `EDQUOT` on POSIX) is `no_space`, the temporary file is deleted and the
+old blob kept; every other error is `storage_error`, logged with the path and `strerror`. Invalid
+names and oversize writes are refused (logged) before the store is touched.
+
+| | ESP: `hc::esp::LittleFsBlobStore` | POSIX: `hc::posix::FileBlobStore` |
+|---|---|---|
+| Where | `platform/esp/components/hc_storage` | `platform/posix/src/file_blob_store.cpp` |
+| Directory | `/storage/state` on the LittleFS partition `storage` | given at construction; `FileBlobStore::directory_for_settings()` gives `homecontrol.state` beside `homecontrol.settings` (created with mode 0700; the parent must exist) |
+| Durability | `fsync` + `close` commit the file; LittleFS's `rename` is atomic and commits the directory | `fsync` of the file, `rename`, `fsync` of the directory (also after `remove()`) |
+| Status | the `storage status` console command; the mount and the blob count with the free space in the log | the blob count in the log |
+
+### The storage partition
+
+`hc_storage` owns the one mount of the LittleFS partition `storage` (312 KB on the 4 MB board,
+`doc/ota.md`) at `/storage`: `storage_mount()` mounts it read-write on the first call and returns
+the first result on every later one; the web server (for the UI) and the blob store both call it,
+in either order. It never formats: a partition without a file system (no `storage.bin` flashed) or
+a damaged one stays unmounted, the web server answers 503 and the blob store refuses, instead of an
+empty file system hiding the fault. Layout:
+
+| Path | Content | Written by |
+|---|---|---|
+| `/storage/ui` | the web UI image (`doc/web.md`) | flashing `storage.bin` |
+| `/storage/state` | the BlobStore's blobs | the device |
+| `/storage/image` | the runtime image (issue #8, later) | the device |
+
+Flashing `storage.bin` (a full USB flash with `flash_args`, or the web flasher) replaces the whole
+partition and with it the saved values and history; an OTA update of the application keeps them.
+`storage status` on the console prints the mount, used and free bytes, and the blob count and
+bytes in `/storage/state`.
 
 ## Last values: `hc::ValueStore`
 
@@ -320,3 +351,11 @@ refusals, spec validation, sampling with spacing and keepalives, gaps, the ring 
 decimation (min, max, last per bucket, never more than `max_points`), the save interval, save and
 restore across a reboot and an image swap, a blob with unknown header fields and larger samples, a
 damaged blob, a clock going back.
+
+`platform/posix/test/file_blob_store_test.cpp` runs the POSIX store against a temporary directory:
+the round trip with chunks and reads at offsets, replace and remove, `visit()` skipping foreign
+files, a crash's temporary files ignored and deleted while the old blob is still served, a blob
+named `x.tmp`, the name and size refusals before anything is touched, an unusable directory refusing
+every call (logged once), the default directory. `no_space` is not tested (it needs a full file
+system). The ESP store shares the algorithm; it is verified on the board (`storage status`, a
+reboot keeps the values).
