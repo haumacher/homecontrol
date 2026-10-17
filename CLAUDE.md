@@ -15,16 +15,20 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
 - `core/` — the portable library: datapoints, DPT codecs, runtime image, scheduler, astro, rule
   interpreter. Plain C++17, no ESP-IDF or POSIX includes; everything the platform provides (clock,
   storage, network, logging) is an interface in `core/include/hc/platform/`. Unit tests in
-  `core/test/`.
+  `core/test/`. `core/hc_core.cmake` is the single source list of both builds; the event loop
+  model is in `doc/core.md`.
 - `platform/posix/` — the Linux build: implements the platform interfaces with POSIX, builds the
   controller as an ordinary executable (the simulator and the SBC fallback) and the test runner.
-- `platform/esp/` — the ESP-IDF project: `main/` (the app), `components/` (knx, zigbee, web, ota,
-  storage, …), `updater/` (the small OTA updater app of the asymmetric partition layout),
+- `platform/esp/` — the ESP-IDF project: `main/` (the app and the `hc::esp` platform),
+  `components/` (`hc_core` compiles `core/` as a component; later knx, zigbee, web, ota, storage, …), `updater/` (the small OTA updater app of the asymmetric partition layout),
   `partitions*.csv`, `sdkconfig.defaults*`.
 - `spec/` — the contract with E-Home: the runtime image format, the rule language, and the
   conformance fixtures both rule interpreters (C++ here, Java in E-Home) must pass.
 - `web/` — the device web UI (static single-page app), built into the LittleFS image.
-- `doc/` — design notes; `doc/hardware.md` for boards, flash sizes and wiring.
+- `doc/` — design notes; `doc/hardware.md` for boards, flash sizes and wiring, `doc/core.md` for
+  the core and its event loop.
+- `third_party/` — vendored code with its license (doctest, the unit test framework).
+- `.github/workflows/ci.yml` — host build with tests and the esp32c6 firmware build.
 
 ## Build, run, verify
 
@@ -32,8 +36,14 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   The core's tests are the fast edit loop; run them after every core change.
 - **ESP-IDF v5.3** is installed at `~/tools/esp/esp-idf` (tools in `~/.espressif`). Every Bash
   call that uses it must source it first: `source ~/tools/esp/esp-idf/export.sh` (the shell state
-  does not persist between calls). Build: `cd platform/esp && idf.py set-target esp32c6 && idf.py build`.
-  Flash and watch: `idf.py -p /dev/ttyACM0 flash monitor` (exit the monitor with Ctrl-]).
+  does not persist between calls). Each target builds in its own directory, with its sdkconfig
+  inside it (settings belong in `sdkconfig.defaults`):
+  `cd platform/esp && idf.py -B build-esp32c6 set-target esp32c6 && idf.py -B build-esp32c6 build`
+  (the same with `esp32s3` proves portability; never flash it). Flash the C6 from the build
+  directory (the reset sequence of `idf.py flash` fails on this board; put it into download mode
+  with BOOT held during RESET): `cd platform/esp/build-esp32c6 && esptool.py --chip esp32c6 --port
+  /dev/ttyACM1 --before no_reset --after hard_reset write_flash @flash_args`. Watch with
+  `idf.py -B build-esp32c6 -p /dev/ttyACM1 monitor` (exit with Ctrl-]).
 - **Boards on the desk**: two Espressif USB-JTAG boards are connected. **Use only the ESP32-C6**
   at `/dev/ttyACM1` (MAC E8:F6:0A:F8:83:EC; `ls -l /dev/serial/by-id/` shows which port is which
   after a replug). The ESP32-S3 at `/dev/ttyACM0` belongs to another project: never flash it.

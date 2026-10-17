@@ -28,7 +28,7 @@ download mode), and flash with `--before no_reset`:
 
 ```bash
 source ~/tools/esp/esp-idf/export.sh
-cd platform/esp && esptool.py --chip esp32c6 --port /dev/ttyACM1 --before no_reset --after hard_reset write_flash @build-esp32c6/flash_args
+cd platform/esp/build-esp32c6 && esptool.py --chip esp32c6 --port /dev/ttyACM1 --before no_reset --after hard_reset write_flash @flash_args
 ```
 
 (`idf.py flash` passes `--before default_reset` itself, so the environment variable `ESPTOOL_BEFORE`

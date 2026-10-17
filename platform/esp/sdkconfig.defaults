@@ -1,0 +1,16 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# Settings common to all targets. The generated sdkconfig is not versioned; every setting the
+# project depends on lives here.
+
+# The core is built without exceptions and RTTI (these are the IDF defaults, stated explicitly).
+# CONFIG_COMPILER_CXX_EXCEPTIONS is not set
+# CONFIG_COMPILER_CXX_RTTI is not set
+
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# app_main only boots the controller; the event loop runs in its own task.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# The development C6 module has 4 MB flash (doc/hardware.md); assume no more.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y

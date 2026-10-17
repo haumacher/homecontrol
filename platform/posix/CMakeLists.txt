@@ -1,0 +1,48 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# The host build: the portable core, the POSIX platform, the `homecontrol` executable and the unit
+# test runner `hc_tests`.
+#
+#   cmake -S platform/posix -B build -G Ninja && cmake --build build && ctest --test-dir build
+
+cmake_minimum_required(VERSION 3.16)
+project(homecontrol_posix LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+	set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
+set(HC_REPO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+
+# The core's rules apply to everything built here: no exceptions, no RTTI, warnings are errors.
+add_compile_options(-Wall -Wextra -Werror -fno-exceptions -fno-rtti)
+
+add_subdirectory("${HC_REPO_DIR}/core" core)
+
+add_library(hc_posix STATIC src/platform.cpp)
+target_include_directories(hc_posix PUBLIC include)
+target_link_libraries(hc_posix PUBLIC hc_core)
+
+add_executable(homecontrol src/main.cpp)
+target_link_libraries(homecontrol PRIVATE hc_posix)
+
+# Unit tests: doctest, vendored. One CTest entry per test case (discovered after each build), so
+# `ctest -R <TestName>` selects single cases.
+enable_testing()
+add_executable(hc_tests
+	"${HC_REPO_DIR}/core/test/test_main.cpp"
+	"${HC_REPO_DIR}/core/test/log_test.cpp"
+	"${HC_REPO_DIR}/core/test/event_loop_test.cpp"
+	"${HC_REPO_DIR}/core/test/controller_test.cpp"
+	"${HC_REPO_DIR}/core/test/event_loop_probe_test.cpp"
+)
+target_include_directories(hc_tests SYSTEM PRIVATE "${HC_REPO_DIR}/third_party/doctest")
+target_link_libraries(hc_tests PRIVATE hc_core)
+# doctest uses exceptions only when they are enabled; tell it explicitly.
+target_compile_definitions(hc_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
+
+include("${HC_REPO_DIR}/third_party/doctest/cmake/doctest.cmake")
+doctest_discover_tests(hc_tests)
