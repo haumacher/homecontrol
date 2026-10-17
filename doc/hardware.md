@@ -35,6 +35,18 @@ cd platform/esp/build-esp32c6 && esptool.py --chip esp32c6 --port /dev/ttyACM1 -
 does not help there.) With a healthy firmware on the chip the ordinary `idf.py flash` auto-reset
 is expected to work again.
 
+**Leaving download mode needs a physical reset.** Every reset the host can trigger over the USB
+Serial/JTAG port (`rst:0x15 (USB_UART_HPSYS)`: esptool's `--after hard_reset`, the IDF monitor,
+DTR/RTS toggling) resets the HP system only and does not re-sample the strapping pins. The boot
+mode latched by the BOOT+RESET grip therefore persists (`boot:0x4 (DOWNLOAD…)`) until the RESET
+(EN) button is pressed or the board is power-cycled (replug the USB cable). So after a manual
+download-mode flash: press RESET once by hand, then open the monitor.
+
+**Console.** The dev boards have no UART-to-USB bridge, so `sdkconfig.defaults` routes the
+console to the USB Serial/JTAG port (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`): bootloader and app
+logs appear on `/dev/ttyACMn`. A changed `sdkconfig.defaults` is **not** applied to an existing
+`build-<target>/sdkconfig`; delete that file (or run `set-target` again) to regenerate it.
+
 The 4 MB flash of this board is the small end of the module range: the OTA partition layout
 (issue #3) must have a 4 MB variant, and the application partition will be tight once Zigbee and
 the web UI are in. A production board should carry 8 or 16 MB (issue #22).
