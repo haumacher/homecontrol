@@ -15,6 +15,7 @@
 #include "esp_platform.h"
 #include "esp_status_light.h"
 #include "hc/controller.h"
+#include "knx_service.h"
 #include "loop_queue.h"
 #include "net_services.h"
 #include "nvs_settings.h"
@@ -62,6 +63,19 @@ hc::Controller& controller() {
 	return instance;
 }
 
+// ---- KNX (issue #7): the tunnel to the KNXnet/IP gateway of the setting knx.gateway, the adapter
+// between the bus and the datapoint model, and the telegram log; its console command joins the
+// console through the extension table ----
+hc::esp::KnxService& knx() {
+	static hc::esp::KnxService instance(controller(), g_queue, g_model);
+	return instance;
+}
+
+int knx_console(void*, int argc, char** argv) {
+	return hc::esp::knx_console_command(knx(), argc, argv);
+}
+// ---- end KNX ----
+
 void loop_task(void*) {
 	hc::Controller& ctl = controller();
 	g_wifi.init(ctl.connectivity());
@@ -69,6 +83,7 @@ void loop_task(void*) {
 	g_ota.init(ctl);
 	bool serial_ready = g_serial.init();
 	ctl.start(); // opens the Improv window
+	knx().init();
 	if (serial_ready) {
 		g_serial.start_improv(g_queue, ctl.improv(), g_wifi.hostname());
 	}
@@ -80,8 +95,13 @@ void loop_task(void*) {
 	web.start();
 	// ---- end web server ----
 	if (serial_ready) {
+		// The commands other components contribute: the web server's and the KNX service's.
+		static hc::esp::ConsoleCommand extensions[2] = {
+			*web.console_commands(),
+			{"knx", hc::esp::kKnxCommandHint, hc::esp::kKnxCommandHelp, &knx_console, nullptr},
+		};
 		static hc::esp::ConsoleContext console{ctl, g_queue, g_wifi, g_services, g_ota,
-			hc::esp::SerialMux::kConsoleInput, web.console_commands(), web.console_command_count()};
+			hc::esp::SerialMux::kConsoleInput, extensions, sizeof(extensions) / sizeof(extensions[0])};
 		hc::esp::console_start(console);
 	}
 
