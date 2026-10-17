@@ -256,9 +256,12 @@ service's four listener slots); nothing is allocated.
 time (monotonic and wall clock with its synchronized flag), direction (received, or sent and
 confirmed), source, destination, service, priority, repetition, hop count, the data (one octet for a
 short telegram, none for a read) and the mapped datapoint. Every record has a sequence number, so a
-reader (the console, E-Home's monitor of issue #19) can ask for what it has not seen
-(`first_sequence()`, `total()`, `find()`). A new mapping clears the datapoint references (the ids may
-mean other datapoints). The console prints a record as
+reader (the console) can ask for what it has not seen (`first_sequence()`, `total()`, `find()`). A
+new mapping clears the datapoint references (the ids may mean other datapoints). Its one
+`TelegramListener` is told about every record as it is stored: the monitor stream (`MonitorFeed`,
+issue #19, spec/api.md "Monitor") is that listener, so nothing polls the log; it adds the decoded
+value of the mapped datapoint and keeps its own ring with KNX, Zigbee and the controller's actions
+for E-Home's group monitor. The console prints a record as
 
 ```
 12.345 rx 1.1.10 -> 1/2/3 write 0C 1A [living.temperature]
@@ -338,4 +341,3 @@ broke). Use it only against the test system (CLAUDE.md, "KNX during development"
 - Routing (KNXnet/IP multicast) as a second transport beside the tunnel.
 - Gateway search (SEARCH_REQUEST on 224.0.23.12:3671; the response decoding exists), offered to the
   user, never chosen automatically.
-- The monitor stream for E-Home (issue #19) reads the telegram log.

@@ -4,6 +4,7 @@
 #include "hc/zigbee/adapter.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -783,9 +784,26 @@ long ZigbeeAdapter::find_point(Ieee ieee, uint8_t endpoint, Function function) c
 	return -1;
 }
 
-void ZigbeeAdapter::report_point(const ZigbeeDevice& device, uint8_t endpoint, Function function, const Value& value) {
-	if (!loaded_) {
+void ZigbeeAdapter::traffic(ZigbeeTraffic::Kind kind, const ZigbeeDevice& device, uint8_t endpoint, uint16_t cluster,
+	uint16_t code, uint16_t datapoint, const Value* value) {
+	if (traffic_ == nullptr) {
 		return;
+	}
+	ZigbeeTraffic t;
+	t.kind = kind;
+	t.ieee = device.ieee;
+	t.short_addr = device.short_addr;
+	t.endpoint = endpoint;
+	t.cluster = cluster;
+	t.code = code;
+	t.datapoint = datapoint;
+	t.value = value;
+	traffic_->zigbee_traffic(t);
+}
+
+uint16_t ZigbeeAdapter::report_point(const ZigbeeDevice& device, uint8_t endpoint, Function function, const Value& value) {
+	if (!loaded_) {
+		return kNoId;
 	}
 	long index = find_point(device.ieee, endpoint, function);
 	if (index < 0) {
@@ -793,11 +811,12 @@ void ZigbeeAdapter::report_point(const ZigbeeDevice& device, uint8_t endpoint, F
 		format_ieee(device.ieee, ieee);
 		Log::debug(kTag, "%s endpoint %u: %s not mapped to a datapoint", ieee, static_cast<unsigned>(endpoint),
 			function_info(function).key);
-		return;
+		return kNoId;
 	}
 	if (ids_[index] != kNoId) {
 		model_.report(*this, ids_[index], value);
 	}
+	return ids_[index];
 }
 
 void ZigbeeAdapter::check_stale() {
@@ -1322,15 +1341,31 @@ void ZigbeeAdapter::attributes(NodeAddress address, uint8_t endpoint, uint16_t c
 		}
 		const FunctionInfo* info = function_of(cluster, record.attribute);
 		if (info == nullptr) {
+			if (traffic_ != nullptr) {
+				// Unmapped: the attribute's own value for the monitor.
+				std::optional<Value> raw;
+				if (value.is_string()) {
+					raw = Value::of_string(value.text);
+				} else if (value.number >= INT32_MIN && value.number <= INT32_MAX) {
+					raw = Value::of_signed(static_cast<int32_t>(value.number));
+				} else {
+					raw = Value::of_real(static_cast<double>(value.number));
+				}
+				traffic(ZigbeeTraffic::Kind::report, *device, endpoint, cluster, record.attribute, ZigbeeTraffic::kNoDatapoint,
+					raw ? &*raw : nullptr);
+			}
 			continue;
 		}
 		std::optional<Value> converted = attribute_value(info->function, value);
 		if (!converted) {
 			Log::debug(kTag, "%s endpoint %u: %s reported its invalid code", ieee, static_cast<unsigned>(endpoint),
 				info->key);
+			traffic(ZigbeeTraffic::Kind::report, *device, endpoint, cluster, record.attribute, ZigbeeTraffic::kNoDatapoint,
+				nullptr);
 			continue;
 		}
-		report_point(*device, endpoint, info->function, *converted);
+		uint16_t id = report_point(*device, endpoint, info->function, *converted);
+		traffic(ZigbeeTraffic::Kind::report, *device, endpoint, cluster, record.attribute, id, &*converted);
 	}
 	if (basic_step) {
 		start_zone(0);
@@ -1355,9 +1390,12 @@ void ZigbeeAdapter::command_received(NodeAddress address, uint8_t endpoint, uint
 			case 0x02: action = action::kToggle; break;
 			default:
 				Log::debug(kTag, "On/Off command 0x%02x ignored", static_cast<unsigned>(command));
+				traffic(ZigbeeTraffic::Kind::action, *device, endpoint, cluster, command, ZigbeeTraffic::kNoDatapoint, nullptr);
 				return;
 		}
-		report_point(*device, endpoint, Function::action, Value::of_enum(action));
+		Value value = Value::of_enum(action);
+		uint16_t id = report_point(*device, endpoint, Function::action, value);
+		traffic(ZigbeeTraffic::Kind::action, *device, endpoint, cluster, command, id, &value);
 		return;
 	}
 	if (cluster == cluster::kLevelControl) {
@@ -1366,6 +1404,8 @@ void ZigbeeAdapter::command_received(NodeAddress address, uint8_t endpoint, uint
 			case 0x01: case 0x05: // move (with on/off)
 			case 0x02: case 0x06: // step (with on/off)
 				if (length < 1 || payload == nullptr) {
+					traffic(ZigbeeTraffic::Kind::action, *device, endpoint, cluster, command, ZigbeeTraffic::kNoDatapoint,
+						nullptr);
 					return;
 				}
 				action = payload[0] == 0 ? action::kDimUp : action::kDimDown;
@@ -1373,21 +1413,28 @@ void ZigbeeAdapter::command_received(NodeAddress address, uint8_t endpoint, uint
 			case 0x03: case 0x07: action = action::kDimStop; break;
 			default:
 				Log::debug(kTag, "Level Control command 0x%02x ignored", static_cast<unsigned>(command));
+				traffic(ZigbeeTraffic::Kind::action, *device, endpoint, cluster, command, ZigbeeTraffic::kNoDatapoint, nullptr);
 				return;
 		}
-		report_point(*device, endpoint, Function::action, Value::of_enum(action));
+		Value value = Value::of_enum(action);
+		uint16_t id = report_point(*device, endpoint, Function::action, value);
+		traffic(ZigbeeTraffic::Kind::action, *device, endpoint, cluster, command, id, &value);
 		return;
 	}
 	if (cluster == cluster::kIasZone && command == 0x00) { // Zone Status Change Notification
 		if (length < 2 || payload == nullptr) {
+			traffic(ZigbeeTraffic::Kind::action, *device, endpoint, cluster, command, ZigbeeTraffic::kNoDatapoint, nullptr);
 			return;
 		}
 		uint16_t status = static_cast<uint16_t>(payload[0] | (payload[1] << 8));
-		report_point(*device, endpoint, Function::ias_zone, Value::of_bool((status & 0x1) != 0));
+		Value value = Value::of_bool((status & 0x1) != 0);
+		uint16_t id = report_point(*device, endpoint, Function::ias_zone, value);
+		traffic(ZigbeeTraffic::Kind::action, *device, endpoint, cluster, command, id, &value);
 		return;
 	}
 	Log::debug(kTag, "command 0x%02x of cluster 0x%04x ignored", static_cast<unsigned>(command),
 		static_cast<unsigned>(cluster));
+	traffic(ZigbeeTraffic::Kind::action, *device, endpoint, cluster, command, ZigbeeTraffic::kNoDatapoint, nullptr);
 }
 
 void ZigbeeAdapter::reporting_configured(NodeAddress address, uint8_t endpoint, uint16_t cluster, uint8_t status) {
@@ -1436,12 +1483,18 @@ bool ZigbeeAdapter::command(const Datapoint& datapoint, const Value& value) {
 		return false;
 	}
 	bool sent = false;
+	uint16_t sent_cluster = point.command_cluster;
+	uint16_t sent_command = 0;
+	// The ZCL command ids for the monitor: Move to Level (with On/Off) 0x04, On 0x01, Off 0x00, Move to
+	// Color Temperature 0x0A.
 	switch (point.function) {
 		case Function::on_off:
 			if (point.command_cluster == cluster::kLevelControl) {
+				sent_command = 0x04;
 				sent = driver_.move_to_level(device->ieee, device->short_addr, point.endpoint, value.as_bool() ? 254 : 0,
 					kTransitionDs);
 			} else {
+				sent_command = value.as_bool() ? 0x01 : 0x00;
 				sent = driver_.on_off(device->ieee, device->short_addr, point.endpoint,
 					value.as_bool() ? OnOffCommand::on : OnOffCommand::off);
 			}
@@ -1453,6 +1506,7 @@ bool ZigbeeAdapter::command(const Datapoint& datapoint, const Value& value) {
 				return false;
 			}
 			long level = std::lround(percent * 254.0 / 100.0);
+			sent_command = 0x04;
 			sent = driver_.move_to_level(device->ieee, device->short_addr, point.endpoint, static_cast<uint8_t>(level),
 				kTransitionDs);
 			break;
@@ -1464,6 +1518,7 @@ bool ZigbeeAdapter::command(const Datapoint& datapoint, const Value& value) {
 				return false;
 			}
 			long mireds = std::lround(1e6 / static_cast<double>(kelvin));
+			sent_command = 0x0A;
 			sent = driver_.move_to_color_temperature(device->ieee, device->short_addr, point.endpoint,
 				static_cast<uint16_t>(mireds), kTransitionDs);
 			break;
@@ -1477,6 +1532,7 @@ bool ZigbeeAdapter::command(const Datapoint& datapoint, const Value& value) {
 		Log::warn(kTag, "command of '%s' refused: the Zigbee stack did not take it", datapoint.name());
 		return false;
 	}
+	traffic(ZigbeeTraffic::Kind::command, *device, point.endpoint, sent_cluster, sent_command, datapoint.id(), &value);
 	return true;
 }
 

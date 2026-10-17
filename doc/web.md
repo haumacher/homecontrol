@@ -134,6 +134,24 @@ fields changes and every 10 s as a heartbeat. When a send fails (the platform's 
 the client is marked for a fresh snapshot instead of queuing without bound: memory stays fixed, and
 a slow client converges. The UI pings every 20 s and treats 45 s of silence as a dead connection.
 
+### The monitor stream: one ring, a cursor per client
+
+E-Home's group monitor (issue #19) attaches over the same WebSocket (spec/api.md, "Monitor"). The
+core's `MonitorFeed` keeps the last 128 events in a ring inside the live feed (about 12 KB, no
+heap): the KNX telegrams (the telegram log's listener, with the value the adapter decoded and the
+datapoint's name), the Zigbee reports, button actions and commands (the adapter's traffic
+listener), the rules' commands (the engine's observer), the commands from the UI and the API with
+their origin (the model's listener), and the image loads and unloads. The live feed attaches it to
+these sources through the image service at start and after every model change, so the platforms
+wire nothing. A client turns it on with `{"type":"monitor","subscribe":true,"since":n}`; the feed
+keeps only a flag and a cursor per client and, once per loop turn, sends what lies between the
+cursor and the newest event in messages of up to 1400 bytes (4 per client and turn). A client that
+falls behind does not queue: when the ring has overtaken its cursor it gets a `gap` marker with the
+number of lost events and continues with the oldest held. `GET /api/monitor?since=n` reads the same
+ring for tools without a socket. The monitor also sends a typed (DPT and value) or raw group
+write, response or read to the tunnel, as the console's `knx write` does, behind the same
+authentication as the commands; its telegrams come back as `tx` events marked `"origin": "monitor"`.
+
 ### The UI: static files from LittleFS, no framework
 
 `web/ui/dist/` is the UI as it is served: `index.html`, one stylesheet and ES modules (router,

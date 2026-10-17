@@ -312,6 +312,10 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		coredump(response);
 		return;
 	}
+	if (std::strcmp(path, "/api/monitor") == 0) { // the monitor stream (monitor_feed.cpp)
+		handle_monitor_request(feed_ != nullptr ? &feed_->monitor() : nullptr, request, response);
+		return;
+	}
 	if (std::strcmp(path, "/api/image") == 0) {
 		image(request, response);
 		return;
@@ -760,6 +764,8 @@ void WebApi::command(uint16_t id, const WebRequest& request, WebResponse& respon
 		refuse(response, 422, "dp.wrong_type", error);
 		return;
 	}
+	MonitorOrigin origin(feed_ != nullptr ? &feed_->monitor() : nullptr, MonitorEvent::CommandOrigin::api,
+		request.authorization != nullptr);
 	DatapointStatus status = model_.command(id, *value);
 	if (status != DatapointStatus::ok) {
 		refuse(response, command_http_status(status), datapoint_status_code(status), datapoint_command_reason(status));

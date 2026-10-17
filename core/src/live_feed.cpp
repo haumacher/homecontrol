@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "hc/image/image_service.h"
 #include "hc/log.h"
 #include "hc/value_json.h"
 #include "hc/version.h"
@@ -51,7 +52,7 @@ uint32_t fnv(const char* text) {
 } // namespace
 
 LiveFeed::LiveFeed(WebApi& api, EventLoop& loop, WsTransport& transport)
-	: api_(api), loop_(loop), transport_(transport) {}
+	: api_(api), loop_(loop), transport_(transport), monitor_(api.controller().clock(), api.model()) {}
 
 bool LiveFeed::start() {
 	if (api_.model().add_listener(*this) != DatapointStatus::ok) {
@@ -63,7 +64,19 @@ bool LiveFeed::start() {
 		Log::error(kTag, "live feed: no timer for the status push (heartbeat missing)");
 	}
 	api_.set_feed(this);
+	monitor_.start();
+	monitor_.set_appended(Callback::member<LiveFeed, &LiveFeed::schedule_monitor_flush>(this));
+	attach_monitor();
+	if (api_.image() != nullptr && api_.image()->loaded()) {
+		monitor_.model_changed(api_.image()); // the image loaded before the feed started
+	}
 	return true;
+}
+
+void LiveFeed::attach_monitor() {
+	if (api_.image() != nullptr) {
+		monitor_.attach_image(*api_.image());
+	}
 }
 
 bool LiveFeed::same_origin(const char* origin, const char* host) {
@@ -227,6 +240,8 @@ void LiveFeed::message(uint32_t handle, const char* text, size_t length) {
 		subscribe(*c);
 	} else if (json_string_equals(type, "command")) {
 		command(*c, body);
+	} else if (json_string_equals(type, "monitor")) {
+		monitor_message(*c, body);
 	} else {
 		send_error(*c, "ws.unknown_type", "unknown message type");
 	}
@@ -284,6 +299,7 @@ void LiveFeed::command(Client& client, const JsonSpan& message) {
 		if (!value) {
 			code = "dp.wrong_type";
 		} else {
+			MonitorOrigin origin(&monitor_, MonitorEvent::CommandOrigin::ws, client.principal == Principal::token);
 			status = model.command(dp->id(), *value);
 			if (status != DatapointStatus::ok) {
 				code = datapoint_status_code(status);
@@ -387,6 +403,7 @@ void LiveFeed::tick() {
 		send_status(nullptr);
 	}
 	pump();
+	monitor_flush(); // retries a client whose send buffers were full
 }
 
 void LiveFeed::datapoint_updated(const DatapointUpdate& update) {
@@ -469,9 +486,12 @@ void LiveFeed::schedule_pump() {
 
 void LiveFeed::writable() {
 	schedule_pump();
+	schedule_monitor_flush();
 }
 
 void LiveFeed::resync() {
+	attach_monitor();
+	monitor_.model_changed(api_.image());
 	pending_count_ = 0;
 	bool any = false;
 	for (Client& c : clients_) {
@@ -537,6 +557,120 @@ void LiveFeed::pump() {
 	}
 	if (more) {
 		schedule_pump();
+	}
+}
+
+// ---- The monitor stream -----------------------------------------------------------------------
+
+void LiveFeed::monitor_message(Client& client, const JsonSpan& message) {
+	JsonSpan member;
+	JsonSpan ref;
+	bool has_ref = json_member(message, "ref", ref) &&
+		(ref.kind == JsonSpan::Kind::number || ref.kind == JsonSpan::Kind::string);
+	if (json_member(message, "subscribe", member)) {
+		bool on = false;
+		if (!json_bool(member, on)) {
+			send_error(client, "ws.bad_message", "\"subscribe\" is true or false");
+			return;
+		}
+		JsonWriter json(out_, sizeof(out_));
+		json.begin_object().member("type", "monitor").member("subscribed", on);
+		if (on) {
+			JsonSpan since_span;
+			double since = 0;
+			bool has_since = json_member(message, "since", since_span);
+			if (has_since && (!json_number(since_span, since) || since < 0 || since > 4294967295.0 ||
+				since != std::floor(since))) {
+				send_error(client, "ws.bad_message", "\"since\" is a sequence number");
+				return;
+			}
+			bool reset = false;
+			uint32_t start = has_since ? monitor_.start_of(static_cast<uint32_t>(since), reset) : monitor_.next();
+			client.monitor = true;
+			client.monitor_next = start;
+			json.member("since", start).member("first", monitor_.first()).member("next", monitor_.next())
+				.member("capacity", static_cast<uint32_t>(MonitorFeed::kCapacity));
+			if (reset) {
+				json.member("reset", true);
+			}
+			Log::info(kTag, "WebSocket client %u: monitor stream from event %u", static_cast<unsigned>(client.handle),
+				static_cast<unsigned>(start));
+		} else {
+			client.monitor = false;
+		}
+		if (has_ref) {
+			json.key("ref").raw(ref.data, ref.length);
+		}
+		json.end_object();
+		send(client, out_, json.length());
+		if (on) {
+			schedule_monitor_flush();
+		}
+		return;
+	}
+	bool is_send = json_member(message, "send", member);
+	if (!is_send && !json_member(message, "read", member)) {
+		send_error(client, "ws.bad_message", "a monitor message carries \"subscribe\", \"send\" or \"read\"");
+		return;
+	}
+	const char* code = nullptr;
+	const char* reason = nullptr;
+	bool ok = is_send ? monitor_.send(member, &code, &reason) : monitor_.read(member, &code, &reason);
+	if (!ok) {
+		Log::warn(kTag, "WebSocket client %u: monitor %s refused: %s", static_cast<unsigned>(client.handle),
+			is_send ? "send" : "read", reason);
+	}
+	JsonWriter json(out_, sizeof(out_));
+	json.begin_object().member("type", "monitor").member("result", is_send ? "send" : "read").member("ok", ok);
+	if (!ok) {
+		json.member("error", reason).member("code", code);
+	}
+	if (has_ref) {
+		json.key("ref").raw(ref.data, ref.length);
+	}
+	json.end_object();
+	send(client, out_, json.length());
+}
+
+void LiveFeed::schedule_monitor_flush() {
+	if (!monitor_posted_) {
+		monitor_posted_ = loop_.post(Callback::member<LiveFeed, &LiveFeed::monitor_flush>(this));
+	}
+}
+
+void LiveFeed::monitor_flush() {
+	monitor_posted_ = false;
+	uint64_t now = api_.controller().clock().monotonic_ms();
+	bool more = false;
+	for (Client& c : clients_) {
+		if (!c.used || !c.monitor || !authenticated(c)) {
+			continue;
+		}
+		bool blocked = false;
+		for (size_t chunk = 0; chunk < kChunksPerPump && c.monitor_next != monitor_.next(); ++chunk) {
+			JsonWriter json(out_, sizeof(out_));
+			json.reserve(MonitorFeed::kClosingReserve);
+			json.begin_object().member("type", "monitor").member("now_ms", now).key("events").begin_array();
+			uint32_t next = monitor_.write_events(json, c.monitor_next, static_cast<size_t>(-1));
+			json.release();
+			if (next == c.monitor_next) {
+				// Cannot happen with 1400 bytes (an event is at most a few hundred); never loop forever.
+				Log::error(kTag, "monitor event %u does not fit a WebSocket message: skipped",
+					static_cast<unsigned>(next));
+				c.monitor_next = next < monitor_.first() ? monitor_.first() : next + 1;
+				continue;
+			}
+			json.end_array().member("next", next).end_object();
+			if (!transport_.ws_send(c.handle, out_, json.length())) {
+				blocked = true; // retried on writable() or the next tick; the ring may overtake it (gap)
+				break;
+			}
+			c.monitor_next = next;
+		}
+		more = more || (!blocked && c.monitor_next != monitor_.next());
+	}
+	if (more) {
+		schedule_monitor_flush();
 	}
 }
 

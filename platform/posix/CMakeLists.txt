@@ -73,6 +73,8 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/web_api_test.cpp"
 	"${HC_REPO_DIR}/core/test/web_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/live_feed_test.cpp"
+	"${HC_REPO_DIR}/core/test/monitor_feed_test.cpp"
+	"${HC_REPO_DIR}/core/test/monitor_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/astro_test.cpp"
 	"${HC_REPO_DIR}/core/test/time_service_test.cpp"
 	"${HC_REPO_DIR}/core/test/scheduler_test.cpp"

@@ -161,6 +161,11 @@ public:
 	ValueStore& value_store() { return value_store_; }
 	History& history() { return history_; }
 	knx::TimeMaster& time_master() { return time_master_; }
+	/// The platform's KNX adapter the service configures.
+	knx::KnxAdapter& knx_adapter() { return adapter_; }
+	/// The registered providers of dynamic datapoints (the monitor stream finds the Zigbee adapter).
+	size_t provider_count() const { return provider_count_; }
+	DynamicSpecProvider* provider(size_t index) const { return index < provider_count_ ? providers_[index] : nullptr; }
 
 	/// What the UI needs of the loaded image beyond the components (GET /api/model); built after
 	/// every successful load, empty without an image.
