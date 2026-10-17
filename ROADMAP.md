@@ -79,3 +79,22 @@ outside world (weather, external services).
 - **2026-10-17 — The name stays HomeControl.** Generic, but it says what the project is and pairs
   with E-Home; "homedriver" (the local checkout's directory name) was the alternative considered,
   a rename would be a single commit plus the GitHub repository and must precede the first release.
+- **2026-10-17 — Flash at 40 MHz, transmit power 11 dBm on the development board.** The C6's
+  in-package flash misreads at 80 MHz and the USB supply browns out at 20 dBm; both are
+  `sdkconfig.defaults` settings a production board may raise (doc/hardware.md).
+- **2026-10-17 — KNXnet/IP tunnelling implemented in the core, not through thelsing/knx.** Small
+  protocol, testable under the fake clock, no device stack needed; routing is a later transport.
+- **2026-10-17 — The runtime image is JSON.** Readable and diffable, parsed on the device with the
+  core's own reader; a binary form can come later behind the same loader (spec/runtime-image.md).
+- **2026-10-17 — A datapoint has an owner and, optionally, a transmitter.** An application component
+  (the time master, published values) owns and publishes; a technology transmits. Chosen over an
+  adapter-only flag because the shape recurs (doc/datapoints.md).
+- **2026-10-17 — The model is composed from the image plus dynamic spec providers.** Zigbee devices
+  join at run time; the image service reloads the model keeping values and re-binds every component
+  without restarting the rules (#29, doc/image.md).
+- **2026-10-17 — Plain HTTP on the LAN, tokens for machines, signatures later.** Recorded on #20.
+- **2026-10-17 — Zigbee with Espressif's ZBOSS line (esp-zigbee-lib 1.6.x) on ESP-IDF 5.3.** No IDF
+  upgrade; three small partitions for the stack; coexistence with WiFi on channels 15/20/25.
+- **2026-10-17 — The 4 MB module is for development only.** With Zigbee the application fills 76 %
+  of its partition and the heap sits near 90 KB; the production board is an 8 or 16 MB module or
+  the P4 + C6 pairing (#22).
