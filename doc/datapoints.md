@@ -46,9 +46,12 @@ Flags (`DatapointFlags`):
 | `kWritable` | The application may command the datapoint; commands to others are refused. |
 | `kTransmit` | Commands go to the owning technology to transmit (KNX T); without it a command only changes the model. |
 | `kReadOnStart` | The technology reads the value when it starts (KNX I). |
+| `kPersist` | The last good value and its wall-clock time survive a reboot (`hc::ValueStore`, `doc/persistence.md`). |
+| `kHistory` | A ring of recent samples is kept for the UI's sparklines (`hc::History`); the image's history spec gives retention and spacing. Boolean, unsigned, signed and real datapoints only. |
 
 The model enforces `kWritable` and `kTransmit`; `kReadable` and `kReadOnStart` are instructions to
-the adapter.
+the adapter; `kPersist` and `kHistory` are instructions to the value store and the history, which
+read them at their own load.
 
 Each datapoint carries its current value, the monotonic time of its last update (`updated_ms`, 0
 before the first) and a quality:
@@ -56,7 +59,8 @@ before the first) and a quality:
 - `unknown`: nothing reported or commanded since the load;
 - `good`: the last update came from the technology or the application;
 - `stale`: the technology lost contact (`report_stale()`: bus down, device gone); the value is the
-  last known one and stays until the next report.
+  last known one and stays until the next report. A `kPersist` datapoint also starts stale after
+  a reboot: `restore(id, value)` sets its saved value right after the load (see below).
 
 ### Owner and transmitter
 
@@ -96,6 +100,16 @@ Both store with quality `good` and the current time. A technology must not call 
 from inside `command()` (refused as `busy`); it reports later through the event loop. A KNX adapter
 does not see its own telegram again, so the model's optimistic store is the bus state; a Zigbee
 adapter's attribute report later confirms or corrects it.
+
+### Restored values
+
+`restore(id, value)` is the value store's way back in (`doc/persistence.md`): right after `load()`
+it sets the saved last value of a `kPersist` datapoint, converted where exact, with quality `stale`
+(the bus has not confirmed it yet). `updated_ms` stays 0 (nothing was updated in this boot; the
+value store knows the saved wall-clock time) and no listener is told: the restore is part of the
+load, and the rules start afterwards and see it through `lastKnown()`. It is refused (`busy`) once
+the datapoint has a value (a report or command since the load always wins) and (`wrong_type`) for a
+value that does not convert to a changed type.
 
 ### Listeners
 

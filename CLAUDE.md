@@ -17,9 +17,11 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   LED patterns, settings keys and validators, the datapoint model (`DatapointModel`, `Technology`)
   and the KNX DPT codecs (`doc/datapoints.md`), KNXnet/IP tunnelling (`hc::knx`: `KnxTunnel`,
   `KnxAdapter`, `TelegramLog` over the platform's `UdpSocket`, `doc/knx.md`), the time service,
-  astronomy and the scheduler (`doc/time.md`), the KNX time master, the web server's portable half (JSON API `WebApi`,
-  WebSocket feed `LiveFeed` and codec `websocket`, `Auth`, `JsonWriter`/`json_parse`, `LogRing`,
-  SHA-256/PBKDF2; `doc/web.md`); later runtime image, rule interpreter. Plain C++17, no ESP-IDF or POSIX
+  astronomy and the scheduler (`doc/time.md`), the KNX time master, last-value persistence and
+  short-term history over the platform's `BlobStore` (`ValueStore`, `History`, `doc/persistence.md`),
+  the web server's portable half (JSON API `WebApi`, WebSocket feed `LiveFeed` and codec `websocket`,
+  `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); later runtime image,
+  rule interpreter. Plain C++17, no ESP-IDF or POSIX
   includes; everything the platform provides (clock, settings, time zone, network driver, status
   light, logging, the Improv serial port, the WiFi scan) is an interface in `core/include/hc/platform/`. Unit tests in `core/test/`.
   `core/hc_core.cmake` is the single source list of both builds; the event loop model is in

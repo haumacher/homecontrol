@@ -226,7 +226,15 @@ struct DatapointFlags {
 	static constexpr uint8_t kTransmit = 0x04;
 	/// The technology reads the value when it starts (KNX: I flag).
 	static constexpr uint8_t kReadOnStart = 0x08;
-	static constexpr uint8_t kAll = 0x0F;
+	/// The last good value and its wall-clock time survive a reboot: hc::ValueStore saves it (write
+	/// coalescing, a flash budget) and restores it after the load with quality stale
+	/// (doc/persistence.md).
+	static constexpr uint8_t kPersist = 0x10;
+	/// hc::History keeps a ring of recent samples for the UI's sparklines; the retention and the
+	/// sample spacing come with the image's history spec (doc/persistence.md). Numeric and boolean
+	/// datapoints only.
+	static constexpr uint8_t kHistory = 0x20;
+	static constexpr uint8_t kAll = 0x3F;
 };
 
 /// One typed value of the house: a KNX group object, a Zigbee attribute, a rule parameter
@@ -246,11 +254,14 @@ public:
 	bool writable() const { return (flags_ & DatapointFlags::kWritable) != 0; }
 	bool transmits() const { return (flags_ & DatapointFlags::kTransmit) != 0; }
 	bool read_on_start() const { return (flags_ & DatapointFlags::kReadOnStart) != 0; }
+	bool persists() const { return (flags_ & DatapointFlags::kPersist) != 0; }
+	bool has_history() const { return (flags_ & DatapointFlags::kHistory) != 0; }
 
 	/// The current value; of type none while the quality is unknown.
 	const Value& value() const { return value_; }
 	Quality quality() const { return quality_; }
-	/// Monotonic time of the last value update (report or command); 0 before the first.
+	/// Monotonic time of the last value update (report or command); 0 before the first (also for a
+	/// value restored from before the reboot: hc::ValueStore knows its wall-clock time).
 	uint64_t updated_ms() const { return updated_ms_; }
 	/// The technology that owns the datapoint; nullptr for a datapoint of the application alone (a
 	/// rule parameter, a virtual value).
@@ -404,6 +415,13 @@ public:
 	/// The technology lost contact: the value stays, the quality becomes stale (listeners are told
 	/// if the quality was good).
 	DatapointStatus report_stale(Technology& technology, uint16_t id);
+
+	/// Sets the last known value of a datapoint from before the reboot (hc::ValueStore, right after
+	/// load()): the value (converted where exact) with quality stale, updated_ms() stays 0, and no
+	/// listener is told (it is part of the load: rules start afterwards and see it through
+	/// lastKnown()). Refused with wrong_type if it does not convert, and with busy unless the
+	/// quality is still unknown (a value reported or commanded since the load always wins).
+	DatapointStatus restore(uint16_t id, const Value& value);
 
 	/// The application wants `value`. Refused if the datapoint is not writable or the value does not
 	/// convert; passed to the owning technology if the datapoint transmits (refused if the technology
