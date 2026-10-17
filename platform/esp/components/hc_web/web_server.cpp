@@ -12,7 +12,6 @@
 #include <cstring>
 
 #include "esp_heap_caps.h"
-#include "esp_littlefs.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -25,6 +24,7 @@
 #include "hc/network_settings.h"
 #include "hc/update_check.h"
 #include "hc/websocket.h"
+#include "storage.h"
 
 namespace hc {
 namespace esp {
@@ -318,19 +318,10 @@ void WebServer::write_update_state(JsonWriter& json) const {
 }
 
 bool WebServer::mount_ui() {
-	esp_vfs_littlefs_conf_t conf = {};
-	conf.base_path = kMountPoint;
-	conf.partition_label = kPartitionLabel;
-	// Never format: an unreadable partition means the UI image was not flashed (or is damaged);
-	// the server says so on every page instead of hiding it behind an empty file system.
-	conf.format_if_mount_failed = false;
-	conf.dont_mount = false;
-	// Nothing writes the partition yet: read-only keeps the image intact whatever happens.
-	conf.read_only = true;
-	esp_err_t err = esp_vfs_littlefs_register(&conf);
-	if (err != ESP_OK) {
-		Log::error(kTag, "web UI not available: cannot mount the storage partition (%s); flash storage.bin "
-			"(doc/web.md)", esp_err_to_name(err));
+	// The partition is mounted once for the web server and the blob store (hc_storage, doc/persistence.md);
+	// it never formats, so a missing image is reported, not hidden behind an empty file system.
+	if (!storage_mount()) {
+		Log::error(kTag, "web UI not available: %s (doc/web.md)", storage_failure());
 		return false;
 	}
 	char path[48];
@@ -346,11 +337,7 @@ bool WebServer::mount_ui() {
 		--n;
 	}
 	ui_version_[n] = '\0';
-	size_t total = 0;
-	size_t used = 0;
-	esp_littlefs_info(kPartitionLabel, &total, &used);
-	Log::info(kTag, "web UI image %s mounted at %s (%u of %u B used)", ui_version_, kMountPoint,
-		static_cast<unsigned>(used), static_cast<unsigned>(total));
+	Log::info(kTag, "web UI image %s in %s", ui_version_, kUiDir);
 	return true;
 }
 

@@ -122,3 +122,7 @@ target_sources(hc_tests PRIVATE
 )
 # The runtime image (issue #8, spec/runtime-image.md; the fixtures spec/fixtures/images are read at run time).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_test.cpp")
+# The BlobStore on files (issue #21, doc/persistence.md).
+target_sources(hc_posix PRIVATE src/file_blob_store.cpp)
+target_sources(hc_tests PRIVATE test/file_blob_store_test.cpp)
+target_sources(hc_tests PRIVATE test/blob_store_probe_test.cpp)
