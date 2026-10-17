@@ -201,7 +201,7 @@ TEST_CASE("Connectivity.ListenerCapacityIsEnforced") {
 		CHECK(f.connectivity.add_listener(&recorders[i]));
 	}
 	CHECK_FALSE(f.connectivity.add_listener(&recorders.back()));
-	CHECK(f.capture.sink.contains("E hc.net: connectivity listeners exhausted (capacity 4), refusing listener"));
+	CHECK(f.capture.sink.contains("E hc.net: connectivity listeners exhausted (capacity " + std::to_string(Connectivity::kListenerCapacity) + "), refusing listener"));
 	CHECK_FALSE(f.connectivity.add_listener(nullptr));
 }
 
