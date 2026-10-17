@@ -3,6 +3,9 @@
  */
 #include "esp_udp_socket.h"
 
+#include "esp_netif.h"
+#include "lwip/sockets.h"
+
 #include <sys/select.h>
 #include <sys/socket.h>
 
@@ -99,10 +102,42 @@ bool EspUdpSocket::local_endpoint(const Ipv4Endpoint& remote, Ipv4Endpoint& loca
 		*error = "socket is closed";
 		return false;
 	}
-	if (!bsd::udp_local_endpoint(fd_, remote, local, error_, sizeof(error_))) {
-		*error = error_;
+	if (bsd::udp_local_endpoint(fd_, remote, local, error_, sizeof(error_))) {
+		return true;
+	}
+	// lwIP does not pick a local address when a UDP socket bound to any address is connected (Linux
+	// does), so the BSD way yields 0.0.0.0 here. Ask the network interfaces instead: the one whose
+	// subnet holds the gateway, else the default interface (the gateway is routed through it).
+	sockaddr_in bound;
+	socklen_t bound_length = sizeof(bound);
+	if (getsockname(fd_, reinterpret_cast<sockaddr*>(&bound), &bound_length) < 0) {
+		*error = "getsockname failed";
 		return false;
 	}
+	esp_netif_t* chosen = nullptr;
+	esp_netif_ip_info_t chosen_info = {};
+	for (esp_netif_t* netif = esp_netif_next_unsafe(nullptr); netif != nullptr; netif = esp_netif_next_unsafe(netif)) {
+		esp_netif_ip_info_t info;
+		if (esp_netif_get_ip_info(netif, &info) != ESP_OK || info.ip.addr == 0) {
+			continue;
+		}
+		uint32_t ip = ntohl(info.ip.addr);
+		uint32_t mask = ntohl(info.netmask.addr);
+		if ((ip & mask) == (remote.address & mask)) {
+			chosen = netif;
+			chosen_info = info;
+			break;
+		}
+	}
+	if (chosen == nullptr) {
+		chosen = esp_netif_get_default_netif();
+		if (chosen == nullptr || esp_netif_get_ip_info(chosen, &chosen_info) != ESP_OK || chosen_info.ip.addr == 0) {
+			*error = "no network interface with an IPv4 address towards the gateway";
+			return false;
+		}
+	}
+	local.address = ntohl(chosen_info.ip.addr);
+	local.port = ntohs(bound.sin_port);
 	return true;
 }
 
