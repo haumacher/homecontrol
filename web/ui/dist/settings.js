@@ -4,8 +4,10 @@
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
-import { formatBytes, formatDuration } from "/format.js";
+import { formatAgo, formatBytes, formatDuration } from "/format.js";
 import { t, tv, has } from "/i18n.js";
+import { loadModel } from "/model.js";
+import { currentTheme, setTheme } from "/theme.js";
 
 function rows(pairs) {
 	return h("dl", { class: "rows" }, pairs.filter(Boolean).map(([label, value]) => [h("dt", null, label), h("dd", null, value)]));
@@ -101,6 +103,51 @@ function settingRow(setting, onSaved) {
 	);
 }
 
+/// The deployed image: project, revision, when and how it came; "forget image" removes it.
+function imageCard(ctx, rerender) {
+	const card = h("section", { class: "card" }, h("h2", null, t("image.title")), h("p", { class: "muted" }, t("app.loading")));
+	const feedback = h("p", { class: "error-text", role: "status" });
+	loadModel().then((model) => {
+		if (!model.loaded) {
+			replace(card, h("h2", null, t("image.title")), h("p", { class: "muted" }, t("image.none")));
+			return;
+		}
+		const deployedAgo = model.nowMs - model.loadedMs + (Date.now() - model.fetchedAt);
+		const forget = h("button", { type: "button", class: "button danger", onclick: async () => {
+			if (!window.confirm(t("image.forget.confirm", { name: model.name || model.project }))) {
+				return;
+			}
+			forget.disabled = true;
+			try {
+				await api("DELETE", "/api/image");
+				rerender();
+			} catch (error) {
+				feedback.textContent = errorText(error);
+				forget.disabled = false;
+			}
+		} }, t("image.forget"));
+		replace(card, h("h2", null, t("image.title")), rows([
+			[t("image.project"), model.name ? `${model.name} (${model.project})` : model.project],
+			[t("image.revision"), String(model.revision)],
+			model.generatedAt ? [t("image.generated"), model.generatedAt] : null,
+			model.generator ? [t("image.generator"), model.generator] : null,
+			[t("image.deployed"), t("image.deployed.value", { ago: formatAgo(deployedAgo), source: tv("image.source.", model.source) })],
+			[t("image.stored"), model.stored ? t("status.yes") : t("image.not_stored")],
+		]), h("p", { class: "hint" }, t("image.forget.hint")), forget, feedback);
+	}).catch((error) => {
+		replace(card, h("h2", null, t("image.title")), h("p", { class: "muted" },
+			error && error.code === "image.unavailable" ? t("image.unavailable") : errorText(error)));
+	});
+	return card;
+}
+
+function themeCard() {
+	const select = h("select", { id: "theme", onchange: (e) => setTheme(e.target.value) },
+		["auto", "dark", "light"].map((v) => h("option", { value: v, selected: currentTheme() === v }, t(`theme.${v}`))));
+	return h("section", { class: "card" }, h("h2", null, t("theme.title")),
+		h("div", { class: "field" }, h("label", { for: "theme" }, t("theme.label")), select));
+}
+
 export function renderSettings(content, ctx) {
 	const status = h("div", null, h("p", { class: "muted" }, t("app.loading")));
 	const editable = h("div", { class: "card" }, h("p", { class: "muted" }, t("app.loading")));
@@ -140,7 +187,12 @@ export function renderSettings(content, ctx) {
 		},
 	}, t("auth.logout"));
 
+	const project = h("div", null);
+	const showImage = () => replace(project, imageCard(ctx, showImage));
+	showImage();
 	content.appendChild(message);
+	content.appendChild(h("h2", { class: "section-title" }, t("image.section")));
+	content.appendChild(h("div", { class: "cards" }, project, themeCard()));
 	content.appendChild(h("h2", { class: "section-title" }, t("settings.status")));
 	content.appendChild(status);
 	content.appendChild(h("h2", { class: "section-title" }, t("settings.editable")));

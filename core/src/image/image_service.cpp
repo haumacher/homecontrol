@@ -163,6 +163,7 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		return false;
 	}
 	report_.clear();
+	view_.build(text, length, model_);
 	if (store) {
 		const char* error = nullptr;
 		stored_ok_ = store_.write(text, length, &error);
@@ -408,6 +409,7 @@ bool ImageService::unload(const char** error) {
 	report_.clear();
 	stored_ok_ = false;
 	store_error_[0] = '\0';
+	view_.clear();
 	if (changed_) {
 		changed_();
 	}

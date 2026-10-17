@@ -236,6 +236,123 @@ the stored copy could not be removed (the image is unloaded anyway).
 All three: 404 `image.unavailable` in a build without the image service (POSIX `--demo`), 405
 `api.method_not_allowed` for other methods.
 
+## Dashboard
+
+What the device UI reads of the runtime image to build its pages: the model of rooms and functions,
+the history, the rules and the schedules. Authenticated like every endpoint; the two `PUT`s with
+the CSRF header when the cookie is used. All five: 404 `image.unavailable` in a build without the
+image service (POSIX `--demo`), 405 `api.method_not_allowed` for other methods.
+
+### `GET /api/model[?from=<n>]`
+
+The image's locations, functions and datapoint metadata (spec/runtime-image.md 3.3 to 3.5), so that
+a client builds the dashboard without the image. Without an image: 200 `{"loaded": false}`.
+
+```json
+{"loaded": true, "project": "example-house", "name": "Example house", "revision": 7,
+ "generatedAt": "2026-10-17T12:00:00Z", "generator": "E-Home 4.2", "source": "api", "stored": true,
+ "loaded_ms": 51230, "now_ms": 90211, "generation": 3, "total": 30, "from": 0,
+ "locations": [{"id": "living", "label": {"en": "Living room", "de": "Wohnzimmer"}, "kind": "room", "parent": "ground"}],
+ "functions": [{"id": "living-light", "label": "Ceiling light", "kind": "light", "room": "living",
+                "datapoints": {"command": 0, "state": 1}},
+               {"id": "evening", "label": "Evening", "kind": "scene", "scene": 1, "datapoints": {"command": 12}}],
+ "datapoints": [{"id": 4, "name": "living.temperature", "type": "real", "writable": false,
+                 "label": "Living room temperature", "unit": "°C", "technology": "knx",
+                 "binding": {"knx": {"dpt": "9.001", "listen": ["1/3/1"]}}, "history": true}],
+ "next": null}
+```
+
+- `label` is the image's label as it is: a string or an object of language tags (the client picks).
+- A function's `datapoints` maps each role to a datapoint id of `/api/datapoints` and the live
+  feed; roles the loader does not know (spec I5) are passed on, a client ignores what it does not
+  know. `room`, `unit`, `scene` and a location's `kind` and `parent` are left out when the image
+  has none.
+- A datapoint's `technology` is the name of the technology that owns it (`knx`, `scheduler`, ...,
+  `null` for an application value); `binding` the image's technology members verbatim (`knx`,
+  `zigbee`, `virtual`); `history` whether it keeps a history ring. `label`, `unit` and `binding`
+  are left out when absent.
+- `loaded_ms` is when the image was applied (with `source`: deployed when and how).
+- **Paging**: the entries share one index space, the locations first, then the functions, then the
+  datapoints; a page holds as many as fit the response buffer (8 KB). Continue with
+  `from=<next>` until `next` is `null`. `generation` changes with every load: a client that sees
+  another generation on a later page starts over.
+
+Refusals: 507 `model.no_memory` (the device could not hold the model of this image; the image
+runs), 500 `api.response_too_large`.
+
+### `GET /api/history?ids=<id>[,<id>...][&from=<unix>][&to=<unix>][&points=<n>]`
+
+The short-term history (doc/persistence.md) of up to 8 datapoints over `[from, to)` (UTC seconds;
+default the last 24 h), decimated into `points` buckets of equal width (default 48; `points` times
+the number of ids at most 160):
+
+```json
+{"from": 1792145000, "to": 1792231400, "width_s": 1800,
+ "series": [{"id": 4, "points": [[1792145412, 21.5], [1792147200, 21.75, 21.5, 22, 6]]},
+            {"id": 0, "code": "history.none", "error": "this datapoint has no history"}]}
+```
+
+A point is `[t, value]` for a bucket with one sample (`t` its time) or `[t, last, min, max, count]`
+for a bucket of several (`t` the bucket's start). Empty buckets are left out; values have float
+precision. Refusals: 400 `history.bad_query` (ids missing, malformed or more than 8; `from >= to`;
+`points` 0 or too many), 409 `history.no_time` (the wall clock is not synchronized and `from` or
+`to` is missing).
+
+### `GET /api/rules[?from=<n>]`
+
+The rules of the image with their diagnostics (spec/rules.md 9.1) and parameters, paged like the
+datapoints (`count`, `from`, `next`):
+
+```json
+{"now_ms": 90211, "count": 2, "from": 0, "next": null,
+ "rules": [{"id": "hall-presence-light", "name": "Hall light by presence",
+            "enabled": true, "enabledAdjustable": true, "enabledOverridden": false, "firings": 12, "state": null,
+            "lastTrigger": {"text": "datapoint hall.presence", "ms": 88000},
+            "lastAction": {"text": "write hall.light = true", "ms": 88000},
+            "errors": 0, "lastError": null,
+            "timers": [{"id": "off", "remaining_ms": 95000}],
+            "parameters": [{"id": "timeout", "label": "Switch-off delay", "type": "duration", "unit": "min",
+                            "adjustable": true, "overridden": false, "value": 180000, "default": 180000,
+                            "min": 30000, "max": 3600000, "step": 30000}]}]}
+```
+
+`lastTrigger`, `lastAction`, `lastError` (`{"code", "text", "ms"}`) are `null` until they happen;
+`*_ms`/`ms` are monotonic like `now_ms`. `timers` lists the running ones. `parameters` are the
+declared parameters (`enabled`, parameter 0, is the `enabled*` members): `type` is the rules
+type name, `value`/`default`/`min`/`max` in the parameter's JSON form (boolean; number for
+integer, real, enumeration and duration (ms); string; `{"hour","minute","second"}` for a time of
+day; `{"year","month","day"}` for a date; `{"control","value"}`; the literal text otherwise),
+`min`, `max`, `step` and `choices` (`[{"value", "label"}]`) only when declared.
+
+### `PUT /api/rules/<rule>/parameters/<parameter>`
+
+Body `{"value": <JSON value>}` sets the parameter (validated against its type, range and choices,
+persisted, spec/rules.md 8.2); `{"reset": true}` returns it to the image's default. The rule's
+enable switch is the parameter `enabled`. 200 `{"ok": true, "now_ms", "rule": {...}}` with the
+rule as in the list. Refusals: 404 `rule.unknown`, 404 `rule.unknown_parameter`, 403
+`rule.not_adjustable`, 422 `rule.invalid_value` (the reason: "outside min..max", "not one of the
+choices", "not a value of the parameter's type"), 400 `rule.value_missing`, 400 `api.bad_json`.
+Path segments may be percent-encoded.
+
+### `GET /api/schedules[?from=<n>]`
+
+```json
+{"synchronized": true, "now": 1792231392, "count": 2, "from": 0, "next": null,
+ "schedules": [{"id": "workdayMorning", "label": "Workday morning", "kind": "weekly", "enabled": true,
+                "adjustable": true, "nextFiring": 1792384200, "lastFired": 1792297800}]}
+```
+
+`nextFiring` (UTC seconds) is `null` when the entry has none (switched off, a past one-shot, no
+sun times, the clock not synchronized); `lastFired` is `null` when unknown; `adjustable` is the
+image's `enabledAdjustable`.
+
+### `PUT /api/schedules/<id>`
+
+Body `{"enabled": true|false}`: switches the entry like the console does (persisted; switching back
+to the image's value removes the override). 200 `{"ok": true, "schedule": {...}}`. Refusals: 404
+`schedule.unknown`, 403 `schedule.not_adjustable` (with the scheduler's reason), 400
+`schedule.value_missing`, 400 `api.bad_json`.
+
 ## Other refusals
 
 404 `api.not_found` (no such endpoint), 405 `api.method_not_allowed`, 400 `api.bad_json` (with the
@@ -292,4 +409,8 @@ curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/log?after=0"
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT --data-binary @image.json $DEV/api/image
 curl -s -H "Authorization: Bearer $TOKEN" $DEV/api/image -o deployed.json
 curl -s -H "Authorization: Bearer $TOKEN" -X DELETE $DEV/api/image
+curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/model"
+curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/history?ids=4&points=24"
+curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"value": 600000}' $DEV/api/rules/hall-presence-light/parameters/timeout
+curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"enabled": false}' $DEV/api/schedules/workdayMorning
 ```

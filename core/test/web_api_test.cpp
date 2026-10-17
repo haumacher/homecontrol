@@ -262,3 +262,334 @@ TEST_CASE("WebApi query parameters parse strictly") {
 	CHECK_FALSE(hc::query_uint("fromage=1", "from", v));
 	CHECK_FALSE(hc::query_uint("", "from", v));
 }
+
+// ---- The dashboard's view of the image (issue #14) ---------------------------------------------
+
+#include "fake_blob_store.h"
+#include "hc/image/image_service.h"
+#include "hc/knx/adapter.h"
+#include "hc/knx/tunnel.h"
+#include "knx_test_support.h"
+#include "rules_test_support.h"
+
+namespace {
+
+std::string image_fixture(const std::string& name) {
+	std::string text;
+	REQUIRE_MESSAGE(hc_test::read_text(HC_SPEC_DIR "/fixtures/images/" + name, text), "missing fixture " << name);
+	return text;
+}
+
+/// The API with the image service, a KNX adapter without a gateway and an in-memory blob store.
+struct DashboardFixture : WebFixture {
+	hc_test::FakeUdpSocket socket{fake.clock};
+	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
+	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel};
+	hc_test::FakeBlobStore blobs;
+	hc::image::ImageService service{controller, model, blobs, adapter, &tunnel};
+	std::string cookie;
+
+	DashboardFixture() {
+		fake.clock.wall_seconds = 1792231392; // 2026-10-17
+		fake.clock.synchronized = true;
+		controller.start();
+		service.start();
+		api.set_image(&service);
+		cookie = onboard();
+	}
+
+	void load(const std::string& text) {
+		REQUIRE(service.load(text.data(), text.size(), hc::image::Source::api, true));
+	}
+
+	Result put(const std::string& target, const std::string& body, bool csrf = true) {
+		return request(HttpMethod::put, target, body, cookie, "", csrf);
+	}
+};
+
+/// A small image: a virtual sensor with history, a fixed and an adjustable schedule entry, a rule
+/// with a parameter of every kind the UI edits.
+const char* kSmallImage = R"({
+	"image": {"schemaVersion": "1.0", "projectId": "small", "revision": 3},
+	"datapoints": [
+		{"id": "temp", "label": "Temperature", "type": "real", "unit": "°C", "writable": true, "virtual": {},
+		 "history": {"retention": 86400, "spacing": 60}},
+		{"id": "lamp", "label": {"en": "Lamp", "de": "Lampe"}, "type": "boolean", "writable": true, "virtual": {}}
+	],
+	"functions": [
+		{"id": "t", "label": "Temperature", "kind": "sensor", "datapoints": {"value": "temp"}},
+		{"id": "l", "label": "Lamp", "kind": "light", "datapoints": {"command": "lamp", "unknownRole": "temp"}}
+	],
+	"schedules": [
+		{"id": "fixed", "label": "Fixed", "kind": "weekly", "days": [1], "time": {"hour": 6, "minute": 0, "second": 0},
+		 "enabledAdjustable": false},
+		{"id": "free", "label": "Free", "kind": "weekly", "days": [2], "time": {"hour": 7, "minute": 0, "second": 0}}
+	],
+	"rules": [
+		{"id": "r", "name": "Rule", "enabledAdjustable": false,
+		 "parameters": [
+			{"id": "level", "label": "Level", "type": "integer", "default": 5, "min": 0, "max": 10, "step": 1},
+			{"id": "fixed", "label": "Fixed", "type": "boolean", "default": true, "adjustable": false},
+			{"id": "mode", "label": "Mode", "type": "enumeration", "default": 1,
+			 "choices": [{"value": 1, "label": "Eco"}, {"value": 2, "label": "Comfort"}]}
+		 ],
+		 "reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "lamp"}],
+			"actions": [{"kind": "write", "datapoint": "temp", "value": {"kind": "parameter", "id": "level"}}]}]}
+	]
+})";
+
+} // namespace
+
+TEST_CASE("WebApi.Dashboard without the image service or without an image") {
+	WebFixture plain;
+	std::string cookie = plain.onboard();
+	for (const char* path : {"/api/model", "/api/history?ids=0", "/api/rules", "/api/schedules"}) {
+		auto r = plain.get(path, cookie);
+		CHECK(r.status == 404);
+		CHECK(r.json["code"].text == "image.unavailable");
+	}
+	DashboardFixture f;
+	CHECK(f.get("/api/model").status == 401);
+	auto r = f.get("/api/model", f.cookie);
+	REQUIRE(r.status == 200);
+	CHECK_FALSE(r.json["loaded"].boolean);
+	r = f.get("/api/rules", f.cookie);
+	CHECK(r.status == 200);
+	CHECK(r.json["count"].number == 0);
+	r = f.get("/api/schedules", f.cookie);
+	CHECK(r.json["count"].number == 0);
+	CHECK(f.request(HttpMethod::post, "/api/model", "{}", f.cookie).status == 405);
+	CHECK(f.get("/api/modelx", f.cookie).status == 404);
+}
+
+TEST_CASE("WebApi.Model of the example house: rooms, functions with roles, labels, units, bindings") {
+	DashboardFixture f;
+	f.load(image_fixture("example.json"));
+	auto r = f.get("/api/model", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK(r.json["loaded"].boolean);
+	CHECK(r.json["project"].text == "example-house");
+	CHECK(r.json["revision"].number == 7);
+	CHECK(r.json["source"].text == "api");
+	CHECK(r.json["next"].kind == hc_test::Json::Kind::null);
+	MESSAGE("model view of the example house: " << f.service.view().bytes() << " heap bytes");
+	CHECK(f.service.view().bytes() <= 8192);
+	auto& locations = r.json["locations"].items;
+	REQUIRE(locations.size() == 4);
+	CHECK(locations[2]["id"].text == "living");
+	CHECK(locations[2]["label"]["de"].text == "Wohnzimmer");
+	CHECK(locations[2]["parent"].text == "ground");
+	CHECK(locations[2]["kind"].text == "room");
+	auto& functions = r.json["functions"].items;
+	REQUIRE(functions.size() == 9);
+	CHECK(functions[0]["kind"].text == "light");
+	CHECK(functions[0]["room"].text == "living");
+	CHECK(functions[0]["datapoints"]["command"].number == 0);
+	CHECK(functions[0]["datapoints"]["state"].number == 1);
+	CHECK(functions[3]["unit"].text == "°C");
+	CHECK(functions[7]["scene"].number == 1);
+	CHECK(functions[7]["room"].kind == hc_test::Json::Kind::null);
+	auto& datapoints = r.json["datapoints"].items;
+	REQUIRE(datapoints.size() == f.model.size());
+	CHECK(datapoints[4]["name"].text == "living.temperature");
+	CHECK(datapoints[4]["label"].text == "Living room temperature");
+	CHECK(datapoints[4]["unit"].text == "°C");
+	CHECK(datapoints[4]["history"].boolean);
+	CHECK(datapoints[4]["type"].text == "real");
+	CHECK_FALSE(datapoints[4]["writable"].boolean);
+	CHECK(datapoints[5]["writable"].boolean);
+	CHECK(datapoints[4]["technology"].text == "knx");
+	CHECK(datapoints[4]["binding"]["knx"]["dpt"].text == "9.001");
+	CHECK(datapoints[1]["label"]["en"].text == "Living room light (state)");
+	CHECK(datapoints[13]["technology"].text == "scheduler");
+
+	// Paging: one index space over locations, functions, datapoints.
+	r = f.get("/api/model?from=5", f.cookie);
+	REQUIRE(r.status == 200);
+	CHECK(r.json["locations"].items.empty());
+	REQUIRE(r.json["functions"].items.size() == 8);
+	CHECK(r.json["functions"].items[0]["id"].text == "living-dimmer");
+	uint32_t generation = static_cast<uint32_t>(r.json["generation"].number);
+
+	// A new image: a new generation and the new model; unloading empties it.
+	f.load(kSmallImage);
+	r = f.get("/api/model", f.cookie);
+	CHECK(r.json["generation"].number != generation);
+	REQUIRE(r.json["functions"].items.size() == 2);
+	CHECK(r.json["functions"].items[1]["datapoints"]["unknownRole"].number == 0); // kept: the UI ignores it
+	CHECK(r.json["datapoints"].items[1]["binding"]["virtual"].kind == hc_test::Json::Kind::object);
+	REQUIRE(f.request(HttpMethod::del, "/api/image", "", f.cookie).status == 200);
+	r = f.get("/api/model", f.cookie);
+	CHECK_FALSE(r.json["loaded"].boolean);
+}
+
+TEST_CASE("WebApi.History: buckets, refusals, a datapoint without history") {
+	DashboardFixture f;
+	f.load(kSmallImage);
+	f.controller.run_once();
+	// Samples: a value every 10 minutes for two hours.
+	for (int i = 0; i < 12; ++i) {
+		f.fake.clock.wall_seconds += 600;
+		f.fake.clock.advance(600000);
+		auto c = f.post("/api/datapoints/0/command", "{\"value\":" + std::to_string(20 + i) + ".5}", f.cookie);
+		REQUIRE_MESSAGE(c.status == 200, c.body);
+		f.controller.run_once();
+	}
+	int64_t now = f.fake.clock.wall_seconds;
+	auto r = f.get("/api/history?ids=0,1&from=" + std::to_string(now - 7200) + "&to=" + std::to_string(now + 1) +
+		"&points=4", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	auto& series = r.json["series"].items;
+	REQUIRE(series.size() == 2);
+	auto& points = series[0]["points"].items;
+	REQUIRE(points.size() >= 3);
+	REQUIRE(points.size() <= 4);
+	// A bucket of several samples: [t, last, min, max, count].
+	auto& last = points.back();
+	REQUIRE(last.items.size() == 5);
+	CHECK(last.items[1].number == doctest::Approx(31.5));
+	CHECK(last.items[2].number <= last.items[1].number);
+	CHECK(series[1]["code"].text == "history.none");
+
+	// Defaults: the last 24 h, 48 points.
+	r = f.get("/api/history?ids=0", f.cookie);
+	REQUIRE(r.status == 200);
+	CHECK(r.json["to"].number - r.json["from"].number == 86400);
+	CHECK(r.json["series"].items[0]["points"].items.size() >= 1);
+
+	CHECK(f.get("/api/history", f.cookie).json["code"].text == "history.bad_query");
+	CHECK(f.get("/api/history?ids=a", f.cookie).status == 400);
+	CHECK(f.get("/api/history?ids=0,1,2,3,4,5,6,7,8", f.cookie).status == 400);
+	CHECK(f.get("/api/history?ids=0&points=0", f.cookie).status == 400);
+	CHECK(f.get("/api/history?ids=0,1&points=81", f.cookie).status == 400);
+	CHECK(f.get("/api/history?ids=0&from=10&to=5", f.cookie).status == 400);
+	f.fake.clock.synchronized = false;
+	r = f.get("/api/history?ids=0", f.cookie);
+	CHECK(r.status == 409);
+	CHECK(r.json["code"].text == "history.no_time");
+}
+
+TEST_CASE("WebApi.Rules: diagnostics, parameters with their ranges, set, reset, refusals") {
+	DashboardFixture f;
+	f.load(image_fixture("example.json"));
+	auto r = f.get("/api/rules", f.cookie);
+	REQUIRE(r.status == 200);
+	REQUIRE(r.json["rules"].items.size() == 2);
+	auto& rule = r.json["rules"].items[0];
+	CHECK(rule["id"].text == "hall-presence-light");
+	CHECK(rule["enabled"].boolean);
+	CHECK(rule["enabledAdjustable"].boolean);
+	REQUIRE(rule["parameters"].items.size() == 2);
+	auto& timeout = rule["parameters"].items[0];
+	CHECK(timeout["type"].text == "duration");
+	CHECK(timeout["value"].number == 180000);
+	CHECK(timeout["min"].number == 30000);
+	CHECK(timeout["max"].number == 3600000);
+	CHECK(timeout["step"].number == 30000);
+	CHECK(timeout["unit"].text == "min");
+	CHECK_FALSE(timeout["overridden"].boolean);
+
+	// Set: the answer and the list show the override; it is persisted.
+	r = f.put("/api/rules/hall-presence-light/parameters/timeout", "{\"value\":600000}");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK(r.json["rule"]["parameters"].items[0]["value"].number == 600000);
+	CHECK(r.json["rule"]["parameters"].items[0]["overridden"].boolean);
+	r = f.get("/api/rules", f.cookie);
+	CHECK(r.json["rules"].items[0]["parameters"].items[0]["value"].number == 600000);
+	// The enable switch is parameter "enabled".
+	r = f.put("/api/rules/hall-presence-light/parameters/enabled", "{\"value\":false}");
+	REQUIRE(r.status == 200);
+	CHECK_FALSE(r.json["rule"]["enabled"].boolean);
+	CHECK(r.json["rule"]["enabledOverridden"].boolean);
+	// Reset.
+	r = f.put("/api/rules/hall-presence-light/parameters/timeout", "{\"reset\":true}");
+	REQUIRE(r.status == 200);
+	CHECK(r.json["rule"]["parameters"].items[0]["value"].number == 180000);
+	CHECK_FALSE(r.json["rule"]["parameters"].items[0]["overridden"].boolean);
+
+	// Refusals speak.
+	r = f.put("/api/rules/hall-presence-light/parameters/timeout", "{\"value\":1}");
+	CHECK(r.status == 422);
+	CHECK(r.json["code"].text == "rule.invalid_value");
+	CHECK(r.json["error"].text == "outside min..max");
+	r = f.put("/api/rules/hall-presence-light/parameters/timeout", "{\"value\":\"long\"}");
+	CHECK(r.status == 422);
+	r = f.put("/api/rules/nothing/parameters/timeout", "{\"value\":1}");
+	CHECK(r.status == 404);
+	CHECK(r.json["code"].text == "rule.unknown");
+	r = f.put("/api/rules/hall-presence-light/parameters/nothing", "{\"value\":1}");
+	CHECK(r.status == 404);
+	CHECK(r.json["code"].text == "rule.unknown_parameter");
+	r = f.put("/api/rules/hall-presence-light/parameters/timeout", "{}");
+	CHECK(r.status == 400);
+	CHECK(r.json["code"].text == "rule.value_missing");
+	r = f.put("/api/rules/hall-presence-light/parameters/timeout", "{\"value\":600000}", false);
+	CHECK(r.status == 403);
+	CHECK(r.json["code"].text == "auth.csrf");
+	CHECK(f.request(HttpMethod::post, "/api/rules/hall-presence-light/parameters/timeout", "{}", f.cookie).status == 405);
+	CHECK(f.put("/api/rules/hall-presence-light", "{}").status == 404);
+	CHECK(f.put("/api/rules/hall-presence-light/parameters/", "{}").status == 404);
+	CHECK(f.put("/api/rules/hall%2Dpresence-light/parameters/timeout", "{\"value\":60000}").status == 200);
+	CHECK(f.put("/api/rules/hall%2/parameters/timeout", "{\"value\":60000}").status == 404);
+}
+
+TEST_CASE("WebApi.Rules: fixed parameters, choices, the enable switch not adjustable") {
+	DashboardFixture f;
+	f.load(kSmallImage);
+	auto r = f.get("/api/rules", f.cookie);
+	REQUIRE(r.status == 200);
+	auto& rule = r.json["rules"].items[0];
+	CHECK_FALSE(rule["enabledAdjustable"].boolean);
+	auto& parameters = rule["parameters"].items;
+	REQUIRE(parameters.size() == 3);
+	CHECK(parameters[0]["step"].number == 1);
+	CHECK_FALSE(parameters[1]["adjustable"].boolean);
+	REQUIRE(parameters[2]["choices"].items.size() == 2);
+	CHECK(parameters[2]["choices"].items[1]["label"].text == "Comfort");
+	r = f.put("/api/rules/r/parameters/fixed", "{\"value\":false}");
+	CHECK(r.status == 403);
+	CHECK(r.json["code"].text == "rule.not_adjustable");
+	r = f.put("/api/rules/r/parameters/enabled", "{\"value\":false}");
+	CHECK(r.status == 403);
+	r = f.put("/api/rules/r/parameters/mode", "{\"value\":3}");
+	CHECK(r.status == 422);
+	CHECK(r.json["error"].text == "not one of the choices");
+	CHECK(f.put("/api/rules/r/parameters/mode", "{\"value\":2}").status == 200);
+}
+
+TEST_CASE("WebApi.Schedules: entries with their switches and next firings") {
+	DashboardFixture f;
+	f.load(kSmallImage);
+	f.controller.run_once();
+	auto r = f.get("/api/schedules", f.cookie);
+	REQUIRE(r.status == 200);
+	CHECK(r.json["synchronized"].boolean);
+	auto& entries = r.json["schedules"].items;
+	REQUIRE(entries.size() == 2);
+	CHECK(entries[0]["id"].text == "fixed");
+	CHECK_FALSE(entries[0]["adjustable"].boolean);
+	CHECK(entries[1]["adjustable"].boolean);
+	CHECK(entries[1]["kind"].text == "weekly");
+	CHECK(entries[1]["enabled"].boolean);
+	CHECK(entries[1]["nextFiring"].number > f.fake.clock.wall_seconds);
+
+	r = f.put("/api/schedules/free", "{\"enabled\":false}");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK_FALSE(r.json["schedule"]["enabled"].boolean);
+	CHECK(r.json["schedule"]["nextFiring"].kind == hc_test::Json::Kind::null);
+	CHECK_FALSE(f.get("/api/schedules", f.cookie).json["schedules"].items[1]["enabled"].boolean);
+
+	r = f.put("/api/schedules/fixed", "{\"enabled\":false}");
+	CHECK(r.status == 403);
+	CHECK(r.json["code"].text == "schedule.not_adjustable");
+	CHECK(r.json["error"].text.size() > 0);
+	r = f.put("/api/schedules/nothing", "{\"enabled\":false}");
+	CHECK(r.status == 404);
+	CHECK(r.json["code"].text == "schedule.unknown");
+	r = f.put("/api/schedules/free", "{\"enabled\":1}");
+	CHECK(r.status == 400);
+	CHECK(r.json["code"].text == "schedule.value_missing");
+	CHECK(f.put("/api/schedules/free", "{\"enabled\":true}", false).status == 403);
+	CHECK(f.put("/api/schedules/free/x", "{\"enabled\":true}").status == 404);
+	CHECK(f.request(HttpMethod::post, "/api/schedules/free", "{}", f.cookie).status == 405);
+}

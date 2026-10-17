@@ -15,6 +15,7 @@
 #include "hc/image/image.h"
 #include "hc/image/image_store.h"
 #include "hc/image/loader.h"
+#include "hc/image/model_view.h"
 #include "hc/image/rules_clock.h"
 #include "hc/json.h"
 #include "hc/knx/adapter.h"
@@ -127,6 +128,12 @@ public:
 	History& history() { return history_; }
 	knx::TimeMaster& time_master() { return time_master_; }
 
+	/// What the UI needs of the loaded image beyond the components (GET /api/model); built after
+	/// every successful load, empty without an image.
+	const ModelView& view() const { return view_; }
+	/// When the loaded image was applied (monotonic ms; with source() and info(): "deployed when and how").
+	uint64_t loaded_ms() const { return loaded_ms_; }
+
 private:
 	bool apply(Plan& plan, Source source);
 	bool fail_applied(Source source, const char* path, const char* format, ...) HC_PRINTF_FORMAT(4, 5);
@@ -161,6 +168,7 @@ private:
 	char store_error_[64] = {};
 	uint64_t loaded_ms_ = 0;
 	ExternalValues* external_ = nullptr;
+	ModelView view_;
 	Callback ntp_changed_;
 	Callback changed_;
 };

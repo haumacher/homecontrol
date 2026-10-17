@@ -90,6 +90,7 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/image/loader.cpp"
 	"${HC_CORE_DIR}/src/image/image_store.cpp"
 	"${HC_CORE_DIR}/src/image/image_service.cpp"
+	"${HC_CORE_DIR}/src/image/model_view.cpp"
 	"${HC_CORE_DIR}/src/image/rules_clock.cpp"
 	"${HC_CORE_DIR}/src/image/memory_blob_store.cpp"
 )

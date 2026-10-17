@@ -75,8 +75,10 @@ struct WebResponse {
 	size_t password_length = 0;
 };
 
-/// The JSON API under /api/ (spec/api.md): authentication, status, datapoints, the log and the
-/// settings the UI may change. Pure core: the ESP and POSIX servers parse HTTP, call handle() on
+/// The JSON API under /api/ (spec/api.md): authentication, status, datapoints, the log, the
+/// settings the UI may change, the runtime image, and what the dashboard reads of it (the model of
+/// rooms and functions, the history, the rules' diagnostics and adjustable parameters, the
+/// schedules' switches). Pure core: the ESP and POSIX servers parse HTTP, call handle() on
 /// the event loop's thread and send what it answers. Every refusal is a JSON object
 /// {"error": "<English reason>", "code": "<key>"} with a 4xx/5xx status.
 ///
@@ -89,6 +91,9 @@ class WebApi {
 public:
 	/// Datapoints per page of GET /api/datapoints.
 	static constexpr size_t kPageSize = 50;
+	/// Most datapoints in one GET /api/history, and most points over all of them.
+	static constexpr size_t kMaxHistoryIds = 8;
+	static constexpr size_t kMaxHistoryPoints = 160;
 	/// Largest request body accepted (the platforms refuse longer ones with 413).
 	static constexpr size_t kMaxBody = 1024;
 	static constexpr const char* kCsrfHeaderValue = "HomeControl";
@@ -145,6 +150,14 @@ private:
 	void settings(WebResponse& response);
 	void put_setting(const char* key, const WebRequest& request, WebResponse& response);
 	void image(const WebRequest& request, WebResponse& response);
+	void ui_model(const WebRequest& request, WebResponse& response);
+	void history(const WebRequest& request, WebResponse& response);
+	void rules(const WebRequest& request, WebResponse& response);
+	void rule_parameter(const char* rule, const char* parameter, const WebRequest& request, WebResponse& response);
+	void schedules(const WebRequest& request, WebResponse& response);
+	void put_schedule(const char* id, const WebRequest& request, WebResponse& response);
+	void write_rule(JsonWriter& json, size_t index);
+	void write_schedule(JsonWriter& json, size_t index);
 	bool read_password(const WebRequest& request, WebResponse& response);
 	void set_session_cookie(WebResponse& response, const char* session);
 	void finish(WebResponse& response, JsonWriter& json);
@@ -163,6 +176,9 @@ private:
 const char* datapoint_status_code(DatapointStatus status);
 /// The English reason of a refused command.
 const char* datapoint_command_reason(DatapointStatus status);
+
+/// Reads the signed decimal query parameter `name`; false if absent or invalid.
+bool query_int(const char* query, const char* name, int64_t& out);
 
 /// Reads the unsigned decimal query parameter `name` ("from=50&x=1"); false if absent or invalid.
 bool query_uint(const char* query, const char* name, uint32_t& out);

@@ -8,6 +8,8 @@
 #include <cstring>
 
 #include "hc/image/image_service.h"
+#include "hc/json_document.h"
+#include "hc/rules/value.h"
 #include "hc/live_feed.h"
 #include "hc/network_settings.h"
 #include "hc/tz.h"
@@ -83,7 +85,66 @@ const SettingInfo* find_setting(const char* key) {
 	return nullptr;
 }
 
+/// Percent-decodes `length` bytes of a path segment into `out` (NUL-terminated); false if it is
+/// empty, malformed, contains a NUL or does not fit.
+bool url_decode(const char* text, size_t length, char* out, size_t size) {
+	size_t n = 0;
+	for (size_t i = 0; i < length; ++i) {
+		char c = text[i];
+		if (c == '%') {
+			auto hex = [](char h) -> int {
+				return h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1;
+			};
+			if (i + 2 >= length) {
+				return false;
+			}
+			int hi = hex(text[i + 1]);
+			int lo = hex(text[i + 2]);
+			if (hi < 0 || lo < 0 || (hi == 0 && lo == 0)) {
+				return false;
+			}
+			c = static_cast<char>(hi * 16 + lo);
+			i += 2;
+		}
+		if (n + 1 >= size) {
+			return false;
+		}
+		out[n++] = c;
+	}
+	out[n] = '\0';
+	return n > 0;
+}
+
 } // namespace
+
+bool query_int(const char* query, const char* name, int64_t& out) {
+	if (query == nullptr) {
+		return false;
+	}
+	size_t n = std::strlen(name);
+	const char* p = query;
+	while (*p != '\0') {
+		if (std::strncmp(p, name, n) == 0 && p[n] == '=') {
+			const char* v = p + n + 1;
+			if (!((*v >= '0' && *v <= '9') || (*v == '-' && v[1] >= '0' && v[1] <= '9'))) {
+				return false;
+			}
+			char* end = nullptr;
+			long long value = std::strtoll(v, &end, 10);
+			if (*end != '\0' && *end != '&') {
+				return false;
+			}
+			out = static_cast<int64_t>(value);
+			return true;
+		}
+		const char* amp = std::strchr(p, '&');
+		if (amp == nullptr) {
+			break;
+		}
+		p = amp + 1;
+	}
+	return false;
+}
 
 bool query_uint(const char* query, const char* name, uint32_t& out) {
 	if (query == nullptr) {
@@ -277,7 +338,66 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 			return;
 		}
 	}
-	refuse(response, 404, "api.not_found", "no such API endpoint");
+	// ---- What the dashboard reads of the image ----
+	bool model_path = std::strcmp(path, "/api/model") == 0;
+	bool history_path = std::strcmp(path, "/api/history") == 0;
+	bool rules_path = std::strcmp(path, "/api/rules") == 0 || starts_with(path, "/api/rules/");
+	bool schedules_path = std::strcmp(path, "/api/schedules") == 0 || starts_with(path, "/api/schedules/");
+	if (!model_path && !history_path && !rules_path && !schedules_path) {
+		refuse(response, 404, "api.not_found", "no such API endpoint");
+		return;
+	}
+	if (image_ == nullptr) {
+		refuse(response, 404, "image.unavailable", "this build has no runtime image service");
+		return;
+	}
+	if (model_path || history_path || std::strcmp(path, "/api/rules") == 0 || std::strcmp(path, "/api/schedules") == 0) {
+		if (request.method != HttpMethod::get) {
+			refuse(response, 405, "api.method_not_allowed", "use GET");
+			return;
+		}
+		if (model_path) {
+			ui_model(request, response);
+		} else if (history_path) {
+			history(request, response);
+		} else if (rules_path) {
+			rules(request, response);
+		} else {
+			schedules(request, response);
+		}
+		return;
+	}
+	char first[48];
+	char second[48];
+	if (rules_path) {
+		// /api/rules/<id>/parameters/<parameter>
+		const char* rest = path + 11;
+		const char* slash = std::strchr(rest, '/');
+		const char* tail = slash != nullptr ? slash : rest + std::strlen(rest);
+		bool shaped = slash != nullptr && starts_with(slash, "/parameters/") && slash[12] != '\0' &&
+			std::strchr(slash + 12, '/') == nullptr;
+		if (!shaped || !url_decode(rest, static_cast<size_t>(tail - rest), first, sizeof(first)) ||
+			!url_decode(slash + 12, std::strlen(slash + 12), second, sizeof(second))) {
+			refuse(response, 404, "api.not_found", "no such API endpoint (PUT /api/rules/<rule>/parameters/<parameter>)");
+			return;
+		}
+		if (request.method != HttpMethod::put) {
+			refuse(response, 405, "api.method_not_allowed", "use PUT");
+			return;
+		}
+		rule_parameter(first, second, request, response);
+		return;
+	}
+	const char* rest = path + 15;
+	if (std::strchr(rest, '/') != nullptr || !url_decode(rest, std::strlen(rest), first, sizeof(first))) {
+		refuse(response, 404, "api.not_found", "no such API endpoint (PUT /api/schedules/<id>)");
+		return;
+	}
+	if (request.method != HttpMethod::put) {
+		refuse(response, 405, "api.method_not_allowed", "use PUT");
+		return;
+	}
+	put_schedule(first, request, response);
 }
 
 // ---- Authentication ---------------------------------------------------------------------------
@@ -880,6 +1000,594 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 		}
 		image_->write_report(json);
 	}
+	json.end_object();
+	finish(response, json);
+}
+
+// ---- The dashboard's view of the image ---------------------------------------------------------
+
+namespace {
+
+/// A parameter value in JSON: boolean, number (integer, real, enumeration, duration in ms), string,
+/// {"hour","minute","second"} for a time of day, {"year","month","day"} for a date, {"control",
+/// "value"} for a controlled value; the canonical literal text (a string) for the rest; null for no
+/// value.
+void write_val(JsonWriter& json, const rules::Val& v) {
+	if (!v.has()) {
+		json.null();
+		return;
+	}
+	switch (v.type) {
+		case rules::Type::boolean: json.boolean(v.u.b); return;
+		case rules::Type::integer:
+		case rules::Type::duration: json.number(v.u.i); return;
+		case rules::Type::real: json.number(v.u.r); return;
+		case rules::Type::enumeration: json.number(v.u.e); return;
+		case rules::Type::string: json.string(v.str()); return;
+		case rules::Type::time_of_day:
+			json.begin_object()
+				.member("hour", static_cast<uint32_t>(v.u.tod.hour))
+				.member("minute", static_cast<uint32_t>(v.u.tod.minute))
+				.member("second", static_cast<uint32_t>(v.u.tod.second))
+				.end_object();
+			return;
+		case rules::Type::date:
+			json.begin_object()
+				.member("year", static_cast<uint32_t>(v.u.date.year))
+				.member("month", static_cast<uint32_t>(v.u.date.month))
+				.member("day", static_cast<uint32_t>(v.u.date.day))
+				.end_object();
+			return;
+		case rules::Type::controlled:
+			json.begin_object()
+				.member("control", v.u.ctl.control)
+				.member("value", static_cast<uint32_t>(v.u.ctl.value))
+				.end_object();
+			return;
+		default: {
+			char text[96];
+			rules::literal_text(v, text, sizeof(text));
+			json.string(text);
+			return;
+		}
+	}
+}
+
+/// {"text", "ms"} of a diagnostics event, or null.
+void write_event(JsonWriter& json, const char* name, bool has, const char* text, uint64_t ms) {
+	json.key(name);
+	if (!has) {
+		json.null();
+		return;
+	}
+	json.begin_object().member("text", text).member("ms", ms).end_object();
+}
+
+/// A number with float precision (history samples are 32-bit), as JSON.
+void write_sample(JsonWriter& json, double value) {
+	char text[24];
+	int n = std::snprintf(text, sizeof(text), "%.7g", value);
+	json.raw(text, n > 0 ? static_cast<size_t>(n) : 0);
+}
+
+int parameter_http_status(rules::ParameterStatus status) {
+	switch (status) {
+		case rules::ParameterStatus::unknown_rule:
+		case rules::ParameterStatus::unknown_parameter: return 404;
+		case rules::ParameterStatus::not_adjustable: return 403;
+		case rules::ParameterStatus::invalid_value: return 422;
+		default: return 500;
+	}
+}
+
+const char* parameter_code(rules::ParameterStatus status) {
+	switch (status) {
+		case rules::ParameterStatus::unknown_rule: return "rule.unknown";
+		case rules::ParameterStatus::unknown_parameter: return "rule.unknown_parameter";
+		case rules::ParameterStatus::not_adjustable: return "rule.not_adjustable";
+		case rules::ParameterStatus::invalid_value: return "rule.invalid_value";
+		default: return "rule.refused";
+	}
+}
+
+/// Parses "3,4,17" into `ids`; false if malformed or more than `max`.
+bool parse_ids(const char* query, uint16_t* ids, size_t max, size_t& count) {
+	count = 0;
+	const char* p = query;
+	const char* v = nullptr;
+	while (p != nullptr && *p != '\0') {
+		if (std::strncmp(p, "ids=", 4) == 0) {
+			v = p + 4;
+			break;
+		}
+		p = std::strchr(p, '&');
+		p = p != nullptr ? p + 1 : nullptr;
+	}
+	if (v == nullptr) {
+		return false;
+	}
+	for (;;) {
+		uint16_t id = 0;
+		const char* end = nullptr;
+		if (count == max || !parse_id(v, id, end)) {
+			return false;
+		}
+		ids[count++] = id;
+		if (*end == ',') {
+			v = end + 1;
+			continue;
+		}
+		return *end == '\0' || *end == '&';
+	}
+}
+
+} // namespace
+
+void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
+	const image::ModelView& view = image_->view();
+	JsonWriter json(response.body, response.capacity);
+	if (!image_->loaded()) {
+		json.begin_object().member("loaded", false).end_object();
+		finish(response, json);
+		return;
+	}
+	if (view.no_memory()) {
+		refuse(response, 507, "model.no_memory", "the device had not enough memory for the UI model of this image");
+		return;
+	}
+	uint32_t from = 0;
+	query_uint(request.query, "from", from);
+	const image::ImageInfo& info = image_->info();
+	size_t locations = view.location_count();
+	size_t functions = view.function_count();
+	size_t datapoints = view.datapoint_count() < model_.size() ? view.datapoint_count() : model_.size();
+	size_t total = locations + functions + datapoints;
+	json.reserve(kClosingReserve);
+	json.begin_object()
+		.member("loaded", true)
+		.member("project", info.project_id)
+		.member("name", info.name)
+		.member("revision", info.revision)
+		.member("generatedAt", info.generated_at)
+		.member("generator", info.generator)
+		.member("source", image::source_name(image_->source()))
+		.member("stored", image_->stored_ok())
+		.member("loaded_ms", image_->loaded_ms())
+		.member("now_ms", controller_.clock().monotonic_ms())
+		.member("generation", view.generation())
+		.member("total", static_cast<uint32_t>(total))
+		.member("from", from);
+	size_t index = from;
+	size_t written = 0;
+	bool full = false;
+	// The three lists share one index space: locations, then functions, then datapoints.
+	json.key("locations").begin_array();
+	for (; !full && index < locations; ++index) {
+		JsonWriter::Mark mark = json.mark();
+		const image::ModelView::Location& l = view.location(index);
+		json.begin_object().member("id", l.id).key("label").raw(l.label, std::strlen(l.label));
+		if (l.kind[0] != '\0') {
+			json.member("kind", l.kind);
+		}
+		if (l.parent >= 0) {
+			json.member("parent", view.location(static_cast<size_t>(l.parent)).id);
+		}
+		json.end_object();
+		if (json.overflowed()) {
+			json.reset(mark);
+			full = true;
+			break;
+		}
+		++written;
+	}
+	json.end_array();
+	json.key("functions").begin_array();
+	for (; !full && index >= locations && index < locations + functions; ++index) {
+		JsonWriter::Mark mark = json.mark();
+		const image::ModelView::Function& f = view.function(index - locations);
+		json.begin_object().member("id", f.id).key("label").raw(f.label, std::strlen(f.label)).member("kind", f.kind);
+		if (f.room >= 0) {
+			json.member("room", view.location(static_cast<size_t>(f.room)).id);
+		}
+		if (f.unit[0] != '\0') {
+			json.member("unit", f.unit);
+		}
+		if (f.scene > 0) {
+			json.member("scene", static_cast<uint32_t>(f.scene));
+		}
+		json.key("datapoints").begin_object();
+		for (size_t r = 0; r < f.role_count; ++r) {
+			json.member(f.roles[r].name, static_cast<uint32_t>(f.roles[r].datapoint));
+		}
+		json.end_object().end_object();
+		if (json.overflowed()) {
+			json.reset(mark);
+			full = true;
+			break;
+		}
+		++written;
+	}
+	json.end_array();
+	json.key("datapoints").begin_array();
+	for (; !full && index >= locations + functions && index < total; ++index) {
+		JsonWriter::Mark mark = json.mark();
+		size_t id = index - locations - functions;
+		const image::ModelView::DatapointInfo& d = view.datapoint(id);
+		const Datapoint* dp = model_.get(static_cast<uint16_t>(id));
+		json.begin_object().member("id", static_cast<uint32_t>(id)).member("name", dp != nullptr ? dp->name() : "");
+		if (dp != nullptr) {
+			json.member("type", value_type_name(dp->type())).member("writable", dp->writable());
+		}
+		if (d.label != nullptr) {
+			json.key("label").raw(d.label, std::strlen(d.label));
+		}
+		if (d.unit != nullptr) {
+			json.member("unit", d.unit);
+		}
+		json.key("technology");
+		if (dp != nullptr && dp->technology() != nullptr) {
+			json.string(dp->technology()->name());
+		} else {
+			json.null();
+		}
+		if (d.binding != nullptr) {
+			json.key("binding").raw(d.binding, std::strlen(d.binding));
+		}
+		json.member("history", dp != nullptr && dp->has_history());
+		json.end_object();
+		if (json.overflowed()) {
+			json.reset(mark);
+			full = true;
+			break;
+		}
+		++written;
+	}
+	json.end_array();
+	if (written == 0 && index < total) {
+		refuse(response, 500, "api.response_too_large", "an entry of the model does not fit the server's buffer");
+		return;
+	}
+	json.release();
+	json.key("next");
+	if (index < total) {
+		json.number(static_cast<uint32_t>(index));
+	} else {
+		json.null();
+	}
+	json.end_object();
+	finish(response, json);
+}
+
+void WebApi::history(const WebRequest& request, WebResponse& response) {
+	uint16_t ids[kMaxHistoryIds];
+	size_t count = 0;
+	if (!parse_ids(request.query, ids, kMaxHistoryIds, count)) {
+		refuse(response, 400, "history.bad_query", "ids=<datapoint id>[,<id>...] is missing or malformed (at most 8)");
+		return;
+	}
+	WallTime wall = controller_.clock().wall_time();
+	int64_t to = 0;
+	int64_t from = 0;
+	bool has_to = query_int(request.query, "to", to);
+	bool has_from = query_int(request.query, "from", from);
+	if ((!has_to || !has_from) && !wall.synchronized) {
+		refuse(response, 409, "history.no_time", "the wall clock is not synchronized: give from and to");
+		return;
+	}
+	if (!has_to) {
+		to = wall.seconds + 1;
+	}
+	if (!has_from) {
+		from = to - 86400;
+	}
+	uint32_t points = 48;
+	if (std::strstr(request.query, "points=") != nullptr && !query_uint(request.query, "points", points)) {
+		points = 0;
+	}
+	if (to <= from || points == 0 || points * count > kMaxHistoryPoints) {
+		refuse(response, 400, "history.bad_query",
+			"needs from < to and 1 <= points, with points times the number of ids at most 160");
+		return;
+	}
+	History& hist = image_->history();
+	int64_t width = (to - from + points - 1) / points;
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object()
+		.member("from", from)
+		.member("to", to)
+		.member("width_s", width);
+	json.key("series").begin_array();
+	for (size_t i = 0; i < count; ++i) {
+		json.begin_object().member("id", static_cast<uint32_t>(ids[i]));
+		HistoryPoint point;
+		size_t n = 0;
+		HistoryStatus status = hist.range(ids[i], from, to, &point, 1, n);
+		if (status != HistoryStatus::ok) {
+			json.member("code", "history.none").member("error", "this datapoint has no history").end_object();
+			continue;
+		}
+		// One bucket at a time (no point buffer): [t, last] for a single sample, [t, last, min, max,
+		// count] for a decimated bucket.
+		json.key("points").begin_array();
+		for (uint32_t b = 0; b < points; ++b) {
+			int64_t begin = from + b * width;
+			if (begin >= to) {
+				break;
+			}
+			int64_t end = begin + width < to ? begin + width : to;
+			if (hist.range(ids[i], begin, end, &point, 1, n) != HistoryStatus::ok || n == 0) {
+				continue;
+			}
+			json.begin_array().number(point.count == 1 ? point.last_t : point.t);
+			write_sample(json, point.last);
+			if (point.count > 1) {
+				write_sample(json, point.min);
+				write_sample(json, point.max);
+				json.number(point.count);
+			}
+			json.end_array();
+		}
+		json.end_array().end_object();
+	}
+	json.end_array().end_object();
+	finish(response, json);
+}
+
+void WebApi::write_rule(JsonWriter& json, size_t index) {
+	rules::Engine& engine = image_->engine();
+	const rules::RuleSet& set = engine.rules();
+	const rules::Rule& rule = set.rule(index);
+	rules::RuleDiagnostics d;
+	engine.diagnostics(index, d);
+	const rules::Parameter& enabled = set.parameter(rule.first_parameter);
+	json.begin_object()
+		.member("id", d.id)
+		.member("name", d.name)
+		.member("enabled", engine.enabled(index))
+		.member("enabledAdjustable", enabled.adjustable)
+		.member("enabledOverridden", engine.parameter_overridden(index, 0))
+		.member("firings", d.firings);
+	json.key("state");
+	if (d.state != nullptr) {
+		json.string(d.state);
+	} else {
+		json.null();
+	}
+	write_event(json, "lastTrigger", d.has_trigger, d.last_trigger, d.last_trigger_ms);
+	write_event(json, "lastAction", d.has_action, d.last_action, d.last_action_ms);
+	json.member("errors", d.errors);
+	json.key("lastError");
+	if (d.has_error) {
+		json.begin_object()
+			.member("code", rules::log_code_name(d.last_error_code))
+			.member("text", d.last_error_text)
+			.member("ms", d.last_error_ms)
+			.end_object();
+	} else {
+		json.null();
+	}
+	json.key("timers").begin_array();
+	for (size_t t = 0; t < rule.timer_count; ++t) {
+		int64_t remaining = 0;
+		if (engine.timer_remaining(index, t, remaining)) {
+			json.begin_object()
+				.member("id", set.str(set.timer(rule.first_timer + t).id))
+				.member("remaining_ms", remaining)
+				.end_object();
+		}
+	}
+	json.end_array();
+	json.key("parameters").begin_array();
+	const image::ModelView& view = image_->view();
+	for (size_t p = 1; p < rule.parameter_count; ++p) {
+		const rules::Parameter& decl = set.parameter(rule.first_parameter + p);
+		const char* id = set.str(decl.id);
+		json.begin_object()
+			.member("id", id)
+			.member("label", set.str(decl.label)[0] != '\0' ? set.str(decl.label) : id)
+			.member("type", rules::type_name(decl.type))
+			.member("unit", set.str(decl.unit))
+			.member("adjustable", decl.adjustable)
+			.member("overridden", engine.parameter_overridden(index, p));
+		json.key("value");
+		write_val(json, engine.parameter_value(index, p));
+		json.key("default");
+		write_val(json, set.constant(decl.default_value));
+		if (decl.min != rules::kNone) {
+			json.key("min");
+			write_val(json, set.constant(decl.min));
+		}
+		if (decl.max != rules::kNone) {
+			json.key("max");
+			write_val(json, set.constant(decl.max));
+		}
+		double step = view.parameter_step(d.id, id);
+		if (step > 0) {
+			json.member("step", step);
+		}
+		if (decl.choice_count > 0) {
+			json.key("choices").begin_array();
+			for (size_t c = 0; c < decl.choice_count; ++c) {
+				const rules::Choice& choice = set.choice(decl.first_choice + c);
+				json.begin_object().key("value");
+				write_val(json, set.constant(choice.value));
+				json.member("label", set.str(choice.label)).end_object();
+			}
+			json.end_array();
+		}
+		json.end_object();
+	}
+	json.end_array();
+	json.end_object();
+}
+
+void WebApi::rules(const WebRequest& request, WebResponse& response) {
+	uint32_t from = 0;
+	query_uint(request.query, "from", from);
+	rules::Engine& engine = image_->engine();
+	size_t count = engine.loaded() ? engine.rules().rule_count() : 0;
+	JsonWriter json(response.body, response.capacity);
+	json.reserve(kClosingReserve);
+	json.begin_object()
+		.member("now_ms", controller_.clock().monotonic_ms())
+		.member("count", static_cast<uint32_t>(count))
+		.member("from", from);
+	json.key("rules").begin_array();
+	size_t index = from;
+	size_t written = 0;
+	for (; index < count; ++index) {
+		JsonWriter::Mark mark = json.mark();
+		write_rule(json, index);
+		if (json.overflowed()) {
+			json.reset(mark);
+			break;
+		}
+		++written;
+	}
+	if (written == 0 && index < count) {
+		refuse(response, 500, "api.response_too_large", "a rule does not fit the server's buffer");
+		return;
+	}
+	json.release();
+	json.end_array();
+	json.key("next");
+	if (index < count) {
+		json.number(static_cast<uint32_t>(index));
+	} else {
+		json.null();
+	}
+	json.end_object();
+	finish(response, json);
+}
+
+void WebApi::rule_parameter(const char* rule, const char* parameter, const WebRequest& request,
+	WebResponse& response) {
+	rules::Engine& engine = image_->engine();
+	int index = engine.loaded() ? engine.rules().find_rule(rule) : -1;
+	if (index < 0) {
+		refuse(response, 404, "rule.unknown", "no rule with this id");
+		return;
+	}
+	JsonSpan body;
+	JsonSpan member;
+	const char* error = nullptr;
+	if (!json_parse(request.body, request.body_length, body, &error) || body.kind != JsonSpan::Kind::object) {
+		refuse(response, 400, "api.bad_json", error != nullptr ? error : "the body must be a JSON object");
+		return;
+	}
+	bool reset = false;
+	rules::ParameterStatus status = rules::ParameterStatus::ok;
+	const char* reason = nullptr;
+	if (json_member(body, "reset", member) && json_bool(member, reset) && reset) {
+		status = engine.reset_parameter(rule, parameter, &reason);
+	} else if (json_member(body, "value", member)) {
+		JsonSpanDocument document;
+		status = engine.set_parameter(rule, parameter, document.value(member), &reason);
+	} else {
+		refuse(response, 400, "rule.value_missing", "the body needs {\"value\": ...} or {\"reset\": true}");
+		return;
+	}
+	if (status != rules::ParameterStatus::ok) {
+		Log::warn(kTag, "parameter %s/%s refused: %s", rule, parameter, reason != nullptr ? reason : "?");
+		refuse(response, parameter_http_status(status), parameter_code(status),
+			reason != nullptr ? reason : rules::parameter_status_name(status));
+		return;
+	}
+	Log::info(kTag, "parameter %s/%s %s from the API", rule, parameter, reset ? "reset" : "set");
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object().member("ok", true).member("now_ms", controller_.clock().monotonic_ms()).key("rule");
+	write_rule(json, static_cast<size_t>(index));
+	json.end_object();
+	finish(response, json);
+}
+
+void WebApi::write_schedule(JsonWriter& json, size_t index) {
+	Scheduler& scheduler = image_->scheduler();
+	json.begin_object()
+		.member("id", scheduler.id(index))
+		.member("label", scheduler.label(index))
+		.member("kind", schedule_kind_name(scheduler.kind(index)))
+		.member("enabled", scheduler.enabled(index))
+		.member("adjustable", image_->view().schedule_adjustable(scheduler.id(index)));
+	std::optional<int64_t> next = scheduler.next_firing(index);
+	json.key("nextFiring");
+	if (next) {
+		json.number(*next);
+	} else {
+		json.null();
+	}
+	std::optional<int64_t> last = scheduler.last_fired(index);
+	json.key("lastFired");
+	if (last) {
+		json.number(*last);
+	} else {
+		json.null();
+	}
+	json.end_object();
+}
+
+void WebApi::schedules(const WebRequest& request, WebResponse& response) {
+	uint32_t from = 0;
+	query_uint(request.query, "from", from);
+	Scheduler& scheduler = image_->scheduler();
+	size_t count = scheduler.size();
+	WallTime wall = controller_.clock().wall_time();
+	JsonWriter json(response.body, response.capacity);
+	json.reserve(kClosingReserve);
+	json.begin_object()
+		.member("synchronized", wall.synchronized)
+		.member("now", wall.seconds)
+		.member("count", static_cast<uint32_t>(count))
+		.member("from", from);
+	json.key("schedules").begin_array();
+	size_t index = from;
+	for (; index < count; ++index) {
+		JsonWriter::Mark mark = json.mark();
+		write_schedule(json, index);
+		if (json.overflowed()) {
+			json.reset(mark);
+			break;
+		}
+	}
+	json.release();
+	json.end_array();
+	json.key("next");
+	if (index < count) {
+		json.number(static_cast<uint32_t>(index));
+	} else {
+		json.null();
+	}
+	json.end_object();
+	finish(response, json);
+}
+
+void WebApi::put_schedule(const char* id, const WebRequest& request, WebResponse& response) {
+	Scheduler& scheduler = image_->scheduler();
+	std::optional<size_t> index = scheduler.find(id);
+	if (!index) {
+		refuse(response, 404, "schedule.unknown", "no schedule entry with this id");
+		return;
+	}
+	JsonSpan body;
+	JsonSpan member;
+	const char* error = nullptr;
+	if (!json_parse(request.body, request.body_length, body, &error) || body.kind != JsonSpan::Kind::object) {
+		refuse(response, 400, "api.bad_json", error != nullptr ? error : "the body must be a JSON object");
+		return;
+	}
+	bool enabled = false;
+	if (!json_member(body, "enabled", member) || !json_bool(member, enabled)) {
+		refuse(response, 400, "schedule.value_missing", "the body needs {\"enabled\": true|false}");
+		return;
+	}
+	if (!scheduler.set_enabled(id, enabled, &error)) {
+		refuse(response, 403, "schedule.not_adjustable", error != nullptr ? error : "the entry's switch is not adjustable");
+		return;
+	}
+	Log::info(kTag, "schedule %s %s from the API", id, enabled ? "enabled" : "disabled");
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object().member("ok", true).key("schedule");
+	write_schedule(json, *index);
 	json.end_object();
 	finish(response, json);
 }

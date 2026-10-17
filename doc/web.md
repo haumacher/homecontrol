@@ -1,7 +1,8 @@
 # The web server and the device UI
 
-The controller serves its own UI and a JSON API (issue #5): onboarding, login, an overview of the
-datapoints with live values, the settings, the log. The model is Home Assistant's dashboard (a dark
+The controller serves its own UI and a JSON API (issue #5): onboarding, login, the dashboard of the
+deployed image's rooms and functions with live values (issue #14), the rules and schedules with
+what the image lets the inhabitant adjust, the settings, the log. The model is Home Assistant's dashboard (a dark
 sidebar layout with tiles, phone first) without its bulk: no add-ons, no user management, no
 history database, no frameworks. The API contract is `spec/api.md`.
 
@@ -9,7 +10,8 @@ history database, no frameworks. The API contract is `spec/api.md`.
 
 | Where | What |
 | --- | --- |
-| `core/` `WebApi` | the REST API: routing, authentication, CSRF check, JSON in and out |
+| `core/` `WebApi` | the REST API: routing, authentication, CSRF check, JSON in and out; the dashboard's endpoints (model, history, rules, schedules) |
+| `core/` `image::ModelView` | what the UI needs of the loaded image beyond the components: locations, functions with roles, datapoint labels, units and bindings, parameter steps, fixed schedule switches; built at every load |
 | `core/` `LiveFeed` | the WebSocket feed: clients, snapshots, batched updates, commands, status pushes |
 | `core/` `Auth` | password (PBKDF2), sessions, tokens, rate limiting |
 | `core/` `websocket` | the RFC 6455 codec (handshake key, frame decoder, close payload, UTF-8 check) |
@@ -111,7 +113,7 @@ it, a script cannot without a preflight the device never grants). The WebSocket 
 ### The API
 
 REST under `/api/` for everything that is a request (status, datapoints, commands, log, settings,
-authentication) and one WebSocket for what changes by itself (datapoint values, the status). The
+authentication, the image's model, history, rules and schedules) and one WebSocket for what changes by itself (datapoint values, the status). The
 settings the UI may change are a whitelist: `tz`, `ntp.server`, `update.url`; `wifi.ssid` is shown
 read-only; secrets never appear. `knx.gateway` joins the whitelist with the KNX package (issue #7),
 which is not on this branch. Rejected: everything over the WebSocket (no curl, no caching
@@ -135,7 +137,8 @@ a slow client converges. The UI pings every 20 s and treats 45 s of silence as a
 ### The UI: static files from LittleFS, no framework
 
 `web/ui/dist/` is the UI as it is served: `index.html`, one stylesheet and ES modules (router,
-pages, the live connection, the text table), about 55 KB, 19 KB gzip-compressed. No framework and
+pages, the tiles, the detail sheet, the charts, the live connection, the text table), about 124 KB,
+42 KB gzip-compressed (19 KB before the dashboard; the budget is 120 KB). No framework and
 no bundler: browsers load ES modules natively, the code stays readable in the device's own files,
 and there is no node toolchain in the build. Rejected: Preact/Lit (another dependency and a build
 step for a handful of pages); server-rendered pages (state on the device, a reload per action);
@@ -162,12 +165,68 @@ update manifest grows a UI part (to do with the release workflow).
 
 ### Pages
 
-Dark by default, light when the browser prefers it (`prefers-color-scheme`); a sidebar with
-Overview, Log and Settings that becomes a drawer below 760 px; a top bar with the device name and
-the live state. Overview: one tile per datapoint with its live value, tap-to-toggle for writable
-booleans, the refusal shown on the tile. Settings: the device status (network, time, memory, update,
-web) and the editable settings with their validation messages. Log: the ring's lines, polled every
-3 s. No external resources (fonts, icons and scripts are all local).
+Dark by default, light when the browser prefers it (`prefers-color-scheme`), or either one chosen in
+Settings (remembered in the browser's local storage, a convenience only); reduced motion respected
+(no pulsing, a dashed outline marks a pending tile instead). A sidebar with Overview, Rules,
+Schedules, Log and Settings that becomes a drawer below 760 px; a top bar with the device name and
+the live state. Every control is a native button, input or select (keyboard operable, focus
+visible) with a touch target of at least 44 px. No external resources (fonts, icons and scripts
+are all local).
+
+- **Overview**: the dashboard (below). Without an image, in a build without images (POSIX `--demo`)
+  or for an image without functions: one plain tile per datapoint with its live value, a writable
+  boolean toggles on a tap, and a line says why there is no dashboard.
+- **Rules**: one card per rule: the enable switch (or a badge when the image fixes it), the state,
+  the last trigger and the last action with their age, running timers, the problem count with the
+  last error; then the adjustable parameters: a slider within min..max (step as declared, arrow
+  keys send once the value rests), a switch for booleans, a select for choices, a time input for a
+  time of day, a number input without a range; durations in the parameter's unit (`min`, `s`, `h`).
+  A changed parameter shows its default and a "Reset" button; a refusal shows its reason under
+  the parameter. Polled every 10 s; the card being edited is not redrawn.
+- **Schedules**: each entry with its kind, its next firing (weekday and time and how far ahead),
+  the last firing and its switch (disabled where the image fixes it). Polled every 30 s.
+- **Settings**: the deployed project (name, revision, generated when and by what, deployed when and
+  how, whether it survives a restart) with **Forget project** (`DELETE /api/image` after a
+  confirmation), the theme, the device status (network, time, memory, update, web) and the
+  editable settings with their validation messages, logout.
+- **Log**: the ring's lines, polled every 3 s.
+
+### The dashboard
+
+The image's locations become the sections, in the image's order, each titled with the room's label
+and its parent's (the floor); the functions without a room come last under "Elsewhere". Each
+function is a tile of its kind (`tiles.js`); the image's labels are resolved to the browser's
+language (then English, then the first given). The tile's icon is its quick action, its name opens
+the detail sheet, the controls below operate the rest:
+
+| Kind | Quick action (icon) | Shown | Controls |
+| --- | --- | --- | --- |
+| light, switch | toggles `command` | on/off from `state`, else from `command` | — |
+| dimmer | toggles `command`; without it `levelCommand` 0 / 100 | the level from `level` (else `levelCommand`), "Off" at 0 | a 0..100 slider that sends `levelCommand` on release |
+| blind | — | `position` | up / stop / down (`move` false / `stop` true / `move` true), a slider for `positionCommand` |
+| sensor | — | `value` with the function's unit (else the datapoint's) | a 24 h sparkline when the datapoint keeps a history (refreshed every 5 min) |
+| climate | — | `temperature`, "heating" from `heating` | − / setpoint / + in 0.5 steps on `setpointCommand` (from `setpoint`, else the last command) |
+| scene | sends the function's `scene` to `command` (`{"control": false, "value": n}` for a controlled datapoint) | "Scene n" | — |
+| button | sends true (or `{"control": true, "value": 1}`) to a writable `press` | `state`, else "Pressed 3 min ago" | — |
+
+A stale value dims the tile's head and says "last known 3 h ago" (the age from the datapoint's
+`updated_ms` against the feed's `now_ms`); an unknown one shows "—". A command marks the tile
+pending until the datapoint of the reporting role (`state`, `level`, `position`, `setpoint`) has
+reported, at most 5 s; a refusal shows its reason on the tile for 8 s (for `dp.refused` it names
+the technology: the technology's own reason is in the log, `Technology::command()` returns only a
+boolean). The tiles update from the WebSocket feed; a status with another image revision reloads
+the model.
+
+The **detail sheet** (a modal `<dialog>`: Escape and the backdrop close it, a bottom sheet on a
+phone) lists the function's datapoints by role with their value, quality and age (live), a chart
+over 24 h or 7 days for each datapoint that keeps a history (the line of the buckets' last values,
+the min/max band, a read-out under the pointer), and the technology binding of each datapoint
+(KNX: DPT, sending and listening addresses).
+
+The dashboard reads `GET /api/model` once (paged), the live values from the WebSocket, the history
+from `GET /api/history`; nothing about the image is parsed in the browser. Rejected: E-Home's
+explicit visualization pages for now (the image's `ui` member stays reserved); a layout editor on
+the device (engineering is E-Home's job).
 
 ### Texts
 
@@ -190,6 +249,20 @@ therefore listens for the WebSocket on the HTTP port + 1 with a small server aro
 `GET /api/auth/session` tells the UI the port (`ws_port`), and `GET /ws` on the HTTP port answers
 426 with the port. The codec has host tests, so the framing the POSIX build relies on is tested
 code, not glue.
+
+### The model view
+
+`GET /api/model` needs the locations and functions, which the loader validates but no component
+keeps. `ImageService` builds an `image::ModelView` from the validated text after every successful
+load (`ModelView::build()`, one arena; cleared by an unload): the labels and bindings are copied as
+JSON text, the roles resolved to the model's datapoint ids. It stays in RAM while the image runs:
+4 KB for the example house (one arena block, measured in the host test), roughly 100 bytes per
+labelled datapoint with a KNX binding and per function, so about 40 KB for a house of 300
+datapoints and 100 functions and up to some 150 KB at the image limits (1024 datapoints, 512
+functions), which the C6 cannot afford beside everything else; the bindings are the largest part
+and the first thing to drop (or to fetch on demand for the detail sheet) if real images come close.
+When the heap is exhausted the image still runs and `GET /api/model` refuses with
+`model.no_memory`.
 
 ## ESP specifics
 

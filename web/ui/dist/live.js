@@ -196,7 +196,18 @@ export class Live extends EventTarget {
 		}
 	}
 
+	/// How long ago the datapoint was updated, in ms (by the device's clock); null if never.
+	ageMs(dp) {
+		if (!dp || !dp.updated_ms || this.offset === undefined) {
+			return null;
+		}
+		return Math.max(0, Date.now() - this.offset - dp.updated_ms);
+	}
+
 	merge(message) {
+		if (message.now_ms !== undefined) {
+			this.offset = Date.now() - message.now_ms;
+		}
 		if (message.snapshot) {
 			if (message.from === 0) {
 				this.seen = new Set();

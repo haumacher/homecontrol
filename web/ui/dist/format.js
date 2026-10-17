@@ -62,3 +62,56 @@ export function formatBytes(bytes) {
 	}
 	return `${number.format(bytes / 1024)} KB`;
 }
+
+/// "3 min ago" for an age in ms.
+export function formatAgo(ms) {
+	if (ms === null || ms === undefined) {
+		return "";
+	}
+	if (ms < 45000) {
+		return t("ago.now");
+	}
+	return t("ago.past", { duration: formatDurationShort(ms / 1000) });
+}
+
+/// "in 3 h" / "3 h ago" relative to now, both in seconds.
+export function formatRelative(seconds, now) {
+	const delta = seconds - now;
+	if (Math.abs(delta) < 45) {
+		return t("ago.now");
+	}
+	return delta > 0 ? t("ago.future", { duration: formatDurationShort(delta) }) : t("ago.past", { duration: formatDurationShort(-delta) });
+}
+
+/// The largest unit only: "40 s", "3 min", "5 h", "2 d".
+export function formatDurationShort(seconds) {
+	const s = Math.round(seconds);
+	if (s < 60) {
+		return t("duration.s", { s });
+	}
+	if (s < 3600) {
+		return t("duration.m", { m: Math.round(s / 60) });
+	}
+	if (s < 86400 * 2) {
+		return t("duration.hh", { h: Math.round(s / 3600) });
+	}
+	return t("duration.dd", { d: Math.round(s / 86400) });
+}
+
+const dateTime = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+/// A UTC time (seconds) as local weekday and time, or with the date when it is more than 6 days away.
+export function formatWhen(seconds, now) {
+	const date = new Date(seconds * 1000);
+	return Math.abs(seconds - (now || Date.now() / 1000)) > 6 * 86400 ? fullDate.format(date) : dateTime.format(date);
+}
+
+/// A number with a unit, at most `digits` fraction digits.
+export function formatNumber(value, unit, digits = 1) {
+	if (value === null || value === undefined || Number.isNaN(value)) {
+		return t("value.unknown");
+	}
+	const text = new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(value);
+	return unit ? `${text} ${unit}` : text;
+}
