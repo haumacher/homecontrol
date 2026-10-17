@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <csignal>
 #include <poll.h>
+#include <unistd.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -30,6 +31,8 @@
 #include "hc/external_values.h"
 #include "hc/image/image_service.h"
 #include "hc/language_packs.h"
+#include "hc/mqtt.h"
+#include "hc/posix/mqtt_client.h"
 #include "hc/version.h"
 #include "hc/posix/file_blob_store.h"
 #include "hc/posix/httplib_fetcher.h"
@@ -90,6 +93,20 @@ bool read_image_file(const char* path, std::string& out) {
 		hc::Log::error(kTag, "cannot read the image %s", path);
 	}
 	return ok;
+}
+
+/// "homecontrol-<host name>" with every character outside [A-Za-z0-9_-] replaced by '-', cut to fit.
+void mqtt_node_id(char* out, size_t size) {
+	char host[64] = "host";
+	gethostname(host, sizeof(host) - 1);
+	host[sizeof(host) - 1] = '\0';
+	for (char* p = host; *p != '\0'; ++p) {
+		bool ok = (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '-';
+		if (!ok) {
+			*p = '-';
+		}
+	}
+	std::snprintf(out, size, "homecontrol-%s", host);
 }
 
 void print_usage(const char* program) {
@@ -240,6 +257,16 @@ int main(int argc, char** argv) {
 	// The web UI's language pack for ui.lang, fetched from the update server (doc/i18n.md).
 	hc::LanguagePacks packs(controller.loop(), controller.time(), settings, controller.connectivity(), fetcher, blobs,
 		hc::kVersion);
+	// MQTT (doc/mqtt.md): the node id is "homecontrol-<host name>" as the device's is "homecontrol-<MAC>".
+	char node_id[hc::Mqtt::kMaxNodeId + 1];
+	mqtt_node_id(node_id, sizeof(node_id));
+	hc::MqttIdentity mqtt_identity;
+	mqtt_identity.node_id = node_id;
+	mqtt_identity.sw_version = hc::kVersion;
+	hc::posix::PosixMqttClient mqtt_client(executor);
+	hc::Mqtt mqtt(controller.loop(), clock, settings, controller.connectivity(), model, mqtt_client, mqtt_identity,
+		&image.history());
+	image.set_mqtt(&mqtt);
 	bool knx = !gateway.empty();
 	if (knx) {
 		adapter.start();
@@ -278,6 +305,7 @@ int main(int argc, char** argv) {
 		if (!demo) {
 			web->set_image(&image);
 			web->set_language_packs(&packs, &blobs);
+			web->set_mqtt(&mqtt);
 		}
 		if (!web->start()) {
 			return 1;
@@ -297,11 +325,16 @@ int main(int argc, char** argv) {
 		// (a signal interrupts the sleep; the loop then checks g_stop).
 		sleep_until_work(executor, knx_socket, wait < kMaxSleepMs ? wait : kMaxSleepMs);
 	}
+	mqtt.stop(); // offline on the status topic; the retained configs stay for the next run
+	for (int i = 0; i < 30 && mqtt.state() != hc::MqttState::disabled; ++i) {
+		controller.run_once(); // the retirement drains the queue and disconnects (at most kRetireMs)
+		sleep_until_work(executor, knx_socket, 100);
+	}
 	executor.stop();
 	if (web) {
 		web->stop();
 	}
-	image.flush(); // pending value and history writes (into RAM, for symmetry with the device)
+	image.flush(); // pending value and history writes
 	tunnel.stop(); // DISCONNECT_REQUEST, so the gateway frees the tunnel at once
 	hc::Log::info(kTag, "stopping on %s after %llu s", hc::posix::PosixDiagnostics::signal_name(g_stop).c_str(),
 		static_cast<unsigned long long>(controller.uptime_ms() / 1000));

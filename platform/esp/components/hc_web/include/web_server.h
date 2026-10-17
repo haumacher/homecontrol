@@ -26,6 +26,8 @@
 #include "ota_service.h"
 
 namespace hc {
+
+class Mqtt;
 namespace esp {
 
 /// Hardware random numbers (esp_fill_random, with the RF subsystem as entropy source once WiFi

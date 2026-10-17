@@ -613,6 +613,68 @@ bool Mqtt::configure(const MqttImage& image, const char** error) {
 	return commit(table, error);
 }
 
+bool Mqtt::model_reloaded(const char** error) {
+	const Table* current = next_ != nullptr ? next_ : table_;
+	if (current == nullptr) {
+		return true;
+	}
+	Table* table = new Table;
+	if (table == nullptr) {
+		return refuse(error, "no memory for the datapoint table");
+	}
+	table->config = current->config;
+	if (current->device_name != nullptr) {
+		table->device_name = table->arena.copy(current->device_name, std::strlen(current->device_name));
+	}
+	// The image's datapoints come first in the composed model and keep their ids; the providers'
+	// follow and may be more or fewer than before.
+	table->point_count = model_.size();
+	table->points = table->arena.array<Point>(table->point_count);
+	if (table->point_count > 0 && table->points == nullptr) {
+		delete table;
+		return refuse(error, "no memory for the datapoint table (%u datapoints)", static_cast<unsigned>(model_.size()));
+	}
+	size_t carried = current->point_count < table->point_count ? current->point_count : table->point_count;
+	for (size_t i = 0; i < carried; ++i) {
+		const Point& old = current->points[i];
+		Point& point = table->points[i];
+		point.retention_s = old.retention_s;
+		point.spacing_s = old.spacing_s;
+		if (old.unit != nullptr) {
+			point.unit = table->arena.copy(old.unit, std::strlen(old.unit));
+		}
+		if (old.name != nullptr) {
+			point.name = table->arena.copy(old.name, std::strlen(old.name));
+			if (point.name == nullptr) {
+				delete table;
+				return refuse(error, "no memory for the history table");
+			}
+		}
+	}
+	table->function_count = current->function_count;
+	if (table->function_count > 0) {
+		table->functions = table->arena.array<Function>(table->function_count);
+		if (table->functions == nullptr) {
+			delete table;
+			return refuse(error, "no memory for %u functions", static_cast<unsigned>(current->function_count));
+		}
+		for (size_t i = 0; i < table->function_count; ++i) {
+			const Function& old = current->functions[i];
+			Function& function = table->functions[i];
+			function = old;
+			function.id = table->arena.copy(old.id, std::strlen(old.id));
+			function.label = table->arena.copy(old.label, std::strlen(old.label));
+			function.unit = old.unit != nullptr ? table->arena.copy(old.unit, std::strlen(old.unit)) : nullptr;
+			if (function.id == nullptr || function.label == nullptr) {
+				delete table;
+				return refuse(error, "no memory for the functions");
+			}
+		}
+	}
+	Log::info(kTag, "model reloaded: %u datapoint(s) now, states published again", static_cast<unsigned>(table->point_count));
+	return commit(table, error);
+}
+
 bool Mqtt::commit(Table* table, const char** error) {
 	if (!listening_) {
 		DatapointStatus status = model_.add_listener(*this);
@@ -689,6 +751,16 @@ bool Mqtt::commit(Table* table, const char** error) {
 		arm();
 	}
 	return true;
+}
+
+void Mqtt::stop() {
+	if (state_ == MqttState::connected) {
+		Log::info(kTag, "stopping: offline, the discovery configs stay for the next run");
+		remove_configs_ = false;
+		begin_retire(nullptr);
+		return;
+	}
+	clear();
 }
 
 void Mqtt::clear() {

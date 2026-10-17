@@ -28,6 +28,8 @@
 #include "hc/value_store.h"
 
 namespace hc {
+
+class Mqtt;
 namespace image {
 
 /// The runtime image on the device (doc/image.md): validates an image, swaps it in atomically on
@@ -130,6 +132,10 @@ public:
 	/// The external values (weather and other HTTP sources, doc/external.md) the image's `external`
 	/// member configures after every load and clears on unload; nullptr: the member is ignored.
 	void set_external(ExternalValues* external) { external_ = external; }
+	/// The MQTT client (doc/mqtt.md) the image's `mqtt` member configures after every load (an image
+	/// without the member clears it), that follows the model's dynamic reloads and is cleared on
+	/// unload; nullptr: the member is validated and otherwise ignored.
+	void set_mqtt(Mqtt* mqtt) { mqtt_ = mqtt; }
 
 	void set_ntp_changed(Callback callback) { ntp_changed_ = callback; }
 	/// Called after every change of the loaded image (load, swap, restore, unload): the model's ids
@@ -220,6 +226,7 @@ private:
 	char store_error_[64] = {};
 	uint64_t loaded_ms_ = 0;
 	ExternalValues* external_ = nullptr;
+	Mqtt* mqtt_ = nullptr;
 	ModelView view_;
 	DynamicSpecProvider* providers_[kMaxProviders] = {};
 	size_t provider_count_ = 0;

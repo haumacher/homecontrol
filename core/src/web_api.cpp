@@ -14,6 +14,7 @@
 #include "hc/rules/value.h"
 #include "hc/live_feed.h"
 #include "hc/language_packs.h"
+#include "hc/mqtt.h"
 #include "hc/network_settings.h"
 #include "hc/tz.h"
 #include "hc/update_check.h"
@@ -70,6 +71,7 @@ const char* method_name(HttpMethod method) {
 struct SettingInfo {
 	const char* key;
 	bool editable;
+	bool secret = false; ///< Write-only: the listing says whether it is stored, never the value.
 };
 
 constexpr SettingInfo kShownSettings[] = {
@@ -78,6 +80,8 @@ constexpr SettingInfo kShownSettings[] = {
 	{setting::kUpdateUrl, true},
 	{setting::kUiLang, true},
 	{setting::kWifiPowerSave, true},
+	{setting::kMqttUser, true},
+	{setting::kMqttPassword, true, true},
 	{setting::kWifiSsid, false},
 };
 
@@ -873,12 +877,16 @@ void WebApi::settings(WebResponse& response) {
 		}
 		json.begin_object().member("key", info.key);
 		json.key("value");
-		if (status == SettingsStatus::ok) {
+		if (status == SettingsStatus::ok && !info.secret) {
 			json.string(value);
 		} else {
 			json.null();
 		}
-		json.member("default", fallback).member("editable", info.editable).end_object();
+		json.member("default", fallback).member("editable", info.editable);
+		if (info.secret) {
+			json.member("secret", true).member("stored", status == SettingsStatus::ok);
+		}
+		json.end_object();
 	}
 	json.end_array();
 	if (packs_ != nullptr) {
@@ -934,6 +942,37 @@ bool WebApi::apply_setting(const char* key, const char* value, const char** code
 		Log::info(kTag, "UI language set to %s", value);
 		if (packs_ != nullptr) {
 			packs_->language_changed();
+		}
+		return true;
+	}
+	if (std::strcmp(key, setting::kMqttUser) == 0 || std::strcmp(key, setting::kMqttPassword) == 0) {
+		bool password = std::strcmp(key, setting::kMqttPassword) == 0;
+		SettingsStatus status;
+		if (value[0] == '\0') {
+			status = controller_.settings().erase(key);
+			if (status == SettingsStatus::not_found) {
+				status = SettingsStatus::ok;
+			}
+		} else {
+			if (std::strlen(value) > Mqtt::kMaxUser) {
+				*error = password ? "the password is longer than 63 bytes" : "the user name is longer than 63 bytes";
+				return false;
+			}
+			status = Settings::check_string(value);
+			if (status != SettingsStatus::ok) {
+				*error = settings_status_name(status);
+				return false;
+			}
+			status = controller_.settings().set_string(key, value);
+		}
+		if (status != SettingsStatus::ok) {
+			*code = "settings.storage_error";
+			*error = settings_status_name(status);
+			return false;
+		}
+		Log::info(kTag, "MQTT %s %s", password ? "password" : "user name", value[0] == '\0' ? "removed" : "set");
+		if (mqtt_ != nullptr) {
+			mqtt_->reconnect(password ? "the broker password changed" : "the broker user name changed");
 		}
 		return true;
 	}

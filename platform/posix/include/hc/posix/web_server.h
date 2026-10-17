@@ -25,6 +25,7 @@ namespace hc {
 
 class BlobStore;
 class LanguagePacks;
+class Mqtt;
 namespace posix {
 
 /// Secure random bytes from getrandom() and the core's software PBKDF2.
@@ -106,6 +107,8 @@ public:
 		api_.set_language_packs(packs);
 		packs_store_ = store;
 	}
+	/// The MQTT client the settings mqtt.user and mqtt.password reconnect (call before start()).
+	void set_mqtt(Mqtt* mqtt) { api_.set_mqtt(mqtt); }
 
 	// WebHost (loop thread)
 	const char* device_name() const override { return device_name_; }

@@ -3,6 +3,8 @@
  */
 #include "hc/image/image_service.h"
 
+#include "hc/mqtt.h"
+
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -174,6 +176,17 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	}
 	if (!ok) {
 		return false;
+	}
+	// 7c: the MQTT client, from the applied text (its datapoints are resolved by name against the
+	// model just loaded; without an `mqtt` member it is cleared). The loader checked the member, so
+	// a refusal here is a resource problem: logged, and MQTT stands down rather than keep the old image's.
+	if (mqtt_ != nullptr) {
+		const char* mqtt_error = nullptr;
+		if (!mqtt_->configure_image(text, length, &mqtt_error)) {
+			Log::error(kTag, "the MQTT client refused the image's mqtt member: %s; MQTT is off until the next load",
+				mqtt_error != nullptr ? mqtt_error : "?");
+			mqtt_->clear();
+		}
 	}
 	report_.clear();
 	view_.build(text, length, model_);
@@ -603,6 +616,12 @@ bool ImageService::reload_dynamic(const char* why) {
 	}
 	Log::info(kTag, "model reloaded (%s): %u datapoint(s) of the image, %u of the providers", why,
 		static_cast<unsigned>(composed.image_count), static_cast<unsigned>(dynamic_count_));
+	if (mqtt_ != nullptr) {
+		const char* mqtt_error = nullptr;
+		if (!mqtt_->model_reloaded(&mqtt_error)) {
+			Log::error(kTag, "the MQTT client did not follow the model reload: %s", mqtt_error != nullptr ? mqtt_error : "?");
+		}
+	}
 	if (changed_) {
 		changed_();
 	}
@@ -732,6 +751,9 @@ void ImageService::tear_down() {
 	if (external_ != nullptr) {
 		external_->clear();
 	}
+	if (mqtt_ != nullptr) {
+		mqtt_->clear();
+	}
 	loaded_ = false;
 	has_knx_ = false;
 	info_ = ImageInfo();
@@ -755,6 +777,9 @@ bool ImageService::unload(const char** error) {
 	engine_.load(document.value(JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array}), &none, nullptr);
 	if (external_ != nullptr) {
 		external_->clear();
+	}
+	if (mqtt_ != nullptr) {
+		mqtt_->clear();
 	}
 	adapter_.clear();
 	time_master_.clear();

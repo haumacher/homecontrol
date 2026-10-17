@@ -174,13 +174,17 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
               {"key": "update.url", "value": null, "default": "", "editable": true},
               {"key": "ui.lang", "value": "de", "default": "en", "editable": true},
               {"key": "wifi.ps", "value": "none", "default": "none", "editable": true},
+              {"key": "mqtt.user", "value": null, "default": "", "editable": true},
+              {"key": "mqtt.password", "value": null, "default": "", "editable": true, "secret": true, "stored": true},
               {"key": "wifi.ssid", "value": "...", "default": "", "editable": false}],
  "i18n": {"lang": "de", "state": "installed", "detail": "pack 'de' of release 0.2.0 installed (5035 bytes)",
           "release": "0.2.0", "offered": [{"code": "de", "name": "Deutsch"}]}}
 ```
 
 `value` is `null` when the setting is not stored (the default applies); `ui.lang` and `tz` always
-show the value in use. Secrets (`wifi.psk`, the password and token hashes `web.*`) never appear.
+show the value in use. Secrets (`wifi.psk`, the password and token hashes `web.*`) never appear;
+the write-only `mqtt.password` (doc/mqtt.md) is listed with `secret: true` and `stored` saying
+whether one is kept, its `value` always `null`.
 `i18n` (only on a device that downloads language packs, i.e. not the POSIX build) is the state of
 the language pack of `ui.lang` (doc/i18n.md): `state` one of `builtin` (English, nothing to
 download), `waiting` (a condition is missing, `detail` says which), `fetching`, `installed`,
@@ -192,8 +196,9 @@ retry follows); `offered` the languages the release's manifest lists, by their o
 Body `{"value": "<string, at most 127 bytes>"}`; `""` erases `update.url`. Validated as on the
 console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.url` an http(s) URL; doc/ota.md;
 `ui.lang` a language tag `[a-z]{2}(-[A-Z]{2})?`, doc/i18n.md; `wifi.ps` one of `none`, `min`, `max`,
-doc/network.md) and applied at once (a new `ui.lang` starts the download of its language pack, a
-new `wifi.ps` is set on the running WiFi link). 200 with the settings list as for GET. Refusals: 404 `settings.unknown`, 403
+doc/network.md; `mqtt.user` and `mqtt.password` 1 to 63 bytes, `""` removes them) and applied at
+once (a new `ui.lang` starts the download of its language pack, a new `wifi.ps` is set on the
+running WiFi link, a new `mqtt.user` or `mqtt.password` reconnects the MQTT client). 200 with the settings list as for GET. Refusals: 404 `settings.unknown`, 403
 `settings.not_editable`, 400 `settings.value_missing`, 422 `settings.invalid` (with the reason),
 500 `settings.storage_error`.
 

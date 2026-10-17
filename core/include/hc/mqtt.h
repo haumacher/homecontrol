@@ -178,8 +178,18 @@ public:
 	/// `offline` published, disconnect).
 	void clear();
 
+	/// The datapoint model was loaded again with the same image (a dynamic provider's datapoints
+	/// joined or left, doc/image.md): the per-datapoint table follows the model's new size, the
+	/// image's datapoints keep their ids, units and rings, the history cursors their names, and
+	/// every state is published again. Nothing happens without a configuration.
+	bool model_reloaded(const char** error = nullptr);
+
 	/// Drops the connection and connects again now (a new password).
 	void reconnect(const char* why);
+
+	/// The process is ending (the host build's SIGINT): `offline` and an orderly disconnect, the
+	/// discovery configs kept for the next run (clear() removes them). Ends in state disabled.
+	void stop();
 
 	/// Publishes every discovery config again and sweeps. Refused when not connected or discovery is
 	/// off.

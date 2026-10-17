@@ -11,6 +11,7 @@
 #include <new>
 
 #include "hc/json_document.h"
+#include "hc/mqtt.h"
 #include "hc/network_settings.h"
 #include "hc/rules/rule_set.h"
 #include "hc/tz.h"
@@ -2139,6 +2140,19 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 		if (c.object(external, "'external'")) {
 			plan.has_external = true;
 			plan.external = external;
+		}
+	}
+	JsonSpan mqtt;
+	if (c.member(root, "mqtt", mqtt)) {
+		Path p(c, "mqtt");
+		if (c.object(mqtt, "'mqtt'")) {
+			const char* reason = nullptr;
+			if (Mqtt::check_json(mqtt.data, mqtt.length, &reason)) {
+				plan.has_mqtt = true;
+				plan.mqtt = mqtt;
+			} else {
+				c.refuse("%s", reason != nullptr ? reason : "invalid");
+			}
 		}
 	}
 	if (!c.stopped()) {

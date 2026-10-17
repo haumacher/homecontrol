@@ -109,6 +109,9 @@ struct Plan {
 	/// The `external` member (spec/external-values.md), handed to ExternalValues after the model swap.
 	bool has_external = false;
 	JsonSpan external;
+	/// The `mqtt` member (spec/mqtt.md), checked here and handed to the MQTT client after the model swap.
+	bool has_mqtt = false;
+	JsonSpan mqtt;
 
 	Arena arena;
 

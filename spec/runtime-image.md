@@ -234,6 +234,15 @@ applied.
 An object reserved for E-Home's presentation hints (dashboard order, icons). Version 1.0 defines
 no members; the device checks only that it is an object.
 
+### 3.10 `mqtt`
+
+Optional. The MQTT broker the controller publishes to and the shape of what it publishes
+(`spec/mqtt.md`): `broker` (`mqtt://host[:port]`, `mqtts://`), `username`, `baseTopic`, `retain`,
+`discovery` (Home Assistant), `history` (the export of the rings). The password is never in the
+image (the device setting `mqtt.password`); an image with `mqtt.password` is refused. The member is
+validated with the image and applied after the datapoint model and the functions it names; a
+refusal names the path under `mqtt`. Without the member the controller does not talk MQTT.
+
 ## 4. Refusals
 
 Each refusal has a **path** (`datapoints[3].knx.send`, `functions[1].datapoints.command`,

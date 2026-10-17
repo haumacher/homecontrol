@@ -17,6 +17,7 @@
 namespace hc {
 
 class LanguagePacks;
+class Mqtt;
 class LiveFeed;
 
 namespace image {
@@ -107,6 +108,8 @@ public:
 	/// The language packs (doc/i18n.md): a changed ui.lang starts their sync; GET /api/settings
 	/// reports their state as "i18n". Optional (the POSIX build serves the bundled packs only).
 	void set_language_packs(LanguagePacks* packs) { packs_ = packs; }
+	/// The MQTT client (doc/mqtt.md): the settings mqtt.user and mqtt.password reconnect it.
+	void set_mqtt(Mqtt* mqtt) { mqtt_ = mqtt; }
 
 	/// The runtime image service: /api/image and the "image" member of /api/status (doc/image.md).
 	/// The runtime image behind /api/image and the status; its changes resync the live feed.
@@ -176,6 +179,7 @@ private:
 	LiveFeed* feed_ = nullptr;
 	image::ImageService* image_ = nullptr;
 	LanguagePacks* packs_ = nullptr;
+	Mqtt* mqtt_ = nullptr;
 	/// A consistent copy of the controller's log ring for GET /api/log.
 	LogRing log_copy_;
 };

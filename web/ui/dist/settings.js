@@ -99,11 +99,14 @@ const kChoices = { "wifi.ps": ["none", "min", "max"] };
 function settingRow(setting, onSaved) {
 	const id = `setting-${setting.key}`;
 	const label = has(`settings.key.${setting.key}`) ? t(`settings.key.${setting.key}`) : setting.key;
-	const input = h("input", { type: "text", id, value: setting.value ?? "", disabled: !setting.editable, spellcheck: "false",
-		autocomplete: "off" });
-	const feedback = h("span", { class: "hint" }, setting.editable
-		? (setting.default ? t("settings.default", { value: setting.default }) : "")
-		: t("settings.readonly"));
+	// A secret (mqtt.password) is write-only: the device says whether one is stored, never its value;
+	// an empty save removes it.
+	const input = h("input", { type: setting.secret ? "password" : "text", id, value: setting.value ?? "",
+		disabled: !setting.editable, spellcheck: "false", autocomplete: setting.secret ? "new-password" : "off",
+		placeholder: setting.secret ? t(setting.stored ? "settings.secret.stored" : "settings.secret.empty") : "" });
+	const feedback = h("span", { class: "hint" }, !setting.editable ? t("settings.readonly")
+		: setting.secret ? t("settings.secret.hint")
+		: (setting.default ? t("settings.default", { value: setting.default }) : ""));
 	const save = h("button", { class: "button", type: "submit", disabled: !setting.editable }, t("settings.save"));
 	return h(
 		"form",

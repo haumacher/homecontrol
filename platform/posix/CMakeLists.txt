@@ -181,6 +181,7 @@ add_custom_target(hc_lang_packs ALL DEPENDS ${hc_lang_copies})
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/mqtt_codec_test.cpp"
 	"${HC_REPO_DIR}/core/test/mqtt_test.cpp"
+	"${HC_REPO_DIR}/core/test/mqtt_probe_test.cpp"
 )
 # The POSIX MQTT client (a small MQTT 3.1.1 client over TCP, in the web library for the LoopExecutor) and
 # its test against an in-process broker speaking the core's codec.
