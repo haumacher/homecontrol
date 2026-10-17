@@ -42,6 +42,14 @@ mode latched by the BOOT+RESET grip therefore persists (`boot:0x4 (DOWNLOAD…)`
 (EN) button is pressed or the board is power-cycled (replug the USB cable). So after a manual
 download-mode flash: press RESET once by hand, then open the monitor.
 
+**Opening the serial port resets the board.** Any host program opening `/dev/ttyACMn` (pyserial even
+with DTR and RTS preset low, the IDF monitor) makes the USB Serial/JTAG controller reset the chip:
+a capture always starts with a fresh boot and loses the state before it. For a run that must not be
+interrupted (WPS pairing, a reconnect test), open the port once *before* the test and keep it open
+for the whole run; a listener that stops and reopens loses the device state. Stored credentials
+survive the reset, the wall clock keeps its value in the RTC but is flagged unsynchronized until
+SNTP confirms it.
+
 **Console.** The dev boards have no UART-to-USB bridge, so `sdkconfig.defaults` routes the
 console to the USB Serial/JTAG port (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`): bootloader and app
 logs appear on `/dev/ttyACMn`. A changed `sdkconfig.defaults` is **not** applied to an existing
