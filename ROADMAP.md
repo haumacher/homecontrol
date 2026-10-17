@@ -1,0 +1,78 @@
+# HomeControl — Direction and roadmap
+
+*Adopted 2026-10-17. This document records where the project is going and why. The GitHub issue
+tracker at `haumacher/homecontrol` holds the concrete work queue; each roadmap phase names the
+issues that implement it through its `phase:*` label. Reversals of a decision recorded here are
+made by editing this file in the same commit.*
+
+## Where we are going
+
+**HomeControl is the runtime of a smart home: a small always-on controller that executes what the
+engineering tool E-Home deploys.** Devices on the KNX bus and Zigbee network do what devices do;
+the controller does what they cannot: keep time and distribute it, run schedules and rules that
+span devices and technologies, show the house to its inhabitants in a web UI, and bring in the
+outside world (weather, external services).
+
+1. **One portable core.** Datapoints, datapoint-type codecs, the runtime image, the scheduler,
+   astronomy and the rule interpreter are plain C++17 with no platform includes. The same core runs
+   on the ESP32-C6 and as a Linux executable (tests, simulation, a single-board-computer fallback).
+2. **Everything is a datapoint.** KNX group objects, Zigbee cluster attributes, schedule outputs,
+   weather values and rule parameters share one typed value model. Rules, the UI and logging see
+   only datapoints; the technology adapters translate.
+3. **Engineering in E-Home, operation on the device.** E-Home (TopLogic, Java, `../ehome`) owns the
+   project: datapoints, device bindings, rules, schedules, visualization pages. It exports a
+   versioned *runtime image* and pushes it to the controller, which validates it and swaps it in.
+   The device web UI serves the inhabitants: live state, operation, and the parameters a rule
+   declares adjustable (times, setpoints, enable switches). It is not an engineering tool.
+4. **Declarative rules with one semantics in two places.** Rules are data (triggers, conditions,
+   actions, timers, small state machines, a tiny expression language), not scripts. The C++ core
+   interprets them on the device; a Java reference interpreter in E-Home simulates them against
+   E-Home's virtual installation before deployment. A conformance corpus in `spec/` keeps the two
+   interpreters identical.
+5. **Zigbee is the goal of the chip choice.** The ESP32-C6 was chosen for its 802.15.4 radio; the
+   controller becomes the Zigbee coordinator, and Zigbee devices appear as datapoints like KNX
+   group objects. KNX over KNXnet/IP comes first because it is reachable from day one.
+
+## Phases
+
+- **Phase 0 — Foundation** (`phase:0-foundation`): repository skeleton with the portable core,
+  POSIX build and ESP-IDF build; WiFi, mDNS, SNTP; OTA with asymmetric partitions; diagnostics;
+  the web server base.
+- **Phase 1 — KNX** (`phase:1-knx`): the datapoint model and DPT codecs; KNXnet/IP tunneling; the
+  runtime image format and its loader; the E-Home push.
+- **Phase 2 — Time** (`phase:2-time`): time service with time zone and DST, KNX time master,
+  sunrise and sunset; schedules as rule triggers.
+- **Phase 3 — Rules** (`phase:3-rules`): the rule model and expression language; the C++
+  interpreter; the conformance corpus; the Java counterpart in E-Home.
+- **Phase 4 — Visualization** (`phase:4-visualization`): the device web UI generated from the
+  runtime image, live values over WebSocket, controls and adjustable parameters.
+- **Phase 5 — Zigbee** (`phase:5-zigbee`): coordinator role, commissioning, device database,
+  cluster-to-datapoint mapping, the first device classes, bindings maintained in E-Home.
+- **Phase 6 — Services and interoperability** (`phase:6-services`): weather, MQTT (Home Assistant
+  discovery, history export), the monitor stream for E-Home's group monitor.
+- **Cross-cutting** (`cross-cutting`): security, state persistence and history, hardware.
+
+## Decisions log
+
+- **2026-10-17 — Hardware: ESP32-C6 alone, WiFi, KNX through the existing KNXnet/IP router.**
+  Alternatives considered: ESP32-P4 plus C6 co-processor (more RAM, Ethernet) and a thin C6 bridge
+  with the logic on a Linux box in Java. Rejected for now: the point is an embedded controller;
+  the portable core keeps both doors open.
+- **2026-10-17 — Language: C++17 on ESP-IDF.** The Zigbee SDK is a C library and the mature open
+  KNX stack for ESP32 (thelsing/knx, OpenKNX) is C++. Rust (esp-rs) would mean binding both by
+  hand.
+- **2026-10-17 — Portable core with a Linux build from the start.** Unit tests, CI and
+  simulation run on the host; ESP-IDF's Linux target is the fallback if the C6 runs out of room.
+- **2026-10-17 — All engineering happens in E-Home, at least for now.** The device executes; its
+  UI exposes only what rules declare adjustable.
+- **2026-10-17 — Rule interpreter twice, semantics once.** A Java reference interpreter in E-Home
+  for simulation, a shared conformance corpus in `spec/`. Accepted cost: roughly double the rule
+  engine work.
+- **2026-10-17 — OTA with asymmetric partitions.** One small *updater* app partition and one large
+  *application* partition, instead of two equal OTA slots. The application checks for an update,
+  then boots into the updater; the updater overwrites the application partition and boots back.
+  This maximizes the space for the application on a 4 or 8 MB module.
+- **2026-10-17 — One controller per house.** Cooperation between controllers may come later; no
+  design effort is spent on it now.
+- **2026-10-17 — Zigbee integration is the goal; no version is scheduled yet.**
+- **2026-10-17 — The GitHub issue tracker is the work queue; direction lives here.**

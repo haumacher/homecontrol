@@ -1,0 +1,18 @@
+# Host build
+/build/
+/build-*/
+/platform/posix/build/
+# ESP-IDF
+/platform/esp/build/
+/platform/esp/sdkconfig
+/platform/esp/sdkconfig.old
+/platform/esp/managed_components/
+/platform/esp/dependencies.lock
+# Tooling
+/.playwright-mcp/
+/recording.json
+/tmp/
+*.log
+__pycache__/
+.vscode/
+.idea/
