@@ -77,6 +77,7 @@ constexpr SettingInfo kShownSettings[] = {
 	{setting::kNtpServer, true},
 	{setting::kUpdateUrl, true},
 	{setting::kUiLang, true},
+	{setting::kWifiPowerSave, true},
 	{setting::kWifiSsid, false},
 };
 
@@ -865,6 +866,10 @@ void WebApi::settings(WebResponse& response) {
 			read_ui_lang(store, lang, kTag);
 			std::snprintf(value, sizeof(value), "%s", lang);
 			status = SettingsStatus::ok;
+		} else if (std::strcmp(info.key, setting::kWifiPowerSave) == 0) {
+			fallback = wifi_power_save_name(setting::kDefaultWifiPowerSave);
+			std::snprintf(value, sizeof(value), "%s", wifi_power_save_name(read_wifi_power_save(store, kTag)));
+			status = SettingsStatus::ok;
 		}
 		json.begin_object().member("key", info.key);
 		json.key("value");
@@ -930,6 +935,18 @@ bool WebApi::apply_setting(const char* key, const char* value, const char** code
 		if (packs_ != nullptr) {
 			packs_->language_changed();
 		}
+		return true;
+	}
+	if (std::strcmp(key, setting::kWifiPowerSave) == 0) {
+		if (!wifi_power_save_valid(value, error)) {
+			return false;
+		}
+		if (!store_wifi_power_save(controller_.settings(), value, error)) {
+			*code = "settings.storage_error";
+			return false;
+		}
+		Log::info(kTag, "WiFi power save set to %s", value);
+		controller_.connectivity().driver().power_save_changed();
 		return true;
 	}
 	*code = "settings.unknown";

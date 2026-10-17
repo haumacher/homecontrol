@@ -249,6 +249,12 @@ public:
 
 	bool provisioned() const override { return has_credentials; }
 
+	void power_save_changed() override {
+		++power_save_changes;
+		record("power_save");
+	}
+	int power_save_changes = 0;
+
 	hc::ConnectResult connect() override {
 		connects.push_back(clock_.now_ms);
 		record("connect");

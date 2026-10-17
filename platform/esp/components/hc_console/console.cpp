@@ -145,7 +145,7 @@ int wifi_status(ConsoleContext& c) {
 }
 
 int cmd_wifi(ConsoleContext& c, int argc, char** argv) {
-	const char* kUsage = "wifi wps | wifi set <ssid> [<psk>] | wifi clear | wifi status";
+	const char* kUsage = "wifi wps | wifi set <ssid> [<psk>] | wifi clear | wifi status | wifi ps [none|min|max]";
 	if (argc < 2) {
 		return usage(kUsage);
 	}
@@ -164,6 +164,21 @@ int cmd_wifi(ConsoleContext& c, int argc, char** argv) {
 		}
 		c.controller.connectivity().request_connect("WiFi credentials cleared");
 		std::printf("WiFi credentials cleared, disconnected; listening for WPS\n");
+		return 0;
+	}
+	if (std::strcmp(argv[1], "ps") == 0 && (argc == 2 || argc == 3)) {
+		if (argc == 2) {
+			std::printf("WiFi power save %s (setting %s: none | min | max; doc/network.md)\n",
+				wifi_power_save_name(read_wifi_power_save(settings, "console")), setting::kWifiPowerSave);
+			return 0;
+		}
+		const char* error = nullptr;
+		if (!store_wifi_power_save(settings, argv[2], &error)) {
+			std::printf("error: %s\n", error);
+			return 1;
+		}
+		c.controller.connectivity().driver().power_save_changed();
+		std::printf("WiFi power save %s, applied to the running link\n", argv[2]);
 		return 0;
 	}
 	if (std::strcmp(argv[1], "wps") == 0 && argc == 2) {
@@ -569,9 +584,10 @@ const Command kCommands[] = {
 		"Erase the settings (WiFi credentials included), the stored runtime image and its state, and the Zigbee "
 		"network, then restart",
 		&cmd_factory},
-	{"network", "wifi", "wps | set <ssid> [<psk>] | clear | status",
+	{"network", "wifi", "wps | set <ssid> [<psk>] | clear | status | ps [none|min|max]",
 		"WiFi: WPS push-button provisioning, credentials by hand (stored in NVS; the key is never shown; quote "
-		"an SSID with spaces), link state",
+		"an SSID with spaces), link state, power save (none: lowest latency; min: the 802.15.4 radio gets the air "
+		"while WiFi sleeps)",
 		&cmd_wifi},
 	{"network", "ntp", "set <server>", "SNTP server (default pool.ntp.org)", &cmd_ntp},
 	{"time", "tz", "set <posix-tz>", "Time zone as a POSIX TZ string (default CET-1CEST,M3.5.0,M10.5.0/3)", &cmd_tz},

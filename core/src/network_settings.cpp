@@ -141,6 +141,61 @@ bool store_ui_lang(Settings& settings, const char* lang, const char** error) {
 	return true;
 }
 
+const char* wifi_power_save_name(setting::WifiPowerSave mode) {
+	switch (mode) {
+	case setting::WifiPowerSave::min:
+		return "min";
+	case setting::WifiPowerSave::max:
+		return "max";
+	case setting::WifiPowerSave::none:
+	default:
+		return "none";
+	}
+}
+
+bool parse_wifi_power_save(const char* text, setting::WifiPowerSave& mode, const char** error) {
+	if (text != nullptr) {
+		if (std::strcmp(text, "none") == 0) {
+			mode = setting::WifiPowerSave::none;
+			return true;
+		}
+		if (std::strcmp(text, "min") == 0) {
+			mode = setting::WifiPowerSave::min;
+			return true;
+		}
+		if (std::strcmp(text, "max") == 0) {
+			mode = setting::WifiPowerSave::max;
+			return true;
+		}
+	}
+	return refuse(error, "WiFi power save is none, min or max");
+}
+
+bool wifi_power_save_valid(const char* text, const char** error) {
+	setting::WifiPowerSave mode;
+	return parse_wifi_power_save(text, mode, error);
+}
+
+setting::WifiPowerSave read_wifi_power_save(const Settings& settings, const char* tag) {
+	char value[Settings::kMaxStringLength + 1];
+	read_string_setting(settings, setting::kWifiPowerSave, wifi_power_save_name(setting::kDefaultWifiPowerSave), value,
+		sizeof(value), tag, &wifi_power_save_valid);
+	setting::WifiPowerSave mode = setting::kDefaultWifiPowerSave;
+	parse_wifi_power_save(value, mode);
+	return mode;
+}
+
+bool store_wifi_power_save(Settings& settings, const char* text, const char** error) {
+	if (!wifi_power_save_valid(text, error)) {
+		return false;
+	}
+	SettingsStatus status = settings.set_string(setting::kWifiPowerSave, text);
+	if (status != SettingsStatus::ok) {
+		return refuse(error, settings_status_name(status));
+	}
+	return true;
+}
+
 bool store_wifi_credentials(Settings& settings, const char* ssid, const char* psk, const char** error) {
 	if (!wifi_ssid_valid(ssid, error)) {
 		return false;

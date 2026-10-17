@@ -156,9 +156,14 @@ Rules that keep the driver and the radio from racing each other (the dongle's le
 - The driver never reports from within a call the core made; on the ESP the IDF events reach the
   core through the event-loop queue.
 
-Also taken from the dongle, in the ESP driver: WiFi power save is off (the controller is mains
-powered; modem sleep loses ACKs that some access points punish with a disassociation, reason 34),
-and the station scans all channels, so a hidden SSID is found too.
+Also taken from the dongle, in the ESP driver: WiFi power save is off by default (the controller
+is mains powered; modem sleep loses ACKs that some access points punish with a disassociation,
+reason 34), and the station scans all channels, so a hidden SSID is found too. The setting
+`wifi.ps` (`none` | `min` | `max`, console `wifi ps`, the Settings page, `PUT /api/settings/wifi.ps`)
+changes it on the running link: `min` (modem sleep between DTIM beacons) is the mode Espressif's
+coexistence examples use, so the 802.15.4 radio gets the air while WiFi sleeps (doc/zigbee.md); the
+measured cost on the C6 (link stalls of seconds against a consumer access point) is in that section
+and is why `none` stays the default.
 
 **Backoff:** 1 s, 2 s, 4 s, 8 s, 16 s, 32 s, 60 s, 60 s, ... after consecutive failures; reset
 when the link comes up and when the workflow changes mode.

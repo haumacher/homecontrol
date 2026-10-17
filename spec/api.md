@@ -173,6 +173,7 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
               {"key": "ntp.server", "value": null, "default": "pool.ntp.org", "editable": true},
               {"key": "update.url", "value": null, "default": "", "editable": true},
               {"key": "ui.lang", "value": "de", "default": "en", "editable": true},
+              {"key": "wifi.ps", "value": "none", "default": "none", "editable": true},
               {"key": "wifi.ssid", "value": "...", "default": "", "editable": false}],
  "i18n": {"lang": "de", "state": "installed", "detail": "pack 'de' of release 0.2.0 installed (5035 bytes)",
           "release": "0.2.0", "offered": [{"code": "de", "name": "Deutsch"}]}}
@@ -190,8 +191,9 @@ retry follows); `offered` the languages the release's manifest lists, by their o
 
 Body `{"value": "<string, at most 127 bytes>"}`; `""` erases `update.url`. Validated as on the
 console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.url` an http(s) URL; doc/ota.md;
-`ui.lang` a language tag `[a-z]{2}(-[A-Z]{2})?`, doc/i18n.md) and applied at once (a new `ui.lang`
-starts the download of its language pack). 200 with the settings list as for GET. Refusals: 404 `settings.unknown`, 403
+`ui.lang` a language tag `[a-z]{2}(-[A-Z]{2})?`, doc/i18n.md; `wifi.ps` one of `none`, `min`, `max`,
+doc/network.md) and applied at once (a new `ui.lang` starts the download of its language pack, a
+new `wifi.ps` is set on the running WiFi link). 200 with the settings list as for GET. Refusals: 404 `settings.unknown`, 403
 `settings.not_editable`, 400 `settings.value_missing`, 422 `settings.invalid` (with the reason),
 500 `settings.storage_error`.
 

@@ -44,6 +44,10 @@ public:
 	/// Ends pairing (and the association it may have made).
 	virtual void stop_pairing() = 0;
 
+	/// The setting wifi.ps changed (web API, console): a driver with a power-save mode applies it to
+	/// the running link. Default: nothing (the POSIX driver has no radio).
+	virtual void power_save_changed() {}
+
 protected:
 	~NetworkDriver() = default;
 };

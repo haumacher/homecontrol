@@ -69,6 +69,33 @@ function statusCards(s) {
 	);
 }
 
+/// A setting with a fixed set of values (wifi.ps): a selector, applied on change, with the hint
+/// text settings.<key>.hint; the choices are labelled settings.<key>.<value>.
+function choiceRow(setting, choices) {
+	const id = `setting-${setting.key}`;
+	const value = setting.value ?? setting.default ?? choices[0];
+	const select = h("select", { id, disabled: !setting.editable },
+		choices.map((c) => h("option", { value: c, selected: c === value },
+			has(`settings.${setting.key}.${c}`) ? t(`settings.${setting.key}.${c}`) : c)));
+	const feedback = h("span", { class: "hint" }, has(`settings.${setting.key}.hint`) ? t(`settings.${setting.key}.hint`) : "");
+	select.addEventListener("change", async () => {
+		select.disabled = true;
+		feedback.className = "hint";
+		try {
+			await api("PUT", `/api/settings/${encodeURIComponent(setting.key)}`, { value: select.value });
+			feedback.textContent = t("settings.saved");
+		} catch (error) {
+			feedback.className = "error-text";
+			feedback.textContent = errorText(error);
+		} finally {
+			select.disabled = false;
+		}
+	});
+	return h("div", { class: "field" }, h("label", { for: id }, t(`settings.key.${setting.key}`)), select, feedback);
+}
+
+const kChoices = { "wifi.ps": ["none", "min", "max"] };
+
 function settingRow(setting, onSaved) {
 	const id = `setting-${setting.key}`;
 	const label = has(`settings.key.${setting.key}`) ? t(`settings.key.${setting.key}`) : setting.key;
@@ -238,7 +265,8 @@ export function renderSettings(content, ctx) {
 			return;
 		}
 		lastState = i18n ? i18n.state : null;
-		replace(editable, data.settings.map((s) => (s.key === "ui.lang" ? languageRow(s, i18n, ctx, reload) : settingRow(s, () => {}))));
+		replace(editable, data.settings.map((s) => (s.key === "ui.lang" ? languageRow(s, i18n, ctx, reload)
+			: kChoices[s.key] ? choiceRow(s, kChoices[s.key]) : settingRow(s, () => {}))));
 	}).catch((error) => {
 		replace(editable, h("p", { class: "message error" }, errorText(error)));
 	});

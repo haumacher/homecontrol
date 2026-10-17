@@ -514,7 +514,7 @@ void network_up(const char* how) {
 	wifi_ps_type_t ps = WIFI_PS_NONE;
 	if (esp_wifi_get_ps(&ps) == ESP_OK && ps == WIFI_PS_NONE) {
 		Log::warn(kTag, "WiFi power save is off: the 802.15.4 radio only gets the air between WiFi frames "
-						"(doc/zigbee.md, coexistence)");
+						"(setting wifi.ps, `wifi ps min`; doc/zigbee.md, coexistence)");
 	}
 	g_state.ready.store(true);
 	push_network(true);

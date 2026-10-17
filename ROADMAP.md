@@ -98,3 +98,14 @@ outside world (weather, external services).
 - **2026-10-17 — The 4 MB module is for development only.** With Zigbee the application fills 76 %
   of its partition and the heap sits near 90 KB; the production board is an 8 or 16 MB module or
   the P4 + C6 pairing (#22).
+- **2026-10-18 — The monitor stream is the controller's view for E-Home's group monitor.** A ring of
+  128 events (KNX, Zigbee, rule writes, commands with their origin, image loads) over the WebSocket
+  and `GET /api/monitor`, with sending and reading on KNX from the monitor; E-Home attaches to it
+  instead of a tunnel of its own (ehome #41).
+- **2026-10-18 — I18N as on the phoneblock dongle, with the base language in the UI bundle.** Keys
+  everywhere, English bundled, German bundled and complete, further languages as packs per release
+  from the update server; a regional tag falls back to its base language (doc/i18n.md).
+- **2026-10-18 — WiFi power save stays off; `wifi.ps` is a per-household setting.** Measured on the
+  C6 against a consumer access point: minimum modem sleep stalls the link for seconds and the KNX
+  tunnel misses status telegrams, so the Zigbee coexistence gain (Espressif's recommendation) does
+  not justify it as the default (doc/zigbee.md, the table). Revisited with a paired device (#15).

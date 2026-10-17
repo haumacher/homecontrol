@@ -161,6 +161,7 @@ target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_dynamic_test.cpp
 # Internationalization (issue #24, doc/i18n.md): the language pack decision, the ui.lang setting, the pack key sets.
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/language_packs_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/language_packs_probe_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/wifi_power_save_test.cpp")
 target_compile_definitions(hc_tests PRIVATE HC_WEB_DIR="${HC_REPO_DIR}/web")
 # The committed language packs (web/ui/lang/<code>.json) are copied next to the base language
 # (web/ui/dist/lang/en.json), where the POSIX server serves them; the copies are not versioned. The ESP

@@ -5,6 +5,7 @@
 #define HC_NETWORK_SETTINGS_H
 
 #include <cstddef>
+#include <cstdint>
 
 #include "hc/platform/settings.h"
 
@@ -19,6 +20,9 @@ constexpr const char* kTimeZone = "tz";
 constexpr const char* kNtpServer = "ntp.server";
 /// The language of the web UI (doc/i18n.md): a tag `[a-z]{2}(-[A-Z]{2})?`, default kDefaultUiLang.
 constexpr const char* kUiLang = "ui.lang";
+/// WiFi power save (doc/network.md, doc/zigbee.md "coexistence"): `none`, `min` (modem sleep
+/// between DTIM beacons) or `max`; default kDefaultWifiPowerSave. Only the ESP driver acts on it.
+constexpr const char* kWifiPowerSave = "wifi.ps";
 
 /// Central European time with its EU DST rules.
 constexpr const char* kDefaultTimeZone = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -27,6 +31,11 @@ constexpr const char* kDefaultNtpServer = "pool.ntp.org";
 constexpr const char* kDefaultUiLang = "en";
 /// Longest language tag ("pt-BR").
 constexpr size_t kMaxUiLangLength = 5;
+/// WiFi power save: off (the dongle's choice: lowest latency, no lost ACKs), minimum modem sleep
+/// (the radio sleeps between DTIM beacons; coexistence with 802.15.4 gets the air meanwhile) or
+/// maximum modem sleep (the listen interval of the station config).
+enum class WifiPowerSave : uint8_t { none, min, max };
+constexpr WifiPowerSave kDefaultWifiPowerSave = WifiPowerSave::none;
 
 /// Longest SSID in bytes (IEEE 802.11).
 constexpr size_t kMaxSsidLength = 32;
@@ -57,6 +66,22 @@ void read_ui_lang(const Settings& settings, char (&buffer)[setting::kMaxUiLangLe
 /// Validates and stores ui.lang (the web API and the console use it). False with `error` pointing
 /// to the reason if the tag is invalid or the write fails (nothing stored then).
 bool store_ui_lang(Settings& settings, const char* lang, const char** error);
+
+/// "none", "min" or "max".
+const char* wifi_power_save_name(setting::WifiPowerSave mode);
+
+/// Parses "none", "min" or "max" (case-sensitive); false with `error` naming the choices otherwise.
+bool parse_wifi_power_save(const char* text, setting::WifiPowerSave& mode, const char** error = nullptr);
+
+/// A wifi.ps value: one of the three names. On refusal `error` names the choices.
+bool wifi_power_save_valid(const char* text, const char** error = nullptr);
+
+/// The WiFi power save from the settings: wifi.ps if stored and valid, else kDefaultWifiPowerSave
+/// (an invalid stored value is logged under `tag`).
+setting::WifiPowerSave read_wifi_power_save(const Settings& settings, const char* tag);
+
+/// Validates and stores wifi.ps. False with `error` if the value is invalid or the write fails.
+bool store_wifi_power_save(Settings& settings, const char* text, const char** error);
 
 /// Validates and stores WiFi credentials the one way every provisioning path (the console's
 /// `wifi set`, WPS) uses: wifi.ssid, and wifi.psk or, for an open network (`psk` null or empty),

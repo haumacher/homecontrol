@@ -114,6 +114,9 @@ public:
 	static constexpr size_t kMaxReason = 64;
 
 	Connectivity(EventLoop& loop, const Clock& clock, NetworkDriver& driver);
+
+	/// The platform's network driver (for the settings that it applies, e.g. wifi.ps).
+	NetworkDriver& driver() { return driver_; }
 	~Connectivity();
 
 	Connectivity(const Connectivity&) = delete;

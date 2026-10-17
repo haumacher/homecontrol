@@ -70,10 +70,25 @@ or beside the usual WiFi channels 1, 6 and 11 (channel 15 sits at 2425 MHz, betw
 formation. A changed mask only affects a new formation (after an erase of `zb_storage`).
 
 **Power save.** Espressif's gateway example sets WiFi to `WIFI_PS_MIN_MODEM` with coexistence: the
-802.15.4 radio then also gets the air while WiFi sleeps. `hc_net` turns WiFi power save off
-(`WIFI_PS_NONE`, for low latency of the web UI and KNX); the coordinator logs a warning when it
-finds power save off at network start. Whether `WIFI_PS_NONE` costs Zigbee frames in practice is to
-be measured on the device; switching to `WIFI_PS_MIN_MODEM` is a decision for `hc_net`.
+802.15.4 radio then also gets the air while WiFi sleeps. The setting `wifi.ps` (doc/network.md)
+chooses: `none` (the default, lowest latency of the web UI and KNX) or `min`; the coordinator logs
+a warning when it finds power save off at network start, naming the setting. Measured on the C6
+over the home LAN (60 requests each, the board idle with KNX, the web server and the coordinator
+up): see the table below. Whether `none` costs Zigbee frames in practice is measured once a device
+is paired (#15 stage two); a household with Zigbee devices that report late sets `min`.
+
+| `wifi.ps` | ICMP ping avg / max | `GET /api/auth/session` median / p90 / max | KNX status reply after a command |
+|---|---|---|---|
+| `none` | 19 to 27 ms / 70 ms | 69 to 79 ms / 84 ms / 87 ms | 16 to 200 ms |
+| `min` | 62 to 768 ms / 3979 ms | 83 ms / 1220 to 1450 ms / 3003 ms | not received within 6 s (two of two runs) |
+| `max` | 65 ms / 151 ms | 81 ms / 190 ms / 2194 ms | 311 ms |
+
+Measured 2026-10-18 on the C6 with firmware of that day against a consumer access point (the
+numbers depend on its DTIM period and on the coexistence arbiter): with `min` the link stalls for
+seconds at a time and the actuator's status telegram did not reach the tunnel within the window,
+which is why `none` is the default and `min` is a per-household choice with its cost named on the
+Settings page. The measurement is repeated with a paired Zigbee device in #15 stage two, to weigh
+the Zigbee side.
 
 ### Partitions
 

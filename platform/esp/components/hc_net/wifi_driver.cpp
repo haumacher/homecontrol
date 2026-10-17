@@ -195,7 +195,7 @@ ConnectResult WifiDriver::connect() {
 			return ConnectResult::failed;
 		}
 		started_ = true;
-		disable_power_save();
+		apply_power_save();
 		return ConnectResult::started; // esp_wifi_connect() follows on STA_START.
 	}
 	err = esp_wifi_connect();
@@ -206,12 +206,25 @@ ConnectResult WifiDriver::connect() {
 	return ConnectResult::started;
 }
 
-void WifiDriver::disable_power_save() {
-	// Mains powered: modem sleep between beacons only costs lost ACKs, which some access points
-	// answer with a disassociation (reason 34), as the phoneblock dongle learned.
-	esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
+void WifiDriver::power_save_changed() {
+	if (started_) {
+		apply_power_save();
+	}
+}
+
+void WifiDriver::apply_power_save() {
+	// The setting wifi.ps (doc/network.md): off is the phoneblock dongle's choice (mains powered;
+	// modem sleep between beacons costs lost ACKs, which some access points answer with a
+	// disassociation, reason 34); minimum modem sleep gives the 802.15.4 radio the air while WiFi
+	// sleeps (doc/zigbee.md, coexistence).
+	setting::WifiPowerSave mode = read_wifi_power_save(settings_, kTag);
+	wifi_ps_type_t ps = mode == setting::WifiPowerSave::min ? WIFI_PS_MIN_MODEM
+		: mode == setting::WifiPowerSave::max ? WIFI_PS_MAX_MODEM : WIFI_PS_NONE;
+	esp_err_t err = esp_wifi_set_ps(ps);
 	if (err != ESP_OK) {
-		ESP_LOGW(kTag, "cannot disable WiFi power save: %s", esp_err_to_name(err));
+		ESP_LOGW(kTag, "cannot set WiFi power save %s: %s", wifi_power_save_name(mode), esp_err_to_name(err));
+	} else {
+		ESP_LOGI(kTag, "WiFi power save %s", wifi_power_save_name(mode));
 	}
 	// The transmit power limit (quarter dBm) is a board decision: a weak supply browns out at the
 	// driver's maximum of 20 dBm.
@@ -371,7 +384,7 @@ bool WifiDriver::ensure_started(const char* what) {
 			return false;
 		}
 		started_ = true;
-		disable_power_save();
+		apply_power_save();
 	}
 	return true;
 }

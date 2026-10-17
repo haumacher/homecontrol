@@ -56,6 +56,7 @@ public:
 	void disconnect() override;
 	bool start_pairing() override;
 	void stop_pairing() override;
+	void power_save_changed() override;
 
 	bool start_scan(WifiScanSink& sink) override;
 
@@ -86,7 +87,7 @@ private:
 	static void handle_scan_done(void* context, const LoopMessage& message);
 
 	void begin_disconnect();
-	void disable_power_save();
+	void apply_power_save();
 	bool ensure_started(const char* what);
 
 	/// Credentials of a WPS success, handed from the IDF event task to the loop. Written only while
