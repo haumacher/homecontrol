@@ -12,6 +12,7 @@
 #include "hc/event_loop.h"
 #include "hc/external_values.h"
 #include "hc/history.h"
+#include "hc/image/dynamic_specs.h"
 #include "hc/image/image.h"
 #include "hc/image/image_store.h"
 #include "hc/image/loader.h"
@@ -52,9 +53,26 @@ namespace image {
 /// RAM: the service tears the new one down and loads the stored (previous) image again; without
 /// one the device has no image. The text is stored only after a successful load.
 ///
+/// Dynamic datapoints (doc/image.md "Dynamic datapoints"): registered DynamicSpecProviders (the
+/// Zigbee adapter) add datapoints of their own. The model is the image's datapoints, at the
+/// image's positions, followed by every provider's specs; a name that appears twice refuses the
+/// composition (an image is refused, a reload keeps the old model), naming the provider. When a
+/// provider's specs change, the model is reloaded with keep_values at most once per
+/// kReloadSpacingMs, and every component is bound again as in a swap (KNX mapping, time master,
+/// value store, history, schedules, external values, the providers); the rules continue: the
+/// image's datapoints keep their ids, the providers' follow them. Without an image the model
+/// holds the providers' datapoints alone. With a provider registered the service keeps the
+/// applied plan's tables (the "load tables" of the log) for these reloads.
+///
 /// Threading: everything on the event loop's thread.
-class ImageService : public LedInput, private ScheduleListener {
+class ImageService : public LedInput, private ScheduleListener, private DynamicSpecListener {
 public:
+	/// Most providers registered at the same time.
+	static constexpr size_t kMaxProviders = 4;
+	/// Shortest time between two model reloads for provider changes (a joining device changes its
+	/// specs several times within a second: they are coalesced into one reload).
+	static constexpr uint32_t kReloadSpacingMs = 1000;
+
 	/// `tunnel` (may be null) tells the LED whether KNX is up; `adapter` is the platform's KNX adapter
 	/// (also when no gateway is configured).
 	ImageService(Controller& controller, DatapointModel& model, BlobStore& blobs, knx::KnxAdapter& adapter,
@@ -117,6 +135,22 @@ public:
 	/// may have changed (the web API resyncs its live feed).
 	void set_changed(Callback callback) { changed_ = callback; }
 
+	/// Registers a provider of dynamic datapoints (before or after start()). Its specs join the model
+	/// with the next load or reload (at once when the service runs). False when full or registered.
+	/// The provider outlives the service or is removed first (the destructor unregisters from it).
+	bool add_provider(DynamicSpecProvider& provider);
+	/// Unregisters it; the model is reloaded without its datapoints. False if it was not registered.
+	bool remove_provider(DynamicSpecProvider& provider);
+	/// Datapoints in the model that come from providers (after the image's).
+	size_t dynamic_datapoints() const { return dynamic_count_; }
+	/// Model reloads done for provider changes since start.
+	uint32_t dynamic_reloads() const { return dynamic_reloads_; }
+	/// Whether a reload for a provider change is scheduled.
+	bool reload_pending() const { return reload_pending_; }
+	/// Why the last reload for a provider change was refused (its first refusal: the path of the
+	/// image's datapoint, or "", and the reason); nullptr when the last one succeeded.
+	const Report::Refusal* dynamic_refusal() const { return dynamic_refused_ ? &dynamic_refusal_ : nullptr; }
+
 	// LedInput
 	bool image_loaded() const override { return loaded_; }
 	bool image_degraded() const override;
@@ -128,7 +162,20 @@ public:
 	knx::TimeMaster& time_master() { return time_master_; }
 
 private:
+	/// The composed specs of a model load: the image's (`image_count`) and the providers'.
+	struct Composed;
+
 	bool apply(Plan& plan, Source source);
+	bool compose(const Plan* plan, Composed& out, Report& report);
+	void bind_providers(const Plan* plan, const Composed& composed);
+	bool bind_persistence(const Plan& plan, Source source);
+	bool bind_technologies(const Plan& plan, Source source);
+	bool reload_dynamic(const char* why);
+	void reload_due();
+	void drop_plan();
+	ImageBindings bindings_of(const Plan* plan) const;
+	// DynamicSpecListener
+	void dynamic_specs_changed(DynamicSpecProvider& provider) override;
 	bool fail_applied(Source source, const char* path, const char* format, ...) HC_PRINTF_FORMAT(4, 5);
 	void tear_down();
 	void apply_settings(const Plan& plan);
@@ -161,6 +208,18 @@ private:
 	char store_error_[64] = {};
 	uint64_t loaded_ms_ = 0;
 	ExternalValues* external_ = nullptr;
+	DynamicSpecProvider* providers_[kMaxProviders] = {};
+	size_t provider_count_ = 0;
+	/// The applied image's plan, kept for provider reloads (only with a provider registered).
+	Plan* plan_ = nullptr;
+	size_t dynamic_count_ = 0;
+	uint32_t dynamic_reloads_ = 0;
+	bool reload_pending_ = false;
+	uint64_t last_model_load_ms_ = 0;
+	bool model_loaded_once_ = false;
+	TimerHandle reload_timer_;
+	bool dynamic_refused_ = false;
+	Report::Refusal dynamic_refusal_ = {};
 	Callback ntp_changed_;
 	Callback changed_;
 };

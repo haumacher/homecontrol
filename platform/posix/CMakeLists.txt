@@ -147,3 +147,5 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/zigbee_adapter_test.cpp"
 	"${HC_REPO_DIR}/core/test/zigbee_probe_test.cpp"
 )
+# Dynamic datapoints in the image-loaded model: providers, the Zigbee bindings of the image (issue #29).
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_dynamic_test.cpp")

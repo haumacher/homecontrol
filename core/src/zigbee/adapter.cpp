@@ -35,6 +35,24 @@ bool same_point(const ZigbeePoint& a, const ZigbeePoint& b) {
 	return a.ieee == b.ieee && a.endpoint == b.endpoint && a.function == b.function;
 }
 
+/// The same datapoint: point, command cluster and (for the generic name) zone type.
+bool same_mapping(const ZigbeePoint& a, const ZigbeePoint& b) {
+	return same_point(a, b) && a.command_cluster == b.command_cluster && a.zone_type == b.zone_type;
+}
+
+/// The unit a function's value is in, for the UI (nullptr: none).
+const char* unit_of(Function function) {
+	switch (function) {
+		case Function::level:
+		case Function::humidity:
+		case Function::battery: return "%";
+		case Function::color_temperature: return "K";
+		case Function::temperature: return "\xc2\xb0" "C";
+		case Function::illuminance: return "lx";
+		default: return nullptr;
+	}
+}
+
 const char* step_name(uint8_t step) {
 	switch (step) {
 		case 0: return "active endpoints";
@@ -51,12 +69,42 @@ ZigbeeAdapter::ZigbeeAdapter(EventLoop& loop, const Clock& clock, DatapointModel
 	BlobStore* store)
 	: loop_(loop), clock_(clock), model_(model), driver_(driver), database_(store), persistent_(store != nullptr) {}
 
+/// The tables a dynamic_specs() call built: the image's bindings (copied, with their names), the
+/// points (bindings first, then the generic ones), the specs and names of the generic points, and
+/// room for the ids model_loaded() resolves.
+struct ZigbeeAdapter::Pending {
+	ZigbeePoint* overrides = nullptr;
+	char* override_names = nullptr;
+	size_t override_count = 0;
+	ZigbeePoint* points = nullptr;
+	uint16_t* ids = nullptr;
+	size_t count = 0;
+	image::DynamicSpec* specs = nullptr;
+	char* names = nullptr;
+
+	~Pending() {
+		delete[] overrides;
+		delete[] override_names;
+		delete[] points;
+		delete[] ids;
+		delete[] specs;
+		delete[] names;
+	}
+};
+
 ZigbeeAdapter::~ZigbeeAdapter() {
 	loop_.cancel(check_timer_);
 	loop_.cancel(refresh_timer_);
 	loop_.cancel(interview_.timer);
 	delete[] points_;
+	delete[] ids_;
 	free_overrides();
+	free_pending();
+}
+
+void ZigbeeAdapter::free_pending() {
+	delete pending_;
+	pending_ = nullptr;
 }
 
 void ZigbeeAdapter::free_overrides() {
@@ -109,6 +157,11 @@ bool ZigbeeAdapter::start(const char** error) {
 }
 
 bool ZigbeeAdapter::configure(const ZigbeeOverride* overrides, size_t count, const char** error) {
+	if (has_spec_listener()) {
+		Log::error(kTag, "bindings refused: the image service hands them over with the model (dynamic datapoints)");
+		fail(error, "the image service hands the Zigbee bindings over");
+		return false;
+	}
 	if (count > kMaxOverrides) {
 		Log::error(kTag, "bindings refused: %u exceed the capacity of %u", static_cast<unsigned>(count),
 			static_cast<unsigned>(kMaxOverrides));
@@ -199,7 +252,41 @@ bool ZigbeeAdapter::device_has_overrides(Ieee ieee) const {
 	return false;
 }
 
+bool ZigbeeAdapter::specs_differ() const {
+	if (!loaded_) {
+		return true;
+	}
+	size_t generic = point_count_ - override_count_;
+	size_t count = 0;
+	ZigbeePoint mapped[ZigbeeDevice::kMaxEndpoints * (kFunctionCount + 1)];
+	for (size_t i = 0; i < database_.size(); ++i) {
+		const ZigbeeDevice& device = database_.at(i);
+		if (device_has_overrides(device.ieee)) {
+			continue;
+		}
+		size_t capacity = sizeof(mapped) / sizeof(mapped[0]);
+		size_t n = map_device(device, mapped, capacity);
+		if (n > capacity) {
+			return true; // cannot compare: reload
+		}
+		for (size_t k = 0; k < n; ++k) {
+			if (count >= generic || !same_mapping(mapped[k], points_[override_count_ + count])) {
+				return true;
+			}
+			++count;
+		}
+	}
+	return count != generic;
+}
+
 bool ZigbeeAdapter::rebuild(const char** error) {
+	if (has_spec_listener()) {
+		// The image service composes the model: tell it when the generic datapoints change.
+		if (specs_differ()) {
+			notify_specs_changed();
+		}
+		return true;
+	}
 	for (size_t id = 0; id < model_.size(); ++id) {
 		const Datapoint* dp = model_.get(static_cast<uint16_t>(id));
 		if (dp->technology() != this) {
@@ -218,6 +305,7 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 		}
 	}
 	ZigbeePoint* table = count > 0 ? new (std::nothrow) ZigbeePoint[count] : nullptr;
+	uint16_t* ids = count > 0 ? new (std::nothrow) uint16_t[count] : nullptr;
 	DatapointSpec* specs = count > 0 ? new (std::nothrow) DatapointSpec[count] : nullptr;
 	char* names = count > 0 ? new (std::nothrow) char[count * kNameSize] : nullptr;
 	struct Saved {
@@ -225,9 +313,10 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 		Quality quality;
 	};
 	Saved* saved = loaded_ && point_count_ > 0 ? new (std::nothrow) Saved[point_count_] : nullptr;
-	if ((count > 0 && (table == nullptr || specs == nullptr || names == nullptr)) ||
+	if ((count > 0 && (table == nullptr || ids == nullptr || specs == nullptr || names == nullptr)) ||
 		(loaded_ && point_count_ > 0 && saved == nullptr)) {
 		delete[] table;
+		delete[] ids;
 		delete[] specs;
 		delete[] names;
 		delete[] saved;
@@ -262,6 +351,7 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 	delete[] names;
 	if (status != DatapointStatus::ok) {
 		delete[] table;
+		delete[] ids;
 		delete[] saved;
 		Log::error(kTag, "datapoints not loaded: the model refused them (%s)", datapoint_status_name(status));
 		fail(error, "the model refused the Zigbee datapoints");
@@ -269,6 +359,7 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 	}
 	for (size_t i = 0; i < count; ++i) {
 		model_.bind(static_cast<uint16_t>(i), *this);
+		ids[i] = static_cast<uint16_t>(i);
 	}
 	// Carry the values over: a good value is reported again, a stale one restored as stale.
 	if (saved != nullptr) {
@@ -288,11 +379,212 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 	}
 	delete[] saved;
 	delete[] points_;
+	delete[] ids_;
 	points_ = table;
+	ids_ = ids;
 	point_count_ = count;
 	loaded_ = true;
 	Log::info(kTag, "%u datapoint(s) loaded", static_cast<unsigned>(count));
 	return true;
+}
+
+// ---- With the image service (dynamic datapoints) ----------------------------------------------
+
+bool ZigbeeAdapter::dynamic_specs(const image::ImageBindings& bindings, const image::DynamicSpec*& specs,
+	size_t& count, const char** error) {
+	free_pending();
+	if (bindings.zigbee_count > kMaxOverrides || (bindings.zigbee == nullptr && bindings.zigbee_count > 0)) {
+		fail(error, "too many Zigbee bindings");
+		return false;
+	}
+	Pending* next = new (std::nothrow) Pending();
+	if (next == nullptr) {
+		fail(error, "out of memory");
+		return false;
+	}
+	// The image's bindings (the loader checked them; override_point() cannot refuse them here).
+	size_t names_bytes = 0;
+	for (size_t i = 0; i < bindings.zigbee_count; ++i) {
+		names_bytes += std::strlen(bindings.zigbee[i].name) + 1;
+	}
+	next->override_count = bindings.zigbee_count;
+	if (next->override_count > 0) {
+		next->overrides = new (std::nothrow) ZigbeePoint[next->override_count];
+		next->override_names = new (std::nothrow) char[names_bytes];
+		if (next->overrides == nullptr || next->override_names == nullptr) {
+			delete next;
+			fail(error, "out of memory");
+			return false;
+		}
+	}
+	char* cursor = next->override_names;
+	for (size_t i = 0; i < next->override_count; ++i) {
+		const char* why = nullptr;
+		std::optional<ZigbeePoint> point = override_point(bindings.zigbee[i], &why);
+		if (!point) {
+			Log::error(kTag, "binding of '%s' refused: %s", bindings.zigbee[i].name != nullptr ? bindings.zigbee[i].name : "",
+				why);
+			delete next;
+			fail(error, why);
+			return false;
+		}
+		size_t length = std::strlen(bindings.zigbee[i].name);
+		std::memcpy(cursor, bindings.zigbee[i].name, length + 1);
+		next->overrides[i] = *point;
+		next->overrides[i].name = cursor;
+		cursor += length + 1;
+	}
+	auto bound = [next](Ieee ieee) {
+		for (size_t i = 0; i < next->override_count; ++i) {
+			if (next->overrides[i].ieee == ieee) {
+				return true;
+			}
+		}
+		return false;
+	};
+	// The generic points of the devices the image does not bind.
+	size_t generic = 0;
+	for (size_t i = 0; i < database_.size(); ++i) {
+		if (!bound(database_.at(i).ieee)) {
+			generic += map_device(database_.at(i), nullptr, 0);
+		}
+	}
+	next->count = next->override_count + generic;
+	if (next->count > 0) {
+		next->points = new (std::nothrow) ZigbeePoint[next->count];
+		next->ids = new (std::nothrow) uint16_t[next->count];
+		if (next->points == nullptr || next->ids == nullptr) {
+			delete next;
+			fail(error, "out of memory");
+			return false;
+		}
+	}
+	if (generic > 0) {
+		next->specs = new (std::nothrow) image::DynamicSpec[generic];
+		next->names = new (std::nothrow) char[generic * kNameSize];
+		if (next->specs == nullptr || next->names == nullptr) {
+			delete next;
+			fail(error, "out of memory");
+			return false;
+		}
+	}
+	for (size_t i = 0; i < next->override_count; ++i) {
+		next->points[i] = next->overrides[i];
+	}
+	size_t filled = next->override_count;
+	for (size_t i = 0; i < database_.size(); ++i) {
+		const ZigbeeDevice& device = database_.at(i);
+		if (!bound(device.ieee)) {
+			filled += map_device(device, next->points + filled, next->count - filled);
+		}
+	}
+	for (size_t g = 0; g < generic; ++g) {
+		ZigbeePoint& point = next->points[next->override_count + g];
+		char* name = next->names + g * kNameSize;
+		point.name = nullptr;
+		point_name(point, name, kNameSize);
+		image::DynamicSpec& spec = next->specs[g];
+		spec.spec = DatapointSpec{name, point.type(), point.flags()};
+		spec.technology = this;
+		spec.unit = unit_of(point.function);
+	}
+	pending_ = next;
+	specs = next->specs;
+	count = generic;
+	return true;
+}
+
+void ZigbeeAdapter::model_loaded(const image::ImageBindings& bindings) {
+	(void)bindings; // taken over by dynamic_specs(), which the image service called with the same
+	if (pending_ == nullptr) {
+		Log::error(kTag, "model loaded without the Zigbee specs asked for: the datapoints stay unbound");
+		loaded_ = false;
+		return;
+	}
+	Pending* next = pending_;
+	pending_ = nullptr;
+	size_t bound = 0;
+	size_t missing = 0;
+	for (size_t i = 0; i < next->count; ++i) {
+		const char* name = i < next->override_count ? next->points[i].name : next->specs[i - next->override_count].spec.name;
+		const Datapoint* dp = model_.find(name);
+		next->ids[i] = dp != nullptr ? dp->id() : kNoId;
+		if (dp == nullptr) {
+			++missing;
+			Log::error(kTag, "datapoint '%s' is not in the model: its device function stays unmapped", name);
+			continue;
+		}
+		if (dp->technology() == nullptr) {
+			model_.bind(dp->id(), *this);
+		} else if (dp->technology() != this) {
+			Log::error(kTag, "datapoint '%s' belongs to %s: not bound to Zigbee", name, dp->technology()->name());
+			next->ids[i] = kNoId;
+			continue;
+		}
+		++bound;
+	}
+	// Devices with points the model did not have are read (their values may be unknown).
+	bool refresh = false;
+	for (size_t i = 0; i < next->count; ++i) {
+		bool known = false;
+		for (size_t j = 0; loaded_ && j < point_count_ && !known; ++j) {
+			known = same_point(next->points[i], points_[j]) && ids_[j] != kNoId;
+		}
+		ZigbeeDevice* device = known ? nullptr : database_.find(next->points[i].ieee);
+		if (device != nullptr && device->interviewed && !device->refresh) {
+			device->refresh = true;
+			refresh = true;
+		}
+	}
+	// Adopt: the bindings, the points and their ids.
+	free_overrides();
+	overrides_ = next->overrides;
+	override_names_ = next->override_names;
+	override_count_ = next->override_count;
+	next->overrides = nullptr;
+	next->override_names = nullptr;
+	delete[] points_;
+	delete[] ids_;
+	points_ = next->points;
+	ids_ = next->ids;
+	point_count_ = next->count;
+	next->points = nullptr;
+	next->ids = nullptr;
+	delete next; // the specs' names: the model keeps its own copies
+	loaded_ = true;
+	if (refresh && started_) {
+		schedule_refresh();
+	}
+	Log::info(kTag, "%u datapoint(s) bound (%u from the image's bindings)%s", static_cast<unsigned>(bound),
+		static_cast<unsigned>(override_count_), missing > 0 ? "; some are missing from the model" : "");
+}
+
+void ZigbeeAdapter::model_cleared() {
+	free_pending();
+	loaded_ = false;
+}
+
+size_t ZigbeeAdapter::device_points(const ZigbeeDevice& device, ZigbeePoint* out, size_t capacity) const {
+	if (!device_has_overrides(device.ieee)) {
+		size_t n = map_device(device, out, capacity);
+		return n < capacity ? n : capacity;
+	}
+	size_t n = 0;
+	for (size_t i = 0; i < override_count_ && n < capacity; ++i) {
+		if (overrides_[i].ieee == device.ieee) {
+			out[n++] = overrides_[i];
+		}
+	}
+	return n;
+}
+
+long ZigbeeAdapter::index_of(uint16_t id) const {
+	for (size_t i = 0; loaded_ && i < point_count_; ++i) {
+		if (ids_[i] == id) {
+			return static_cast<long>(i);
+		}
+	}
+	return -1;
 }
 
 bool ZigbeeAdapter::save_database() {
@@ -503,7 +795,9 @@ void ZigbeeAdapter::report_point(const ZigbeeDevice& device, uint8_t endpoint, F
 			function_info(function).key);
 		return;
 	}
-	model_.report(*this, static_cast<uint16_t>(index), value);
+	if (ids_[index] != kNoId) {
+		model_.report(*this, ids_[index], value);
+	}
 }
 
 void ZigbeeAdapter::check_stale() {
@@ -524,8 +818,8 @@ void ZigbeeAdapter::check_stale() {
 			device_text(device, text, sizeof(text)), static_cast<unsigned>((now - since) / 1000));
 		if (loaded_) {
 			for (size_t p = 0; p < point_count_; ++p) {
-				if (points_[p].ieee == device.ieee) {
-					model_.report_stale(*this, static_cast<uint16_t>(p));
+				if (points_[p].ieee == device.ieee && ids_[p] != kNoId) {
+					model_.report_stale(*this, ids_[p]);
 				}
 			}
 		}
@@ -772,10 +1066,8 @@ void ZigbeeAdapter::finish_interview() {
 	if (started_) {
 		rebuild(nullptr);
 	}
-	size_t points = 0;
-	for (size_t i = 0; i < point_count_; ++i) {
-		points += points_[i].ieee == device->ieee ? 1 : 0;
-	}
+	ZigbeePoint mapped[kMaxDevicePoints];
+	size_t points = device_points(*device, mapped, kMaxDevicePoints);
 	char ieee[kIeeeText];
 	format_ieee(device->ieee, ieee);
 	Log::info(kTag, "device %s interviewed: \"%s\" \"%s\", %u endpoint(s), %u datapoint(s)", ieee, device->manufacturer,
@@ -806,11 +1098,11 @@ void ZigbeeAdapter::setup_reporting(const ZigbeeDevice& device) {
 		bound[bound_count++] = Bound{endpoint, cluster};
 		driver_.bind(device.ieee, device.short_addr, endpoint, cluster);
 	};
-	for (size_t i = 0; i < point_count_; ++i) {
-		const ZigbeePoint& point = points_[i];
-		if (point.ieee != device.ieee) {
-			continue;
-		}
+	// The device's mapping, not the loaded points: with the image service the model follows later.
+	ZigbeePoint points[kMaxDevicePoints];
+	size_t count = device_points(device, points, kMaxDevicePoints);
+	for (size_t i = 0; i < count; ++i) {
+		const ZigbeePoint& point = points[i];
 		const FunctionInfo& info = function_info(point.function);
 		if (point.function == Function::action) {
 			const ZigbeeEndpoint* endpoint = device.endpoint(point.endpoint);
@@ -908,8 +1200,8 @@ void ZigbeeAdapter::device_left(NodeAddress address) {
 		device->stale = true;
 		if (loaded_) {
 			for (size_t p = 0; p < point_count_; ++p) {
-				if (points_[p].ieee == device->ieee) {
-					model_.report_stale(*this, static_cast<uint16_t>(p));
+				if (points_[p].ieee == device->ieee && ids_[p] != kNoId) {
+					model_.report_stale(*this, ids_[p]);
 				}
 			}
 		}
@@ -1128,12 +1420,12 @@ void ZigbeeAdapter::bind_result(NodeAddress address, uint8_t status) {
 // ---- Commands -------------------------------------------------------------------------------
 
 bool ZigbeeAdapter::command(const Datapoint& datapoint, const Value& value) {
-	uint16_t id = datapoint.id();
-	if (!loaded_ || id >= point_count_) {
+	long index = index_of(datapoint.id());
+	if (index < 0) {
 		Log::error(kTag, "command of '%s' refused: not a Zigbee datapoint", datapoint.name());
 		return false;
 	}
-	const ZigbeePoint& point = points_[id];
+	const ZigbeePoint& point = points_[index];
 	const ZigbeeDevice* device = database_.find(point.ieee);
 	if (device == nullptr || device->short_addr == kNoShortAddress) {
 		Log::warn(kTag, "command of '%s' refused: the device has not joined", datapoint.name());
@@ -1225,8 +1517,8 @@ void ZigbeeAdapter::write_json(JsonWriter& json) const {
 		}
 		json.key("datapoints").begin_array();
 		for (size_t p = 0; loaded_ && p < point_count_; ++p) {
-			if (points_[p].ieee == device.ieee) {
-				const Datapoint* dp = model_.get(static_cast<uint16_t>(p));
+			if (points_[p].ieee == device.ieee && ids_[p] != kNoId) {
+				const Datapoint* dp = model_.get(ids_[p]);
 				if (dp != nullptr) {
 					json.string(dp->name());
 				}

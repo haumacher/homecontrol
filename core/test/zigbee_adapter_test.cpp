@@ -610,3 +610,100 @@ TEST_CASE("ZigbeeAdapter: without a blob store the database lives in memory") {
 	REQUIRE(adapter.start());
 	CHECK(capture.sink.contains("no blob store: the device database is kept in memory only"));
 }
+
+namespace {
+
+/// Stands in for the image service: counts the notifications.
+struct SpecListener : hc::image::DynamicSpecListener {
+	void dynamic_specs_changed(hc::image::DynamicSpecProvider&) override { ++calls; }
+	int calls = 0;
+};
+
+/// The image service's part: the image's specs, then the provider's, the provider's bound to their
+/// technology, then model_loaded().
+void compose(ZigbeeFixture& f, const std::vector<DatapointSpec>& image, const hc::image::ImageBindings& bindings) {
+	const hc::image::DynamicSpec* specs = nullptr;
+	size_t count = 0;
+	const char* error = nullptr;
+	REQUIRE(f.adapter.dynamic_specs(bindings, specs, count, &error));
+	std::vector<DatapointSpec> all = image;
+	for (size_t i = 0; i < count; ++i) {
+		all.push_back(specs[i].spec);
+	}
+	REQUIRE(f.model.load(all.data(), all.size(), true) == DatapointStatus::ok);
+	for (size_t i = 0; i < count; ++i) {
+		REQUIRE(specs[i].technology == &f.adapter);
+		REQUIRE(f.model.bind(static_cast<uint16_t>(image.size() + i), *specs[i].technology) == DatapointStatus::ok);
+	}
+	f.adapter.model_loaded(bindings);
+}
+
+} // namespace
+
+TEST_CASE("ZigbeeAdapter: as a provider of the image service it states its datapoints and binds them by name") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	SpecListener listener;
+	f.adapter.set_spec_listener(&listener);
+	f.start_network();
+	CHECK(listener.calls == 1); // nothing loaded yet
+	CHECK(f.model.size() == 0); // the service loads the model, not the adapter
+	f.join_sensor();
+	CHECK(listener.calls == 2);
+	CHECK(f.model.size() == 0);
+	// Reporting is configured from the device's mapping, before its datapoints are in the model.
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..600 10"));
+	CHECK(capture.sink.contains("1 endpoint(s), 3 datapoint(s)"));
+
+	// The image binds the bulb's On/Off to "living.ceiling"; another technology's datapoint first.
+	ZigbeeOverride ceiling;
+	ceiling.name = "living.ceiling";
+	ceiling.ieee = kBulb;
+	ceiling.endpoint = 11;
+	ceiling.cluster = cluster::kOnOff;
+	ceiling.attribute = attribute::kOnOff;
+	ceiling.command_cluster = cluster::kOnOff;
+	hc::image::ImageBindings bindings;
+	bindings.zigbee = &ceiling;
+	bindings.zigbee_count = 1;
+	std::vector<DatapointSpec> image = {
+		{"knx.light", ValueType::boolean, 0},
+		{"living.ceiling", ValueType::boolean, DatapointFlags::kWritable | DatapointFlags::kTransmit},
+	};
+	const hc::image::DynamicSpec* specs = nullptr;
+	size_t count = 0;
+	REQUIRE(f.adapter.dynamic_specs(bindings, specs, count, nullptr));
+	REQUIRE(count == 3);
+	CHECK(std::string(specs[0].spec.name) == kSensorTemperature);
+	CHECK(std::string(specs[0].unit) == "\xc2\xb0" "C");
+	CHECK(f.adapter.configure(&ceiling, 1) == false); // the service hands the bindings over
+	compose(f, image, bindings);
+	REQUIRE(f.model.size() == 5);
+	CHECK(f.adapter.loaded());
+	CHECK(f.dp("knx.light")->technology() == nullptr);
+	CHECK(f.dp("living.ceiling")->technology() == &f.adapter);
+	CHECK(f.dp(kSensorTemperature)->technology() == &f.adapter);
+	CHECK(f.dp(kSensorTemperature)->id() == 2);
+	f.report(kSensorShort, 1, cluster::kTemperatureMeasurement, attribute::kMeasuredValue, zcl_type::kInt16, 2150);
+	CHECK(f.dp(kSensorTemperature)->value() == Value::of_real(21.5));
+
+	// The bound bulb joins: its only datapoint is the image's, the generic set does not change.
+	f.join_bulb();
+	CHECK(listener.calls == 2);
+	CHECK(f.dp(kBulbOn) == nullptr);
+	f.report(kBulbShort, 11, cluster::kOnOff, attribute::kOnOff, zcl_type::kBool, 1);
+	CHECK(f.dp("living.ceiling")->value() == Value::of_bool(true));
+	CHECK(f.model.command(f.dp("living.ceiling")->id(), Value::of_bool(false)) == DatapointStatus::ok);
+	CHECK(f.driver.calls.back() == "onoff 0x1a2b 11 off");
+	// A labelled device keeps its datapoints; a removed one changes the set.
+	REQUIRE(f.adapter.set_label(kSensor, "Bathroom"));
+	CHECK(listener.calls == 2);
+	REQUIRE(f.adapter.remove(kSensor));
+	CHECK(listener.calls == 3);
+	// The model without the adapter's datapoints: reports go nowhere.
+	f.adapter.model_cleared();
+	CHECK_FALSE(f.adapter.loaded());
+	CHECK(f.adapter.point_id(0) == ZigbeeAdapter::kNoId);
+	f.report(kBulbShort, 11, cluster::kOnOff, attribute::kOnOff, zcl_type::kBool, 0);
+	CHECK(f.dp("living.ceiling")->value() == Value::of_bool(false)); // the command's value, unchanged
+}

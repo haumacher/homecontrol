@@ -8,6 +8,7 @@
 
 #include "hc/controller.h"
 #include "hc/datapoint.h"
+#include "hc/image/image_service.h"
 #include "hc/json.h"
 #include "hc/platform/blob_store.h"
 #include "hc/zigbee/adapter.h"
@@ -28,7 +29,8 @@ namespace esp {
 /// Threading: every method on the event loop's task.
 class ZigbeeService {
 public:
-	/// `model` is the controller's datapoint model; until runtime images exist (issue #8) the
+	/// `model` is the controller's datapoint model. With init(ImageService&) the image service composes
+	/// it (the adapter is a provider of dynamic datapoints, doc/image.md); with init() alone the
 	/// adapter loads the Zigbee datapoints into it alone (refused while it holds other datapoints).
 	ZigbeeService(Controller& controller, LoopQueue& queue, DatapointModel& model);
 
@@ -40,6 +42,11 @@ public:
 	/// task, after the WiFi driver is initialized. Logs and stays unavailable when the partitions
 	/// zb_storage/zb_fct are missing (an OTA-updated device with the old partition table).
 	void init(BlobStore* store = nullptr);
+
+	/// As init(), and registers the adapter with `images` as a provider of dynamic datapoints before
+	/// it starts: the joined devices' datapoints join the image-loaded model (doc/zigbee.md "The
+	/// model"), and the image's `zigbee` bindings reach the adapter. Call before images.start().
+	void init(image::ImageService& images, BlobStore* store = nullptr);
 
 	/// Whether the coordinator runs (compiled in, partitions present, task created).
 	bool available() const;
@@ -65,6 +72,8 @@ public:
 	DatapointModel& model() { return model_; }
 
 private:
+	void start(image::ImageService* images, BlobStore* store);
+
 	Controller& controller_;
 	LoopQueue& queue_;
 	DatapointModel& model_;

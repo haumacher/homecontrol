@@ -147,11 +147,37 @@ functions:
 to Level with On/Off). The writable datapoints (`.on`, `.level`, `.color_temperature`) carry the
 flags writable and transmit; the server functions except `multistate` are read at start.
 
-The model: until the runtime image (issue #8) composes datapoints of all technologies into one
-model, the adapter loads the model itself with the Zigbee datapoints alone (like the demo), and
-reloads it when a device is interviewed or removed; the values survive a reload. While the model
-holds datapoints of another owner the load is refused ("the model holds datapoints of another
-owner") and the devices stay without datapoints.
+### The model
+
+On the device the adapter is a provider of dynamic datapoints of the image service (issue #29,
+`doc/image.md` "Dynamic datapoints"): the service composes the model from the runtime image's
+datapoints followed by the generic datapoints of the joined devices the image does not bind.
+
+- **Bindings.** A datapoint of the image with a `zigbee` member (`spec/runtime-image.md` 3.3,
+  `spec/zigbee.md`) stands for one function of one device endpoint. The loader checks it; at apply
+  the service hands the bindings to the adapter (`ImageBindings`), which binds those datapoints by
+  name. A device with any binding gets only its bound datapoints; they exist (unknown) before the
+  device joins. Rules, functions and the UI refer to Zigbee datapoints through these names: the
+  generic names are not in the image, so a rule cannot name them.
+- **Joins and removals.** When an interview finishes or a device is removed, the adapter compares
+  the generic datapoints it would state with those in the model and notifies the service when they
+  differ (a label does not change them; a bound device's join does not either). The service reloads
+  the model within a second (one reload per second at most) with the values kept, binds every
+  component again and leaves the rules running. Reporting and the coordinator bindings are set up
+  from the device's mapping right after the interview, before the reload; the device's values are
+  read once its datapoints are in the model.
+- **No image.** Without an image the model holds the Zigbee datapoints alone, so the first pairing
+  on a fresh device works before E-Home deploys anything; removing the image keeps them (with their
+  values) and brings back the generic datapoints of devices it had bound.
+- **Duplicates.** An image datapoint named like a generic one (`zigbee.<ieee>.<endpoint>.<suffix>`)
+  refuses the image (`datapoints[3].id: '...' is also a datapoint of the provider 'zigbee'`); a
+  device that joins later with such a name leaves the model as it is (logged) until the image
+  changes.
+
+Alone (the adapter without an image service: the host tests, a firmware built without images) the
+adapter loads the model itself with the Zigbee datapoints and reloads it when a device is
+interviewed or removed; the values survive a reload. While the model holds datapoints of another
+owner that load is refused ("the model holds datapoints of another owner").
 
 ## Stale rule
 
@@ -171,7 +197,8 @@ one drain message through the `LoopQueue`; the event loop delivers them to the a
 drops the frame and counts it (`zigbee status`: "events N dropped"). The adapter's requests run on
 the event loop's task: the driver takes the stack's lock (at most 500 ms) and calls the SDK
 directly. Allocation happens at `init()` (the adapter, the driver, the task) and at the model
-reloads; reports, commands and the stale check allocate nothing.
+reloads (the adapter's point tables, the specs it states); reports, commands and the stale check
+allocate nothing.
 
 ## Console
 
@@ -205,8 +232,9 @@ int zigbee_console(void*, int argc, char** argv) {
 	return hc::esp::zigbee_console_command(zigbee(), argc, argv);
 }
 
-// in loop_task, after knx().init():
-	zigbee().init();
+// in loop_task, after knx().init() and before image().start(): the adapter registers as a provider
+// of the image service (doc/image.md "Dynamic datapoints"), then starts
+	zigbee().init(image());
 
 // in the console's extension table:
 	{"zigbee", hc::esp::kZigbeeCommandHint, hc::esp::kZigbeeCommandHelp, &zigbee_console, nullptr},
@@ -217,8 +245,8 @@ E-Home's pairing through the API (issue #16) uses `ZigbeeService::permit_join()`
 
 ## Not done
 
-- **Composed model.** Zigbee datapoints next to those of other technologies need the runtime image
-  (issue #8); until then the adapter loads the model alone.
+- **Labels and units in the model.** The adapter states a unit per generic datapoint and the image
+  labels its datapoints, but the model carries neither yet (the UI shows the names).
 - **Green Power devices**, install codes, touchlink, OTA updates of Zigbee devices.
 - **Colour** other than colour temperature (hue/saturation, XY), scenes and groups.
 - **Power source** of a device (mains or battery) is not read; the stale rule follows the reporting

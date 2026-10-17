@@ -12,6 +12,7 @@ describes how the controller loads, applies and keeps an image (`hc::image`,
 | `image::ImageService` | Owns the scheduler, the rule engine and its clock, the value store, the history, the KNX time master and the image store; applies a `Plan` (spec section 6), stores the text, loads the stored image at boot, unloads. It is the controller's `LedInput`. |
 | `image::ImageStore` | The text in the blob store: 16 KB chunks in two alternating generations and a manifest with a CRC-32 (spec section 7). |
 | `image::MemoryBlobStore` | The RAM stand-in of the platforms' blob store (below). |
+| `image::DynamicSpecProvider` (`hc/image/dynamic_specs.h`) | A component with datapoints of its own next to the image's (the Zigbee adapter): states them, is told when the model holds them, notifies changes (below, "Dynamic datapoints"). |
 | `JsonSpanDocument` (`hc/json_document.h`) | Lets the rule loader read the image's `rules` straight from the text. |
 | `WebApi` | `PUT`/`GET`/`DELETE /api/image`, the `image` member of the status; a load or unload resyncs the live feed (every client gets a fresh snapshot, ids changed). |
 
@@ -47,6 +48,38 @@ tracking and diagnostics follow datapoints whose position moved; rule timers, st
 overrides follow the rule id (`spec/rules.md` 7.6). The KNX adapter re-reads read-on-start
 datapoints when it is configured with the tunnel up.
 
+**Dynamic datapoints.** Some datapoints come and go at run time: a Zigbee device joins or is
+removed. A `DynamicSpecProvider` registered with `ImageService::add_provider()` states the datapoints
+it needs (`dynamic_specs()`: name, type, flags, unit, the `Technology` that owns them), given the
+image's bindings it serves (`ImageBindings`: the `zigbee` members of the image's datapoints). The
+service composes the model from the image's datapoints, at the image's positions, followed by every
+provider's (the image's datapoints keep their ids whatever the providers do). A name that appears
+twice refuses the composition: an image is refused with the path of its datapoint
+(`datapoints[8].id: 'hall.light' is also a datapoint of the provider 'zigbee'`), a reload keeps the
+old model and is logged (`ImageService::dynamic_refusal()` holds the reason). After the model load
+the service binds each provider datapoint to its technology and calls `model_loaded()`; the provider
+binds the image datapoints it serves by name.
+
+When a provider's set changes it calls `notify_specs_changed()`; the service reloads the model with
+`keep_values` from a timer, never within the call, and at most once per second
+(`kReloadSpacingMs`): the first change after a quiet second reloads on the next loop turn, the
+changes of the following second (a joining device writes the database several times) are coalesced
+into one reload a second after the last. The reload binds every component again as a swap does,
+from the applied plan the service keeps while a provider is registered: the value store and the
+history load (rings saved and restored by name), the KNX adapter gets its mapping and the time
+master its configuration again (the KNX adapter re-reads the read-on-start datapoints when the
+tunnel is up), the schedules are loaded again (their state is kept by id; an output is reported
+only when it differs), the external values are configured again (their sources fetch again after
+the start delay). The rules are neither loaded again nor restarted: the image's datapoints are where
+they were, the rules' ids stay valid, their timers and states run on; the engine ignores updates of
+datapoints its tables do not cover (the providers' datapoints, which rules cannot name). An image
+load composes the providers itself and drops a pending reload.
+
+Without an image the model holds the providers' datapoints alone: at start when nothing is stored,
+after `DELETE /api/image` (their values kept), after an apply failure without a stored image. The
+first pairing on a fresh device works before E-Home deploys anything. A provider registered while
+an image runs whose plan was not kept (no provider when it was applied) joins with the next load.
+
 **LED.** `Controller::led_status()`: pairing, then connecting (network down), then `setup` when no
 image is loaded, `degraded` when the image has KNX datapoints (or a time master) and the KNX tunnel
 is down, `ready` otherwise (`doc/network.md` for the patterns).
@@ -71,6 +104,10 @@ The image store, the value store and the history are tested against the contract
 (`core/test/fake_blob_store.h`); the stand-in has its own contract test.
 
 ## Memory
+
+With a provider registered (the ESP32-C6 with Zigbee) the service keeps the applied plan, the
+"load tables" the log names for each load ("kept for the providers' reloads"), until the next load
+or unload; a reload allocates the composed spec table and the providers' tables for its duration.
 
 On the ESP32-C6 the image service and its components are static (part of the 8.6 KB the `.bss`
 grew); the rules engine, scheduler, value store and history are linked for the first time (flash
