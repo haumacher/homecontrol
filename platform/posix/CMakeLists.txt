@@ -73,6 +73,10 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/web_api_test.cpp"
 	"${HC_REPO_DIR}/core/test/web_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/live_feed_test.cpp"
+	"${HC_REPO_DIR}/core/test/astro_test.cpp"
+	"${HC_REPO_DIR}/core/test/time_service_test.cpp"
+	"${HC_REPO_DIR}/core/test/scheduler_test.cpp"
+	"${HC_REPO_DIR}/core/test/scheduler_probe_test.cpp"
 	test/file_settings_test.cpp
 	test/posix_platform_test.cpp
 )
@@ -86,3 +90,17 @@ target_compile_definitions(hc_tests PRIVATE HC_SPEC_DIR="${HC_REPO_DIR}/spec")
 
 include("${HC_REPO_DIR}/third_party/doctest/cmake/doctest.cmake")
 doctest_discover_tests(hc_tests)
+
+# KNXnet/IP tunnelling (issue #7, doc/knx.md): the UDP socket on BSD sockets (the socket calls are
+# shared with the ESP build in platform/common), the diagnostic tool `knxtool` and the KNX tests.
+target_sources(hc_posix PRIVATE src/udp_socket.cpp "${HC_REPO_DIR}/platform/common/src/bsd_udp.cpp")
+target_include_directories(hc_posix PUBLIC "${HC_REPO_DIR}/platform/common/include")
+add_executable(knxtool tools/knxtool.cpp)
+target_link_libraries(knxtool PRIVATE hc_posix)
+target_sources(hc_tests PRIVATE
+	"${HC_REPO_DIR}/core/test/knx_frames_test.cpp"
+	"${HC_REPO_DIR}/core/test/knx_tunnel_test.cpp"
+	"${HC_REPO_DIR}/core/test/knx_adapter_test.cpp"
+	"${HC_REPO_DIR}/core/test/knx_probe_test.cpp"
+	test/posix_udp_test.cpp
+)

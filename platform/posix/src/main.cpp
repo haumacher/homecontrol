@@ -8,10 +8,12 @@
 // Runs the controller until SIGINT or SIGTERM. The settings (time zone, ...) live in a text file,
 // by default homecontrol.settings in the working directory (format in doc/network.md). The web
 // server (doc/web.md) serves the API and the UI files of web/ui/dist on port 8080 (--http 0: off),
-// the WebSocket on the port above; --demo loads simulated datapoints for UI development.
+// the WebSocket on the port above; --demo loads simulated datapoints for UI development. With the
+// setting knx.gateway it keeps a KNXnet/IP tunnel to that gateway (doc/knx.md).
 
 #include <cerrno>
 #include <csignal>
+#include <poll.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -21,9 +23,14 @@
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/demo.h"
+#include "hc/knx/adapter.h"
+#include "hc/knx/knx_settings.h"
+#include "hc/knx/telegram_log.h"
+#include "hc/knx/tunnel.h"
 #include "hc/log.h"
 #include "hc/posix/file_settings.h"
 #include "hc/posix/platform.h"
+#include "hc/posix/udp_socket.h"
 #include "hc/posix/web_server.h"
 
 namespace {
@@ -53,6 +60,44 @@ void print_usage(const char* program) {
 }
 
 } // namespace
+
+/// Sleeps up to `ms` or until the web executor has a job or the KNX socket a datagram, then runs
+/// the jobs and delivers the datagrams on this (the loop's) thread.
+void sleep_until_work(hc::posix::LoopExecutor& executor, hc::posix::PosixUdpSocket& knx_socket, uint64_t ms) {
+	pollfd entries[2];
+	nfds_t count = 0;
+	if (executor.wake_fd() >= 0) {
+		entries[count].fd = executor.wake_fd();
+		entries[count].events = POLLIN;
+		entries[count].revents = 0;
+		++count;
+	}
+	if (knx_socket.fd() >= 0) {
+		entries[count].fd = knx_socket.fd();
+		entries[count].events = POLLIN;
+		entries[count].revents = 0;
+		++count;
+	}
+	if (count == 0) {
+		executor.wait(ms);
+		return;
+	}
+	int ready = poll(entries, count, static_cast<int>(ms));
+	if (ready <= 0) {
+		executor.run_pending(); // a job may have slipped in right after the wait ended
+		return;
+	}
+	for (nfds_t i = 0; i < count; ++i) {
+		if ((entries[i].revents & (POLLIN | POLLERR | POLLHUP)) == 0) {
+			continue;
+		}
+		if (entries[i].fd == knx_socket.fd()) {
+			knx_socket.drain();
+		} else {
+			executor.run_pending();
+		}
+	}
+}
 
 int main(int argc, char** argv) {
 	hc::posix::PosixClock clock;
@@ -128,6 +173,23 @@ int main(int argc, char** argv) {
 	hc::posix::LoopExecutor executor;
 	std::unique_ptr<hc::posix::WebServer> web;
 
+	// KNX: the tunnel runs when knx.gateway is set. The datapoint model stays empty until runtime
+	// images exist (issue #8); the telegram log still records what the bus says.
+	hc::knx::GatewayAddress gateway;
+	bool nat = false;
+	hc::knx::read_gateway_settings(settings, gateway, nat);
+	hc::posix::PosixUdpSocket knx_socket(controller.loop());
+	hc::knx::TelegramLog telegrams(clock);
+	hc::knx::KnxTunnel tunnel(controller.loop(), clock, controller.connectivity(), knx_socket);
+	hc::knx::KnxAdapter adapter(controller.loop(), clock, model, tunnel, &telegrams);
+	bool knx = !gateway.empty();
+	if (knx) {
+		adapter.start();
+		tunnel.set_gateway(&gateway, nat);
+	} else {
+		hc::Log::info(kTag, "no KNX gateway (setting %s): the KNX tunnel is off", hc::knx::setting::kGateway);
+	}
+
 	struct sigaction action;
 	std::memset(&action, 0, sizeof(action));
 	action.sa_handler = on_signal;
@@ -145,6 +207,9 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 	}
+	if (knx) {
+		tunnel.start();
+	}
 	hc::Log::info(kTag, "mDNS is not implemented on POSIX: _homecontrol._tcp is not announced (the host's wall clock "
 		"needs no SNTP either; ntp.server is not used here)");
 	while (!g_stop) {
@@ -152,13 +217,15 @@ int main(int argc, char** argv) {
 		uint64_t now = clock.monotonic_ms();
 		uint64_t deadline = controller.next_deadline();
 		uint64_t wait = deadline <= now ? 0 : deadline - now;
-		// Sleeps until the deadline or until a server thread hands the loop a job (and runs it).
-		executor.wait(wait < kMaxSleepMs ? wait : kMaxSleepMs);
+		// Sleeps until the deadline, a job from a web server thread, or a datagram for the KNX tunnel
+		// (a signal interrupts the sleep; the loop then checks g_stop).
+		sleep_until_work(executor, knx_socket, wait < kMaxSleepMs ? wait : kMaxSleepMs);
 	}
 	executor.stop();
 	if (web) {
 		web->stop();
 	}
+	tunnel.stop(); // DISCONNECT_REQUEST, so the gateway frees the tunnel at once
 	hc::Log::info(kTag, "stopping on signal after %llu s",
 		static_cast<unsigned long long>(controller.uptime_ms() / 1000));
 	return 0;

@@ -1,0 +1,63 @@
+/*
+ * Copyright (c) 2026 Bernhard Haumacher
+ */
+#ifndef HC_ASTRO_H
+#define HC_ASTRO_H
+
+#include <cstddef>
+#include <cstdint>
+
+namespace hc {
+
+/// The sun events of a day. Dawn and dusk are the begin and end of civil twilight (the sun's centre
+/// 6 degrees below the horizon); sunrise and sunset are the moments the upper limb touches the
+/// horizon (90.833 degrees from the zenith: refraction and the sun's radius, plus the dip of the
+/// horizon for an elevated observer).
+enum class SunEvent : uint8_t {
+	dawn,
+	sunrise,
+	sunset,
+	dusk,
+};
+
+constexpr size_t kSunEventCount = 4;
+
+/// "dawn", "sunrise", "sunset", "dusk" (the spelling of spec/schedules.md and spec/rules.md).
+const char* sun_event_name(SunEvent event);
+
+/// The event named `name` (one of the names above); false for any other text.
+bool parse_sun_event(const char* name, SunEvent& out);
+
+/// A place on the WGS84 ellipsoid.
+struct GeoLocation {
+	double latitude = 0;    ///< Degrees, north positive, -90..90.
+	double longitude = 0;   ///< Degrees, east positive, -180..180.
+	double elevation_m = 0; ///< Metres above the surroundings' horizon; lowers sunrise and raises sunset.
+};
+
+/// The sun events of one date. An event that does not occur (polar day or night, or a summer night
+/// that never gets dark enough for civil dusk) is absent: occurs() is false.
+struct SunTimes {
+	int64_t utc[kSunEventCount] = {}; ///< Seconds since the epoch (UTC), valid where occurs().
+	bool present[kSunEventCount] = {};
+
+	bool occurs(SunEvent event) const { return present[static_cast<size_t>(event)]; }
+	int64_t at(SunEvent event) const { return utc[static_cast<size_t>(event)]; }
+};
+
+/// The sun events of the calendar date `year-month-day` at `where`, after the NOAA solar
+/// calculator (Meeus' low-precision solar coordinates, refined at the event time). The events of a
+/// date are those around its solar noon at the place's longitude: dawn and sunrise before, sunset
+/// and dusk after. They are UTC instants and may fall on the neighbouring UTC date (east of 90 E or
+/// west of 90 W), and at high latitudes in summer dusk may fall after the following local midnight.
+/// Accuracy: about a minute between the polar circles (doc/time.md), worse within minutes of a
+/// polar day or night boundary, where the event exists only barely.
+SunTimes sun_times(int32_t year, unsigned month, unsigned day, const GeoLocation& where);
+
+/// Whether the coordinates are in range (latitude -90..90, longitude -180..180, elevation
+/// -500..9000 m, all finite). On refusal `error` (if given) names the problem.
+bool geo_location_valid(const GeoLocation& where, const char** error = nullptr);
+
+} // namespace hc
+
+#endif // HC_ASTRO_H

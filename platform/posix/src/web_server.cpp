@@ -4,6 +4,7 @@
 #include "hc/posix/web_server.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -11,6 +12,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -71,14 +73,41 @@ bool LoopExecutor::run(const std::function<void()>& fn) {
 	}
 	jobs_.push_back(&job);
 	wake_.notify_one();
+	signal_wake();
 	done_.wait(lock, [&] { return job.done || stopped_; });
 	return job.done;
 }
 
-void LoopExecutor::wait(uint64_t ms) {
-	std::unique_lock<std::mutex> lock(mutex_);
-	if (jobs_.empty() && !stopped_) {
-		wake_.wait_for(lock, std::chrono::milliseconds(ms));
+LoopExecutor::LoopExecutor() {
+	if (pipe2(wake_pipe_, O_NONBLOCK | O_CLOEXEC) != 0) {
+		wake_pipe_[0] = wake_pipe_[1] = -1;
+		hc::Log::error("hc.web", "cannot create the executor's wake pipe: %s; a poll()ing main loop will not wake for jobs",
+			std::strerror(errno));
+	}
+}
+
+LoopExecutor::~LoopExecutor() {
+	for (int& fd : wake_pipe_) {
+		if (fd >= 0) {
+			::close(fd);
+			fd = -1;
+		}
+	}
+}
+
+void LoopExecutor::signal_wake() {
+	if (wake_pipe_[1] >= 0) {
+		uint8_t byte = 1;
+		ssize_t n = ::write(wake_pipe_[1], &byte, 1); // a full pipe already wakes the reader
+		(void) n;
+	}
+}
+
+void LoopExecutor::run_jobs(std::unique_lock<std::mutex>& lock) {
+	if (wake_pipe_[0] >= 0) {
+		uint8_t drain[16];
+		while (::read(wake_pipe_[0], drain, sizeof(drain)) > 0) {
+		}
 	}
 	while (!jobs_.empty()) {
 		Job* job = jobs_.front();
@@ -91,10 +120,24 @@ void LoopExecutor::wait(uint64_t ms) {
 	}
 }
 
+void LoopExecutor::wait(uint64_t ms) {
+	std::unique_lock<std::mutex> lock(mutex_);
+	if (jobs_.empty() && !stopped_) {
+		wake_.wait_for(lock, std::chrono::milliseconds(ms));
+	}
+	run_jobs(lock);
+}
+
+void LoopExecutor::run_pending() {
+	std::unique_lock<std::mutex> lock(mutex_);
+	run_jobs(lock);
+}
+
 void LoopExecutor::stop() {
 	std::lock_guard<std::mutex> lock(mutex_);
 	stopped_ = true;
 	wake_.notify_all();
+	signal_wake();
 	done_.notify_all();
 }
 

@@ -13,6 +13,7 @@
 #include "hc/log.h"
 #include "hc/log_ring.h"
 #include "hc/status_led.h"
+#include "hc/time_service.h"
 #include "hc/platform/clock.h"
 #include "hc/platform/improv_port.h"
 #include "hc/platform/network_driver.h"
@@ -46,16 +47,16 @@ struct Platform {
 /// run_once() and next_deadline().
 ///
 /// At start it logs the version, applies the time zone setting, logs the wall clock state and
-/// starts connecting. It watches the wall clock and logs the local time once it is synchronized,
-/// and logs a heartbeat every kHeartbeatPeriodMs with the uptime, the network state and the heap.
+/// starts connecting. Its TimeService watches the wall clock; the controller logs the local time
+/// once it is synchronized, and logs a heartbeat every kHeartbeatPeriodMs with the uptime, the network state and the heap.
 /// With a status light it drives the LED pattern (hc::StatusLed) every StatusLed::kTickMs from
 /// led_status().
-class Controller {
+class Controller : private TimeListener {
 public:
 	static constexpr uint32_t kHeartbeatPeriodMs = 10000;
 
-	/// How often an unsynchronized wall clock is checked for synchronization.
-	static constexpr uint32_t kClockWatchPeriodMs = 1000;
+	/// How often an unsynchronized wall clock is checked for synchronization (the TimeService's watch).
+	static constexpr uint32_t kClockWatchPeriodMs = TimeService::kWatchPeriodMs;
 
 	/// Longest time zone string including the NUL.
 	static constexpr size_t kMaxTimeZone = Settings::kMaxStringLength + 1;
@@ -104,6 +105,9 @@ public:
 	Improv& improv() { return improv_; }
 	const Improv& improv() const { return improv_; }
 	const Clock& clock() const { return clock_; }
+	/// The time service: wall clock, local time, astronomy and time events (doc/time.md).
+	TimeService& time() { return time_; }
+	const TimeService& time() const { return time_; }
 	Settings& settings() { return settings_; }
 	const SystemInfo& system() const { return system_; }
 	TimeZone& time_zone_platform() { return time_zone_platform_; }
@@ -112,7 +116,7 @@ public:
 
 private:
 	void heartbeat();
-	void watch_clock();
+	void time_changed(uint8_t events) override;
 	void log_clock_synchronized();
 	void led_tick();
 
@@ -127,8 +131,8 @@ private:
 	EventLoop loop_;
 	Connectivity connectivity_;
 	Improv improv_;
-	TimerHandle clock_watch_;
 	LogRing log_ring_;
+	TimeService time_;
 	char time_zone_[kMaxTimeZone] = {};
 	uint64_t start_ms_ = 0;
 	bool started_ = false;

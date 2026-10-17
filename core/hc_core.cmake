@@ -35,6 +35,9 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/value_json.cpp"
 	"${HC_CORE_DIR}/src/web_api.cpp"
 	"${HC_CORE_DIR}/src/websocket.cpp"
+	"${HC_CORE_DIR}/src/astro.cpp"
+	"${HC_CORE_DIR}/src/time_service.cpp"
+	"${HC_CORE_DIR}/src/scheduler.cpp"
 )
 
 # The build id is taken at configure time; reconfigure to refresh it after a commit.
@@ -52,3 +55,16 @@ if(GIT_FOUND)
 		set(HC_CORE_BUILD_ID "${_hc_git_describe}")
 	endif()
 endif()
+
+# KNXnet/IP tunnelling and the KNX adapter (issue #7, doc/knx.md).
+list(APPEND HC_CORE_SOURCES
+	"${HC_CORE_DIR}/src/ipv4.cpp"
+	"${HC_CORE_DIR}/src/knx/address.cpp"
+	"${HC_CORE_DIR}/src/knx/cemi.cpp"
+	"${HC_CORE_DIR}/src/knx/knxnetip.cpp"
+	"${HC_CORE_DIR}/src/knx/knx_settings.cpp"
+	"${HC_CORE_DIR}/src/knx/adapter.cpp"
+	"${HC_CORE_DIR}/src/knx/group_value.cpp"
+	"${HC_CORE_DIR}/src/knx/telegram_log.cpp"
+	"${HC_CORE_DIR}/src/knx/tunnel.cpp"
+)

@@ -37,6 +37,11 @@ public:
 /// calling server thread until the loop has executed the job.
 class LoopExecutor {
 public:
+	LoopExecutor();
+	~LoopExecutor();
+	LoopExecutor(const LoopExecutor&) = delete;
+	LoopExecutor& operator=(const LoopExecutor&) = delete;
+
 	/// Server threads: runs `job` on the loop thread and waits for it. False if the executor
 	/// stopped (the job did not run).
 	bool run(const std::function<void()>& job);
@@ -44,10 +49,22 @@ public:
 	/// Loop thread: waits up to `ms` for jobs, then runs the waiting ones.
 	void wait(uint64_t ms);
 
+	/// Loop thread: a descriptor that becomes readable when a job is waiting, so a main loop that
+	/// sleeps in poll() over several descriptors (the KNX socket, …) wakes for jobs too. After
+	/// poll() reports it readable, call run_pending().
+	int wake_fd() const { return wake_pipe_[0]; }
+
+	/// Loop thread: runs the waiting jobs (and clears the wake descriptor) without sleeping.
+	void run_pending();
+
 	/// Refuses further jobs and wakes everybody (at shutdown).
 	void stop();
 
 private:
+	void signal_wake();
+	void run_jobs(std::unique_lock<std::mutex>& lock);
+
+	int wake_pipe_[2] = {-1, -1};
 	struct Job {
 		const std::function<void()>* fn;
 		bool done = false;
