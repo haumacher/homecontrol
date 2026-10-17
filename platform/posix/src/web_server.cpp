@@ -19,6 +19,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "hc/image/image.h"
 #include "hc/log.h"
 #include "hc/sha.h"
 #include "hc/update_check.h"
@@ -276,11 +277,14 @@ bool WebServer::start() {
 		return false;
 	}
 	httplib::Server& http = impl_->http;
-	http.set_payload_max_length(64 * 1024);
+	// The largest body any route takes (PUT /api/image); each route's own limit is checked below.
+	http.set_payload_max_length(image::kMaxImageBytes);
 
 	auto api_handler = [this](const httplib::Request& req, httplib::Response& res) {
-		if (req.body.size() > WebApi::kMaxBody) {
-			json_error(res, 413, "api.body_too_large", "the request body is longer than 1024 bytes");
+		size_t limit = WebApi::body_limit(method_of(req.method), req.path.c_str());
+		if (req.body.size() > limit) {
+			std::string text = "the request body is longer than " + std::to_string(limit) + " bytes";
+			json_error(res, 413, "api.body_too_large", text.c_str());
 			return;
 		}
 		std::string query;
@@ -341,6 +345,27 @@ bool WebServer::start() {
 			res.set_header("Retry-After", std::to_string(response.retry_after_s));
 		}
 		res.set_header("Cache-Control", "no-store");
+		if (response.stream) {
+			// A stored document (GET /api/image): fetched piecewise on the loop, as the ESP build does.
+			std::string body;
+			body.reserve(response.stream_length);
+			bool ok = true;
+			while (ok && body.size() < response.stream_length) {
+				size_t length = 0;
+				if (!executor_.run([&] {
+						ok = api_.read_stream(response.stream_token, body.size(), buffer.get(), kResponseBuffer, length);
+					}) || length == 0) {
+					ok = false;
+				}
+				body.append(buffer.get(), ok ? length : 0);
+			}
+			if (!ok) {
+				json_error(res, 409, "image.changed", "the stored image changed while it was read; repeat the request");
+				return;
+			}
+			res.set_content(body, response.content_type);
+			return;
+		}
 		res.set_content(buffer.get(), response.length, response.content_type);
 	};
 	http.Get(R"(/api/.*)", api_handler);

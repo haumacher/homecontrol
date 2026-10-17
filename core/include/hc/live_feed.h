@@ -75,6 +75,11 @@ public:
 	/// The transport can take messages again: resume snapshots.
 	void writable();
 
+	/// The datapoint model was replaced (a runtime image swap): ids changed, so every subscribed
+	/// client gets a full snapshot again (from id 0, which tells the UI to drop what it knew) and
+	/// the status at once; value updates queued for the old model are dropped.
+	void resync();
+
 	size_t client_count() const;
 
 	void datapoint_updated(const DatapointUpdate& update) override;

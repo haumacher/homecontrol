@@ -1,0 +1,5 @@
+{"comment": "The rings must fit the image's history budget.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [{"path": "history", "reason": "the image's budget is 1000"}]},
+ "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "t", "type": "real", "history": {"retention": 86400, "spacing": 60}}],
+ "history": {"budget": 1000}}

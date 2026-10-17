@@ -1,0 +1,13 @@
+{"comment": "Datapoint refusals are collected, each with its path.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "datapoints[0].type", "reason": "unknown type"},
+   {"path": "datapoints[1].id", "reason": "missing"},
+   {"path": "datapoints[2].history", "reason": "boolean, unsigned, signed or real"},
+   {"path": "datapoints[4].id", "reason": "duplicate id 'x'"}]},
+ "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
+ "datapoints": [
+   {"id": "a", "type": "bool"},
+   {"type": "boolean"},
+   {"id": "s", "type": "string", "history": {"retention": 3600, "spacing": 60}},
+   {"id": "x", "type": "real"},
+   {"id": "x", "type": "real"}]}

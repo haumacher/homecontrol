@@ -162,7 +162,15 @@ public:
 	/// declarations; the first load is a boot and reads the persisted overrides). Does not start
 	/// the rules: call start() (boot after the first load, image after a swap). A refused load
 	/// changes nothing. Pending external events are processed with the old rules first.
-	LoadResult load(const JsonValue& rules, const ScheduleDirectory* schedules);
+	LoadResult load(const JsonValue& rules, const ScheduleDirectory* schedules) {
+		return load(rules, schedules, nullptr);
+	}
+
+	/// As above, after the datapoint model was replaced (the image swap): `previous_ids[id]` is the
+	/// id the datapoint `id` of the new model had in the previous one, or kNone for a new datapoint
+	/// (one entry per datapoint of the model). The change records (7.7) and the diagnostics follow
+	/// a datapoint by it. Call flush() before the model is replaced: queued events carry old ids.
+	LoadResult load(const JsonValue& rules, const ScheduleDirectory* schedules, const uint16_t* previous_ids);
 
 	/// Starts every rule with `reason` (boot or image, spec 7.5), each in its own cascade, after
 	/// re-baselining the match memories (7.4). Queued; runs on the loop.
@@ -268,7 +276,7 @@ private:
 		const char* text);
 
 	// Swap.
-	bool install(RuleSet&& next, LoadResult& result);
+	bool install(RuleSet&& next, LoadResult& result, const uint16_t* previous_ids);
 	bool check_parameter_keys(const RuleSet& next, LoadResult& result) const;
 
 	EventLoop& loop_;

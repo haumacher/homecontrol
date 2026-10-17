@@ -1,0 +1,128 @@
+{
+	"image": {
+		"schemaVersion": "1.0",
+		"projectId": "example-house",
+		"revision": 7,
+		"generatedAt": "2026-10-17T12:00:00Z",
+		"generator": "hand-written (spec/runtime-image.md)",
+		"name": "Example house"
+	},
+	"settings": {
+		"tz": "CET-1CEST,M3.5.0,M10.5.0/3",
+		"location": {"lat": 48.137154, "lon": 11.576124, "elev": 520},
+		"ntp": {"server": "pool.ntp.org"}
+	},
+	"datapoints": [
+		{"id": "living.light", "label": "Living room light", "type": "boolean", "writable": true, "transmit": true,
+		 "knx": {"dpt": "1.001", "send": "1/1/1"}},
+		{"id": "living.light.state", "label": {"en": "Living room light (state)", "de": "Wohnzimmerlicht (Status)"},
+		 "type": "boolean", "readOnStart": true, "persist": true,
+		 "knx": {"dpt": "1.001", "listen": ["1/1/2"]}},
+		{"id": "living.dimmer.level", "label": "Living room dimmer", "type": "real", "writable": true, "transmit": true,
+		 "unit": "%", "knx": {"dpt": "5.001", "send": "1/2/1"}},
+		{"id": "living.dimmer.state", "label": "Living room dimmer (level)", "type": "real", "unit": "%",
+		 "readOnStart": true, "knx": {"dpt": "5.001", "listen": ["1/2/2"]}},
+		{"id": "living.temperature", "label": "Living room temperature", "type": "real", "unit": "°C",
+		 "readOnStart": true, "persist": true, "history": {"retention": 86400, "spacing": 300},
+		 "knx": {"dpt": "9.001", "listen": ["1/3/1"]}},
+		{"id": "living.setpoint", "label": "Living room setpoint", "type": "real", "unit": "°C", "writable": true,
+		 "transmit": true, "readable": true, "persist": true, "knx": {"dpt": "9.001", "send": "1/3/2"}},
+		{"id": "hall.presence", "label": "Hall presence", "type": "boolean", "knx": {"dpt": "1.018", "listen": ["1/4/1"]}},
+		{"id": "hall.lux", "label": "Hall brightness", "type": "real", "unit": "lx",
+		 "knx": {"dpt": "9.004", "listen": ["1/4/2"]}},
+		{"id": "hall.light", "label": "Hall light", "type": "boolean", "writable": true, "transmit": true,
+		 "knx": {"dpt": "1.001", "send": "1/1/10", "listen": ["1/1/11"]}},
+		{"id": "hall.blind.move", "label": "Hall blind up/down", "type": "boolean", "writable": true, "transmit": true,
+		 "knx": {"dpt": "1.008", "send": "1/5/1"}},
+		{"id": "hall.blind.position", "label": "Hall blind position", "type": "real", "unit": "%",
+		 "knx": {"dpt": "5.001", "listen": ["1/5/3"]}},
+		{"id": "hall.button", "label": "Hall push button", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["1/6/1"]}},
+		{"id": "scene.evening", "label": "Evening scene", "type": "unsigned", "writable": true, "transmit": true,
+		 "knx": {"dpt": "17.001", "send": "1/7/1"}},
+		{"id": "schedule.morning", "label": "Workday morning", "type": "boolean"},
+		{"id": "away", "label": "Away mode", "type": "boolean", "writable": true, "persist": true, "virtual": {}}
+	],
+	"locations": [
+		{"id": "house", "label": "House", "kind": "building"},
+		{"id": "ground", "label": "Ground floor", "kind": "floor", "parent": "house"},
+		{"id": "living", "label": {"en": "Living room", "de": "Wohnzimmer"}, "kind": "room", "parent": "ground"},
+		{"id": "hall", "label": "Hall", "kind": "room", "parent": "ground"}
+	],
+	"functions": [
+		{"id": "living-light", "label": "Ceiling light", "room": "living", "kind": "light",
+		 "datapoints": {"command": "living.light", "state": "living.light.state"}},
+		{"id": "living-dimmer", "label": "Reading lamp", "room": "living", "kind": "dimmer",
+		 "datapoints": {"levelCommand": "living.dimmer.level", "level": "living.dimmer.state"}},
+		{"id": "living-climate", "label": "Heating", "room": "living", "kind": "climate",
+		 "datapoints": {"temperature": "living.temperature", "setpointCommand": "living.setpoint"}},
+		{"id": "living-temperature", "label": "Temperature", "room": "living", "kind": "sensor", "unit": "°C",
+		 "datapoints": {"value": "living.temperature"}},
+		{"id": "hall-light", "label": "Hall light", "room": "hall", "kind": "light",
+		 "datapoints": {"command": "hall.light"}},
+		{"id": "hall-blind", "label": "Blind", "room": "hall", "kind": "blind",
+		 "datapoints": {"move": "hall.blind.move", "position": "hall.blind.position"}},
+		{"id": "hall-button", "label": "Push button", "room": "hall", "kind": "button",
+		 "datapoints": {"press": "hall.button"}},
+		{"id": "evening", "label": "Evening", "kind": "scene", "scene": 1, "datapoints": {"command": "scene.evening"}},
+		{"id": "away-switch", "label": "Away", "kind": "switch", "datapoints": {"command": "away"}}
+	],
+	"knx": {
+		"timeMaster": {"time": "0/7/1", "date": "0/7/2", "interval": 600, "atMidnight": true}
+	},
+	"schedules": [
+		{"id": "workdayMorning", "label": "Workday morning", "kind": "weekly", "days": [1, 2, 3, 4, 5],
+		 "time": {"hour": 6, "minute": 30, "second": 0}, "missed": "catchUp", "output": "schedule.morning"},
+		{"id": "blindsEvening", "label": "Blinds down at dusk", "kind": "astro", "sun": "sunset", "offset": -1800000,
+		 "notBefore": {"hour": 17, "minute": 0, "second": 0}, "notAfter": {"hour": 22, "minute": 0, "second": 0}}
+	],
+	"rules": [
+		{
+			"id": "hall-presence-light",
+			"name": "Hall light by presence",
+			"parameters": [
+				{"id": "timeout", "label": "Switch-off delay", "type": "duration", "default": 180000, "min": 30000,
+				 "max": 3600000, "step": 30000, "unit": "min"},
+				{"id": "darkBelow", "label": "Dark below", "type": "real", "default": 80.0, "min": 0.0, "max": 2000.0,
+				 "unit": "lx"}
+			],
+			"timers": [{"id": "off", "duration": {"kind": "parameter", "id": "timeout"}}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "hall.presence"}],
+					"condition": {"kind": "binary", "op": "and", "left": {"kind": "datapoint", "name": "hall.presence"},
+						"right": {"kind": "binary", "op": "or", "left": {"kind": "datapoint", "name": "hall.light"},
+							"right": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "hall.lux"},
+								"right": {"kind": "parameter", "id": "darkBelow"}}}},
+					"actions": [
+						{"kind": "cancelTimer", "timer": "off"},
+						{"kind": "write", "datapoint": "hall.light", "value": {"kind": "literal", "type": "boolean", "value": true},
+						 "onlyOnChange": true}
+					]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "hall.presence"}],
+					"condition": {"kind": "unary", "op": "not", "operand": {"kind": "datapoint", "name": "hall.presence"}},
+					"actions": [{"kind": "restartTimer", "timer": "off"}]
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "off"}],
+					"actions": [{"kind": "write", "datapoint": "hall.light", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				}
+			]
+		},
+		{
+			"id": "morning-light",
+			"name": "Light on in the morning unless away",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "workdayMorning"}],
+					"condition": {"kind": "unary", "op": "not", "operand": {"kind": "call", "function": "coalesce",
+						"args": [{"kind": "datapoint", "name": "away"}, {"kind": "literal", "type": "boolean", "value": false}]}},
+					"actions": [{"kind": "write", "datapoint": "living.light", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			]
+		}
+	],
+	"history": {"budget": 4096},
+	"ui": {}
+}

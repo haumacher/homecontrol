@@ -1,0 +1,3 @@
+{"comment": "Without the image member nothing is loaded.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [{"path": "image", "reason": "missing"}]},
+ "datapoints": []}

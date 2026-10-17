@@ -1,0 +1,9 @@
+{"comment": "The time master's addresses are its own; its datapoint ids are reserved.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "datapoints[0].id", "reason": "reserved"},
+   {"path": "knx.timeMaster.date", "reason": "sending address of datapoints[1]"}]},
+ "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
+ "knx": {"timeMaster": {"time": "0/7/1", "date": "0/7/2"}},
+ "datapoints": [
+   {"id": "knx.time", "type": "timeOfDay"},
+   {"id": "light", "type": "boolean", "writable": true, "transmit": true, "knx": {"dpt": "1.001", "send": "0/7/2"}}]}

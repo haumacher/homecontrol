@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "esp_heap_caps.h"
@@ -69,6 +70,7 @@ const char* status_line(int status) {
 		case 429: return "429 Too Many Requests";
 		case 500: return "500 Internal Server Error";
 		case 503: return "503 Service Unavailable";
+		case 507: return "507 Insufficient Storage";
 		default: return status >= 500 ? "500 Internal Server Error" : "400 Bad Request";
 	}
 }
@@ -205,7 +207,7 @@ void EspCrypto::pbkdf2_sha256(const uint8_t* password, size_t password_length, c
 // ---- The job slot (httpd task -> event loop) ---------------------------------------------------
 
 struct WebServer::Job {
-	enum class Kind : uint8_t { api, ws_open, ws_message };
+	enum class Kind : uint8_t { api, api_stream, ws_open, ws_message };
 
 	Kind kind = Kind::api;
 	uint32_t sequence = 0;
@@ -222,6 +224,12 @@ struct WebServer::Job {
 	char requested_with[kMaxRequestedWith] = {};
 	char source[Auth::kMaxSource] = {};
 	char body[WebApi::kMaxBody + 1] = {};
+
+	// api_stream: the piece at `offset` of the streamed document `token`, into g_response
+	uint32_t stream_token = 0;
+	size_t stream_offset = 0;
+	size_t stream_got = 0;
+	bool stream_ok = false;
 
 	// ws_open, ws_message
 	uint32_t handle = 0;
@@ -447,6 +455,10 @@ void WebServer::run_job(void* context, const LoopMessage&) {
 			}
 			self.api_.handle(job.request, job.response);
 			break;
+		case Job::Kind::api_stream:
+			job.stream_ok = self.api_.read_stream(job.stream_token, job.stream_offset, g_response, sizeof(g_response),
+				job.stream_got);
+			break;
 		case Job::Kind::ws_open:
 			self.feed_.open(job.handle, job.has_cookie ? job.cookie : nullptr, job.has_origin ? job.origin : nullptr,
 				job.has_host ? job.host : nullptr);
@@ -474,26 +486,52 @@ esp_err_t WebServer::api_handler(httpd_req_t* req) {
 	return g_server->handle_api(req);
 }
 
+void WebServer::wait_job() {
+	// A job that timed out still runs later: memory it points to stays valid until it has.
+	while (job_busy_.load()) {
+		vTaskDelay(pdMS_TO_TICKS(10));
+	}
+}
+
 esp_err_t WebServer::handle_api(httpd_req_t* req) {
 	if (job_busy_.load()) {
 		return send_refusal(req, 503, "api.busy", "the controller is busy; try again");
 	}
-	if (req->content_len > WebApi::kMaxBody) {
-		return send_refusal(req, 413, "api.body_too_large", "the request body is longer than 1024 bytes");
-	}
 	Job& job = *job_;
-	job.kind = Job::Kind::api;
-	job.request = WebRequest();
-	job.response = WebResponse(g_response, sizeof(g_response));
-
 	std::snprintf(job.path, sizeof(job.path), "%s", req->uri);
 	char* query = std::strchr(job.path, '?');
 	if (query != nullptr) {
 		*query++ = '\0';
 	}
+	size_t limit = WebApi::body_limit(method_of(req->method), job.path);
+	if (req->content_len > limit) {
+		static char text[64];
+		std::snprintf(text, sizeof(text), "the request body is longer than %u bytes", static_cast<unsigned>(limit));
+		return send_refusal(req, 413, "api.body_too_large", text);
+	}
+	// A large body (the runtime image) in a heap buffer of its own, released on every path out.
+	struct HeapBody {
+		char* data = nullptr;
+		~HeapBody() { std::free(data); }
+	} heap;
+	char* body = job.body;
+	if (req->content_len > WebApi::kMaxBody) {
+		heap.data = static_cast<char*>(std::malloc(req->content_len + 1));
+		if (heap.data == nullptr) {
+			Log::warn(kTag, "refusing a %u-byte body for %s: no heap block that large (largest %u B)",
+				static_cast<unsigned>(req->content_len), job.path,
+				static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+			return send_refusal(req, 507, "api.no_memory", "the device has not enough free memory for this body");
+		}
+		body = heap.data;
+	}
+	job.kind = Job::Kind::api;
+	job.request = WebRequest();
+	job.response = WebResponse(g_response, sizeof(g_response));
+
 	size_t received = 0;
 	while (received < req->content_len) {
-		int n = httpd_req_recv(req, job.body + received, req->content_len - received);
+		int n = httpd_req_recv(req, body + received, req->content_len - received);
 		if (n == HTTPD_SOCK_ERR_TIMEOUT) {
 			continue;
 		}
@@ -502,7 +540,7 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 		}
 		received += static_cast<size_t>(n);
 	}
-	job.body[received] = '\0';
+	body[received] = '\0';
 
 	WebRequest& request = job.request;
 	request.method = method_of(req->method);
@@ -517,10 +555,13 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 		? job.requested_with : nullptr;
 	peer_address(httpd_req_to_sockfd(req), job.source, sizeof(job.source));
 	request.source = job.source;
-	request.body = job.body;
+	request.body = body;
 	request.body_length = received;
 
 	if (!run_on_loop()) {
+		if (heap.data != nullptr) {
+			wait_job();
+		}
 		return send_refusal(req, 503, "api.busy", "the controller is busy; try again");
 	}
 	if (job.response.needs_hash) {
@@ -542,7 +583,9 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 			return send_refusal(req, 503, "api.busy", "the controller is busy; try again");
 		}
 	}
-	std::memset(job.body, 0, received + 1); // may hold a password
+	if (heap.data == nullptr) {
+		std::memset(job.body, 0, received + 1); // may hold a password
+	}
 
 	WebResponse& response = job.response;
 	static char retry_after[12];
@@ -556,7 +599,40 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 		std::snprintf(retry_after, sizeof(retry_after), "%u", static_cast<unsigned>(response.retry_after_s));
 		httpd_resp_set_hdr(req, "Retry-After", retry_after);
 	}
+	if (response.stream) {
+		return send_stream(req, response.stream_length, response.stream_token);
+	}
 	return httpd_resp_send(req, response.body, static_cast<ssize_t>(response.length));
+}
+
+esp_err_t WebServer::send_stream(httpd_req_t* req, size_t length, uint32_t token) {
+	// Chunked: each piece is read on the loop into g_response, then sent from here.
+	Job& job = *job_;
+	size_t sent = 0;
+	while (sent < length) {
+		job.kind = Job::Kind::api_stream;
+		job.stream_token = token;
+		job.stream_offset = sent;
+		job.stream_got = 0;
+		job.stream_ok = false;
+		if (!run_on_loop()) {
+			wait_job();
+			Log::warn(kTag, "streamed response cut after %u of %u bytes: the loop was busy", static_cast<unsigned>(sent),
+				static_cast<unsigned>(length));
+			return ESP_FAIL; // the client sees the connection close before the last chunk
+		}
+		if (!job.stream_ok || job.stream_got == 0) {
+			Log::warn(kTag, "streamed response cut after %u of %u bytes: the document changed",
+				static_cast<unsigned>(sent), static_cast<unsigned>(length));
+			return ESP_FAIL;
+		}
+		size_t piece = job.stream_got < length - sent ? job.stream_got : length - sent;
+		if (httpd_resp_send_chunk(req, g_response, static_cast<ssize_t>(piece)) != ESP_OK) {
+			return ESP_FAIL;
+		}
+		sent += piece;
+	}
+	return httpd_resp_send_chunk(req, nullptr, 0);
 }
 
 // ---- /ws --------------------------------------------------------------------------------------

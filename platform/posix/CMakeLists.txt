@@ -120,3 +120,5 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/rules_unit_test.cpp"
 	"${HC_REPO_DIR}/core/test/rules_probe_test.cpp"
 )
+# The runtime image (issue #8, spec/runtime-image.md; the fixtures spec/fixtures/images are read at run time).
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_test.cpp")

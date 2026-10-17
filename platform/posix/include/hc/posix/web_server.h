@@ -95,6 +95,8 @@ public:
 	void stop();
 
 	Auth& auth() { return auth_; }
+	/// The runtime image behind /api/image and the status (call before start()).
+	void set_image(image::ImageService* image) { api_.set_image(image); }
 
 	// WebHost (loop thread)
 	const char* device_name() const override { return device_name_; }

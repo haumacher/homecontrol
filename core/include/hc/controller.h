@@ -41,6 +41,20 @@ struct Platform {
 	WifiScanner* scanner = nullptr;
 };
 
+/// What the status LED needs to know about the runtime image beyond the network (the image
+/// service, issue #8): whether one is loaded and whether something it needs is failing.
+class LedInput {
+public:
+	/// A runtime image is loaded.
+	virtual bool image_loaded() const = 0;
+	/// The image is loaded but something it needs is failing (the KNX tunnel is down while the image
+	/// has KNX datapoints).
+	virtual bool image_degraded() const = 0;
+
+protected:
+	~LedInput() = default;
+};
+
 /// The object a platform boots. It owns the event loop, the network Connectivity and the Improv
 /// Wi-Fi provisioning service (active only if the platform has an Improv port); the platform
 /// supplies its capabilities (Platform), calls start() once and then drives the loop with
@@ -95,9 +109,12 @@ public:
 	bool format_wall_time(char* buffer, size_t size) const;
 
 	/// What the status LED shows now: pairing while pairing is active or an Improv `wifi settings`
-	/// exchange waits for the link, connecting without a link, setup while up (no runtime image can
-	/// be loaded yet, issue #8).
+	/// exchange waits for the link, connecting without a link; with the link up setup without a
+	/// runtime image, degraded when the image's needs fail (LedInput), ready otherwise.
 	LedStatus led_status() const;
+
+	/// The source of the image part of led_status() (nullptr: none, the LED shows setup when up).
+	void set_led_input(const LedInput* input) { led_input_ = input; }
 
 	EventLoop& loop() { return loop_; }
 	Connectivity& connectivity() { return connectivity_; }
@@ -136,6 +153,7 @@ private:
 	char time_zone_[kMaxTimeZone] = {};
 	uint64_t start_ms_ = 0;
 	bool started_ = false;
+	const LedInput* led_input_ = nullptr;
 };
 
 } // namespace hc

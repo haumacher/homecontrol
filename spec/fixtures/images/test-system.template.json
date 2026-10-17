@@ -1,0 +1,112 @@
+{
+	"comment": "Template for the KNX test system (push-button sensor with six keys, four-channel switch actuator, room temperature). Every \"GA:<name>\" is a placeholder: replace it with the project's group address before pushing. The filled-in image is kept outside the repository; real addresses are never committed. Remove knx.timeMaster if the project has no time address on the push-button sensor.",
+	"image": {
+		"schemaVersion": "1.0",
+		"projectId": "knx-test-system",
+		"revision": 1,
+		"generator": "hand-written (test-system template)",
+		"name": "KNX test system"
+	},
+	"datapoints": [
+		{"id": "key1", "label": "Key 1", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["GA:key1"]}},
+		{"id": "key2", "label": "Key 2", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["GA:key2"]}},
+		{"id": "key3", "label": "Key 3", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["GA:key3"]}},
+		{"id": "key4", "label": "Key 4", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["GA:key4"]}},
+		{"id": "key5", "label": "Key 5", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["GA:key5"]}},
+		{"id": "key6", "label": "Key 6", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["GA:key6"]}},
+		{"id": "chA", "label": "Channel A", "type": "boolean", "writable": true, "transmit": true,
+		 "knx": {"dpt": "1.001", "send": "GA:chA"}},
+		{"id": "chA.state", "label": "Channel A (state)", "type": "boolean", "readOnStart": true,
+		 "knx": {"dpt": "1.001", "listen": ["GA:chA.state"]}},
+		{"id": "chB", "label": "Channel B", "type": "boolean", "writable": true, "transmit": true,
+		 "knx": {"dpt": "1.001", "send": "GA:chB"}},
+		{"id": "chB.state", "label": "Channel B (state)", "type": "boolean", "readOnStart": true,
+		 "knx": {"dpt": "1.001", "listen": ["GA:chB.state"]}},
+		{"id": "chC", "label": "Channel C", "type": "boolean", "writable": true, "transmit": true,
+		 "knx": {"dpt": "1.001", "send": "GA:chC"}},
+		{"id": "chC.state", "label": "Channel C (state)", "type": "boolean", "readOnStart": true,
+		 "knx": {"dpt": "1.001", "listen": ["GA:chC.state"]}},
+		{"id": "chD", "label": "Channel D", "type": "boolean", "writable": true, "transmit": true,
+		 "knx": {"dpt": "1.001", "send": "GA:chD"}},
+		{"id": "chD.state", "label": "Channel D (state)", "type": "boolean", "readOnStart": true,
+		 "knx": {"dpt": "1.001", "listen": ["GA:chD.state"]}},
+		{"id": "temperature", "label": "Room temperature", "type": "real", "unit": "°C", "readOnStart": true,
+		 "persist": true, "history": {"retention": 86400, "spacing": 60},
+		 "knx": {"dpt": "9.001", "listen": ["GA:temperature"]}}
+	],
+	"locations": [
+		{"id": "lab", "label": "Test system", "kind": "room"},
+		{"id": "panel", "label": "Push-button sensor", "kind": "area", "parent": "lab"}
+	],
+	"functions": [
+		{"id": "key-1", "label": "Key 1", "room": "panel", "kind": "button", "datapoints": {"press": "key1"}},
+		{"id": "key-2", "label": "Key 2", "room": "panel", "kind": "button", "datapoints": {"press": "key2"}},
+		{"id": "key-3", "label": "Key 3 (toggles C)", "room": "panel", "kind": "button", "datapoints": {"press": "key3"}},
+		{"id": "key-4", "label": "Key 4", "room": "panel", "kind": "button", "datapoints": {"press": "key4"}},
+		{"id": "key-5", "label": "Key 5", "room": "panel", "kind": "button", "datapoints": {"press": "key5"}},
+		{"id": "key-6", "label": "Key 6", "room": "panel", "kind": "button", "datapoints": {"press": "key6"}},
+		{"id": "channel-a", "label": "Channel A", "room": "lab", "kind": "light",
+		 "datapoints": {"command": "chA", "state": "chA.state"}},
+		{"id": "channel-b", "label": "Channel B", "room": "lab", "kind": "light",
+		 "datapoints": {"command": "chB", "state": "chB.state"}},
+		{"id": "channel-c", "label": "Channel C", "room": "lab", "kind": "light",
+		 "datapoints": {"command": "chC", "state": "chC.state"}},
+		{"id": "channel-d", "label": "Channel D (auto-off)", "room": "lab", "kind": "light",
+		 "datapoints": {"command": "chD", "state": "chD.state"}},
+		{"id": "room-temperature", "label": "Temperature", "room": "lab", "kind": "sensor", "unit": "°C",
+		 "datapoints": {"value": "temperature"}}
+	],
+	"knx": {
+		"timeMaster": {"time": "GA:time", "interval": 600, "atMidnight": true}
+	},
+	"schedules": [
+		{"id": "pulseD", "label": "Channel D every 10 minutes", "kind": "interval", "every": 600000,
+		 "from": {"hour": 0, "minute": 0, "second": 0}, "until": {"hour": 23, "minute": 50, "second": 0},
+		 "comment": "Switches channel D on; the rule autoOffD switches it off after two minutes."}
+	],
+	"rules": [
+		{
+			"id": "key3TogglesC",
+			"name": "Key 3 toggles channel C",
+			"comment": "Every telegram from key 3 inverts channel C's reported state, whatever value the key sends.",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "key3", "on": "update", "origin": "report"}],
+					"actions": [{"kind": "write", "datapoint": "chC", "value": {"kind": "unary", "op": "not",
+						"operand": {"kind": "call", "function": "coalesce",
+							"args": [{"kind": "datapoint", "name": "chC.state"}, {"kind": "literal", "type": "boolean", "value": false}]}}}]
+				}
+			]
+		},
+		{
+			"id": "scheduleD",
+			"name": "Schedule switches channel D on",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "pulseD"}],
+					"actions": [{"kind": "write", "datapoint": "chD", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			]
+		},
+		{
+			"id": "autoOffD",
+			"name": "Channel D off after two minutes",
+			"timers": [{"id": "off", "duration": {"kind": "literal", "type": "duration", "value": 120000}}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "chD.state"}],
+					"condition": {"kind": "call", "function": "coalesce",
+						"args": [{"kind": "datapoint", "name": "chD.state"}, {"kind": "literal", "type": "boolean", "value": false}]},
+					"actions": [{"kind": "restartTimer", "timer": "off"}],
+					"elseActions": [{"kind": "cancelTimer", "timer": "off"}]
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "off"}],
+					"actions": [{"kind": "write", "datapoint": "chD", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				}
+			]
+		}
+	],
+	"history": {"budget": 16384},
+	"ui": {}
+}

@@ -101,6 +101,8 @@ export function renderOverview(content, ctx) {
 
 	function renderAll() {
 		tiles.clear();
+		const image = live.status && live.status.image; // the deployed runtime image (spec/api.md)
+		footer.textContent = image && image.loaded ? t("overview.project", { name: image.name || image.project, revision: image.revision }) : t("overview.preview");
 		const list = [...live.datapoints.values()].sort((a, b) => a.id - b.id);
 		if (list.length === 0) {
 			replace(grid, h("div", { class: "empty" }, live.snapshotDone ? t("overview.empty") : t("overview.waiting")));
@@ -135,7 +137,7 @@ export function renderOverview(content, ctx) {
 	content.appendChild(h("h2", { class: "section-title" }, t("overview.datapoints")));
 	content.appendChild(message);
 	content.appendChild(grid);
-	content.appendChild(h("p", { class: "muted" }, t("overview.preview")));
+	const footer = content.appendChild(h("p", { class: "muted" }, t("overview.preview")));
 	renderAll();
 
 	return () => {

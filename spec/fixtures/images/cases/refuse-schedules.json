@@ -1,0 +1,13 @@
+{"comment": "Schedules follow spec/schedules.md: strict members, the reasons of its section 6.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "schedules[0].output", "reason": "outputConflict"},
+   {"path": "schedules[1].time", "reason": "malformed: hour must be 0..23"},
+   {"path": "schedules[2]", "reason": "unknown member 'cron'"},
+   {"path": "schedules[3].id", "reason": "duplicateId"}]},
+ "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "knxbool", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["1/0/1"]}}],
+ "schedules": [
+   {"id": "s1", "label": "S1", "kind": "weekly", "time": {"hour": 6, "minute": 0, "second": 0}, "output": "knxbool"},
+   {"id": "s2", "label": "S2", "kind": "weekly", "time": {"hour": 24, "minute": 0, "second": 0}},
+   {"id": "s3", "label": "S3", "kind": "weekly", "time": {"hour": 6, "minute": 0, "second": 0}, "cron": "* * *"},
+   {"id": "s1", "label": "S1 again", "kind": "once", "at": {"year": 2027, "month": 1, "day": 1, "hour": 0, "minute": 0, "second": 0}}]}

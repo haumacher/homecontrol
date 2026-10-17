@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "hc/image/image_service.h"
 #include "hc/live_feed.h"
 #include "hc/network_settings.h"
 #include "hc/tz.h"
@@ -238,6 +239,10 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 			return;
 		}
 		put_setting(path + 14, request, response);
+		return;
+	}
+	if (std::strcmp(path, "/api/image") == 0) {
+		image(request, response);
 		return;
 	}
 	if (std::strcmp(path, "/api/datapoints") == 0) {
@@ -476,6 +481,11 @@ void WebApi::write_status(JsonWriter& json) {
 		.member("ws_clients", static_cast<uint32_t>(feed_ != nullptr ? feed_->client_count() : 0))
 		.end_object();
 	json.member("datapoints", static_cast<uint32_t>(model_.size()));
+	if (image_ != nullptr) {
+		json.key("image").begin_object();
+		image_->write_status(json);
+		json.end_object();
+	}
 }
 
 void WebApi::status(WebResponse& response) {
@@ -789,6 +799,89 @@ void WebApi::put_setting(const char* key, const WebRequest& request, WebResponse
 		return;
 	}
 	settings(response);
+}
+
+// ---- Runtime image ----------------------------------------------------------------------------
+
+void WebApi::set_image(image::ImageService* image) {
+	image_ = image;
+	if (image_ != nullptr) {
+		image_->set_changed(Callback::member<WebApi, &WebApi::image_changed>(this));
+	}
+}
+
+void WebApi::image_changed() {
+	if (feed_ != nullptr) {
+		feed_->resync();
+	}
+}
+
+size_t WebApi::body_limit(HttpMethod method, const char* path) {
+	if (method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
+		return image::kMaxImageBytes;
+	}
+	return kMaxBody;
+}
+
+bool WebApi::read_stream(uint32_t token, size_t offset, char* buffer, size_t size, size_t& length) {
+	length = 0;
+	return image_ != nullptr && image_->read_stored(token, offset, buffer, size, length);
+}
+
+void WebApi::image(const WebRequest& request, WebResponse& response) {
+	if (image_ == nullptr) {
+		refuse(response, 404, "image.unavailable", "this build has no runtime image service");
+		return;
+	}
+	if (request.method == HttpMethod::get) {
+		size_t bytes = 0;
+		if (!image_->stored(bytes)) {
+			refuse(response, 404, "image.none", "no runtime image is stored");
+			return;
+		}
+		response.stream = true;
+		response.stream_length = bytes;
+		response.stream_token = image_->store_token();
+		response.length = 0;
+		return;
+	}
+	if (request.method == HttpMethod::del) {
+		const char* error = nullptr;
+		if (!image_->unload(&error)) {
+			refuse(response, 500, "image.storage_error", error);
+			return;
+		}
+		JsonWriter json(response.body, response.capacity);
+		json.begin_object().member("ok", true).member("loaded", false).end_object();
+		finish(response, json);
+		return;
+	}
+	if (request.method != HttpMethod::put) {
+		refuse(response, 405, "api.method_not_allowed", "use GET, PUT or DELETE");
+		return;
+	}
+	if (request.body == nullptr || request.body_length == 0) {
+		refuse(response, 400, "image.missing", "the body must be the runtime image (JSON)");
+		return;
+	}
+	Log::info(kTag, "PUT /api/image from %s: %u bytes", request.source, static_cast<unsigned>(request.body_length));
+	bool ok = image_->load(request.body, request.body_length, image::Source::api, true);
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object();
+	if (ok) {
+		image_->write_info(json);
+	} else {
+		switch (image_->report().kind) {
+			case image::Report::Kind::syntax: response.status = 400; break;
+			case image::Report::Kind::too_large: response.status = 413; break;
+			case image::Report::Kind::no_memory: response.status = 507; break;
+			case image::Report::Kind::apply: response.status = 500; break;
+			default: response.status = 422; break;
+		}
+		image_->write_report(json);
+	}
+	json.end_object();
+	finish(response, json);
 }
 
 } // namespace hc

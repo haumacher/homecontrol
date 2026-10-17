@@ -1,0 +1,12 @@
+{"comment": "Location ids are unique, parents exist and form no cycle.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "locations[1].id", "reason": "duplicate location id 'a'"},
+   {"path": "locations[2].parent", "reason": "unknown location 'nowhere'"},
+   {"path": "locations[3].parent", "reason": "cycle"}]},
+ "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
+ "locations": [
+   {"id": "a", "label": "A"},
+   {"id": "a", "label": "A again"},
+   {"id": "b", "label": "B", "parent": "nowhere"},
+   {"id": "c", "label": "C", "parent": "d"},
+   {"id": "d", "label": "D", "parent": "c"}]}

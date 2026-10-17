@@ -90,7 +90,10 @@ LedStatus Controller::led_status() const {
 	if (!connectivity_.is_up()) {
 		return LedStatus::connecting;
 	}
-	return LedStatus::setup;
+	if (led_input_ == nullptr || !led_input_->image_loaded()) {
+		return LedStatus::setup;
+	}
+	return led_input_->image_degraded() ? LedStatus::degraded : LedStatus::ready;
 }
 
 void Controller::led_tick() {

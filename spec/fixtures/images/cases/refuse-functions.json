@@ -1,0 +1,16 @@
+{"comment": "Functions name existing datapoints of fitting type; command roles need writable datapoints.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "functions[0].datapoints.command", "reason": "needs a writable datapoint; 'lamp' is not"},
+   {"path": "functions[1].datapoints.command", "reason": "needs a writable datapoint"},
+   {"path": "functions[1].datapoints.state", "reason": "unknown datapoint 'nothing'"},
+   {"path": "functions[2].datapoints", "reason": "a sensor needs the role value"},
+   {"path": "functions[2].room", "reason": "unknown location 'attic'"},
+   {"path": "functions[3].kind", "reason": "unknown function kind"}]},
+ "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "lamp", "type": "boolean"}, {"id": "t", "type": "real"}],
+ "locations": [{"id": "house", "label": "House", "kind": "building"}],
+ "functions": [
+   {"id": "f1", "label": "Lamp", "kind": "light", "datapoints": {"command": "lamp"}},
+   {"id": "f2", "label": "Lamp 2", "kind": "light", "datapoints": {"command": "lamp", "state": "nothing"}},
+   {"id": "f3", "label": "T", "kind": "sensor", "room": "attic", "datapoints": {}},
+   {"id": "f4", "label": "X", "kind": "toaster", "datapoints": {}}]}

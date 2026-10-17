@@ -374,7 +374,12 @@ public:
 	/// (values unknown, no technology bound). Validates every spec before anything changes: on a
 	/// refusal the previous model stays. Datapoint pointers and bindings of the previous model are
 	/// invalid afterwards; listeners stay registered.
-	DatapointStatus load(const DatapointSpec* specs, size_t count);
+	DatapointStatus load(const DatapointSpec* specs, size_t count) { return load(specs, count, false); }
+
+	/// As load(); with `keep_values` a datapoint whose name and value type are those of a datapoint
+	/// of the previous model keeps its value, quality and update time (the runtime image swap,
+	/// spec/rules.md 7.6). Nothing is announced to the listeners: the values did not change.
+	DatapointStatus load(const DatapointSpec* specs, size_t count, bool keep_values);
 
 	/// Removes all datapoints and frees the tables.
 	void clear();

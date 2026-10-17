@@ -1,0 +1,7 @@
+{"comment": "Settings are validated like the device's own.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "settings.tz", "reason": "POSIX TZ"},
+   {"path": "settings.location.lat", "reason": "-90..90"},
+   {"path": "settings.ntp.server", "reason": "host name"}]},
+ "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
+ "settings": {"tz": "Europe/Berlin", "location": {"lat": 91, "lon": 11}, "ntp": {"server": "not a host!"}}}

@@ -42,6 +42,7 @@ const base = {
 	"overview.empty": "No datapoints yet. They come with the project E-Home deploys to this controller.",
 	"overview.waiting": "Waiting for live values…",
 	"overview.preview": "A first view: the dashboard of rooms and functions follows.",
+	"overview.project": "Project {name}, revision {revision}. The dashboard of rooms and functions follows.",
 
 	"value.on": "On",
 	"value.off": "Off",

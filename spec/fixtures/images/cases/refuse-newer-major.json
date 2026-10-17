@@ -1,0 +1,4 @@
+{"comment": "A newer major version is refused with the version named; nothing else is checked.",
+ "expect": {"valid": false, "kind": "version", "refusals": [{"path": "image.schemaVersion", "reason": "2.0"}]},
+ "image": {"schemaVersion": "2.0", "projectId": "case", "revision": 1},
+ "datapoints": "not checked"}

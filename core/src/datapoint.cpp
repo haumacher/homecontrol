@@ -336,7 +336,7 @@ bool valid_spec(const DatapointSpec& spec, size_t index, size_t& name_length) {
 
 } // namespace
 
-DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count) {
+DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count, bool keep_values) {
 	if (refuse_busy("load")) {
 		return DatapointStatus::busy;
 	}
@@ -397,13 +397,30 @@ DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count) {
 		}
 	}
 
+	size_t kept = 0;
+	if (keep_values) {
+		for (size_t i = 0; i < count; ++i) {
+			const Datapoint* previous = find(datapoints[i].name_);
+			if (previous != nullptr && previous->type_ == datapoints[i].type_) {
+				datapoints[i].value_ = previous->value_;
+				datapoints[i].quality_ = previous->quality_;
+				datapoints[i].updated_ms_ = previous->updated_ms_;
+				++kept;
+			}
+		}
+	}
 	free_tables();
 	datapoints_ = datapoints;
 	names_ = names;
 	by_name_ = by_name;
 	count_ = count;
-	Log::info(kTag, "model loaded: %u datapoints, %u bytes", static_cast<unsigned>(count),
-		static_cast<unsigned>(count * sizeof(Datapoint) + block));
+	if (keep_values) {
+		Log::info(kTag, "model loaded: %u datapoints, %u bytes, %u values kept", static_cast<unsigned>(count),
+			static_cast<unsigned>(count * sizeof(Datapoint) + block), static_cast<unsigned>(kept));
+	} else {
+		Log::info(kTag, "model loaded: %u datapoints, %u bytes", static_cast<unsigned>(count),
+			static_cast<unsigned>(count * sizeof(Datapoint) + block));
+	}
 	return DatapointStatus::ok;
 }
 

@@ -18,6 +18,10 @@ namespace hc {
 
 class LiveFeed;
 
+namespace image {
+class ImageService;
+}
+
 enum class HttpMethod : uint8_t { get, post, put, del, other };
 
 /// A password hash the platform computed for the API (the second pass of a login or onboarding).
@@ -56,6 +60,13 @@ struct WebResponse {
 	size_t capacity;
 	size_t length = 0;
 
+	/// The body is the stored runtime image (GET /api/image), too large for the buffer: the platform
+	/// sends `stream_length` bytes, fetching them in pieces with WebApi::read_stream(stream_token, ...)
+	/// on the event loop. `body` is empty then.
+	bool stream = false;
+	size_t stream_length = 0;
+	uint32_t stream_token = 0;
+
 	/// The request needs a password hash: the platform derives `hash_params` from the password
 	/// (Crypto::pbkdf2_sha256, off the event loop) and calls handle() again with WebRequest::hash.
 	bool needs_hash = false;
@@ -85,7 +96,19 @@ public:
 	WebApi(Controller& controller, DatapointModel& model, Auth& auth, WebHost& host);
 
 	/// The live feed, for its client count in /api/status.
-	void set_feed(const LiveFeed* feed) { feed_ = feed; }
+	void set_feed(LiveFeed* feed) { feed_ = feed; }
+
+	/// The runtime image service: /api/image and the "image" member of /api/status (doc/image.md).
+	/// The runtime image behind /api/image and the status; its changes resync the live feed.
+	void set_image(image::ImageService* image);
+
+	/// The largest body a request may carry: kMaxBody, the image size limit for PUT /api/image.
+	/// The platforms refuse longer bodies with 413 before they read them.
+	static size_t body_limit(HttpMethod method, const char* path);
+
+	/// A piece of the stored image for a streamed response (WebResponse::stream), on the loop. False
+	/// when the stored image changed since the response began (the platform aborts the transfer).
+	bool read_stream(uint32_t token, size_t offset, char* buffer, size_t size, size_t& length);
 
 	void handle(const WebRequest& request, WebResponse& response);
 
@@ -109,6 +132,7 @@ public:
 	WebHost& host() { return host_; }
 
 private:
+	void image_changed();
 	void auth_session(const WebRequest& request, WebResponse& response);
 	void auth_onboard(const WebRequest& request, WebResponse& response);
 	void auth_login(const WebRequest& request, WebResponse& response);
@@ -120,6 +144,7 @@ private:
 	void log(const WebRequest& request, WebResponse& response);
 	void settings(WebResponse& response);
 	void put_setting(const char* key, const WebRequest& request, WebResponse& response);
+	void image(const WebRequest& request, WebResponse& response);
 	bool read_password(const WebRequest& request, WebResponse& response);
 	void set_session_cookie(WebResponse& response, const char* session);
 	void finish(WebResponse& response, JsonWriter& json);
@@ -128,7 +153,8 @@ private:
 	DatapointModel& model_;
 	Auth& auth_;
 	WebHost& host_;
-	const LiveFeed* feed_ = nullptr;
+	LiveFeed* feed_ = nullptr;
+	image::ImageService* image_ = nullptr;
 	/// A consistent copy of the controller's log ring for GET /api/log.
 	LogRing log_copy_;
 };

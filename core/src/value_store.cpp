@@ -601,6 +601,15 @@ DatapointStatus ValueStore::load() {
 }
 
 void ValueStore::restore(Slot& s) {
+	const Datapoint* dp = model_.get(s.id);
+	// A value kept across an image swap (DatapointModel::load with keep_values) is current; the
+	// record, flushed at the start of this load, only gives its wall time.
+	bool kept = dp->quality() != Quality::unknown;
+	if (kept) {
+		s.value = dp->value();
+		s.has_value = !dp->value().empty();
+		s.updated_ms = dp->updated_ms();
+	}
 	char name[persist::kBlobNameSize];
 	persist::blob_name(kPrefix, s.name, name);
 	size_t size = 0;
@@ -634,10 +643,16 @@ void ValueStore::restore(Slot& s) {
 		Log::error(kTag, "record %s belongs to '%s', not '%s': ignored", name, record.name, s.name);
 		return;
 	}
+	if (kept) {
+		if (s.has_value && record.value == dp->value()) {
+			s.wall_s = to_raw(record.wall_s);
+			s.saved_wall_s = s.wall_s;
+		}
+		return;
+	}
 	if (model_.restore(s.id, record.value) != DatapointStatus::ok) {
 		return; // The model logged why (a changed type).
 	}
-	const Datapoint* dp = model_.get(s.id);
 	s.value = dp->value();
 	s.has_value = true;
 	s.wall_s = to_raw(record.wall_s);

@@ -41,7 +41,10 @@ public:
 ///
 /// - /api/* : the core's WebApi. The httpd task copies the request into a static slot and runs
 ///   WebApi::handle() on the event loop (LoopQueue, waits up to kJobTimeoutMs); the password hash
-///   of a login or onboarding is computed in the httpd task between the two passes.
+///   of a login or onboarding is computed in the httpd task between the two passes. A body above
+///   WebApi::kMaxBody (PUT /api/image, up to WebApi::body_limit()) goes to a heap buffer of its
+///   length, freed after the response (507 when the heap has no block that large). A streamed
+///   response (GET /api/image) is sent chunked, each piece fetched by a job of its own.
 /// - /ws : the WebSocket of the core's LiveFeed. Incoming messages go to the loop the same way;
 ///   outgoing messages are copied into a pool of kSendBuffers buffers and sent by work queued to
 ///   the httpd task (httpd_queue_work), so the loop never blocks on a socket.
@@ -75,6 +78,8 @@ public:
 	/// before and after. Returns false (logged) if the server cannot start.
 	bool start();
 
+	/// The runtime image behind /api/image and the status (call before start()).
+	void set_image(image::ImageService* image) { api_.set_image(image); }
 	/// The `web` console command (ConsoleContext::extensions).
 	const ConsoleCommand* console_commands() const { return &console_command_; }
 	size_t console_command_count() const { return 1; }
@@ -108,6 +113,8 @@ private:
 	static int console_web(void* context, int argc, char** argv);
 
 	esp_err_t handle_api(httpd_req_t* req);
+	esp_err_t send_stream(httpd_req_t* req, size_t length, uint32_t token);
+	void wait_job();
 	esp_err_t handle_ws(httpd_req_t* req);
 	esp_err_t handle_file(httpd_req_t* req);
 	void handle_close(int fd);

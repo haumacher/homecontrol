@@ -4,7 +4,8 @@
 // Boots the controller on the device: NVS, the platform objects, the event-loop task with the
 // network bring-up (WiFi with WPS pairing, mDNS, SNTP, the WPS button), the status LED, the USB
 // Serial/JTAG port shared by Improv Wi-Fi provisioning and the serial console, and the OTA update
-// (the confirmation of a new image, the update check; doc/ota.md), and the web server (doc/web.md).
+// (the confirmation of a new image, the update check; doc/ota.md), the web server (doc/web.md) and
+// the runtime image (doc/image.md).
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -27,14 +28,21 @@
 #include "hc/datapoint.h"
 #include "web_server.h"
 // ---- end web server ----
+// ---- runtime image (issue #8) ----
+#include "hc/image/image_service.h"
+#include "hc/image/memory_blob_store.h"
+#include "image_console.h"
+// ---- end runtime image ----
 
 namespace {
 
 constexpr const char* kTag = "hc.main";
 
 /// Stack of the event-loop task: log formatting (Log::kMaxMessage plus vsnprintf), console
-/// command bodies with printf, NVS writes and the esp_wifi/mDNS/SNTP calls made on the loop.
-constexpr uint32_t kLoopTaskStack = 8192;
+/// command bodies with printf, NVS writes and the esp_wifi/mDNS/SNTP calls made on the loop, and
+/// the runtime image's load (the validation of rules and schedules runs on the loop; `image
+/// status` prints the reserve left).
+constexpr uint32_t kLoopTaskStack = 12288;
 constexpr UBaseType_t kLoopTaskPriority = 5;
 
 /// Upper bound for one sleep, so the loop re-checks its deadline at least once a second.
@@ -55,6 +63,11 @@ hc::esp::OtaService g_ota(g_queue);
 // ---- web server (issue #5): the datapoint model the technologies fill, and the server ----
 hc::DatapointModel g_model(g_clock);
 // ---- end web server ----
+// ---- runtime image (issue #8): until the LittleFS blob store is merged, the blobs (the stored
+// image, persisted values, history rings) are kept in RAM and lost on restart ----
+constexpr size_t kBlobCapacity = 96 * 1024;
+hc::image::MemoryBlobStore g_blobs(kBlobCapacity);
+// ---- end runtime image ----
 
 hc::Controller& controller() {
 	// Constructed on first use, from app_main, after the IDF is up.
@@ -76,6 +89,19 @@ int knx_console(void*, int argc, char** argv) {
 }
 // ---- end KNX ----
 
+// ---- runtime image (issue #8): the loader, the rules, the schedules, persistence and history of
+// the image, and the console command `image` ----
+hc::image::ImageService& image() {
+	static hc::image::ImageService instance(controller(), g_model, g_blobs, knx().adapter(), &knx().tunnel());
+	return instance;
+}
+
+hc::esp::ImageConsole& image_console() {
+	static hc::esp::ImageConsole instance(image(), g_queue);
+	return instance;
+}
+// ---- end runtime image ----
+
 void loop_task(void*) {
 	hc::Controller& ctl = controller();
 	g_wifi.init(ctl.connectivity());
@@ -84,6 +110,13 @@ void loop_task(void*) {
 	bool serial_ready = g_serial.init();
 	ctl.start(); // opens the Improv window
 	knx().init();
+	// ---- runtime image ----
+	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services));
+	image().start();
+	hc::Log::info(kTag, "runtime image: blobs in RAM (up to %u KB) until the flash blob store is merged; event-loop "
+		"stack reserve %u B", static_cast<unsigned>(kBlobCapacity / 1024),
+		static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+	// ---- end runtime image ----
 	if (serial_ready) {
 		g_serial.start_improv(g_queue, ctl.improv(), g_wifi.hostname());
 	}
@@ -92,13 +125,16 @@ void loop_task(void*) {
 	button.start();
 	// ---- web server (issue #5) ----
 	static hc::esp::WebServer web(ctl, g_model, g_queue, g_services, g_ota, g_wifi.hostname());
+	web.set_image(&image());
 	web.start();
 	// ---- end web server ----
 	if (serial_ready) {
-		// The commands other components contribute: the web server's and the KNX service's.
-		static hc::esp::ConsoleCommand extensions[2] = {
+		// The commands other components contribute: the web server's, the KNX service's, the image's.
+		static hc::esp::ConsoleCommand extensions[3] = {
 			*web.console_commands(),
 			{"knx", hc::esp::kKnxCommandHint, hc::esp::kKnxCommandHelp, &knx_console, nullptr},
+			{"image", hc::esp::kImageCommandHint, hc::esp::kImageCommandHelp, &hc::esp::ImageConsole::run,
+				&image_console()},
 		};
 		static hc::esp::ConsoleContext console{ctl, g_queue, g_wifi, g_services, g_ota,
 			hc::esp::SerialMux::kConsoleInput, extensions, sizeof(extensions) / sizeof(extensions[0])};

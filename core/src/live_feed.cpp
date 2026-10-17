@@ -471,6 +471,21 @@ void LiveFeed::writable() {
 	schedule_pump();
 }
 
+void LiveFeed::resync() {
+	pending_count_ = 0;
+	bool any = false;
+	for (Client& c : clients_) {
+		if (c.used && c.subscribed) {
+			c.snapshot_next = 0;
+			any = true;
+		}
+	}
+	if (any) {
+		send_status(nullptr);
+		schedule_pump();
+	}
+}
+
 void LiveFeed::pump() {
 	pump_posted_ = false;
 	DatapointModel& model = api_.model();

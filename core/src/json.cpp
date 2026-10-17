@@ -278,8 +278,6 @@ void JsonWriter::reset(const Mark& mark) {
 
 namespace {
 
-constexpr int kMaxNesting = 16;
-
 struct Parser {
 	const char* text;
 	size_t length;
@@ -404,98 +402,189 @@ struct Parser {
 		return true;
 	}
 
-	bool value(int depth, JsonSpan& out) {
+	/// A scalar at pos (string, literal, number); false with the error otherwise.
+	bool scalar() {
+		char c = text[pos];
+		if (c == '"') {
+			return string();
+		}
+		if (c == 't') {
+			return literal("true");
+		}
+		if (c == 'f') {
+			return literal("false");
+		}
+		if (c == 'n') {
+			return literal("null");
+		}
+		if (c == '-' || (c >= '0' && c <= '9')) {
+			return number();
+		}
+		return fail("unexpected character");
+	}
+
+	/// After '{' or ',' inside an object: the member name and the colon.
+	bool member_name() {
+		space();
+		if (pos >= length || text[pos] != '"') {
+			return fail("member name expected");
+		}
+		if (!string()) {
+			return false;
+		}
+		space();
+		if (pos >= length || text[pos] != ':') {
+			return fail("':' expected");
+		}
+		++pos;
+		return true;
+	}
+
+	/// Validates one value at pos, without recursion: an explicit stack of the open containers
+	/// (one bit each: object or array) bounds the nesting to `max_depth` (at most kJsonMaxDepth).
+	bool value(size_t max_depth, JsonSpan& out) {
 		space();
 		if (pos >= length) {
 			return fail("value expected");
 		}
 		size_t start = pos;
-		char c = text[pos];
-		JsonSpan::Kind kind;
-		bool ok;
-		if (c == '{') {
-			kind = JsonSpan::Kind::object;
-			ok = container(depth, '}', true);
-		} else if (c == '[') {
-			kind = JsonSpan::Kind::array;
-			ok = container(depth, ']', false);
-		} else if (c == '"') {
-			kind = JsonSpan::Kind::string;
-			ok = string();
-		} else if (c == 't') {
-			kind = JsonSpan::Kind::boolean;
-			ok = literal("true");
-		} else if (c == 'f') {
-			kind = JsonSpan::Kind::boolean;
-			ok = literal("false");
-		} else if (c == 'n') {
-			kind = JsonSpan::Kind::null;
-			ok = literal("null");
-		} else if (c == '-' || (c >= '0' && c <= '9')) {
-			kind = JsonSpan::Kind::number;
-			ok = number();
-		} else {
-			return fail("unexpected character");
+		char first = text[pos];
+		uint64_t objects = 0; // bit d: the container at depth d is an object
+		size_t depth = 0;
+		for (;;) {
+			// A value is expected at pos.
+			space();
+			if (pos >= length) {
+				return fail("value expected");
+			}
+			char c = text[pos];
+			if (c == '{' || c == '[') {
+				if (depth >= max_depth) {
+					return fail("nested too deeply");
+				}
+				bool object = c == '{';
+				if (object) {
+					objects |= (uint64_t{1} << depth);
+				} else {
+					objects &= ~(uint64_t{1} << depth);
+				}
+				++depth;
+				++pos;
+				space();
+				if (pos < length && text[pos] == (object ? '}' : ']')) {
+					++pos;
+					--depth;
+				} else {
+					if (object && !member_name()) {
+						return false;
+					}
+					continue;
+				}
+			} else if (!scalar()) {
+				return false;
+			}
+			// A value ended: close containers until one continues with a comma.
+			for (;;) {
+				if (depth == 0) {
+					out.data = text + start;
+					out.length = pos - start;
+					out.kind = first == '{' ? JsonSpan::Kind::object
+						: first == '[' ? JsonSpan::Kind::array
+						: first == '"' ? JsonSpan::Kind::string
+						: (first == 't' || first == 'f') ? JsonSpan::Kind::boolean
+						: first == 'n' ? JsonSpan::Kind::null
+						: JsonSpan::Kind::number;
+					return true;
+				}
+				bool object = (objects >> (depth - 1)) & 1u;
+				space();
+				if (pos < length && text[pos] == ',') {
+					++pos;
+					if (object && !member_name()) {
+						return false;
+					}
+					break; // the next value
+				}
+				if (pos < length && text[pos] == (object ? '}' : ']')) {
+					++pos;
+					--depth;
+					continue;
+				}
+				return fail(object ? "',' or '}' expected" : "',' or ']' expected");
+			}
 		}
-		if (!ok) {
+	}
+
+	/// Skips one value of an already validated text (no checks, no recursion).
+	bool skip(JsonSpan& out) {
+		space();
+		if (pos >= length) {
 			return false;
+		}
+		size_t start = pos;
+		char first = text[pos];
+		if (first == '"') {
+			++pos;
+			while (pos < length && text[pos] != '"') {
+				pos += text[pos] == '\\' ? 2 : 1;
+			}
+			++pos;
+		} else if (first == '{' || first == '[') {
+			size_t depth = 0;
+			while (pos < length) {
+				char c = text[pos];
+				if (c == '"') {
+					++pos;
+					while (pos < length && text[pos] != '"') {
+						pos += text[pos] == '\\' ? 2 : 1;
+					}
+					++pos;
+					continue;
+				}
+				++pos;
+				if (c == '{' || c == '[') {
+					++depth;
+				} else if (c == '}' || c == ']') {
+					if (--depth == 0) {
+						break;
+					}
+				}
+			}
+		} else {
+			while (pos < length) {
+				char c = text[pos];
+				if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+					break;
+				}
+				++pos;
+			}
+		}
+		if (pos > length) {
+			pos = length;
 		}
 		out.data = text + start;
 		out.length = pos - start;
-		out.kind = kind;
+		out.kind = first == '{' ? JsonSpan::Kind::object
+			: first == '[' ? JsonSpan::Kind::array
+			: first == '"' ? JsonSpan::Kind::string
+			: (first == 't' || first == 'f') ? JsonSpan::Kind::boolean
+			: first == 'n' ? JsonSpan::Kind::null
+			: JsonSpan::Kind::number;
 		return true;
-	}
-
-	bool container(int depth, char close, bool object) {
-		if (depth >= kMaxNesting) {
-			return fail("nested too deeply");
-		}
-		++pos;
-		space();
-		if (pos < length && text[pos] == close) {
-			++pos;
-			return true;
-		}
-		for (;;) {
-			JsonSpan item;
-			if (object) {
-				space();
-				if (pos >= length || text[pos] != '"') {
-					return fail("member name expected");
-				}
-				if (!string()) {
-					return false;
-				}
-				space();
-				if (pos >= length || text[pos] != ':') {
-					return fail("':' expected");
-				}
-				++pos;
-			}
-			if (!value(depth + 1, item)) {
-				return false;
-			}
-			space();
-			if (pos < length && text[pos] == ',') {
-				++pos;
-				continue;
-			}
-			if (pos < length && text[pos] == close) {
-				++pos;
-				return true;
-			}
-			return fail(object ? "',' or '}' expected" : "',' or ']' expected");
-		}
 	}
 };
 
 } // namespace
 
-bool json_parse(const char* text, size_t length, JsonSpan& out, const char** error) {
+bool json_parse(const char* text, size_t length, JsonSpan& out, const char** error, size_t max_depth,
+	size_t* error_offset) {
 	Parser parser{text, length, 0, nullptr};
 	out = JsonSpan{};
 	JsonSpan value;
-	bool ok = text != nullptr && parser.value(0, value);
+	if (max_depth > kJsonMaxDepth) {
+		max_depth = kJsonMaxDepth;
+	}
+	bool ok = text != nullptr && parser.value(max_depth, value);
 	if (ok) {
 		parser.space();
 		if (parser.pos != length) {
@@ -507,6 +596,9 @@ bool json_parse(const char* text, size_t length, JsonSpan& out, const char** err
 	if (!ok) {
 		if (error != nullptr) {
 			*error = parser.error;
+		}
+		if (error_offset != nullptr) {
+			*error_offset = parser.pos;
 		}
 		return false;
 	}
@@ -527,18 +619,17 @@ bool next_element(const JsonSpan& container, size_t& position, bool object, Json
 		++parser.pos;
 	}
 	if (object) {
-		parser.space();
-		size_t start = parser.pos;
-		if (!parser.string()) {
+		JsonSpan key;
+		if (!parser.skip(key) || key.kind != JsonSpan::Kind::string) {
 			return false;
 		}
 		if (name != nullptr) {
-			*name = JsonSpan{parser.text + start, parser.pos - start, JsonSpan::Kind::string};
+			*name = key;
 		}
 		parser.space();
 		++parser.pos; // ':'
 	}
-	if (!parser.value(1, value)) {
+	if (!parser.skip(value)) {
 		return false;
 	}
 	position = parser.pos;

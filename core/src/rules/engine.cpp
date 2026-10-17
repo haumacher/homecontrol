@@ -357,14 +357,14 @@ bool Engine::parameter_valid(const Parameter& d, const Val& v) const {
 	return true;
 }
 
-LoadResult Engine::load(const JsonValue& rules, const ScheduleDirectory* schedules) {
+LoadResult Engine::load(const JsonValue& rules, const ScheduleDirectory* schedules, const uint16_t* previous_ids) {
 	flush();
 	RuleSet next;
 	LoadResult result = next.load(rules, model_, schedules);
 	if (!result.ok() || !check_parameter_keys(next, result)) {
 		return result;
 	}
-	install(std::move(next), result);
+	install(std::move(next), result, previous_ids);
 	return result;
 }
 
@@ -386,7 +386,7 @@ private:
 
 } // namespace
 
-bool Engine::install(RuleSet&& next_set, LoadResult& result) {
+bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* previous_ids) {
 	RuleSet next = std::move(next_set);
 	size_t rules = next.rule_count();
 	size_t params = next.parameter_count();
@@ -467,10 +467,35 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result) {
 			nr.state = kNoState;
 			nr.has_state = false;
 			nr.cascade_firings = 0;
-			if (orr.last_trigger_kind == static_cast<uint8_t>(TriggerKind::datapoint) ||
-				orr.last_action_kind == static_cast<uint8_t>(ActionKind::write)) {
-				// Datapoint ids stay valid (same model); other references are by index of the old set.
+			if (previous_ids != nullptr) {
+				// The model was replaced: follow the datapoint of the last trigger and the last write
+				// to its new id; forget it when the datapoint is gone.
+				auto follow = [&](uint16_t old_id, bool& found) {
+					for (size_t id = 0; id < model_.size(); ++id) {
+						if (previous_ids[id] == old_id) {
+							found = true;
+							return static_cast<uint16_t>(id);
+						}
+					}
+					found = false;
+					return old_id;
+				};
+				bool found = false;
+				if (orr.last_trigger_kind == static_cast<uint8_t>(TriggerKind::datapoint)) {
+					nr.last_trigger_ref = follow(orr.last_trigger_ref, found);
+					if (!found) {
+						nr.last_trigger_kind = kNoKind;
+					}
+				}
+				if (orr.last_action_kind == static_cast<uint8_t>(ActionKind::write)) {
+					nr.last_action_target = follow(orr.last_action_target, found);
+					if (!found) {
+						nr.last_action_kind = kNoKind;
+					}
+				}
 			}
+			// Without previous_ids the model stayed: datapoint ids are valid. Other references are by
+			// index of the old set.
 			if (orr.last_trigger_kind != kNoKind && orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::datapoint) &&
 				orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::start) &&
 				orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::match)) {
@@ -558,7 +583,8 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result) {
 	// Change tracking continues for datapoints still tracked; new ones start from the model.
 	for (size_t i = 0; i < tracked; ++i) {
 		uint16_t id = next.tracked(i);
-		uint16_t old_index = old ? old_set.find_tracked(id) : kNone;
+		uint16_t previous = previous_ids != nullptr ? previous_ids[id] : id;
+		uint16_t old_index = (old && previous != kNone) ? old_set.find_tracked(previous) : kNone;
 		if (old_index != kNone) {
 			rt->changes[i] = old->changes[old_index];
 		} else {

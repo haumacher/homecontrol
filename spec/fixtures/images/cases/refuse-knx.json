@@ -1,0 +1,12 @@
+{"comment": "KNX bindings: the DPT fits the type, addresses parse, a transmitting datapoint has a sending address.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "datapoints[0].knx.dpt", "reason": "carries real values"},
+   {"path": "datapoints[1].knx", "reason": "needs a sending address"},
+   {"path": "datapoints[2].knx.send", "reason": "not a group address"},
+   {"path": "datapoints[3].knx", "reason": "either knx or virtual"}]},
+ "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
+ "datapoints": [
+   {"id": "a", "type": "boolean", "knx": {"dpt": "9.001", "send": "1/2/3"}},
+   {"id": "b", "type": "boolean", "transmit": true, "knx": {"dpt": "1.001", "listen": ["1/2/4"]}},
+   {"id": "c", "type": "boolean", "knx": {"dpt": "1.001", "send": "1/2/300"}},
+   {"id": "d", "type": "boolean", "virtual": {}, "knx": {"dpt": "1.001", "send": "1/2/5"}}]}

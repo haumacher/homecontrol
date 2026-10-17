@@ -9,7 +9,7 @@ that breaks a client needs a new path or field, not a changed meaning.
 ## Conventions
 
 - Bodies are UTF-8 JSON objects (`Content-Type: application/json`), at most 1024 bytes in a
-  request (413 `api.body_too_large` otherwise). Responses carry `Cache-Control: no-store`.
+  request (413 `api.body_too_large` otherwise), except `PUT /api/image` (256 KB). Responses carry `Cache-Control: no-store`.
 - Every refusal is a 4xx/5xx status with the body `{"error": "<English reason>", "code": "<key>"}`.
   The `code` is stable and is the key a UI translates (doc/web.md, "Texts"); the `error` text is
   for logs and humans and may change. Some refusals add fields (listed below).
@@ -87,8 +87,16 @@ WebSocket connections are closed with 1008 `auth.session_ended`.
             "last": "none since start"},
  "led": "setup",
  "web": {"sessions": 1, "tokens": 0, "ws_clients": 1},
- "datapoints": 8}
+ "datapoints": 8,
+ "image": {"loaded": true, "project": "example-house", "revision": 7, "name": "Example house", "source": "api",
+           "datapoints": 17, "rules": 2, "schedules": 2, "degraded": false}}
 ```
+
+`image` (builds with the runtime image service): without an image `{"loaded": false}`, after a
+refused load while no image runs also `"refused": "<code>"`. `source` is how the image came: `boot` (the stored
+one at start), `api`, `console`, `file` (POSIX `--image`), `restore` (the stored one again after a
+failed apply). `degraded`: the image has KNX datapoints and the tunnel is down (the LED shows
+degraded). The WebSocket's `status` message carries the same member.
 
 `update` is platform-specific: always `available` (whether the device updates itself), the ESP
 build adds `partition`, `confirmed`, `checking`, `source` (update.url, `""` if none), `last`,
@@ -177,6 +185,57 @@ and applied at once. 200 with the settings list as for GET. Refusals: 404 `setti
 `settings.not_editable`, 400 `settings.value_missing`, 422 `settings.invalid` (with the reason),
 500 `settings.storage_error`.
 
+## Runtime image
+
+The configuration E-Home deploys (format: `spec/runtime-image.md`, operation: `doc/image.md`).
+Authenticated like every endpoint: a bearer token, or the session cookie with the CSRF header.
+
+### `PUT /api/image`
+
+The body is the image (JSON, at most 256 KB; larger: 413 `api.body_too_large` before it is read).
+The device validates it completely, then swaps it in on the event loop and stores it. 200:
+
+```json
+{"ok": true,
+ "image": {"schemaVersion": "1.0", "projectId": "example-house", "revision": 7, "generatedAt": "2026-10-17T12:00:00Z",
+           "generator": "E-Home 4.2", "name": "Example house", "bytes": 7126},
+ "counts": {"datapoints": 17, "knx": 13, "rules": 2, "schedules": 2, "locations": 4, "functions": 9,
+            "historyRings": 1, "timeMaster": true},
+ "source": "api", "stored": true}
+```
+
+`stored: false` with `storeError` when the image runs but could not be written (after a restart
+the previous one loads). A refusal changes nothing and reports every problem:
+
+```json
+{"error": "the image is invalid", "code": "image.invalid",
+ "refusals": [{"path": "datapoints[0].knx.dpt", "reason": "DPT 9.001 carries real values, the datapoint is boolean"},
+              {"path": "functions[1].datapoints.state", "reason": "unknown datapoint 'nothing'"}],
+ "total": 2, "loaded": true, "revision": 7}
+```
+
+`refusals` lists up to 12, `total` counts all; `loaded`/`revision` say what still runs. Status and
+code: 400 `image.bad_json` (not JSON; the reason names the byte), 422 `image.version` (a newer
+major schema version), 422 `image.invalid`, 413 `image.too_large`, 507 `image.no_memory` (also
+`api.no_memory` from the ESP server when no heap block holds the body), 500 `image.apply_failed`
+(valid, but refused while applied; the stored image was loaded again), 400 `image.missing` (empty
+body). A load takes up to a few hundred milliseconds on the device; requests meanwhile wait.
+
+### `GET /api/image`
+
+The stored image, byte for byte as it was deployed (`application/json`; the ESP server sends it
+chunked). 404 `image.none` when none is stored. A deployment tool compares it, or its
+`image.revision`, with what it would deploy.
+
+### `DELETE /api/image`
+
+Unloads the image and removes it with the persisted values and history rings; the device returns
+to setup (LED: short pulse). 200 `{"ok": true, "loaded": false}`; 500 `image.storage_error` when
+the stored copy could not be removed (the image is unloaded anyway).
+
+All three: 404 `image.unavailable` in a build without the image service (POSIX `--demo`), 405
+`api.method_not_allowed` for other methods.
+
 ## Other refusals
 
 404 `api.not_found` (no such endpoint), 405 `api.method_not_allowed`, 400 `api.bad_json` (with the
@@ -230,4 +289,7 @@ curl -s -H "Authorization: Bearer $TOKEN" $DEV/api/datapoints
 curl -s -H "Authorization: Bearer $TOKEN" -X POST -d '{"value": true}' $DEV/api/datapoints/0/command
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"value": "pool.ntp.org"}' $DEV/api/settings/ntp.server
 curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/log?after=0"
+curl -s -H "Authorization: Bearer $TOKEN" -X PUT --data-binary @image.json $DEV/api/image
+curl -s -H "Authorization: Bearer $TOKEN" $DEV/api/image -o deployed.json
+curl -s -H "Authorization: Bearer $TOKEN" -X DELETE $DEV/api/image
 ```

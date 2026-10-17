@@ -9,7 +9,10 @@
 // by default homecontrol.settings in the working directory (format in doc/network.md). The web
 // server (doc/web.md) serves the API and the UI files of web/ui/dist on port 8080 (--http 0: off),
 // the WebSocket on the port above; --demo loads simulated datapoints for UI development. With the
-// setting knx.gateway it keeps a KNXnet/IP tunnel to that gateway (doc/knx.md).
+// setting knx.gateway it keeps a KNXnet/IP tunnel to that gateway (doc/knx.md). --image loads a
+// runtime image (spec/runtime-image.md) at start; PUT /api/image replaces it. The blobs (the stored
+// image, persisted values, history rings) are kept in RAM until the POSIX blob store is merged:
+// nothing of them survives a restart.
 
 #include <cerrno>
 #include <csignal>
@@ -19,10 +22,13 @@
 #include <cstdlib>
 #include <ctime>
 #include <memory>
+#include <string>
 
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/demo.h"
+#include "hc/image/image_service.h"
+#include "hc/image/memory_blob_store.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/knx_settings.h"
 #include "hc/knx/telegram_log.h"
@@ -41,6 +47,10 @@ constexpr const char* kDefaultSettingsFile = "homecontrol.settings";
 
 constexpr unsigned kDefaultHttpPort = 8080;
 
+/// The RAM blob store's capacity (the stand-in for the file store): the image and its persisted
+/// state with room to spare.
+constexpr size_t kBlobCapacity = 4 * 1024 * 1024;
+
 #ifndef HC_WEB_UI_DIR
 #define HC_WEB_UI_DIR "web/ui/dist"
 #endif
@@ -52,6 +62,29 @@ volatile std::sig_atomic_t g_stop = 0;
 
 void on_signal(int) {
 	g_stop = 1;
+}
+
+/// Reads the file `path` into `out`; false (logged) if it cannot be read or exceeds the image limit.
+bool read_image_file(const char* path, std::string& out) {
+	std::FILE* file = std::fopen(path, "rb");
+	if (file == nullptr) {
+		hc::Log::error(kTag, "cannot open the image %s: %s", path, std::strerror(errno));
+		return false;
+	}
+	char buffer[4096];
+	size_t n = 0;
+	while ((n = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
+		out.append(buffer, n);
+		if (out.size() > hc::image::kMaxImageBytes) {
+			break;
+		}
+	}
+	bool ok = std::ferror(file) == 0;
+	std::fclose(file);
+	if (!ok) {
+		hc::Log::error(kTag, "cannot read the image %s", path);
+	}
+	return ok;
 }
 
 void print_usage(const char* program) {
@@ -109,6 +142,7 @@ int main(int argc, char** argv) {
 	unsigned http_port = kDefaultHttpPort;
 	const char* www_dir = HC_WEB_UI_DIR;
 	bool demo = false;
+	const char* image_path = nullptr;
 
 	// Log through the sink while the arguments are parsed (the Controller installs it for good).
 	hc::Log::set_sink(&sink);
@@ -128,8 +162,8 @@ int main(int argc, char** argv) {
 				print_usage(argv[0]);
 				return 2;
 			}
-			hc::Log::error(kTag, "refusing --image %s: runtime images are not supported yet (issue #8)", argv[i + 1]);
-			return 2;
+			image_path = argv[++i];
+			continue;
 		}
 		if (std::strcmp(argv[i], "--http") == 0 || std::strcmp(argv[i], "--www") == 0) {
 			if (i + 1 >= argc) {
@@ -163,6 +197,11 @@ int main(int argc, char** argv) {
 		return 2;
 	}
 
+	if (demo && image_path != nullptr) {
+		hc::Log::error(kTag, "--demo and --image both fill the datapoint model: choose one");
+		return 2;
+	}
+
 	hc::posix::FileSettings settings(settings_path);
 	settings.load();
 
@@ -173,8 +212,8 @@ int main(int argc, char** argv) {
 	hc::posix::LoopExecutor executor;
 	std::unique_ptr<hc::posix::WebServer> web;
 
-	// KNX: the tunnel runs when knx.gateway is set. The datapoint model stays empty until runtime
-	// images exist (issue #8); the telegram log still records what the bus says.
+	// KNX: the tunnel runs when knx.gateway is set. The runtime image maps datapoints to group
+	// addresses; without one the telegram log still records what the bus says.
 	hc::knx::GatewayAddress gateway;
 	bool nat = false;
 	hc::knx::read_gateway_settings(settings, gateway, nat);
@@ -182,6 +221,8 @@ int main(int argc, char** argv) {
 	hc::knx::TelegramLog telegrams(clock);
 	hc::knx::KnxTunnel tunnel(controller.loop(), clock, controller.connectivity(), knx_socket);
 	hc::knx::KnxAdapter adapter(controller.loop(), clock, model, tunnel, &telegrams);
+	hc::image::MemoryBlobStore blobs(kBlobCapacity);
+	hc::image::ImageService image(controller, model, blobs, adapter, &tunnel);
 	bool knx = !gateway.empty();
 	if (knx) {
 		adapter.start();
@@ -199,10 +240,27 @@ int main(int argc, char** argv) {
 
 	controller.start();
 	if (demo) {
-		demo_technology.load();
+		demo_technology.load(); // without the image service: /api/image answers image.unavailable
+	} else {
+		hc::Log::info(kTag, "blobs are kept in RAM (up to %u KB) until the POSIX blob store is merged: the image "
+			"and the persisted values do not survive a restart", static_cast<unsigned>(kBlobCapacity / 1024));
+		image.start();
+		if (image_path != nullptr) {
+			std::string text;
+			if (!read_image_file(image_path, text)) {
+				return 1;
+			}
+			if (!image.load(text.data(), text.size(), hc::image::Source::file, true)) {
+				hc::Log::error(kTag, "the image %s was refused (the log above names each problem)", image_path);
+				return 1;
+			}
+		}
 	}
 	if (http_port != 0) {
 		web.reset(new hc::posix::WebServer(controller, model, executor, static_cast<uint16_t>(http_port), www_dir));
+		if (!demo) {
+			web->set_image(&image);
+		}
 		if (!web->start()) {
 			return 1;
 		}
@@ -225,6 +283,7 @@ int main(int argc, char** argv) {
 	if (web) {
 		web->stop();
 	}
+	image.flush(); // pending value and history writes (into RAM, for symmetry with the device)
 	tunnel.stop(); // DISCONNECT_REQUEST, so the gateway frees the tunnel at once
 	hc::Log::info(kTag, "stopping on signal after %llu s",
 		static_cast<unsigned long long>(controller.uptime_ms() / 1000));

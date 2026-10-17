@@ -1,0 +1,5 @@
+{"comment": "A higher minor version loads; unknown members outside rules and schedules are ignored.",
+ "expect": {"valid": true},
+ "image": {"schemaVersion": "1.7", "projectId": "case", "revision": 1, "futureField": 3},
+ "futureMember": {"anything": [1, 2, 3]},
+ "datapoints": [{"id": "a", "type": "boolean", "futureFlag": true}]}

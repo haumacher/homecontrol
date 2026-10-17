@@ -84,3 +84,12 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/rules/printer.cpp"
 	"${HC_CORE_DIR}/src/rules/engine.cpp"
 )
+# The runtime image: format, loader, storage, the service that applies it (issue #8, doc/image.md).
+list(APPEND HC_CORE_SOURCES
+	"${HC_CORE_DIR}/src/json_document.cpp"
+	"${HC_CORE_DIR}/src/image/loader.cpp"
+	"${HC_CORE_DIR}/src/image/image_store.cpp"
+	"${HC_CORE_DIR}/src/image/image_service.cpp"
+	"${HC_CORE_DIR}/src/image/rules_clock.cpp"
+	"${HC_CORE_DIR}/src/image/memory_blob_store.cpp"
+)

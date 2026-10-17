@@ -92,9 +92,18 @@ struct JsonSpan {
 	bool valid() const { return kind != Kind::invalid; }
 };
 
-/// Validates `text` as one JSON value (whitespace around it allowed), nesting at most 16 deep;
-/// on success `out` spans the value. On refusal `error` names the problem.
-bool json_parse(const char* text, size_t length, JsonSpan& out, const char** error = nullptr);
+/// Default nesting limit of json_parse() (the API's request bodies).
+constexpr size_t kJsonDefaultDepth = 16;
+
+/// Largest nesting json_parse() accepts (the runtime image: rule expressions nest deeply).
+constexpr size_t kJsonMaxDepth = 64;
+
+/// Validates `text` as one JSON value (whitespace around it allowed), nesting at most `max_depth`
+/// containers deep (capped at kJsonMaxDepth); on success `out` spans the value. On refusal `error`
+/// names the problem and `error_offset` (if given) the byte offset where it was found. The
+/// validation is iterative: its stack use does not grow with the nesting.
+bool json_parse(const char* text, size_t length, JsonSpan& out, const char** error = nullptr,
+	size_t max_depth = kJsonDefaultDepth, size_t* error_offset = nullptr);
 
 /// The member `name` of an object span (the first one, if repeated); false if absent or `object`
 /// is not an object.
