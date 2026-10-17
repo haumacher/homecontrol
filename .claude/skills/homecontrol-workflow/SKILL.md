@@ -175,6 +175,18 @@ delivery (this list grows; add every trap you fall into):
   before believing a green `ctest`, and compare the test count with what the branches should add.
 - **A merge is not gated by the commits it merges.** Run the full gate on the merged tree before
   pushing, even when every branch was green on its own.
+- **A scripted multi-file edit that stops at a failed anchor has already written the files before
+  it.** Edits applied in order are on disk, the later ones are not, and the commit message you
+  drafted from the plan is then wrong (the MQTT device wiring was "done" in a commit that did not
+  contain it). After such a script, grep every target for its new symbol before building, and
+  prefer one script per file or a script that checks all anchors first.
+- **A background process started inside a tool call must have its stdout and stderr redirected.**
+  A broker or server launched with `&` that keeps the shell's pipe open makes the call wait for
+  ever; two agents stalled on exactly this. The same for `rm -rf ./*` after a `cd`: the safety check
+  refuses it and the call never returns in an agent. Use a fresh directory per run instead.
+- **Verify a wiring claim on the hardware by its log line, not by the build growing.** The core
+  links in whether or not a platform service uses it; only the service's own log line (or its
+  console command) proves it runs.
 
 When a probe legitimately fails: send it back (§2). When it exposes something deeper than the
 package (a format gap, a platform-interface hole), fix small ones yourself with a regression test;
