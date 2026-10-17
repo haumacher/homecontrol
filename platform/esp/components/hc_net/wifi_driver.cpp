@@ -275,6 +275,12 @@ void WifiDriver::on_wifi_event(void* arg, esp_event_base_t, int32_t id, void* da
 		self->queue_.post(&handle_wps_success, self, 0, nullptr, "WPS success");
 		break;
 	}
+	case WIFI_EVENT_SCAN_DONE: {
+		const wifi_event_sta_scan_done_t* event = static_cast<const wifi_event_sta_scan_done_t*>(data);
+		self->queue_.post(&handle_scan_done, self, event != nullptr ? static_cast<int32_t>(event->status) : 1, nullptr,
+			"WiFi SCAN_DONE");
+		break;
+	}
 	case WIFI_EVENT_STA_WPS_ER_FAILED: {
 		int32_t reason = data != nullptr ? *static_cast<const wifi_event_sta_wps_fail_reason_t*>(data) : 0;
 		self->queue_.post(&handle_wps_failed, self, reason, "failed", "WPS failed");
@@ -353,21 +359,76 @@ void WifiDriver::handle_disconnected(void* context, const LoopMessage& message) 
 	self->connectivity_->link_down(reason);
 }
 
-bool WifiDriver::start_pairing() {
+bool WifiDriver::ensure_started(const char* what) {
 	if (!initialized_) {
-		ESP_LOGE(kTag, "refusing WPS: WiFi failed to initialize (see the error at boot)");
+		ESP_LOGE(kTag, "refusing %s: WiFi failed to initialize (see the error at boot)", what);
 		return false;
 	}
-	esp_err_t err = ESP_OK;
 	if (!started_) {
-		err = esp_wifi_start();
+		esp_err_t err = esp_wifi_start();
 		if (err != ESP_OK) {
-			ESP_LOGE(kTag, "refusing WPS: cannot start WiFi: %s", esp_err_to_name(err));
+			ESP_LOGE(kTag, "refusing %s: cannot start WiFi: %s", what, esp_err_to_name(err));
 			return false;
 		}
 		started_ = true;
 		disable_power_save();
 	}
+	return true;
+}
+
+bool WifiDriver::start_scan(WifiScanSink& sink) {
+	if (scan_sink_ != nullptr) {
+		ESP_LOGW(kTag, "refusing scan: a scan is already running");
+		return false;
+	}
+	if (wps_active_) {
+		ESP_LOGE(kTag, "refusing scan while WPS runs (the core pauses pairing first)");
+		return false;
+	}
+	if (!ensure_started("scan")) {
+		return false;
+	}
+	esp_err_t err = esp_wifi_scan_start(nullptr, false);
+	if (err != ESP_OK) {
+		ESP_LOGE(kTag, "WiFi scan not started: %s", esp_err_to_name(err));
+		return false;
+	}
+	scan_sink_ = &sink;
+	ESP_LOGI(kTag, "WiFi scan started");
+	return true;
+}
+
+void WifiDriver::handle_scan_done(void* context, const LoopMessage& message) {
+	WifiDriver* self = static_cast<WifiDriver*>(context);
+	WifiScanSink* sink = self->scan_sink_;
+	if (sink == nullptr) {
+		// A scan nobody here asked for (WPS scans for itself): leave its records alone.
+		return;
+	}
+	self->scan_sink_ = nullptr;
+	if (message.number != 0) {
+		esp_wifi_clear_ap_list();
+		sink->scan_finished(false, "the WiFi driver reports the scan failed");
+		return;
+	}
+	uint16_t count = 0;
+	esp_wifi_scan_get_ap_num(&count);
+	wifi_ap_record_t record;
+	// Each call hands out (and frees) one record of the driver's list.
+	while (esp_wifi_scan_get_ap_record(&record) == ESP_OK) {
+		record.ssid[sizeof(record.ssid) - 1] = '\0';
+		sink->scan_network(reinterpret_cast<const char*>(record.ssid), record.rssi, record.authmode != WIFI_AUTH_OPEN);
+	}
+	esp_wifi_clear_ap_list();
+	ESP_LOGI(kTag, "WiFi scan done: %u access point(s)", static_cast<unsigned>(count));
+	sink->scan_finished(true, "");
+}
+
+bool WifiDriver::start_pairing() {
+	if (!ensure_started("WPS")) {
+		return false;
+	}
+	esp_err_t err = ESP_OK;
 	esp_wps_config_t config = WPS_CONFIG_INIT_DEFAULT(WPS_TYPE_PBC);
 	err = esp_wifi_wps_enable(&config);
 	if (err == ESP_OK) {

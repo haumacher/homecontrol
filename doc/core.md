@@ -4,8 +4,9 @@ The portable core (`core/`, namespace `hc`) is plain C++17 without exceptions, R
 any platform include. What it needs from the outside is an interface under
 `core/include/hc/platform/`: `Clock` (monotonic milliseconds, wall time with a "synchronized"
 flag), `SystemInfo` (free heap figures), `Settings` (small persistent named values), `TimeZone`
-(applies a POSIX TZ string, converts to local time), `NetworkDriver` (connect, disconnect, pair)
-and `StatusLight` (the status LED); the log sink is `hc::LogSink` in `hc/log.h`. The platforms
+(applies a POSIX TZ string, converts to local time), `NetworkDriver` (connect, disconnect, pair),
+`StatusLight` (the status LED), `ImprovPort` (the serial port an Improv Wi-Fi client talks to) and
+`WifiScanner` (a WiFi scan); the log sink is `hc::LogSink` in `hc/log.h`. The platforms
 implement them: `hc::posix` in `platform/posix/`, `hc::esp` in `platform/esp/components/hc_platform`
 and `hc_net`. The platforms hand them to the controller bundled in an `hc::Platform`.
 
@@ -16,15 +17,16 @@ its log sink for `hc::Log`); `start()` logs the version and the build id, applie
 setting, logs the wall clock state and the free heap, schedules a heartbeat every 10 s (uptime,
 network state, free heap), watches the wall clock every second until it is synchronized and then
 logs the local time once, drives the status LED every 50 ms (if the board has one) and starts the
-network. The controller owns the `hc::EventLoop` and the `hc::Connectivity` (the network workflow,
-`doc/network.md`); later packages hang their work onto them.
+network. The controller owns the `hc::EventLoop`, the `hc::Connectivity` (the network workflow,
+`doc/network.md`) and `hc::Improv` (WiFi provisioning from the web flasher, active only when the
+platform supplies an `ImprovPort`); later packages hang their work onto them.
 
 ## Event loop model
 
 - **Single-threaded.** Every `EventLoop` method is called on the loop's thread; handlers may
   schedule, cancel and post, but must not call `run_once`. Work from other threads reaches the
   loop through the platform: the ESP build's `hc::esp::LoopQueue` (a FreeRTOS queue the loop task
-  sleeps on) carries the IDF's WiFi/IP events and the console's commands onto the loop thread,
+  sleeps on) carries the IDF's WiFi/IP events, the console's commands and the Improv frames onto the loop thread,
   where they call into the core. The core itself stays single-threaded.
 - **Timers** live on the monotonic time base (`Clock::monotonic_ms`). `schedule_at(deadline)` is a
   one-shot; `schedule_periodic(first, period)` repeats at `first + k * period` without drift. If

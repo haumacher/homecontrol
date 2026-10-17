@@ -72,6 +72,9 @@ protected:
 /// - Every switch between connecting and pairing first stops the other activity and waits
 ///   kSettleMs before the next driver call; down reports during pairing and during that settle time
 ///   are not failures.
+/// - pause_pairing() frees the station for a while (a WiFi scan: the driver refuses to scan while
+///   WPS or a connection attempt owns the station): it stops pairing or the attempt in flight and
+///   holds every step that comes due; resume_pairing() runs the held step after kSettleMs.
 ///
 /// The platform feeds it through link_connecting(), link_up(), link_down(), pairing_succeeded() and
 /// pairing_failed(); every transition is logged (tag "hc.net") with its reason.
@@ -101,6 +104,9 @@ public:
 	/// Length of each failsafe phase (one WPS walk time).
 	static constexpr uint32_t kFailsafePhaseMs = 120000;
 
+	/// A pause that is not resumed within this long resumes by itself (logged).
+	static constexpr uint32_t kMaxPauseMs = 20000;
+
 	/// Longest IP address text (an IPv6 address, INET6_ADDRSTRLEN) including the NUL.
 	static constexpr size_t kMaxAddress = 46;
 
@@ -124,6 +130,25 @@ public:
 	/// Pairs while keeping the current link. Refused (logged, false) while pairing is active.
 	bool request_pairing(const char* trigger);
 
+	/// Frees the station for `why` (a WiFi scan): stops pairing (an existing link stays up) or
+	/// aborts an attempt that has not reached the link, and holds the next driver call that takes
+	/// the station - a pairing start or a connect - until resume_pairing(). Requests made meanwhile
+	/// (request_connect(), request_pairing()) are decided as usual and their step is held too; the
+	/// latest decided step wins. Returns false (logged) if already paused. station_free_at() tells
+	/// when the radio has settled. A pause longer than kMaxPauseMs resumes by itself.
+	bool pause_pairing(const char* why);
+
+	/// Ends the pause: the held step (pairing, a connect) runs after kSettleMs. Ignored (logged)
+	/// when not paused.
+	void resume_pairing(const char* why);
+
+	/// Whether a pause_pairing() is in effect.
+	bool paused() const { return paused_; }
+
+	/// Monotonic time from which the station is free after pause_pairing() (now, or kSettleMs after
+	/// the activity it stopped).
+	uint64_t station_free_at() const { return station_free_at_; }
+
 	/// The driver started connecting on its own (or confirms the attempt the core started).
 	void link_connecting();
 
@@ -146,8 +171,11 @@ public:
 	bool is_up() const { return state_ == LinkState::up; }
 	NetworkMode mode() const { return mode_; }
 
-	/// Whether pairing runs or is about to (re)start: what the status LED shows as "pairing".
-	bool pairing_active() const { return pairing_ || action_ == Action::start_pairing; }
+	/// Whether pairing runs or is about to (re)start (also while held by a pause): what the status
+	/// LED shows as "pairing".
+	bool pairing_active() const {
+		return pairing_ || action_ == Action::start_pairing || held_ == Action::start_pairing;
+	}
 
 	/// The address while up, "" otherwise.
 	const char* ip() const { return ip_; }
@@ -185,6 +213,8 @@ private:
 	void cancel_action();
 	void cancel_timeout();
 	void cancel_phase();
+	void cancel_pause_timer();
+	void pause_due();
 	ConnectResult driver_connect();
 	void driver_disconnect();
 	bool driver_start_pairing();
@@ -200,11 +230,15 @@ private:
 	LinkState state_ = LinkState::down;
 	NetworkMode mode_ = NetworkMode::normal;
 	Action action_ = Action::none;
+	/// The step that came due (or was stopped) during a pause, run at resume.
+	Action held_ = Action::none;
 	char ip_[kMaxAddress] = {};
 	char reason_[kMaxReason] = {};
 	TimerHandle action_timer_;
 	TimerHandle timeout_timer_;
 	TimerHandle phase_timer_;
+	TimerHandle pause_timer_;
+	uint64_t station_free_at_ = 0;
 	uint64_t action_at_ = EventLoop::kNever;
 	uint32_t attempts_ = 0;
 	uint32_t failures_ = 0;
@@ -212,6 +246,8 @@ private:
 	size_t listener_count_ = 0;
 	bool started_ = false;
 	bool pairing_ = false;
+	bool paused_ = false;
+	char pause_reason_[kMaxReason] = {};
 	bool in_driver_ = false;
 	bool notifying_ = false;
 };

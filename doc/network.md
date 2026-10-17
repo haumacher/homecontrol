@@ -13,13 +13,20 @@ executes them.
 | Hold-to-pair button logic | `core/include/hc/hold_button.h` |
 | Setting keys, defaults, validators, `store_wifi_credentials()` | `core/include/hc/network_settings.h` |
 | POSIX TZ validation, local time formatting | `core/include/hc/tz.h` |
-| WiFi station + WPS driver, mDNS, SNTP, button | `platform/esp/components/hc_net` |
+| Improv Wi-Fi serial: frames, reader, service and its lifetime | `core/include/hc/improv_protocol.h`, `core/include/hc/improv.h` |
+| WiFi station + WPS driver, WiFi scan, mDNS, SNTP, button | `platform/esp/components/hc_net` |
+| USB Serial/JTAG port shared by Improv and the console | `platform/esp/components/hc_improv` |
 | Console | `platform/esp/components/hc_console` |
+| Web flasher (ESP Web Tools manifest and page) | `web/flasher/` |
 | NVS settings, status LED, event-loop queue | `platform/esp/components/hc_platform` |
 
 ## Provisioning
 
-**First choice: WPS push-button.** A device without stored credentials listens for WPS all the
+**From the browser: the web flasher.** `web/flasher/` flashes the firmware with ESP Web Tools and
+then hands the device its WiFi credentials over the same USB cable (Improv Wi-Fi serial); see
+"Improv / web flasher" below.
+
+**WPS push-button.** A device without stored credentials listens for WPS all the
 time, so the procedure is:
 
 1. Power the board. The status LED blinks fast (100 ms on, 100 ms off): it is listening for WPS.
@@ -48,7 +55,7 @@ can be associated with one access point only). If nobody answers within the WPS 
 | `wifi wps` | starts WPS pairing (refused while pairing is active) |
 | `wifi clear` | erases the credentials, disconnects; the device then listens for WPS |
 | `wifi status` | SSID, link state and address, workflow mode, last reason, RSSI, failures, next step, mDNS name, NTP server |
-| `status` | uptime, network, LED state, local time and whether it is synchronized, free heap |
+| `status` | uptime, network, LED state, local time and whether it is synchronized, free heap, whether Improv is still offered |
 | `tz set <posix-tz>` | stores and applies the time zone |
 | `ntp set <server>` | stores the SNTP server, restarts SNTP if it runs |
 | `settings list` | all stored settings, `wifi.psk` masked |
@@ -57,6 +64,64 @@ can be associated with one access point only). If nobody answers within the WPS 
 The key is never logged or printed; `wifi set` also removes its line from the console's command
 history, so the up arrow cannot bring it back. The terminal shows the key while it is typed (the
 line editor echoes), so type it only on the local USB console.
+
+## Improv / web flasher
+
+[Improv Wi-Fi serial](https://www.improv-wifi.com/serial/) lets a browser page hand a device its WiFi
+credentials over the serial port it was just flashed through. The page is `web/flasher/index.html`
+with [ESP Web Tools](https://esphome.github.io/esp-web-tools/) (Chrome or Edge on a desktop; Web
+Serial needs HTTPS or `localhost`); `web/flasher/manifest.json` describes the esp32c6 build
+(bootloader at 0x0, partition table at 0x8000, application at 0x10000). "Connect, install, set up
+WiFi" is one browser session: after the install ESP Web Tools resets the board, asks it over Improv
+for its state and device info, offers the networks it scanned, and sends the chosen SSID and key.
+The device stores them exactly as WPS and `wifi set` do (`store_wifi_credentials()`), restarts the
+connection workflow and answers with `http://homecontrol-<mac>.local/` once the link is up; the
+page then offers it as "visit device". Without a link after 25 s, or after 3 failed attempts (a
+wrong key), it answers "unable to connect"; the credentials stay stored (a corrected retry
+overwrites them, WPS and the failsafe remain).
+
+The protocol is the phoneblock dongle's, ported: the RPCs `wifi settings`, `get current state`,
+`get device info` (`HomeControl`, `<version> (<build>)`, the chip, `homecontrol-<mac>`) and `get
+wifi networks` (one entry per SSID, strongest first, hidden networks left out; the IDF refuses to
+scan while WPS owns the station, so the core pauses pairing for the scan,
+`Connectivity::pause_pairing()`, and resumes it afterwards). A bad checksum or malformed RPC is
+answered with the error `invalid RPC`, an unknown command with `unknown RPC`. The decisions live in
+`hc::Improv` (core, tested under the fake clock); the ESP platform only moves bytes.
+
+**Window and grace.** Improv is offered from boot for 5 minutes (`Improv::kWindowMs`) and ends
+earlier 60 s (`Improv::kGraceMs`) after the network first comes up - but never sooner than 60 s
+after the last frame from a client (so a user in the middle of the dialog is not cut off, and a
+`wifi settings` exchange always completes). The log then says `Improv Wi-Fi serial ended (...): the
+serial port belongs to the console` and the port carries only the console and the log. A provisioned
+device that boots offers Improv for about a minute; opening the port from the browser resets the
+board (doc/hardware.md), so a client always meets a fresh window. Nothing is sent before a client
+has sent a frame: on the monitor Improv is invisible.
+
+**Status LED.** While a `wifi settings` exchange waits for the link the LED shows *pairing* (fast
+blink), also during the short pause of pairing for a scan.
+
+**Sharing the port with the console.** The IDF REPL reads the port itself, so it cannot share it:
+`hc_improv` installs the USB Serial/JTAG driver, and while Improv is active a reader task reads the
+raw bytes and splits them with `hc::ImprovReader`. A frame starts with the magic `IMPROV` followed by
+version 1; bytes matching a prefix of the magic are held back (at most 100 ms) and released to the
+console as soon as the match breaks, so typing `IMPORT` or `IMPROVE` on the console works. Frames go
+to the event loop; everything else reaches the console's line editor through the VFS device
+`/dev/hcin`, the REPL task's stdin. When Improv ends the reader task exits and the console reads the
+driver directly. Frames are written in one driver call each, framed by newlines; log lines go
+between them (ESP Web Tools skips the noise).
+
+**Testing it locally** (Chrome on the desk machine, the C6 connected):
+
+```bash
+cd platform/esp && idf.py -B build-esp32c6 build && cd ../..
+scripts/flasher-local.sh                  # copies the three binaries to web/flasher/firmware/esp32c6/
+cd web/flasher && python3 -m http.server 8000
+```
+
+Open `http://localhost:8000/`, click *Connect*, choose the `USB JTAG/serial debug unit` of the C6
+(never the S3). The copied binaries are not versioned (`.gitignore`). For a release the binaries
+come from the GitHub release assets (the URL pattern is noted in the manifest, to be filled with the
+first release; the OTA layout of issue #3 will change the parts).
 
 ## The connection workflow
 
@@ -83,6 +148,8 @@ Rules that keep the driver and the radio from racing each other (the dongle's le
   the WPS exchange or from an activity the core stopped.
 - Duplicate pairing failures (the IDF reports `FAILED` and `TIMEOUT` back to back) collapse into
   one restart.
+- A WiFi scan (Improv) pauses the workflow: pairing or an attempt in flight is stopped, every step
+  that comes due is held, and the latest one runs 500 ms after the scan (at most 20 s of pause).
 - An attempt without an outcome after 30 s counts as a failure; a pairing without an outcome after
   150 s counts as a pairing failure (the IDF's own WPS timeout is 120 s).
 - The driver never reports from within a call the core made; on the ESP the IDF events reach the
@@ -104,7 +171,7 @@ again in 1 s`. The heartbeat line names the link state and, if it is not `normal
 
 | Pattern | Meaning |
 |---|---|
-| fast blink, 100 ms on / 100 ms off | pairing (WPS): press the router's WPS button |
+| fast blink, 100 ms on / 100 ms off | pairing (WPS): press the router's WPS button; or an Improv WiFi setup is connecting |
 | slow blink, 500 ms on / 500 ms off | no IP address yet, or reconnecting |
 | short pulse, 100 ms on / 900 ms off | online, setup unfinished: no runtime image loaded (always, until issue #8) |
 | short dropout, 900 ms on / 100 ms off | degraded: configured, but something fails (reserved for later packages) |

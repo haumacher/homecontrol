@@ -27,7 +27,8 @@ Controller::Controller(const Platform& platform)
 	  settings_(platform.settings),
 	  time_zone_platform_(platform.time_zone),
 	  status_light_(platform.status_light),
-	  connectivity_(loop_, platform.clock, platform.network) {
+	  connectivity_(loop_, platform.clock, platform.network),
+	  improv_(loop_, platform.clock, platform.settings, connectivity_, platform.improv, platform.scanner) {
 	Log::set_sink(&sink_);
 }
 
@@ -73,11 +74,12 @@ void Controller::start() {
 		loop_.schedule_periodic(start_ms_, StatusLed::kTickMs, Callback::member<Controller, &Controller::led_tick>(this));
 	}
 
+	improv_.start();
 	connectivity_.start();
 }
 
 LedStatus Controller::led_status() const {
-	if (connectivity_.pairing_active()) {
+	if (connectivity_.pairing_active() || improv_.provisioning()) {
 		return LedStatus::pairing;
 	}
 	if (!connectivity_.is_up()) {

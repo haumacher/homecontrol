@@ -1,0 +1,17 @@
+{
+  "_note": "ESP Web Tools manifest for the HomeControl firmware (doc/network.md, 'Improv / web flasher'). The part paths are relative to this file. For local testing scripts/flasher-local.sh copies a build into firmware/esp32c6/ (not versioned). For a release the binaries are the GitHub release assets, https://github.com/haumacher/homecontrol/releases/download/<tag>/<asset> (pattern to be filled when the first release is cut); release downloads may lack CORS headers, in which case the release workflow copies the assets next to this manifest (GitHub Pages) instead. The layout is the single-app table until the OTA layout of issue #3 replaces it.",
+  "name": "HomeControl",
+  "version": "0.1.0-dev",
+  "new_install_prompt_erase": true,
+  "improv": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C6",
+      "parts": [
+        { "path": "firmware/esp32c6/bootloader.bin", "offset": 0 },
+        { "path": "firmware/esp32c6/partition-table.bin", "offset": 32768 },
+        { "path": "firmware/esp32c6/homecontrol.bin", "offset": 65536 }
+      ]
+    }
+  ]
+}

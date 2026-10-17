@@ -16,11 +16,13 @@
 #include "hc/controller.h"
 #include "hc/log.h"
 #include "hc/platform/clock.h"
+#include "hc/platform/improv_port.h"
 #include "hc/platform/network_driver.h"
 #include "hc/platform/settings.h"
 #include "hc/platform/status_light.h"
 #include "hc/platform/system_info.h"
 #include "hc/platform/time_zone.h"
+#include "hc/platform/wifi_scanner.h"
 #include "hc/tz.h"
 
 namespace hc_test {
@@ -299,6 +301,32 @@ public:
 
 private:
 	const FakeClock& clock_;
+};
+
+/// Records the frames sent and whether Improv ended.
+class FakeImprovPort : public hc::ImprovPort {
+public:
+	void send_frame(const uint8_t* frame, size_t length) override { frames.emplace_back(frame, frame + length); }
+	void improv_ended() override { ++ended; }
+	const char* chip_family() const override { return "ESP32-C6"; }
+	const char* device_name() const override { return "homecontrol-a1b2c3"; }
+
+	std::vector<std::vector<uint8_t>> frames;
+	int ended = 0;
+};
+
+/// Records scan starts; the test delivers the results through `sink`.
+class FakeScanner : public hc::WifiScanner {
+public:
+	bool start_scan(hc::WifiScanSink& sink_) override {
+		++starts;
+		sink = &sink_;
+		return accept;
+	}
+
+	bool accept = true;
+	int starts = 0;
+	hc::WifiScanSink* sink = nullptr;
 };
 
 /// All fakes a Controller needs, wired into an hc::Platform.

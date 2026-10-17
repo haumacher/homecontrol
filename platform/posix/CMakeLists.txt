@@ -40,12 +40,15 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/controller_test.cpp"
 	"${HC_REPO_DIR}/core/test/event_loop_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/network_probe_test.cpp"
+	"${HC_REPO_DIR}/core/test/improv_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/backoff_test.cpp"
 	"${HC_REPO_DIR}/core/test/connectivity_test.cpp"
 	"${HC_REPO_DIR}/core/test/settings_test.cpp"
 	"${HC_REPO_DIR}/core/test/tz_test.cpp"
 	"${HC_REPO_DIR}/core/test/hold_button_test.cpp"
 	"${HC_REPO_DIR}/core/test/status_led_test.cpp"
+	"${HC_REPO_DIR}/core/test/improv_protocol_test.cpp"
+	"${HC_REPO_DIR}/core/test/improv_test.cpp"
 	test/file_settings_test.cpp
 	test/posix_platform_test.cpp
 )

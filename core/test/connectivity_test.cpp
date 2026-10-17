@@ -539,3 +539,127 @@ TEST_CASE("Connectivity.DownReportsWhileWaitingAreNoFailures") {
 	f.connectivity.link_down("from the stopped attempt");
 	CHECK(f.connectivity.failures() == 0);
 }
+
+// ---- Pausing for a scan -------------------------------------------------------------------------
+
+TEST_CASE("Connectivity.PauseStopsPairingAndResumeRestartsIt") {
+	Fixture f;
+	f.driver.has_credentials = false;
+	f.connectivity.start();
+	REQUIRE(f.driver.pairings == std::vector<uint64_t>{1000});
+	f.clock.now_ms = 3000;
+	CHECK(f.connectivity.pause_pairing("WiFi scan"));
+	CHECK(f.driver.pairing_stops == 1);
+	CHECK(f.connectivity.paused());
+	CHECK(f.connectivity.pairing_active()); // held, about to restart: the LED keeps showing pairing
+	CHECK(f.connectivity.station_free_at() == 3000 + Connectivity::kSettleMs);
+	CHECK(f.capture.sink.contains("I hc.net: network paused for WiFi scan: pairing stopped, resumes afterwards"));
+	f.run_until(3000 + Connectivity::kMaxPauseMs - 1); // no restart while paused
+	CHECK(f.driver.pairings.size() == 1);
+	CHECK(f.connectivity.paused());
+	f.run_until(3000 + Connectivity::kMaxPauseMs + Connectivity::kSettleMs);
+	CHECK_FALSE(f.connectivity.paused()); // the pause limit resumed it
+	CHECK(f.capture.sink.contains("W hc.net: network pause for WiFi scan not ended after 20 s: resuming"));
+	CHECK(f.driver.pairings == std::vector<uint64_t>{1000, 3000 + Connectivity::kMaxPauseMs + Connectivity::kSettleMs});
+}
+
+TEST_CASE("Connectivity.ResumeRunsTheHeldPairingAfterTheSettleTime") {
+	Fixture f;
+	f.driver.has_credentials = false;
+	f.connectivity.start();
+	f.clock.now_ms = 3000;
+	f.connectivity.pause_pairing("WiFi scan");
+	f.clock.now_ms = 6000;
+	f.connectivity.resume_pairing("scan over");
+	CHECK_FALSE(f.connectivity.paused());
+	CHECK(f.connectivity.next_action_at() == 6000 + Connectivity::kSettleMs);
+	f.run_until(6000 + Connectivity::kSettleMs);
+	CHECK(f.driver.pairings == std::vector<uint64_t>{1000, 6000 + Connectivity::kSettleMs});
+	CHECK(f.connectivity.mode() == NetworkMode::unprovisioned);
+	CHECK(f.capture.sink.contains("I hc.net: network resumed (scan over): pairing"));
+}
+
+TEST_CASE("Connectivity.PauseAbortsAnAttemptAndResumeRepeatsIt") {
+	Fixture f;
+	f.connectivity.start();
+	REQUIRE(f.connectivity.state() == LinkState::connecting);
+	f.clock.now_ms = 2000;
+	f.connectivity.pause_pairing("WiFi scan");
+	CHECK(f.driver.disconnects == 1);
+	CHECK(f.connectivity.state() == LinkState::down);
+	CHECK(std::string(f.connectivity.reason()) == "paused for WiFi scan");
+	CHECK(f.connectivity.failures() == 0); // not a failure
+	CHECK(f.connectivity.station_free_at() == 2000 + Connectivity::kSettleMs);
+	f.connectivity.link_down("wifi reason 8 (ASSOC_LEAVE)"); // the abort's own report
+	CHECK(f.connectivity.failures() == 0);
+	f.clock.now_ms = 5000;
+	f.connectivity.resume_pairing("scan over");
+	f.run_until(5000 + Connectivity::kSettleMs);
+	CHECK(f.driver.connects == std::vector<uint64_t>{1000, 5000 + Connectivity::kSettleMs});
+	CHECK(f.connectivity.state() == LinkState::connecting);
+}
+
+TEST_CASE("Connectivity.StepsDueWhilePausedAreHeldAndTheLatestWins") {
+	Fixture f;
+	f.connectivity.start();
+	f.connectivity.link_down("no access point"); // reconnect in 1 s
+	f.connectivity.pause_pairing("WiFi scan");
+	CHECK(f.connectivity.station_free_at() == 1000); // nothing was running
+	f.run_until(4000);
+	CHECK(f.driver.connects.size() == 1); // the reconnect came due and was held
+	CHECK(f.capture.sink.contains("I hc.net: network: connect held while paused for WiFi scan"));
+
+	// A request meanwhile is decided as usual; its step is held too and replaces the old one.
+	f.driver.has_credentials = false;
+	f.connectivity.request_connect("credentials cleared");
+	CHECK(f.connectivity.mode() == NetworkMode::unprovisioned);
+	CHECK(f.connectivity.pairing_active());
+	CHECK(f.driver.pairings.empty());
+	CHECK_FALSE(f.connectivity.request_pairing("console")); // already about to pair
+	f.connectivity.resume_pairing("scan over");
+	f.run_until(4000 + Connectivity::kSettleMs);
+	CHECK(f.driver.pairings == std::vector<uint64_t>{4000 + Connectivity::kSettleMs});
+	CHECK(f.driver.connects.size() == 1);
+}
+
+TEST_CASE("Connectivity.PauseWithTheLinkUpLeavesItAlone") {
+	Fixture f;
+	f.connectivity.start();
+	f.connectivity.link_up("192.0.2.10");
+	CHECK(f.connectivity.pause_pairing("WiFi scan"));
+	CHECK(f.driver.disconnects == 0);
+	CHECK(f.connectivity.is_up());
+	CHECK(f.connectivity.station_free_at() == 1000);
+	CHECK_FALSE(f.connectivity.pause_pairing("another scan"));
+	CHECK(f.capture.sink.contains("W hc.net: refusing pause for another scan: already paused for WiFi scan"));
+	f.connectivity.resume_pairing("scan over");
+	CHECK(f.loop.timer_count() == 0);
+	f.connectivity.resume_pairing("scan over");
+	CHECK(f.capture.sink.contains("W hc.net: resume (scan over) while not paused, ignored"));
+
+	// The link coming up during a pause drops a held reconnect.
+	f.connectivity.link_down("beacon timeout");
+	f.connectivity.pause_pairing("WiFi scan");
+	f.run_until(3000);
+	f.connectivity.link_up("192.0.2.10");
+	f.connectivity.resume_pairing("scan over");
+	f.run_until(10000);
+	CHECK(f.driver.connects.size() == 1);
+	CHECK(f.connectivity.is_up());
+}
+
+TEST_CASE("Connectivity.RepairingPausedKeepsTheLink") {
+	Fixture f;
+	f.connectivity.start();
+	f.connectivity.link_up("192.0.2.10");
+	REQUIRE(f.connectivity.request_pairing("button"));
+	REQUIRE(f.driver.pairings.size() == 1);
+	f.connectivity.pause_pairing("WiFi scan");
+	CHECK(f.driver.pairing_stops == 1);
+	CHECK(f.connectivity.is_up());
+	f.connectivity.resume_pairing("scan over");
+	f.run_until(f.clock.now_ms + Connectivity::kSettleMs);
+	CHECK(f.driver.pairings.size() == 2);
+	CHECK(f.connectivity.mode() == NetworkMode::repairing);
+	CHECK(f.connectivity.is_up());
+}

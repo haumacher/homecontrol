@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<!--
+  Copyright (c) 2026 Bernhard Haumacher
+
+  The HomeControl web flasher: ESP Web Tools flashes the firmware over Web Serial and then hands the
+  device its WiFi credentials with Improv Wi-Fi serial (doc/network.md, "Improv / web flasher").
+  Web Serial needs Chrome or Edge on a desktop and a secure origin (HTTPS, or http://localhost).
+  Local test: scripts/flasher-local.sh, then `python3 -m http.server` in this directory.
+-->
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>HomeControl Flasher</title>
+	<script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+	<style>
+		:root {
+			--bg: #f7f7f5;
+			--fg: #1d1d1b;
+			--muted: #5c5c58;
+			--accent: #0b6e75;
+			--card: #ffffff;
+			--border: #dcdcd6;
+		}
+		@media (prefers-color-scheme: dark) {
+			:root {
+				--bg: #161615;
+				--fg: #ececea;
+				--muted: #a4a49e;
+				--accent: #5cc3c9;
+				--card: #20201e;
+				--border: #3a3a36;
+			}
+		}
+		body {
+			margin: 0;
+			background: var(--bg);
+			color: var(--fg);
+			font: 16px/1.5 system-ui, sans-serif;
+		}
+		main {
+			max-width: 40rem;
+			margin: 0 auto;
+			padding: 2rem 1rem;
+		}
+		h1 {
+			font-size: 1.6rem;
+			margin: 0 0 0.5rem;
+		}
+		p, li {
+			color: var(--muted);
+		}
+		section {
+			background: var(--card);
+			border: 1px solid var(--border);
+			border-radius: 8px;
+			padding: 1rem 1.25rem;
+			margin: 1.25rem 0;
+		}
+		esp-web-install-button {
+			--esp-tools-button-color: var(--accent);
+		}
+		code {
+			font-size: 0.9em;
+		}
+	</style>
+</head>
+<body>
+	<main>
+		<h1>HomeControl</h1>
+		<p>Install the HomeControl firmware on an ESP32-C6 board and connect it to your WiFi, all from
+			this page.</p>
+
+		<section>
+			<esp-web-install-button manifest="manifest.json">
+				<span slot="unsupported">This browser cannot talk to serial ports. Use Chrome or Edge on a
+					desktop computer.</span>
+				<span slot="not-allowed">Serial ports are only available on a secure page (HTTPS or
+					localhost).</span>
+			</esp-web-install-button>
+		</section>
+
+		<section>
+			<ol>
+				<li>Connect the board by USB and click <em>Connect</em>; choose the
+					<em>USB JTAG/serial debug unit</em>.</li>
+				<li>Install the firmware. Afterwards the page offers to set up WiFi: pick your network and
+					enter its key. The status LED blinks fast while the device connects.</li>
+				<li>Once connected, the device is reachable as <code>homecontrol-xxxxxx.local</code> (the
+					last six hex digits of its MAC address).</li>
+			</ol>
+			<p>The WiFi setup is offered for 5 minutes after the board starts, and for one minute after
+				it is online. Reconnect (which restarts the board) to get it again. Without this page:
+				press the router's WPS button, or use the serial console (<code>wifi set</code>).</p>
+		</section>
+	</main>
+</body>
+</html>

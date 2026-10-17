@@ -60,6 +60,7 @@ Connectivity::~Connectivity() {
 	cancel_action();
 	cancel_timeout();
 	cancel_phase();
+	cancel_pause_timer();
 }
 
 // ---- Requests ---------------------------------------------------------------------------------
@@ -107,6 +108,67 @@ bool Connectivity::request_pairing(const char* trigger) {
 	return true;
 }
 
+bool Connectivity::pause_pairing(const char* why) {
+	if (refuse_reentry("pause_pairing")) {
+		return false;
+	}
+	if (paused_) {
+		Log::warn(kTag, "refusing pause for %s: already paused for %s", why, pause_reason_);
+		return false;
+	}
+	paused_ = true;
+	std::snprintf(pause_reason_, sizeof(pause_reason_), "%s", why);
+	uint64_t now = clock_.monotonic_ms();
+	station_free_at_ = now;
+	pause_timer_ = loop_.schedule_at(now + kMaxPauseMs, Callback::member<Connectivity, &Connectivity::pause_due>(this));
+	if (pairing_) {
+		cancel_timeout();
+		end_pairing();
+		held_ = Action::start_pairing;
+		station_free_at_ = now + kSettleMs;
+		Log::info(kTag, "network paused for %s: pairing stopped, resumes afterwards", why);
+	} else if (state_ == LinkState::connecting) {
+		cancel_timeout();
+		driver_disconnect();
+		held_ = Action::connect;
+		station_free_at_ = now + kSettleMs;
+		Log::info(kTag, "network paused for %s: attempt aborted, repeated afterwards", why);
+		char reason[kMaxReason];
+		std::snprintf(reason, sizeof(reason), "paused for %s", why);
+		set_state(LinkState::down, reason);
+	} else {
+		Log::info(kTag, "network paused for %s", why);
+	}
+	return true;
+}
+
+void Connectivity::resume_pairing(const char* why) {
+	if (refuse_reentry("resume_pairing")) {
+		return;
+	}
+	if (!paused_) {
+		Log::warn(kTag, "resume (%s) while not paused, ignored", why);
+		return;
+	}
+	paused_ = false;
+	cancel_pause_timer();
+	Action held = held_;
+	held_ = Action::none;
+	if (held != Action::none && action_ == Action::none) {
+		Log::info(kTag, "network resumed (%s): %s", why, held == Action::connect ? "connecting" : "pairing");
+		schedule(held, kSettleMs);
+	} else {
+		Log::info(kTag, "network resumed (%s)", why);
+	}
+}
+
+void Connectivity::pause_due() {
+	pause_timer_ = TimerHandle();
+	Log::warn(kTag, "network pause for %s not ended after %u s: resuming", pause_reason_,
+		static_cast<unsigned>(kMaxPauseMs / 1000));
+	resume_pairing("pause timeout");
+}
+
 // ---- Reports from the driver ------------------------------------------------------------------
 
 void Connectivity::link_connecting() {
@@ -144,7 +206,7 @@ void Connectivity::link_up(const char* ip) {
 	if (!pairing_) {
 		cancel_timeout();
 	}
-	if (action_ == Action::connect) {
+	if (action_ == Action::connect || held_ == Action::connect) {
 		cancel_action();
 	}
 	failures_ = 0;
@@ -340,7 +402,7 @@ void Connectivity::exit_failsafe() {
 		cancel_timeout();
 		end_pairing();
 	}
-	if (action_ == Action::start_pairing) {
+	if (action_ == Action::start_pairing || held_ == Action::start_pairing) {
 		cancel_action();
 	}
 	set_mode(NetworkMode::normal, "failsafe over");
@@ -376,7 +438,7 @@ void Connectivity::end_pairing() {
 }
 
 void Connectivity::schedule(Action action, uint32_t delay_ms) {
-	cancel_action();
+	cancel_action(); // a newly decided step also supersedes a held one
 	action_ = action;
 	if (delay_ms == 0) {
 		action_due();
@@ -396,6 +458,12 @@ void Connectivity::action_due() {
 	action_ = Action::none;
 	action_timer_ = TimerHandle();
 	action_at_ = EventLoop::kNever;
+	if (paused_ && action != Action::none) {
+		held_ = action;
+		Log::info(kTag, "network: %s held while paused for %s", action == Action::connect ? "connect" : "pairing",
+			pause_reason_);
+		return;
+	}
 	switch (action) {
 	case Action::none:
 		break;
@@ -439,6 +507,7 @@ void Connectivity::cancel_action() {
 		action_timer_ = TimerHandle();
 	}
 	action_ = Action::none;
+	held_ = Action::none;
 	action_at_ = EventLoop::kNever;
 }
 
@@ -446,6 +515,13 @@ void Connectivity::cancel_timeout() {
 	if (timeout_timer_.valid()) {
 		loop_.cancel(timeout_timer_);
 		timeout_timer_ = TimerHandle();
+	}
+}
+
+void Connectivity::cancel_pause_timer() {
+	if (pause_timer_.valid()) {
+		loop_.cancel(pause_timer_);
+		pause_timer_ = TimerHandle();
 	}
 }
 
@@ -534,6 +610,8 @@ void Connectivity::set_state(LinkState state, const char* reason) {
 			Log::warn(kTag, "network down: %s; pairing in %s", reason_, delay);
 		} else if (pairing_) {
 			Log::warn(kTag, "network down: %s; pairing", reason_);
+		} else if (paused_) {
+			Log::info(kTag, "network down: %s; next step after the pause", reason_);
 		} else {
 			Log::error(kTag, "network down: %s; no next step scheduled", reason_);
 		}

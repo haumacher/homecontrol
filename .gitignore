@@ -18,3 +18,5 @@ __pycache__/
 .idea/
 # Host settings file (may hold a WiFi key)
 homecontrol.settings
+# Web flasher: local copies of the firmware (scripts/flasher-local.sh), never versioned
+/web/flasher/firmware/

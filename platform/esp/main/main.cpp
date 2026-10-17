@@ -2,8 +2,8 @@
  * Copyright (c) 2026 Bernhard Haumacher
  */
 // Boots the controller on the device: NVS, the platform objects, the event-loop task with the
-// network bring-up (WiFi with WPS pairing, mDNS, SNTP, the WPS button), the status LED and the
-// serial console.
+// network bring-up (WiFi with WPS pairing, mDNS, SNTP, the WPS button), the status LED, and the
+// USB Serial/JTAG port shared by Improv Wi-Fi provisioning and the serial console.
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -17,6 +17,7 @@
 #include "loop_queue.h"
 #include "net_services.h"
 #include "nvs_settings.h"
+#include "serial_mux.h"
 #include "wifi_driver.h"
 #include "wps_button.h"
 
@@ -42,11 +43,12 @@ hc::esp::NvsSettings g_settings;
 hc::esp::LoopQueue g_queue;
 hc::esp::WifiDriver g_wifi(g_settings, g_queue);
 hc::esp::NetServices g_services(g_settings, g_clock);
+hc::esp::SerialMux g_serial;
 
 hc::Controller& controller() {
 	// Constructed on first use, from app_main, after the IDF is up.
 	static hc::Controller instance(hc::Platform{g_clock, g_sink, g_system, g_settings, g_time_zone, g_wifi,
-		g_light_ready ? &g_light : nullptr});
+		g_light_ready ? &g_light : nullptr, &g_serial, &g_wifi});
 	return instance;
 }
 
@@ -54,12 +56,18 @@ void loop_task(void*) {
 	hc::Controller& ctl = controller();
 	g_wifi.init(ctl.connectivity());
 	g_services.init(ctl.connectivity(), g_wifi.hostname());
-	ctl.start();
+	bool serial_ready = g_serial.init();
+	ctl.start(); // opens the Improv window
+	if (serial_ready) {
+		g_serial.start_improv(g_queue, ctl.improv(), g_wifi.hostname());
+	}
 
 	static hc::esp::WpsButton button(ctl.loop(), g_clock, ctl.connectivity());
 	button.start();
-	static hc::esp::ConsoleContext console{ctl, g_queue, g_wifi, g_services};
-	hc::esp::console_start(console);
+	if (serial_ready) {
+		static hc::esp::ConsoleContext console{ctl, g_queue, g_wifi, g_services, hc::esp::SerialMux::kConsoleInput};
+		hc::esp::console_start(console);
+	}
 
 	for (;;) {
 		ctl.run_once();

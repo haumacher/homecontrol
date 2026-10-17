@@ -13,6 +13,7 @@
 #include "hc/connectivity.h"
 #include "hc/platform/network_driver.h"
 #include "hc/platform/settings.h"
+#include "hc/platform/wifi_scanner.h"
 #include "loop_queue.h"
 
 namespace hc {
@@ -34,7 +35,11 @@ namespace esp {
 /// stores them - the Settings stay authoritative, the IDF keeps nothing (WIFI_STORAGE_RAM) - and
 /// reported as pairing_succeeded(); failures, timeouts, PIN requests and PBC overlaps as
 /// pairing_failed(). When to pair, restart or fall back is the core's decision (Connectivity).
-class WifiDriver : public NetworkDriver {
+///
+/// The scan for Improv (WifiScanner) is an asynchronous esp_wifi_scan_start(); SCAN_DONE hands the
+/// records to the sink on the event loop, one esp_wifi_scan_get_ap_record() at a time (no array).
+/// It is refused while WPS runs: the core pauses pairing first (Connectivity::pause_pairing()).
+class WifiDriver : public NetworkDriver, public WifiScanner {
 public:
 	/// Longest host name including the NUL ("homecontrol-" + 6 hex digits).
 	static constexpr size_t kMaxHostname = 24;
@@ -51,6 +56,8 @@ public:
 	void disconnect() override;
 	bool start_pairing() override;
 	void stop_pairing() override;
+
+	bool start_scan(WifiScanSink& sink) override;
 
 	/// "homecontrol-<last three MAC bytes in lower-case hex>", also the DHCP host name.
 	const char* hostname() const { return hostname_; }
@@ -76,9 +83,11 @@ private:
 
 	static void handle_wps_success(void* context, const LoopMessage& message);
 	static void handle_wps_failed(void* context, const LoopMessage& message);
+	static void handle_scan_done(void* context, const LoopMessage& message);
 
 	void begin_disconnect();
 	void disable_power_save();
+	bool ensure_started(const char* what);
 
 	/// Credentials of a WPS success, handed from the IDF event task to the loop. Written only while
 	/// `wps_mailbox_full_` is false, read only while it is true.
@@ -91,6 +100,8 @@ private:
 	Settings& settings_;
 	LoopQueue& queue_;
 	Connectivity* connectivity_ = nullptr;
+	/// The sink of the scan in progress; nullptr when none runs.
+	WifiScanSink* scan_sink_ = nullptr;
 	esp_netif_t* netif_ = nullptr;
 	char hostname_[kMaxHostname] = {};
 	int32_t last_reason_ = 0;

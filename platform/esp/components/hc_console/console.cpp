@@ -12,6 +12,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "hc/network_settings.h"
 #include "linenoise/linenoise.h"
 
@@ -53,6 +54,15 @@ int cmd_status(ConsoleContext& c, int, char**) {
 	}
 	std::printf("heap      %u B free (min %u B)\n", static_cast<unsigned>(memory.free_bytes),
 		static_cast<unsigned>(memory.min_free_bytes));
+	const Improv& improv = ctl.improv();
+	if (improv.active()) {
+		uint64_t now = ctl.clock().monotonic_ms();
+		uint64_t ends = improv.ends_at();
+		std::printf("improv    active (%s), ends in %llu s\n", improv::state_name(improv.state()),
+			static_cast<unsigned long long>(ends > now ? (ends - now) / 1000 : 0));
+	} else {
+		std::printf("improv    ended\n");
+	}
 	return 0;
 }
 
@@ -67,7 +77,7 @@ int wifi_status(ConsoleContext& c) {
 	}
 	std::printf("state     %s%s%s%s\n", link_state_name(net.state()), net.is_up() ? " " : "", net.ip(),
 		net.pairing_active() ? ", WPS active" : "");
-	std::printf("mode      %s\n", network_mode_name(net.mode()));
+	std::printf("mode      %s%s\n", network_mode_name(net.mode()), net.paused() ? " (paused for a scan)" : "");
 	if (net.reason()[0] != '\0') {
 		std::printf("reason    %s\n", net.reason());
 	}
@@ -256,6 +266,11 @@ const Command kCommands[] = {
 
 constexpr int kMaxArgs = 8;
 constexpr size_t kMaxLine = 256;
+constexpr int kHistory = 32;
+
+/// The REPL task (the IDF REPL's defaults).
+constexpr uint32_t kReplStack = 4096;
+constexpr UBaseType_t kReplPriority = 2;
 
 /// The one command in flight: the REPL handles a line at a time, so a single slot suffices. If
 /// a command outlives kCommandTimeout, the slot stays busy and the next command is refused until
@@ -341,18 +356,54 @@ int dispatch(void* context, int argc, char** argv) {
 	return g_pending.result;
 }
 
+/// The REPL (the IDF's esp_console_repl_task, reading the shared port's console device).
+void repl_task(void*) {
+	// stdin is per task: only the REPL reads the console device.
+	stdin = std::fopen(g_context->input_device, "r");
+	if (stdin == nullptr) {
+		ESP_LOGE(kTag, "console not started: cannot open %s", g_context->input_device);
+		vTaskDelete(nullptr);
+		return;
+	}
+	setvbuf(stdin, nullptr, _IONBF, 0);
+	const char* prompt = LOG_COLOR_I "hc> " LOG_RESET_COLOR;
+	// Does the terminal answer escape sequences? Otherwise no line editing (and no colors).
+	if (linenoiseProbe() != 0) {
+		linenoiseSetDumbMode(1);
+		prompt = "hc> ";
+	}
+	ESP_LOGI(kTag, "console ready on USB Serial/JTAG: type 'help'");
+	for (;;) {
+		char* line = linenoise(prompt);
+		if (line == nullptr) {
+			continue; // empty line
+		}
+		linenoiseHistoryAdd(line);
+		int result = 0;
+		esp_err_t err = esp_console_run(line, &result);
+		if (err == ESP_ERR_NOT_FOUND) {
+			std::printf("Unrecognized command\n");
+		} else if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) { // INVALID_ARG: empty command
+			std::printf("Internal error: %s\n", esp_err_to_name(err));
+		}
+		linenoiseFree(line);
+	}
+}
+
 } // namespace
 
 bool console_start(ConsoleContext& context) {
 	g_context = &context;
 	g_done = xSemaphoreCreateBinaryStatic(&g_done_storage);
 
-	esp_console_repl_t* repl = nullptr;
-	esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
-	repl_config.prompt = "hc>";
-	repl_config.max_cmdline_length = kMaxLine;
-	esp_console_dev_usb_serial_jtag_config_t device_config = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
-	esp_err_t err = esp_console_new_repl_usb_serial_jtag(&device_config, &repl_config, &repl);
+	esp_console_config_t console_config = ESP_CONSOLE_CONFIG_DEFAULT();
+	console_config.max_cmdline_length = kMaxLine;
+#if CONFIG_LOG_COLORS
+	console_config.hint_color = 36; // cyan
+#else
+	console_config.hint_color = -1;
+#endif
+	esp_err_t err = esp_console_init(&console_config);
 	if (err == ESP_OK) {
 		err = esp_console_register_help_command();
 	}
@@ -368,14 +419,19 @@ bool console_start(ConsoleContext& context) {
 		descriptor.context = const_cast<Command*>(&command);
 		err = esp_console_cmd_register(&descriptor);
 	}
-	if (err == ESP_OK) {
-		err = esp_console_start_repl(repl);
-	}
 	if (err != ESP_OK) {
 		ESP_LOGE(kTag, "console not started: %s", esp_err_to_name(err));
 		return false;
 	}
-	ESP_LOGI(kTag, "console ready on USB Serial/JTAG: type 'help'");
+	linenoiseSetMultiLine(1);
+	linenoiseSetCompletionCallback(&esp_console_get_completion);
+	linenoiseSetHintsCallback(reinterpret_cast<linenoiseHintsCallback*>(&esp_console_get_hint));
+	linenoiseHistorySetMaxLen(kHistory);
+	linenoiseSetMaxLineLen(kMaxLine);
+	if (xTaskCreate(&repl_task, "hc_console", kReplStack, nullptr, kReplPriority, nullptr) != pdPASS) {
+		ESP_LOGE(kTag, "console not started: cannot create its task (stack %u B)", static_cast<unsigned>(kReplStack));
+		return false;
+	}
 	return true;
 }
 

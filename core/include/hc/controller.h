@@ -9,14 +9,17 @@
 
 #include "hc/connectivity.h"
 #include "hc/event_loop.h"
+#include "hc/improv.h"
 #include "hc/log.h"
 #include "hc/status_led.h"
 #include "hc/platform/clock.h"
+#include "hc/platform/improv_port.h"
 #include "hc/platform/network_driver.h"
 #include "hc/platform/settings.h"
 #include "hc/platform/status_light.h"
 #include "hc/platform/system_info.h"
 #include "hc/platform/time_zone.h"
+#include "hc/platform/wifi_scanner.h"
 
 namespace hc {
 
@@ -30,9 +33,14 @@ struct Platform {
 	NetworkDriver& network;
 	/// The status LED; nullptr if the board has none.
 	StatusLight* status_light = nullptr;
+	/// The serial port for Improv Wi-Fi provisioning; nullptr if the platform offers none.
+	ImprovPort* improv = nullptr;
+	/// The WiFi scan Improv lists networks with; nullptr if the platform has none.
+	WifiScanner* scanner = nullptr;
 };
 
-/// The object a platform boots. It owns the event loop and the network Connectivity; the platform
+/// The object a platform boots. It owns the event loop, the network Connectivity and the Improv
+/// Wi-Fi provisioning service (active only if the platform has an Improv port); the platform
 /// supplies its capabilities (Platform), calls start() once and then drives the loop with
 /// run_once() and next_deadline().
 ///
@@ -84,13 +92,16 @@ public:
 	/// returns whether the wall clock is synchronized.
 	bool format_wall_time(char* buffer, size_t size) const;
 
-	/// What the status LED shows now: pairing while pairing is active, connecting without a link,
-	/// setup while up (no runtime image can be loaded yet, issue #8).
+	/// What the status LED shows now: pairing while pairing is active or an Improv `wifi settings`
+	/// exchange waits for the link, connecting without a link, setup while up (no runtime image can
+	/// be loaded yet, issue #8).
 	LedStatus led_status() const;
 
 	EventLoop& loop() { return loop_; }
 	Connectivity& connectivity() { return connectivity_; }
 	const Connectivity& connectivity() const { return connectivity_; }
+	Improv& improv() { return improv_; }
+	const Improv& improv() const { return improv_; }
 	const Clock& clock() const { return clock_; }
 	Settings& settings() { return settings_; }
 	const SystemInfo& system() const { return system_; }
@@ -111,6 +122,7 @@ private:
 	bool light_on_ = false;
 	EventLoop loop_;
 	Connectivity connectivity_;
+	Improv improv_;
 	TimerHandle clock_watch_;
 	char time_zone_[kMaxTimeZone] = {};
 	uint64_t start_ms_ = 0;
