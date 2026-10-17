@@ -530,7 +530,150 @@ TEST_CASE("DatapointModel and the DPT codecs: a telegram becomes a datapoint val
 
 TEST_CASE("DatapointModel memory per datapoint") {
 	// The budget documented in doc/datapoints.md: the table entry plus 2 bytes of name index plus
-	// the name with its NUL. 56 bytes on the 32-bit ESP, 64 on a 64-bit host.
-	CHECK(sizeof(Datapoint) <= 64);
-	CHECK(sizeof(Datapoint) == 32 + 8 + 2 * sizeof(void*) + 8);
+	// the name with its NUL. 64 bytes on the 32-bit ESP, 72 on a 64-bit host (value, time, the
+	// name, owner and transmitter pointers, id, type, flags, quality, padded to 8).
+	CHECK(sizeof(Datapoint) <= 72);
+	CHECK(sizeof(Datapoint) == (32 + 8 + 3 * sizeof(void*) + 5 + 7) / 8 * 8);
+}
+
+namespace {
+
+/// An application component that owns datapoints and publishes them (the KNX time master's role):
+/// it refuses the application's commands.
+class Publisher : public hc::Technology {
+public:
+	const char* name() const override { return "publisher"; }
+
+	bool command(const Datapoint&, const Value&) override {
+		++commands;
+		return false;
+	}
+
+	int commands = 0;
+};
+
+/// The owner publishes, a transmitter sends: ids 0 clock (time of day, readable and transmitting),
+/// 1 local (transmits, no transmitter), 2 quiet (no kTransmit), 3 free (no owner).
+struct PublishFixture {
+	ScopedCapture capture;
+	FakeClock clock;
+	hc::EventLoop loop;
+	DatapointModel model{clock};
+	LoopbackTechnology bus{model, loop};
+	Publisher owner;
+	RecordingListener listener{"l"};
+
+	PublishFixture() {
+		const DatapointSpec specs[] = {
+			{"clock", ValueType::time_of_day, DatapointFlags::kReadable | DatapointFlags::kTransmit},
+			{"local", ValueType::real, DatapointFlags::kTransmit},
+			{"quiet", ValueType::real, DatapointFlags::kReadable},
+			{"free", ValueType::real, kRWT},
+		};
+		REQUIRE(model.load(specs, 4) == DatapointStatus::ok);
+		for (uint16_t id = 0; id < 3; ++id) {
+			REQUIRE(model.bind(id, owner) == DatapointStatus::ok);
+		}
+		REQUIRE(model.add_listener(listener) == DatapointStatus::ok);
+	}
+};
+
+} // namespace
+
+TEST_CASE("DatapointModel.SetTransmitterRules") {
+	PublishFixture f;
+	const char* error = nullptr;
+	// No owner yet.
+	CHECK(f.model.set_transmitter(3, f.bus, &error) == DatapointStatus::not_owner);
+	CHECK(std::string(error) == "the datapoint has no owner yet");
+	CHECK(f.capture.sink.contains("E hc.dp: refusing loopback as transmitter of 'free': the datapoint has no owner yet"));
+	CHECK(f.model.set_transmitter(99, f.bus, &error) == DatapointStatus::unknown_id);
+	// The owner as its own transmitter changes nothing.
+	CHECK(f.model.set_transmitter(0, f.owner) == DatapointStatus::ok);
+	CHECK(f.model.get(0)->transmitter() == nullptr);
+	CHECK(f.model.set_transmitter(0, f.bus) == DatapointStatus::ok);
+	CHECK(f.model.get(0)->transmitter() == &f.bus);
+	CHECK(f.model.get(0)->technology() == &f.owner);
+	CHECK(f.model.set_transmitter(0, f.bus) == DatapointStatus::ok); // again: no change
+	struct Other : hc::Technology {
+		const char* name() const override { return "other"; }
+		bool command(const Datapoint&, const Value&) override { return true; }
+	} other;
+	CHECK(f.model.set_transmitter(0, other, &error) == DatapointStatus::not_owner);
+	CHECK(std::string(error) == "the datapoint has another transmitter");
+	CHECK(f.capture.sink.contains("refusing other as transmitter of 'clock': transmitted by loopback"));
+	// A load drops it like the binding.
+	const DatapointSpec specs[] = {{"clock", ValueType::time_of_day, DatapointFlags::kTransmit}};
+	REQUIRE(f.model.load(specs, 1) == DatapointStatus::ok);
+	CHECK(f.model.get(0)->transmitter() == nullptr);
+	CHECK(f.model.get(0)->technology() == nullptr);
+}
+
+TEST_CASE("DatapointModel.PublishThroughTheTransmitter") {
+	PublishFixture f;
+	REQUIRE(f.model.set_transmitter(0, f.bus) == DatapointStatus::ok);
+	hc::TimeOfDay t{3, 12, 10, 0};
+	f.clock.now_ms = 4000;
+	CHECK(f.model.publish(f.owner, 0, Value::of_time(t)) == DatapointStatus::ok);
+	REQUIRE(f.bus.commands.size() == 1);
+	CHECK(f.bus.commands[0].id == 0);
+	CHECK(f.bus.commands[0].value.as_time() == t);
+	const Datapoint& dp = *f.model.get(0);
+	CHECK(dp.value().as_time() == t);
+	CHECK(dp.quality() == Quality::good);
+	CHECK(dp.updated_ms() == 4000);
+	REQUIRE(f.listener.lines.size() == 1);
+	CHECK(f.listener.lines[0] == "clock (none) -> 12:10:00 Wed (publish, unknown -> good, changed)");
+	CHECK(f.owner.commands == 0); // the owner is not asked about its own publish
+
+	// The transmitter refuses: nothing is stored.
+	f.bus.accept = false;
+	CHECK(f.model.publish(f.owner, 0, Value::of_time(hc::TimeOfDay{3, 12, 20, 0})) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("W hc.dp: publish 12:20:00 Wed of 'clock' refused by loopback"));
+	CHECK(dp.value().as_time() == t);
+	CHECK(f.listener.lines.size() == 1);
+	// The transmitter may not call back into the model from its command.
+	CHECK(f.bus.reentry == DatapointStatus::busy);
+}
+
+TEST_CASE("DatapointModel.PublishWithoutTransmitter") {
+	PublishFixture f;
+	// kTransmit without a transmitter, and a transmitter on a datapoint without kTransmit: stored only.
+	CHECK(f.model.publish(f.owner, 1, Value::of_unsigned(7)) == DatapointStatus::ok);
+	CHECK(f.model.get(1)->value().as_real() == doctest::Approx(7.0));
+	REQUIRE(f.model.set_transmitter(2, f.bus) == DatapointStatus::ok);
+	CHECK(f.model.publish(f.owner, 2, Value::of_real(1.5)) == DatapointStatus::ok);
+	CHECK(f.bus.commands.empty());
+	CHECK(f.listener.lines.back() == "quiet (none) -> 1.5 (publish, unknown -> good, changed)");
+}
+
+TEST_CASE("DatapointModel.PublishRefusals") {
+	PublishFixture f;
+	REQUIRE(f.model.set_transmitter(0, f.bus) == DatapointStatus::ok);
+	// Only the owner publishes; the transmitter is not the owner.
+	CHECK(f.model.publish(f.bus, 0, Value::of_time(hc::TimeOfDay{})) == DatapointStatus::not_owner);
+	CHECK(f.capture.sink.contains("E hc.dp: refusing publish of 'clock' from loopback: not its owner"));
+	CHECK(f.model.publish(f.owner, 0, Value::of_bool(true)) == DatapointStatus::wrong_type);
+	CHECK(f.capture.sink.contains("refusing publish of 'clock' from publisher: a boolean value for a time of day datapoint"));
+	CHECK(f.model.publish(f.owner, 9, Value::of_real(1)) == DatapointStatus::unknown_id);
+	CHECK(f.bus.commands.empty());
+	// The transmitter cannot report or mark stale what it does not own.
+	CHECK(f.model.report(f.bus, 0, Value::of_time(hc::TimeOfDay{})) == DatapointStatus::not_owner);
+	CHECK(f.model.report_stale(f.bus, 0) == DatapointStatus::not_owner);
+	// The application's commands go to the owner, never to the transmitter.
+	CHECK(f.model.command(0, Value::of_time(hc::TimeOfDay{})) == DatapointStatus::not_writable);
+	const DatapointSpec specs[] = {{"clock", ValueType::time_of_day, kRWT}};
+	REQUIRE(f.model.load(specs, 1) == DatapointStatus::ok);
+	REQUIRE(f.model.bind(0, f.owner) == DatapointStatus::ok);
+	REQUIRE(f.model.set_transmitter(0, f.bus) == DatapointStatus::ok);
+	CHECK(f.model.command(0, Value::of_time(hc::TimeOfDay{})) == DatapointStatus::refused);
+	CHECK(f.owner.commands == 1);
+	CHECK(f.bus.commands.empty());
+	// Not from a listener.
+	f.listener.action = [&](const DatapointUpdate&) {
+		CHECK(f.model.publish(f.owner, 0, Value::of_time(hc::TimeOfDay{})) == DatapointStatus::busy);
+		CHECK(f.model.set_transmitter(0, f.bus) == DatapointStatus::busy);
+	};
+	CHECK(f.model.publish(f.owner, 0, Value::of_time(hc::TimeOfDay{1, 1, 1, 1})) == DatapointStatus::ok);
+	CHECK(f.capture.sink.contains("refusing publish from a datapoint listener"));
 }

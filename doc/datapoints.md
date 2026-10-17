@@ -58,11 +58,33 @@ before the first) and a quality:
 - `stale`: the technology lost contact (`report_stale()`: bus down, device gone); the value is the
   last known one and stays until the next report.
 
-### The two write directions
+### Owner and transmitter
+
+Every datapoint has at most one owner (`bind()`): the technology or component that reports it,
+marks it stale and receives the application's commands. A datapoint can additionally have one
+**transmitter** (`set_transmitter(id, technology, error)`): the technology that sends what the owner
+publishes to its bus. This is for values an application component produces and a bus carries: the
+KNX time master owns `knx.time` and the KNX adapter transmits it (doc/knx.md); later weather or
+virtual values published to KNX, or the scheduler's outputs mirrored to the bus.
+
+- `set_transmitter()` is refused (`not_owner`, logged, the reason in `error`) while the datapoint
+  has no owner and when another transmitter is set; the owner itself is accepted and changes nothing
+  (an owner that transmits does so in its own code). `load()` and `clear()` drop it like the binding.
+- The transmitter receives only what the owner publishes; it may not report the datapoint or mark it
+  stale (`not_owner`), and the application's commands still go to the owner, which decides.
+
+### The write directions
 
 - **`report(technology, id, value)`** — the technology says what the value is (a telegram arrived,
   a device reported). Only the owning technology may report; the value is converted to the
   datapoint's type where exact, otherwise refused.
+- **`publish(owner, id, value)`** — the owner says what it produced (the time master's broadcast).
+  Only the owner may (`not_owner`); the value converts like a report. If the datapoint transmits
+  (`kTransmit`) and has a transmitter, the transmitter's `Technology::command()` receives it first:
+  when it refuses (the tunnel is down), `publish()` fails with `refused` and nothing is stored, the
+  rule of `command()`. Otherwise the value is stored and announced with the origin `publish`, so the
+  log and the UI can tell "we sent this" from "the bus said this". `kWritable` is not needed: it is
+  about the application's commands.
 - **`command(id, value)`** — the application (a rule, the UI) wants a value. Refused if the
   datapoint is not writable or the value does not convert. If the datapoint transmits and has an
   owner, the owner's `Technology::command()` receives the converted value first: it returns true
@@ -81,12 +103,12 @@ adapter's attribute report later confirms or corrects it.
 (the rule engine, the UI's live feed, logging, an adapter watching other datapoints). After every
 update each listener's `datapoint_updated()` runs synchronously on the event loop's thread, in
 registration order, with the datapoint (new value, quality, time), the old value, the old quality
-and the origin (`report`, `command`, `stale`). Every report is an update, also one repeating the
+and the origin (`report`, `command`, `stale`, `publish`). Every report is an update, also one repeating the
 same value (a push button sending "on" again matters to a rule); `DatapointUpdate::changed()` tells
 whether value or quality differ.
 
-While listeners run the model refuses every change — `report`, `report_stale`, `command`, `load`,
-`clear`, `bind` and listener (un)registration — with `busy` and a log line. A listener that wants to
+While listeners run the model refuses every change — `report`, `report_stale`, `command`,
+`publish`, `load`, `clear`, `bind`, `set_transmitter` and listener (un)registration — with `busy` and a log line. A listener that wants to
 react with a change posts it to the event loop; it then runs in the next `run_once`, after all
 listeners have seen the current update. This keeps the order of notifications equal to the order of
 updates and bounds the work of one update.
@@ -107,12 +129,13 @@ Allocated once per `load()`, nothing in steady state:
 
 | Part | Size per datapoint |
 |---|---|
-| `Datapoint` table entry (value 32, time 8, name and technology pointers, id, type, flags, quality) | 56 bytes on the ESP32 (32-bit), 64 on a 64-bit host |
+| `Datapoint` table entry (value 32, time 8, name, owner and transmitter pointers, id, type, flags, quality) | 64 bytes on the ESP32 (32-bit), 72 on a 64-bit host |
 | Name index (ids sorted by name) | 2 bytes |
 | Name | its length + 1 byte |
 
-So a datapoint with a 20-character name takes 79 bytes on the ESP32; 1000 such datapoints about
-77 KB. The model object itself (listeners, pointers) takes about 60 bytes on the ESP32. Two blocks are allocated
+So a datapoint with a 20-character name takes 87 bytes on the ESP32; 1000 such datapoints about
+85 KB. (The transmitter pointer added 8 bytes per entry on both: 4 bytes of pointer and 4 of
+padding to the 8-byte alignment of the time.) The model object itself (listeners, pointers) takes about 60 bytes on the ESP32. Two blocks are allocated
 per load (the table, and the names with the index); during a reload the old and the new tables
 exist at the same time until the new one is validated. Allocation failure refuses the load
 (`out_of_memory`), it never aborts.

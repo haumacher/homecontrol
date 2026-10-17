@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 #include "hc/datapoint.h"
 #include "hc/dpt.h"
@@ -24,6 +25,13 @@ namespace knx {
 /// (doc/datapoints.md): kTransmit sends a command as a group write to `send`, kReadable answers a
 /// group read of `send` with the current value, kReadOnStart reads `send` (or the first listening
 /// address) when the tunnel comes up.
+///
+/// A `transmit_only` mapping is for a datapoint another component owns (the KNX time master): the
+/// adapter becomes its transmitter (DatapointModel::set_transmitter()) instead of its owner. What
+/// the owner publishes goes out as a group write to `send`; a group read of `send` is answered from
+/// the model's value while its quality is good; received telegrams never update it (logged at debug
+/// level), the adapter never marks it stale and never reads it on start. It needs a sending address
+/// that no other datapoint of the mapping sends on, the kTransmit flag and no listening addresses.
 struct KnxMapping {
 	static constexpr size_t kMaxListen = 8;
 
@@ -35,6 +43,8 @@ struct KnxMapping {
 	/// being repeated here. Up to kMaxListen; may be nullptr with listen_count 0.
 	const GroupAddress* listen = nullptr;
 	size_t listen_count = 0;
+	/// The adapter transmits for another owner (see above) instead of owning the datapoint.
+	bool transmit_only = false;
 };
 
 /// The KNX technology adapter: translates between group telegrams of a KnxTunnel and the
@@ -72,11 +82,15 @@ public:
 	/// Registers with the tunnel (once).
 	void start();
 
-	/// Replaces the mapping by `count` mappings and binds their datapoints to this adapter. Every
+	/// Replaces the mapping by `count` mappings and binds their datapoints to this adapter (a
+	/// transmit_only mapping makes it the datapoint's transmitter instead). The caller merges the
+	/// mappings of every source into one list: the image's and the time master's. Every
 	/// mapping is checked before anything changes: the datapoint exists, is mapped once and is not
 	/// owned by another technology; the DPT is supported and produces the datapoint's value type
 	/// (or both are numbers); at most KnxMapping::kMaxListen listening addresses and at least one
-	/// address; a transmitting or readable datapoint has a sending address. A refusal (false, the
+	/// address; a transmitting or readable datapoint has a sending address; a transmit_only datapoint
+	/// has an owner other than this adapter and no other transmitter, transmits, has no listening
+	/// address and a sending address no other mapping sends on. A refusal (false, the
 	/// reason in `error` and in the log) keeps the previous mapping. After a model load the mapping
 	/// must be configured again (the load unbinds every datapoint).
 	bool configure(const KnxMapping* mappings, size_t count, const char** error = nullptr);
@@ -86,6 +100,10 @@ public:
 
 	/// Mapped datapoints.
 	size_t size() const { return count_; }
+
+	/// The datapoint whose sending address is `address` (the lowest id if several send there), so
+	/// that a component can refuse an address another datapoint already sends on; empty if none.
+	std::optional<uint16_t> sender_of(GroupAddress address) const;
 
 	/// Reads still to be sent from the last tunnel up.
 	size_t reads_pending() const;
@@ -106,6 +124,7 @@ private:
 		bool has_send;
 		GroupAddress send;
 		GroupAddress first_listen;
+		bool transmit_only;
 	};
 
 	struct Listen {

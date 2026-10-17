@@ -57,6 +57,7 @@ const char* update_origin_name(UpdateOrigin origin) {
 		case UpdateOrigin::report: return "report";
 		case UpdateOrigin::command: return "command";
 		case UpdateOrigin::stale: return "stale";
+		case UpdateOrigin::publish: return "publish";
 	}
 	return "?";
 }
@@ -458,6 +459,76 @@ DatapointStatus DatapointModel::bind(uint16_t id, Technology& technology) {
 		return DatapointStatus::not_owner;
 	}
 	dp->technology_ = &technology;
+	return DatapointStatus::ok;
+}
+
+DatapointStatus DatapointModel::set_transmitter(uint16_t id, Technology& transmitter, const char** error) {
+	if (refuse_busy("set transmitter")) {
+		if (error != nullptr) {
+			*error = "busy (called from a listener or a technology command)";
+		}
+		return DatapointStatus::busy;
+	}
+	Datapoint* dp = lookup(id, "set transmitter");
+	if (dp == nullptr) {
+		if (error != nullptr) {
+			*error = "no datapoint with this id";
+		}
+		return DatapointStatus::unknown_id;
+	}
+	if (dp->technology_ == nullptr) {
+		Log::error(kTag, "refusing %s as transmitter of '%s': the datapoint has no owner yet", transmitter.name(),
+			dp->name_);
+		if (error != nullptr) {
+			*error = "the datapoint has no owner yet";
+		}
+		return DatapointStatus::not_owner;
+	}
+	if (dp->technology_ == &transmitter) {
+		return DatapointStatus::ok;
+	}
+	if (dp->transmitter_ != nullptr && dp->transmitter_ != &transmitter) {
+		Log::error(kTag, "refusing %s as transmitter of '%s': transmitted by %s", transmitter.name(), dp->name_,
+			dp->transmitter_->name());
+		if (error != nullptr) {
+			*error = "the datapoint has another transmitter";
+		}
+		return DatapointStatus::not_owner;
+	}
+	dp->transmitter_ = &transmitter;
+	return DatapointStatus::ok;
+}
+
+DatapointStatus DatapointModel::publish(Technology& owner, uint16_t id, const Value& value) {
+	if (refuse_busy("publish")) {
+		return DatapointStatus::busy;
+	}
+	Datapoint* dp = lookup(id, "publish");
+	if (dp == nullptr) {
+		return DatapointStatus::unknown_id;
+	}
+	if (dp->technology_ != &owner) {
+		Log::error(kTag, "refusing publish of '%s' from %s: not its owner", dp->name_, owner.name());
+		return DatapointStatus::not_owner;
+	}
+	std::optional<Value> converted = value.convert(dp->type_);
+	if (!converted) {
+		Log::error(kTag, "refusing publish of '%s' from %s: a %s value for a %s datapoint", dp->name_, owner.name(),
+			value_type_name(value.type()), value_type_name(dp->type_));
+		return DatapointStatus::wrong_type;
+	}
+	if (dp->transmitter_ != nullptr && dp->transmits()) {
+		commanding_ = true;
+		bool accepted = dp->transmitter_->command(*dp, *converted);
+		commanding_ = false;
+		if (!accepted) {
+			char text[48];
+			Log::warn(kTag, "publish %s of '%s' refused by %s", converted->format(text, sizeof(text)), dp->name_,
+				dp->transmitter_->name());
+			return DatapointStatus::refused;
+		}
+	}
+	store(*dp, *converted, UpdateOrigin::publish);
 	return DatapointStatus::ok;
 }
 

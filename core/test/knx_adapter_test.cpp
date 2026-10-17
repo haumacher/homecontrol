@@ -291,3 +291,163 @@ TEST_CASE("KnxAdapter.StaleWhenTheTunnelGoesDown") {
 	CHECK(f.last_telegram() == "0A 03 01 00 00");
 	f.socket.inject(hc_test::tunneling_ack(8, 0));
 }
+
+namespace {
+
+/// An application component owning datapoints the adapter transmits (the time master's role).
+struct Owner : hc::Technology {
+	const char* name() const override { return "owner"; }
+	bool command(const hc::Datapoint&, const Value&) override { return false; }
+};
+
+/// Ids: 0 clock (10.001, owned by `owner`, transmit-only on 0/0/1, readable, read-on-start which the
+/// adapter ignores), 1 display (10.001, listens 0/0/1: a device showing the time), 2 light (1.001,
+/// the adapter's own, sends 1/0/1).
+struct TransmitFixture : AdapterFixture {
+	Owner owner;
+	GroupAddress display_listen[1] = {GroupAddress::of(0, 0, 1)};
+
+	TransmitFixture() {
+		DatapointSpec specs[] = {
+			{"clock", ValueType::time_of_day,
+				DatapointFlags::kReadable | DatapointFlags::kTransmit | DatapointFlags::kReadOnStart},
+			{"display", ValueType::time_of_day, 0},
+			{"light", ValueType::boolean, kReadWrite},
+		};
+		REQUIRE(model.load(specs, 3) == DatapointStatus::ok);
+		REQUIRE(model.bind(0, owner) == DatapointStatus::ok);
+		KnxMapping mappings[3] = {
+			clock_mapping(),
+			mapping(1, Dpt{10, 1}, std::nullopt, display_listen, 1),
+			mapping(2, Dpt{1, 1}, GroupAddress::of(1, 0, 1), nullptr, 0),
+		};
+		REQUIRE(adapter.configure(mappings, 3));
+	}
+
+	static KnxMapping clock_mapping() {
+		KnxMapping m = mapping(0, Dpt{10, 1}, GroupAddress::of(0, 0, 1), nullptr, 0);
+		m.transmit_only = true;
+		return m;
+	}
+
+	/// Up; nothing to read on start (only the clock has the flag, which the adapter ignores).
+	void up() {
+		connect(7);
+		run_for(1000);
+	}
+};
+
+const hc::TimeOfDay kNoon{3, 12, 10, 0}; // Wednesday 12:10:00: 6C 0A 00
+
+} // namespace
+
+TEST_CASE("KnxAdapter.TransmitOnlyBindsAsTransmitter") {
+	TransmitFixture f;
+	CHECK(f.dp(0).technology() == &f.owner);
+	CHECK(f.dp(0).transmitter() == &f.adapter);
+	CHECK(f.dp(1).technology() == &f.adapter);
+	CHECK(f.adapter.sender_of(GroupAddress::of(0, 0, 1)) == std::optional<uint16_t>(0));
+	CHECK(f.adapter.sender_of(GroupAddress::of(1, 0, 1)) == std::optional<uint16_t>(2));
+	CHECK_FALSE(f.adapter.sender_of(GroupAddress::of(0, 0, 2)));
+	// The clock's read-on-start flag is not the adapter's business: nothing is read.
+	f.connect(7);
+	CHECK(f.adapter.reads_pending() == 0);
+	f.run_for(1000);
+	CHECK(f.socket.count(ip::Service::tunneling_request) == 0);
+}
+
+TEST_CASE("KnxAdapter.TransmitOnlyPublishSendsAndAnswersReads") {
+	TransmitFixture f;
+	// Down: the publish is refused, nothing stored.
+	CHECK(f.model.publish(f.owner, 0, Value::of_time(kNoon)) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("W hc.knx: refusing command for 'clock': the KNX tunnel is down"));
+	CHECK(f.dp(0).quality() == Quality::unknown);
+
+	f.up();
+	CHECK(f.model.publish(f.owner, 0, Value::of_time(kNoon)) == DatapointStatus::ok);
+	CHECK(f.last_telegram() == "00 01 04 00 80 6C 0A 00");
+	CHECK(f.dp(0).value().as_time() == kNoon);
+	CHECK(f.dp(1).quality() == Quality::unknown);
+	f.confirm_last();
+	CHECK(f.dp(1).value().as_time() == kNoon); // the display on the address takes it, like the bus devices
+	CHECK(f.log.at(f.log.size() - 1)->datapoint == 0);
+
+	// A read of the address is answered from the published value.
+	size_t base = f.socket.count(ip::Service::tunneling_request);
+	f.receive(0x0001, "00 00");
+	REQUIRE(f.socket.count(ip::Service::tunneling_request) == base + 1);
+	CHECK(f.last_telegram() == "00 01 04 00 40 6C 0A 00");
+	f.confirm_last();
+
+	// Another device writes the address: the display follows, the owner's value does not.
+	f.receive(0x0001, "00 80 6D 00 00");
+	CHECK(f.dp(1).value().as_time() == hc::TimeOfDay{3, 13, 0, 0});
+	CHECK(f.dp(0).value().as_time() == kNoon);
+	CHECK(f.capture.sink.contains("D hc.knx: 0/0/1 from 1.1.10: 'clock' is transmit-only, not updated"));
+
+	// The clock is not writable: the model refuses the command before any technology sees it.
+	base = f.socket.count(ip::Service::tunneling_request);
+	CHECK(f.model.command(0, Value::of_time(kNoon)) == DatapointStatus::not_writable);
+	CHECK(f.socket.count(ip::Service::tunneling_request) == base);
+}
+
+TEST_CASE("KnxAdapter.TransmitOnlyIsNotMarkedStale") {
+	TransmitFixture f;
+	f.up();
+	REQUIRE(f.model.publish(f.owner, 0, Value::of_time(kNoon)) == DatapointStatus::ok);
+	f.confirm_last();
+	f.socket.inject(hc_test::disconnect_request(7));
+	CHECK(f.dp(1).quality() == Quality::stale); // the adapter's own
+	CHECK(f.dp(0).quality() == Quality::good);  // the owner decides
+	// The owner's stale report is its own.
+	CHECK(f.model.report_stale(f.owner, 0) == DatapointStatus::ok);
+	CHECK(f.dp(0).quality() == Quality::stale);
+}
+
+TEST_CASE("KnxAdapter.TransmitOnlyRefusals") {
+	TransmitFixture f;
+	const char* error = nullptr;
+	auto refused = [&](KnxMapping* mappings, size_t count, const char* text) {
+		CHECK_FALSE(f.adapter.configure(mappings, count, &error));
+		CHECK(f.capture.sink.contains(text));
+		CHECK(f.adapter.size() == 3);
+	};
+	// The address another datapoint sends on.
+	KnxMapping two[2] = {TransmitFixture::clock_mapping(),
+		AdapterFixture::mapping(2, Dpt{1, 1}, GroupAddress::of(0, 0, 1), nullptr, 0)};
+	refused(two, 2, "mapping 0: mapping 1 sends on the same address");
+	// Listening addresses.
+	KnxMapping m = TransmitFixture::clock_mapping();
+	m.listen = f.display_listen;
+	m.listen_count = 1;
+	refused(&m, 1, "mapping 0: a transmit-only datapoint listens to no address");
+	// No sending address.
+	m = TransmitFixture::clock_mapping();
+	m.has_send = false;
+	m.listen = f.display_listen;
+	m.listen_count = 1;
+	refused(&m, 1, "a transmit-only datapoint needs a sending address");
+	// No owner, the adapter as owner, no transmit flag.
+	m = AdapterFixture::mapping(1, Dpt{10, 1}, GroupAddress::of(0, 0, 2), nullptr, 0);
+	m.transmit_only = true;
+	refused(&m, 1, "a transmit-only datapoint must be owned by another component, not the adapter");
+	DatapointSpec specs[] = {
+		{"clock", ValueType::time_of_day, DatapointFlags::kTransmit},
+		{"plain", ValueType::time_of_day, DatapointFlags::kReadable},
+	};
+	REQUIRE(f.model.load(specs, 2) == DatapointStatus::ok);
+	m = TransmitFixture::clock_mapping();
+	refused(&m, 1, "a transmit-only datapoint needs its owner bound first");
+	REQUIRE(f.model.bind(1, f.owner) == DatapointStatus::ok);
+	m.datapoint = 1;
+	refused(&m, 1, "a transmit-only datapoint needs the transmit flag");
+	// Another transmitter.
+	Owner other;
+	REQUIRE(f.model.bind(0, f.owner) == DatapointStatus::ok);
+	REQUIRE(f.model.set_transmitter(0, other) == DatapointStatus::ok);
+	m.datapoint = 0;
+	refused(&m, 1, "mapping 0: the datapoint has another transmitter");
+	// Without transmit_only a foreign datapoint stays refused.
+	m.transmit_only = false;
+	refused(&m, 1, "the datapoint belongs to another technology");
+}
