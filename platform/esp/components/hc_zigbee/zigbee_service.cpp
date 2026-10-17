@@ -919,6 +919,14 @@ ZigbeeService::ZigbeeService(Controller& controller, LoopQueue& queue, Datapoint
 	: controller_(controller), queue_(queue), model_(model) {}
 
 void ZigbeeService::init(BlobStore* store) {
+	start(nullptr, store);
+}
+
+void ZigbeeService::init(image::ImageService& images, BlobStore* store) {
+	start(&images, store);
+}
+
+void ZigbeeService::start(image::ImageService* images, BlobStore* store) {
 	if (g_state.service != nullptr) {
 		Log::warn(kTag, "init called twice, ignored");
 		return;
@@ -940,6 +948,9 @@ void ZigbeeService::init(BlobStore* store) {
 	g_state.mutex = xSemaphoreCreateMutexStatic(&g_state.mutex_buffer);
 	g_state.driver = new EspZigbeeDriver();
 	g_state.adapter = new ZigbeeAdapter(controller_.loop(), controller_.clock(), model_, *g_state.driver, store);
+	if (images != nullptr && !images->add_provider(*g_state.adapter)) {
+		Log::error(kTag, "not registered with the image service: the adapter loads the model alone");
+	}
 	const char* error = nullptr;
 	if (!g_state.adapter->start(&error)) {
 		Log::warn(kTag, "adapter: %s", error);

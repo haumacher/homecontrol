@@ -62,6 +62,7 @@ struct ImageInfo {
 	size_t bytes = 0;      ///< Size of the JSON text.
 	size_t datapoints = 0; ///< In the model, with those the image implies (the time master's).
 	size_t knx_datapoints = 0;
+	size_t zigbee_datapoints = 0; ///< With a `zigbee` binding.
 	size_t rules = 0;
 	size_t schedules = 0;
 	size_t locations = 0;

@@ -120,37 +120,12 @@ inline std::vector<uint8_t> zcl_string(const std::string& text) {
 	return bytes;
 }
 
-/// The adapter with its model, loop, blob store and driver; helpers that play a device's part.
-struct ZigbeeFixture {
-	FakeClock clock;
-	hc::EventLoop loop;
-	hc::DatapointModel model{clock};
-	FakeBlobStore store;
-	FakeZigbeeDriver driver;
-	hc::zigbee::ZigbeeAdapter adapter{loop, clock, model, driver, &store};
+/// Helpers that play a device's part towards an adapter (wherever it lives: the fixture below, or
+/// an image service's test).
+struct ZigbeeActions {
+	explicit ZigbeeActions(hc::zigbee::ZigbeeAdapter& target) : actor(target) {}
 
-	/// Runs the loop, jumping the clock from deadline to deadline, until `until_ms`.
-	void run_until(uint64_t until_ms) {
-		for (;;) {
-			loop.run_once(clock.now_ms);
-			uint64_t deadline = loop.next_deadline();
-			if (deadline > until_ms) {
-				clock.now_ms = until_ms;
-				loop.run_once(clock.now_ms);
-				return;
-			}
-			if (deadline > clock.now_ms) {
-				clock.now_ms = deadline;
-			}
-		}
-	}
-
-	void run_for(uint64_t ms) { run_until(clock.now_ms + ms); }
-
-	void start_network() {
-		REQUIRE(adapter.start());
-		adapter.network_state(true, 0x1a62, 15, 0xdddddddddddddddd);
-	}
+	hc::zigbee::ZigbeeAdapter& actor;
 
 	static hc::zigbee::NodeAddress node(hc::zigbee::Ieee ieee, uint16_t short_addr) {
 		hc::zigbee::NodeAddress address;
@@ -176,7 +151,7 @@ struct ZigbeeFixture {
 		d.in_count = in.size();
 		d.out = out.data();
 		d.out_count = out.size();
-		adapter.simple_descriptor(by_short(short_addr), 0, d);
+		actor.simple_descriptor(by_short(short_addr), 0, d);
 	}
 
 	void basic(uint16_t short_addr, uint8_t endpoint, const std::string& manufacturer, const std::string& model_id) {
@@ -191,7 +166,7 @@ struct ZigbeeFixture {
 		records[1].type = hc::zigbee::zcl_type::kCharString;
 		records[1].data = n.data();
 		records[1].length = n.size();
-		adapter.attributes(by_short(short_addr), endpoint, hc::zigbee::cluster::kBasic, records, 2);
+		actor.attributes(by_short(short_addr), endpoint, hc::zigbee::cluster::kBasic, records, 2);
 	}
 
 	/// One attribute report with a little-endian value of the type's size.
@@ -207,14 +182,14 @@ struct ZigbeeFixture {
 		record.type = type;
 		record.data = data;
 		record.length = size;
-		adapter.attributes(by_short(short_addr), endpoint, cluster, &record, 1);
+		actor.attributes(by_short(short_addr), endpoint, cluster, &record, 1);
 	}
 
 	/// The full join of a colour-temperature bulb (endpoint 11, plus a Green Power endpoint 242).
 	void join_bulb() {
-		adapter.device_announced(node(kBulb, kBulbShort));
+		actor.device_announced(node(kBulb, kBulbShort));
 		uint8_t endpoints[] = {11, 242};
-		adapter.active_endpoints(by_short(kBulbShort), 0, endpoints, 2);
+		actor.active_endpoints(by_short(kBulbShort), 0, endpoints, 2);
 		descriptor(kBulbShort, 11, hc::zigbee::kHomeAutomationProfile, 0x010C, {0x0000, 0x0003, 0x0004, 0x0005, 0x0006,
 			0x0008, 0x0300, 0x1000}, {0x0019});
 		descriptor(kBulbShort, 242, 0xA1E0, 0x0061, {}, {0x0021});
@@ -223,9 +198,9 @@ struct ZigbeeFixture {
 
 	/// A temperature/humidity sensor on endpoint 1 with battery.
 	void join_sensor() {
-		adapter.device_announced(node(kSensor, kSensorShort));
+		actor.device_announced(node(kSensor, kSensorShort));
 		uint8_t endpoints[] = {1};
-		adapter.active_endpoints(by_short(kSensorShort), 0, endpoints, 1);
+		actor.active_endpoints(by_short(kSensorShort), 0, endpoints, 1);
 		descriptor(kSensorShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0302, {0x0000, 0x0001, 0x0003, 0x0402,
 			0x0405}, {0x0019});
 		basic(kSensorShort, 1, "LUMI", "lumi.weather");
@@ -233,9 +208,9 @@ struct ZigbeeFixture {
 
 	/// A door contact (IAS zone type 0x0015) on endpoint 1.
 	void join_contact() {
-		adapter.device_announced(node(kContact, kContactShort));
+		actor.device_announced(node(kContact, kContactShort));
 		uint8_t endpoints[] = {1};
-		adapter.active_endpoints(by_short(kContactShort), 0, endpoints, 1);
+		actor.active_endpoints(by_short(kContactShort), 0, endpoints, 1);
 		descriptor(kContactShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0402, {0x0000, 0x0001, 0x0500}, {});
 		basic(kContactShort, 1, "SONOFF", "DS01");
 		report(kContactShort, 1, hc::zigbee::cluster::kIasZone, hc::zigbee::attribute::kZoneType,
@@ -244,12 +219,47 @@ struct ZigbeeFixture {
 
 	/// A remote with On/Off and Level Control client clusters on endpoint 1.
 	void join_button() {
-		adapter.device_announced(node(kButton, kButtonShort));
+		actor.device_announced(node(kButton, kButtonShort));
 		uint8_t endpoints[] = {1};
-		adapter.active_endpoints(by_short(kButtonShort), 0, endpoints, 1);
+		actor.active_endpoints(by_short(kButtonShort), 0, endpoints, 1);
 		descriptor(kButtonShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0820, {0x0000, 0x0003}, {0x0003, 0x0006,
 			0x0008});
 		basic(kButtonShort, 1, "IKEA of Sweden", "TRADFRI on/off switch");
+	}
+};
+
+/// The adapter with its model, loop, blob store and driver; helpers that play a device's part.
+struct ZigbeeFixture : ZigbeeActions {
+	FakeClock clock;
+	hc::EventLoop loop;
+	hc::DatapointModel model{clock};
+	FakeBlobStore store;
+	FakeZigbeeDriver driver;
+	hc::zigbee::ZigbeeAdapter adapter{loop, clock, model, driver, &store};
+
+	ZigbeeFixture() : ZigbeeActions(adapter) {}
+
+	/// Runs the loop, jumping the clock from deadline to deadline, until `until_ms`.
+	void run_until(uint64_t until_ms) {
+		for (;;) {
+			loop.run_once(clock.now_ms);
+			uint64_t deadline = loop.next_deadline();
+			if (deadline > until_ms) {
+				clock.now_ms = until_ms;
+				loop.run_once(clock.now_ms);
+				return;
+			}
+			if (deadline > clock.now_ms) {
+				clock.now_ms = deadline;
+			}
+		}
+	}
+
+	void run_for(uint64_t ms) { run_until(clock.now_ms + ms); }
+
+	void start_network() {
+		REQUIRE(adapter.start());
+		adapter.network_state(true, 0x1a62, 15, 0xdddddddddddddddd);
 	}
 
 	const hc::Datapoint* dp(const std::string& name) const { return model.find(name.c_str()); }

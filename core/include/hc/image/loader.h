@@ -17,6 +17,7 @@
 #include "hc/platform/clock.h"
 #include "hc/platform/settings.h"
 #include "hc/scheduler.h"
+#include "hc/zigbee/cluster_mapping.h"
 
 namespace hc {
 namespace image {
@@ -65,6 +66,7 @@ enum class Binding : uint8_t {
 	knx,         ///< The KNX adapter (its `knx` member).
 	schedule,    ///< A schedule entry's output.
 	time_master, ///< The KNX time master (the datapoints its `knx.timeMaster` implies).
+	zigbee,      ///< The Zigbee adapter (its `zigbee` member, spec/zigbee.md), through the provider interface.
 };
 
 /// A validated image, ready to apply: the specs the components take, in tables of the arena. The
@@ -85,6 +87,11 @@ struct Plan {
 
 	knx::KnxMapping* mappings = nullptr;
 	size_t mapping_count = 0;
+
+	/// The `zigbee` bindings (spec/zigbee.md), validated; each `name` is its datapoint's id. Handed to
+	/// the dynamic spec providers at apply (ImageBindings).
+	zigbee::ZigbeeOverride* zigbee = nullptr;
+	size_t zigbee_count = 0;
 
 	bool has_time_master = false;
 	knx::TimeMasterConfig time_master;

@@ -9,6 +9,7 @@
 
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
+#include "hc/image/dynamic_specs.h"
 #include "hc/json.h"
 #include "hc/platform/blob_store.h"
 #include "hc/platform/clock.h"
@@ -65,9 +66,14 @@ struct NetworkStatus {
 ///   learnt stays uninterviewed and is tried again when it is heard after kInterviewRetryMs. Missing
 ///   names or zone types do not fail it. On success the database is written, the reporting of the
 ///   mapped attributes is configured, their clusters bound to the coordinator, the datapoints loaded.
-/// - **Datapoints.** Until the runtime image of issue #8 exists, the adapter loads the model itself
-///   (load refused while the model holds datapoints of another owner, like the demo's) and reloads it
-///   when a device is interviewed or removed; values survive the reload.
+/// - **Datapoints.** Registered with the image service (a DynamicSpecProvider with a listener), the
+///   adapter does not load the model: it states the generic datapoints of the devices the image does
+///   not bind (dynamic_specs()), notifies the service when that set changes (a device interviewed or
+///   removed) and binds its datapoints by name when the service has loaded the model
+///   (model_loaded()): the generic ones and the image's datapoints with a `zigbee` binding. Alone
+///   (no image service, the tests and a build without images), it loads the model itself (refused
+///   while the model holds datapoints of another owner) and reloads it when a device is interviewed
+///   or removed; values survive the reload.
 /// - **Stale.** Every kCheckPeriodMs the adapter compares each device's silence with its stale
 ///   timeout: kStaleFactor times the largest maximum reporting interval of its datapoints (a device
 ///   without configured reporting, a pure button, never goes stale). Silence counts from the start
@@ -79,8 +85,11 @@ struct NetworkStatus {
 /// Memory: start(), configure() and the reload allocate the point table, the device database is
 /// static (DeviceDatabase::kMaxDevices); reports, commands and the stale check allocate nothing.
 /// Threading: the event loop's thread; the platform posts its events there.
-class ZigbeeAdapter : public Technology {
+class ZigbeeAdapter : public Technology, public image::DynamicSpecProvider {
 public:
+	/// A point whose datapoint is not in the model (point_id()).
+	static constexpr uint16_t kNoId = 0xFFFF;
+
 	static constexpr uint32_t kInterviewTimeoutMs = 10000;
 	static constexpr uint8_t kInterviewAttempts = 3;
 	static constexpr uint32_t kInterviewRetryMs = 60000;
@@ -95,6 +104,8 @@ public:
 	/// Endpoints of one device the interview asks for (it keeps ZigbeeDevice::kMaxEndpoints).
 	static constexpr size_t kMaxQueriedEndpoints = 8;
 	static constexpr size_t kMaxOverrides = 512;
+	/// Points of one device the reporting set-up considers (every endpoint with every function).
+	static constexpr size_t kMaxDevicePoints = ZigbeeDevice::kMaxEndpoints * (kFunctionCount + 1);
 
 	/// `store` holds the device database; nullptr keeps it in memory only.
 	ZigbeeAdapter(EventLoop& loop, const Clock& clock, DatapointModel& model, ZigbeeDriver& driver, BlobStore* store);
@@ -109,7 +120,8 @@ public:
 	/// loads them with the next change).
 	bool start(const char** error = nullptr);
 
-	/// Replaces the runtime image's device bindings (copied). Checked before anything changes: every
+	/// Alone (without an image service): replaces the runtime image's device bindings (copied); with
+	/// an image service the bindings come with model_loaded() and this is refused. Checked before anything changes: every
 	/// binding has a name and maps a known function (override_point()), no name and no
 	/// (device, endpoint, function) appears twice, at most kMaxOverrides. Reloads the datapoints when
 	/// started. A refusal (false, the reason in `error` and the log) keeps the previous bindings.
@@ -154,6 +166,8 @@ public:
 	const NetworkStatus& network() const { return network_; }
 	size_t point_count() const { return point_count_; }
 	const ZigbeePoint& point(size_t index) const { return points_[index]; }
+	/// The model id of point `index`; kNoId while it is not in the model.
+	uint16_t point_id(size_t index) const { return loaded_ ? ids_[index] : kNoId; }
 	/// The device's stale timeout in seconds (0: never stale).
 	uint32_t stale_timeout_s(Ieee ieee) const;
 	/// The device being interviewed, 0 if none.
@@ -170,8 +184,21 @@ public:
 	const char* name() const override { return "zigbee"; }
 	bool command(const Datapoint& datapoint, const Value& value) override;
 
+	// image::DynamicSpecProvider (with the image service, doc/image.md "Dynamic datapoints")
+	const char* provider_name() const override { return "zigbee"; }
+	/// The generic datapoints of the interviewed devices that `bindings` does not mention. The
+	/// bindings are taken over (copied) only with model_loaded().
+	bool dynamic_specs(const image::ImageBindings& bindings, const image::DynamicSpec*& specs, size_t& count,
+		const char** error) override;
+	/// Takes over the bindings and the points of the last dynamic_specs() call and binds them by name.
+	void model_loaded(const image::ImageBindings& bindings) override;
+	void model_cleared() override;
+
 private:
 	enum class Step : uint8_t { active_endpoints, simple_descriptor, basic, zone };
+
+	/// The tables of a dynamic_specs() call, adopted by model_loaded().
+	struct Pending;
 
 	struct Interview {
 		bool active = false;
@@ -207,6 +234,11 @@ private:
 	long find_point(Ieee ieee, uint8_t endpoint, Function function) const;
 	bool device_has_overrides(Ieee ieee) const;
 	void free_overrides();
+	void free_pending();
+	bool specs_differ() const;
+	long index_of(uint16_t id) const;
+	/// The points of one device: its bindings, or the generic mapping when the image binds none.
+	size_t device_points(const ZigbeeDevice& device, ZigbeePoint* out, size_t capacity) const;
 	const char* device_text(const ZigbeeDevice& device, char* buffer, size_t size) const;
 
 	EventLoop& loop_;
@@ -217,7 +249,9 @@ private:
 	NetworkStatus network_;
 	Interview interview_;
 	ZigbeePoint* points_ = nullptr;
+	uint16_t* ids_ = nullptr; ///< The model id of each point (kNoId: not in the model).
 	size_t point_count_ = 0;
+	Pending* pending_ = nullptr;
 	ZigbeePoint* overrides_ = nullptr; ///< The image's bindings, names in override_names_.
 	size_t override_count_ = 0;
 	char* override_names_ = nullptr;

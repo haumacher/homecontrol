@@ -18,49 +18,54 @@ with the suffixes of the function table in `doc/zigbee.md` (`on`, `level`, `colo
 for an IAS zone by its zone type, `battery`, `multistate`, `action`). Example:
 `zigbee.00158d0001020304.1.temperature`.
 
-## Bindings (runtime image, issue #8)
+## Bindings (runtime image, issues #8 and #29)
 
-A runtime image may bind a device's functions to datapoint names of its own. A device with at least
-one binding gets exactly its bound datapoints (its unbound functions get none); a device without
-bindings gets the generic datapoints. The image carries the bindings as a list of objects:
+A runtime image binds a device's functions to datapoints of its own: a datapoint of the image's
+`datapoints` (`spec/runtime-image.md` 3.3) with a `zigbee` member instead of `knx`. The datapoint's
+`id` is the name; its type and flags are the image's. A device with at least one binding gets exactly
+its bound datapoints (its unbound functions get none); a device without bindings gets the generic
+datapoints, added to the model behind the image's (`doc/image.md` "Dynamic datapoints").
 
 ```json
-{
-	"name": "living.ceiling",
-	"ieee": "00158d0001020304",
-	"endpoint": 11,
-	"cluster": 6,
-	"attribute": 0,
-	"client": false,
-	"command": 6
-}
+{"id": "living.ceiling", "label": "Ceiling light", "type": "boolean", "writable": true, "transmit": true,
+ "zigbee": {"ieee": "00158d0001020304", "endpoint": 11, "cluster": 6, "attribute": 0, "command": 6}}
 ```
 
 | Member | Meaning |
 |---|---|
-| `name` | The datapoint name (the rules of `doc/datapoints.md`). Required, unique among all bindings. |
-| `ieee` | The device. Not 0 and not all ones. |
-| `endpoint` | 1..240. |
-| `cluster`, `attribute` | Select the function (the cluster/attribute pairs of the function table). |
-| `client` | `true`: the device's client cluster commands (a button: `cluster` 6 or 8), the `action` function; `attribute` and `command` are then ignored and must not command. Default `false`. |
-| `command` | The cluster commands go to; absent: read-only. Only the function's own cluster, or Level Control (8) for `on_off` (cluster 6), is accepted. |
+| `ieee` | The device: 16 hex digits, colons allowed. Not 0 and not all ones. Required. |
+| `endpoint` | 1..240. Required. |
+| `cluster`, `attribute` | Select the function (the cluster/attribute pairs of the function table in `doc/zigbee.md`), decimal 0..65535. Required; `attribute` not for a client binding. |
+| `client` | `true`: the device's client cluster commands (a button: `cluster` 6 or 8), the `action` function; `attribute` is then ignored and `command` not allowed. Default `false`. |
+| `command` | The cluster commands go to (0..65534); absent: read-only. Only the function's own cluster, or Level Control (8) for `on_off` (cluster 6), is accepted. |
 
-The controller checks the whole list before it changes anything (`ZigbeeAdapter::configure()`): at
-most 512 bindings, every binding maps a known function, no name and no (device, endpoint,
-function) appears twice. A refusal names the reason:
+The loader checks every binding before anything changes and refuses with the path and the reason:
 
-- `binding without a datapoint name`
-- `binding with a reserved IEEE address`
-- `binding endpoint outside 1..240`
-- `a client binding (button commands) needs cluster 6 (On/Off) or 8 (Level Control)`
-- `a client binding (button commands) cannot be commanded`
-- `no known function for this cluster and attribute (doc/zigbee.md lists them)`
-- `the command cluster cannot set this attribute`
-- `a datapoint name is bound twice`
-- `a function of an endpoint is bound twice`
+| Path | Reason |
+|---|---|
+| `datapoints[i].zigbee.ieee` | `ieee is missing`, `"..." is not an IEEE address (16 hex digits, colons allowed; not 0 and not all ones)` |
+| `datapoints[i].zigbee.endpoint` | `endpoint is missing`, `endpoint must be 1..240` |
+| `datapoints[i].zigbee.cluster`, `.attribute`, `.command` | missing (`attribute is missing (only a client binding, a button's commands, has none)`) or not an integer in range |
+| `datapoints[i].zigbee` | `cluster C attribute A: no known function for this cluster and attribute (doc/zigbee.md lists them)` |
+| | `cluster C attribute A: the command cluster cannot set this attribute` |
+| | `client cluster C: a client binding (button commands) needs cluster 6 (On/Off) or 8 (Level Control)` / `... cannot be commanded` |
+| | `the function F carries T values, the datapoint is U` (numeric types and enumeration are interchangeable) |
+| | `a transmitting Zigbee datapoint needs the cluster its commands go to (command); ...` |
+| | `a datapoint is either knx or zigbee`, `a datapoint is either zigbee or virtual` |
+| | `device D endpoint E: the function F is bound twice (also datapoints[j] 'name')` |
+| `datapoints` | `N Zigbee bindings exceed the limit of 512` |
+| `schedules[i].output` | `outputConflict: output '...' is owned by the Zigbee adapter` |
 
-Bound datapoints are loaded whether the device has joined or not; the datapoint of a device that
-has not joined yet stays unknown until the device reports.
+Bound datapoints are in the model whether the device has joined or not; the datapoint of a device
+that has not joined yet stays unknown until the device reports. A generic name the image uses as
+an `id` refuses the image while that device is joined (`datapoints[i].id: '...' is also a datapoint
+of the provider 'zigbee'`).
+
+Without an image service (the adapter alone) the same bindings are given to
+`ZigbeeAdapter::configure()` as `ZigbeeOverride` records (`name` plus the members above), which
+checks them with the reasons `binding without a datapoint name`, `binding with a reserved IEEE
+address`, `binding endpoint outside 1..240`, the function and command reasons above, `a datapoint
+name is bound twice` and `a function of an endpoint is bound twice`.
 
 ## Device database
 

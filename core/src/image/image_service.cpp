@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
 #include <new>
 
@@ -73,6 +74,13 @@ ImageService::ImageService(Controller& controller, DatapointModel& model, BlobSt
 	  store_(blobs) {}
 
 ImageService::~ImageService() {
+	if (reload_pending_) {
+		controller_.loop().cancel(reload_timer_);
+	}
+	for (size_t i = 0; i < provider_count_; ++i) {
+		providers_[i]->set_spec_listener(nullptr);
+	}
+	delete plan_;
 	if (started_) {
 		controller_.set_led_input(nullptr);
 		controller_.time().remove_listener(scheduler_);
@@ -99,9 +107,12 @@ void ImageService::start() {
 	size_t bytes = 0;
 	if (!store_.stored(bytes)) {
 		Log::info(kTag, "no runtime image stored: PUT /api/image deploys one (doc/image.md)");
-		return;
+	} else {
+		load_stored(Source::boot);
 	}
-	load_stored(Source::boot);
+	if (!loaded_ && provider_count_ > 0) {
+		reload_dynamic("start without an image");
+	}
 }
 
 bool ImageService::load_stored(Source source) {
@@ -158,7 +169,9 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	}
 	size_t arena = plan->arena.bytes();
 	bool ok = apply(*plan, source);
-	delete plan;
+	if (plan != plan_) {
+		delete plan; // not kept for the providers' reloads
+	}
 	if (!ok) {
 		return false;
 	}
@@ -176,14 +189,19 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		std::snprintf(store_error_, sizeof(store_error_), "not stored");
 	}
 	Log::info(kTag, "image '%s' revision %u (%s, schema %s) loaded from %s in %u ms: %u datapoints (%u KNX), %u rules, "
-		"%u schedules, %u functions, %u locations, %u history rings%s; %u bytes, load tables %u bytes",
+		"%u schedules, %u functions, %u locations, %u history rings%s; %u bytes, load tables %u bytes%s",
 		info_.project_id, static_cast<unsigned>(info_.revision), info_.name[0] != '\0' ? info_.name : "unnamed",
 		info_.schema_version, source_name(source), static_cast<unsigned>(controller_.clock().monotonic_ms() - begin),
 		static_cast<unsigned>(info_.datapoints), static_cast<unsigned>(info_.knx_datapoints),
 		static_cast<unsigned>(info_.rules), static_cast<unsigned>(info_.schedules),
 		static_cast<unsigned>(info_.functions), static_cast<unsigned>(info_.locations),
 		static_cast<unsigned>(info_.history_rings), info_.time_master ? ", time master" : "",
-		static_cast<unsigned>(length), static_cast<unsigned>(arena));
+		static_cast<unsigned>(length), static_cast<unsigned>(arena),
+		plan_ != nullptr ? " (kept for the providers' reloads)" : "");
+	if (info_.zigbee_datapoints > 0 || dynamic_count_ > 0) {
+		Log::info(kTag, "  %u Zigbee binding(s); %u datapoint(s) of the providers", static_cast<unsigned>(info_.zigbee_datapoints),
+			static_cast<unsigned>(dynamic_count_));
+	}
 	if (changed_) {
 		changed_();
 	}
@@ -231,38 +249,138 @@ void ImageService::apply_settings(const Plan& plan) {
 	}
 }
 
-bool ImageService::apply(Plan& plan, Source source) {
-	report_.clear();
-	// Where each datapoint of the new model was in the old one (the rules follow it by that).
-	uint16_t* previous = plan.arena.array<uint16_t>(plan.datapoint_count);
-	if (plan.datapoint_count > 0 && previous == nullptr) {
-		report_.add(Report::Kind::no_memory, "", "no memory for the swap table");
+struct ImageService::Composed {
+	struct Part {
+		DynamicSpecProvider* provider;
+		const DynamicSpec* specs;
+		size_t first;
+		size_t count;
+	};
+
+	Arena arena;
+	DatapointSpec* specs = nullptr;
+	size_t count = 0;
+	size_t image_count = 0;
+	Part parts[kMaxProviders] = {};
+	size_t part_count = 0;
+};
+
+ImageBindings ImageService::bindings_of(const Plan* plan) const {
+	ImageBindings bindings;
+	if (plan != nullptr) {
+		bindings.zigbee = plan->zigbee;
+		bindings.zigbee_count = plan->zigbee_count;
+	}
+	return bindings;
+}
+
+bool ImageService::compose(const Plan* plan, Composed& out, Report& report) {
+	out.image_count = plan != nullptr ? plan->datapoint_count : 0;
+	size_t total = out.image_count;
+	ImageBindings bindings = bindings_of(plan);
+	for (size_t i = 0; i < provider_count_; ++i) {
+		DynamicSpecProvider* provider = providers_[i];
+		const DynamicSpec* specs = nullptr;
+		size_t count = 0;
+		const char* error = nullptr;
+		if (!provider->dynamic_specs(bindings, specs, count, &error)) {
+			report.add(Report::Kind::no_memory, "", "the provider '%s' cannot build its datapoints: %s",
+				provider->provider_name(), error != nullptr ? error : "?");
+			return false;
+		}
+		out.parts[out.part_count++] = Composed::Part{provider, count > 0 ? specs : nullptr, total, count};
+		total += count;
+	}
+	if (total > DatapointModel::kMaxDatapoints) {
+		report.add(Report::Kind::invalid, "", "the image and the providers need %u datapoints, more than the model holds",
+			static_cast<unsigned>(total));
 		return false;
 	}
-	for (size_t i = 0; i < plan.datapoint_count; ++i) {
-		const Datapoint* old = model_.find(plan.datapoints[i].name);
-		previous[i] = old != nullptr ? old->id() : rules::kNone;
-	}
-
-	// 1, 2: the rules' queued events still name the old ids; then the model.
-	engine_.flush();
-	DatapointStatus status = model_.load(plan.datapoints, plan.datapoint_count, true);
-	if (status != DatapointStatus::ok) {
-		report_.add(status == DatapointStatus::out_of_memory ? Report::Kind::no_memory : Report::Kind::apply,
-			"datapoints", "the datapoint model refused the image: %s; the %s", datapoint_status_name(status),
-			loaded_ ? "loaded image stays" : "device keeps no image");
-		Log::error(kTag, "image not applied: the datapoint model refused it (%s)", datapoint_status_name(status));
+	out.specs = out.arena.array<DatapointSpec>(total);
+	uint32_t* order = out.arena.array<uint32_t>(total);
+	if (total > 0 && (out.specs == nullptr || order == nullptr)) {
+		report.add(Report::Kind::no_memory, "", "no memory to compose %u datapoints", static_cast<unsigned>(total));
 		return false;
 	}
-	// From here on the previous image is gone from RAM.
-	bool was_loaded = loaded_;
-	loaded_ = false;
+	for (size_t i = 0; i < out.image_count; ++i) {
+		out.specs[i] = plan->datapoints[i];
+	}
+	bool ok = true;
+	for (size_t p = 0; p < out.part_count; ++p) {
+		const Composed::Part& part = out.parts[p];
+		for (size_t k = 0; k < part.count; ++k) {
+			out.specs[part.first + k] = part.specs[k].spec;
+			if (part.specs[k].spec.name == nullptr) {
+				report.add(Report::Kind::invalid, "", "the provider '%s' gave a datapoint without a name",
+					part.provider->provider_name());
+				ok = false;
+			}
+		}
+	}
+	out.count = total;
+	if (!ok) {
+		return false;
+	}
+	// Names are unique across the image and the providers.
+	for (size_t i = 0; i < total; ++i) {
+		order[i] = static_cast<uint32_t>(i);
+	}
+	const DatapointSpec* specs = out.specs;
+	std::sort(order, order + total, [specs](uint32_t a, uint32_t b) {
+		int cmp = std::strcmp(specs[a].name, specs[b].name);
+		return cmp < 0 || (cmp == 0 && a < b);
+	});
+	auto provider_of = [&out](uint32_t index) -> const char* {
+		for (size_t p = 0; p < out.part_count; ++p) {
+			if (index >= out.parts[p].first && index < out.parts[p].first + out.parts[p].count) {
+				return out.parts[p].provider->provider_name();
+			}
+		}
+		return "?";
+	};
+	for (size_t k = 1; k < total; ++k) {
+		uint32_t a = order[k - 1];
+		uint32_t b = order[k];
+		if (std::strcmp(specs[a].name, specs[b].name) != 0) {
+			continue;
+		}
+		ok = false;
+		if (a < out.image_count) {
+			char path[32];
+			std::snprintf(path, sizeof(path), "datapoints[%u].id", static_cast<unsigned>(a));
+			report.add(Report::Kind::invalid, path, "'%s' is also a datapoint of the provider '%s'", specs[a].name,
+				provider_of(b));
+		} else {
+			report.add(Report::Kind::invalid, "", "'%s' is a datapoint of the provider '%s' and of the provider '%s'",
+				specs[a].name, provider_of(a), provider_of(b));
+		}
+	}
+	return ok;
+}
 
-	// 3: settings.
-	apply_settings(plan);
+void ImageService::bind_providers(const Plan* plan, const Composed& composed) {
+	for (size_t p = 0; p < composed.part_count; ++p) {
+		const Composed::Part& part = composed.parts[p];
+		for (size_t k = 0; k < part.count; ++k) {
+			Technology* technology = part.specs[k].technology;
+			if (technology != nullptr &&
+				model_.bind(static_cast<uint16_t>(part.first + k), *technology) != DatapointStatus::ok) {
+				Log::error(kTag, "datapoint '%s' of the provider '%s' not bound to %s (the model logged why)",
+					part.specs[k].spec.name, part.provider->provider_name(), technology->name());
+			}
+		}
+	}
+	dynamic_count_ = composed.count - composed.image_count;
+	ImageBindings bindings = bindings_of(plan);
+	for (size_t i = 0; i < provider_count_; ++i) {
+		providers_[i]->model_loaded(bindings);
+	}
+	last_model_load_ms_ = controller_.clock().monotonic_ms();
+	model_loaded_once_ = true;
+}
 
-	// 4: persistence, before anything reports (the scheduler's outputs).
-	status = value_store_.load();
+bool ImageService::bind_persistence(const Plan& plan, Source source) {
+	DatapointStatus status = value_store_.load();
 	if (status != DatapointStatus::ok) {
 		return fail_applied(source, "datapoints", "the value store refused: %s", datapoint_status_name(status));
 	}
@@ -270,20 +388,10 @@ bool ImageService::apply(Plan& plan, Source source) {
 	if (history_status != HistoryStatus::ok) {
 		return fail_applied(source, "history", "the history refused: %s", history_status_name(history_status));
 	}
+	return true;
+}
 
-	// 5: rules.
-	JsonSpanDocument document;
-	JsonSpan rules_span = plan.rules;
-	if (!plan.has_rules) {
-		rules_span = JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array};
-	}
-	PlanSchedules schedules(plan);
-	rules::LoadResult result = engine_.load(document.value(rules_span), &schedules, previous);
-	if (!result.ok()) {
-		return fail_applied(source, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
-			result.text);
-	}
-
+bool ImageService::bind_technologies(const Plan& plan, Source source) {
 	// 6: KNX.
 	const char* error = nullptr;
 	if (!adapter_.configure(plan.mappings, plan.mapping_count, &error)) {
@@ -294,7 +402,7 @@ bool ImageService::apply(Plan& plan, Source source) {
 			return fail_applied(source, "knx.timeMaster", "the time master refused: %s", error);
 		}
 		size_t total = plan.mapping_count + knx::TimeMaster::kMaxOutputs;
-		knx::KnxMapping* merged = plan.arena.array<knx::KnxMapping>(total);
+		knx::KnxMapping* merged = new (std::nothrow) knx::KnxMapping[total];
 		if (merged == nullptr) {
 			return fail_applied(source, "knx", "no memory for the merged KNX mapping");
 		}
@@ -302,7 +410,9 @@ bool ImageService::apply(Plan& plan, Source source) {
 			merged[i] = plan.mappings[i];
 		}
 		size_t n = plan.mapping_count + time_master_.mappings(merged + plan.mapping_count, knx::TimeMaster::kMaxOutputs);
-		if (!adapter_.configure(merged, n, &error)) {
+		bool configured = adapter_.configure(merged, n, &error);
+		delete[] merged;
+		if (!configured) {
 			return fail_applied(source, "knx.timeMaster", "the KNX adapter refused the time master's mapping: %s", error);
 		}
 	} else {
@@ -325,6 +435,88 @@ bool ImageService::apply(Plan& plan, Source source) {
 			external_->clear();
 		}
 	}
+	return true;
+}
+
+bool ImageService::apply(Plan& plan, Source source) {
+	report_.clear();
+	// With providers the plan is kept for their reloads: the `external` text must not point into the
+	// image text, which is freed after the load (the rules are not loaded again).
+	if (provider_count_ > 0 && plan.has_external) {
+		char* copy = plan.arena.copy(plan.external.data, plan.external.length);
+		if (copy == nullptr) {
+			report_.add(Report::Kind::no_memory, "external", "no memory to keep the external sources");
+			return false;
+		}
+		plan.external.data = copy;
+	}
+	// The model: the image's datapoints, then the providers'.
+	Composed composed;
+	if (!compose(&plan, composed, report_)) {
+		Log::warn(kTag, "image from %s refused: it does not compose with the providers' datapoints; the %s",
+			source_name(source), loaded_ ? "loaded image stays" : "device keeps no image");
+		for (size_t i = 0; i < report_.count; ++i) {
+			Log::warn(kTag, "  %s: %s", report_.refusals[i].path[0] != '\0' ? report_.refusals[i].path : "(image)",
+				report_.refusals[i].reason);
+		}
+		return false;
+	}
+	// Where each datapoint of the new model was in the old one (the rules follow it by that).
+	uint16_t* previous = composed.arena.array<uint16_t>(composed.count);
+	if (composed.count > 0 && previous == nullptr) {
+		report_.add(Report::Kind::no_memory, "", "no memory for the swap table");
+		return false;
+	}
+	for (size_t i = 0; i < composed.count; ++i) {
+		const Datapoint* old = model_.find(composed.specs[i].name);
+		previous[i] = old != nullptr ? old->id() : rules::kNone;
+	}
+
+	// 1, 2: the rules' queued events still name the old ids; then the model.
+	engine_.flush();
+	DatapointStatus status = model_.load(composed.specs, composed.count, true);
+	if (status != DatapointStatus::ok) {
+		report_.add(status == DatapointStatus::out_of_memory ? Report::Kind::no_memory : Report::Kind::apply,
+			"datapoints", "the datapoint model refused the image: %s; the %s", datapoint_status_name(status),
+			loaded_ ? "loaded image stays" : "device keeps no image");
+		Log::error(kTag, "image not applied: the datapoint model refused it (%s)", datapoint_status_name(status));
+		return false;
+	}
+	// From here on the previous image is gone from RAM.
+	bool was_loaded = loaded_;
+	loaded_ = false;
+	bind_providers(&plan, composed);
+	// The applied image's composition includes every provider change until now.
+	if (reload_pending_) {
+		controller_.loop().cancel(reload_timer_);
+		reload_pending_ = false;
+	}
+
+	// 3: settings.
+	apply_settings(plan);
+
+	// 4: persistence, before anything reports (the scheduler's outputs).
+	if (!bind_persistence(plan, source)) {
+		return false;
+	}
+
+	// 5: rules.
+	JsonSpanDocument document;
+	JsonSpan rules_span = plan.rules;
+	if (!plan.has_rules) {
+		rules_span = JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array};
+	}
+	PlanSchedules schedules(plan);
+	rules::LoadResult result = engine_.load(document.value(rules_span), &schedules, previous);
+	if (!result.ok()) {
+		return fail_applied(source, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
+			result.text);
+	}
+
+	// 6, 7, 7b: KNX and the time master, the schedules, the external values.
+	if (!bind_technologies(plan, source)) {
+		return false;
+	}
 
 	// 8: start.
 	info_ = plan.info;
@@ -332,11 +524,160 @@ bool ImageService::apply(Plan& plan, Source source) {
 	loaded_ = true;
 	has_knx_ = plan.mapping_count > 0 || plan.has_time_master;
 	loaded_ms_ = controller_.clock().monotonic_ms();
+	dynamic_refused_ = false;
 	rules::StartReason reason = rules_started_ ? rules::StartReason::image : rules::StartReason::boot;
 	rules_started_ = true;
 	engine_.start(reason);
 	if (was_loaded) {
 		Log::info(kTag, "image swapped; rules started (%s)", rules::start_reason_name(reason));
+	}
+	// Kept for the providers' reloads; the rules' text is gone with the image text.
+	drop_plan();
+	if (provider_count_ > 0) {
+		plan.has_rules = false;
+		plan.rules = JsonSpan{};
+		plan_ = &plan;
+	}
+	return true;
+}
+
+void ImageService::drop_plan() {
+	delete plan_;
+	plan_ = nullptr;
+}
+
+bool ImageService::reload_dynamic(const char* why) {
+	if (model_.notifying()) {
+		Log::error(kTag, "model reload (%s) refused from a datapoint listener", why);
+		return false;
+	}
+	const Plan* plan = loaded_ ? plan_ : nullptr;
+	if (loaded_ && plan == nullptr) {
+		dynamic_refused_ = true;
+		std::snprintf(dynamic_refusal_.path, sizeof(dynamic_refusal_.path), "%s", "");
+		std::snprintf(dynamic_refusal_.reason, sizeof(dynamic_refusal_.reason),
+			"the loaded image's tables were not kept (no provider when it was applied): the providers' datapoints "
+			"join with the next image load");
+		Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal_.reason);
+		return false;
+	}
+	Report* report = new (std::nothrow) Report();
+	if (report == nullptr) {
+		Log::error(kTag, "model not reloaded (%s): no memory", why);
+		return false;
+	}
+	Composed composed;
+	if (!compose(plan, composed, *report)) {
+		dynamic_refused_ = true;
+		if (report->count > 0) {
+			dynamic_refusal_ = report->refusals[0];
+		}
+		Log::warn(kTag, "model not reloaded (%s): the datapoints do not compose; the model stays as it is", why);
+		for (size_t i = 0; i < report->count; ++i) {
+			Log::warn(kTag, "  %s: %s", report->refusals[i].path[0] != '\0' ? report->refusals[i].path : "(providers)",
+				report->refusals[i].reason);
+		}
+		delete report;
+		return false;
+	}
+	delete report;
+	if (loaded_) {
+		engine_.flush();
+	}
+	DatapointStatus status = model_.load(composed.specs, composed.count, true);
+	if (status != DatapointStatus::ok) {
+		dynamic_refused_ = true;
+		std::snprintf(dynamic_refusal_.path, sizeof(dynamic_refusal_.path), "%s", "");
+		std::snprintf(dynamic_refusal_.reason, sizeof(dynamic_refusal_.reason),
+			"the datapoint model refused the reload: %s", datapoint_status_name(status));
+		Log::error(kTag, "model not reloaded (%s): %s; the model stays as it is", why, dynamic_refusal_.reason);
+		return false;
+	}
+	bind_providers(plan, composed);
+	dynamic_refused_ = false;
+	++dynamic_reloads_;
+	// The image's datapoints are at their positions: the rules' ids stay valid. Every component that
+	// binds or indexes datapoints takes the new model, as in a swap (the bindings were dropped).
+	if (plan != nullptr && (!bind_persistence(*plan, source_) || !bind_technologies(*plan, source_))) {
+		return false; // torn down and restored (fail_applied)
+	}
+	Log::info(kTag, "model reloaded (%s): %u datapoint(s) of the image, %u of the providers", why,
+		static_cast<unsigned>(composed.image_count), static_cast<unsigned>(dynamic_count_));
+	if (changed_) {
+		changed_();
+	}
+	return true;
+}
+
+void ImageService::reload_due() {
+	reload_pending_ = false;
+	reload_dynamic("a provider's datapoints changed");
+}
+
+void ImageService::dynamic_specs_changed(DynamicSpecProvider& provider) {
+	if (!started_) {
+		return; // start() composes them
+	}
+	if (reload_pending_) {
+		return; // coalesced
+	}
+	uint64_t now = controller_.clock().monotonic_ms();
+	uint64_t at = now;
+	if (model_loaded_once_ && last_model_load_ms_ + kReloadSpacingMs > now) {
+		at = last_model_load_ms_ + kReloadSpacingMs;
+	}
+	reload_timer_ = controller_.loop().schedule_at(at, Callback::member<ImageService, &ImageService::reload_due>(this));
+	reload_pending_ = reload_timer_.valid();
+	if (!reload_pending_) {
+		Log::error(kTag, "the datapoints of '%s' changed but no timer is free for the reload", provider.provider_name());
+		return;
+	}
+	Log::debug(kTag, "the datapoints of '%s' changed: model reload in %u ms", provider.provider_name(),
+		static_cast<unsigned>(at - now));
+}
+
+bool ImageService::add_provider(DynamicSpecProvider& provider) {
+	for (size_t i = 0; i < provider_count_; ++i) {
+		if (providers_[i] == &provider) {
+			Log::error(kTag, "provider '%s' registered twice", provider.provider_name());
+			return false;
+		}
+	}
+	if (provider_count_ >= kMaxProviders || provider.has_spec_listener()) {
+		Log::error(kTag, "provider '%s' refused: %s", provider.provider_name(),
+			provider.has_spec_listener() ? "it has a listener already" : "no provider slot left");
+		return false;
+	}
+	providers_[provider_count_++] = &provider;
+	provider.set_spec_listener(this);
+	Log::info(kTag, "provider '%s' of dynamic datapoints registered", provider.provider_name());
+	if (started_) {
+		dynamic_specs_changed(provider);
+	}
+	return true;
+}
+
+bool ImageService::remove_provider(DynamicSpecProvider& provider) {
+	size_t at = provider_count_;
+	for (size_t i = 0; i < provider_count_; ++i) {
+		if (providers_[i] == &provider) {
+			at = i;
+		}
+	}
+	if (at == provider_count_) {
+		return false;
+	}
+	for (size_t i = at + 1; i < provider_count_; ++i) {
+		providers_[i - 1] = providers_[i];
+	}
+	providers_[--provider_count_] = nullptr;
+	provider.set_spec_listener(nullptr);
+	provider.model_cleared();
+	if (started_) {
+		reload_dynamic("a provider was removed");
+	}
+	if (provider_count_ == 0) {
+		drop_plan();
 	}
 	return true;
 }
@@ -362,6 +703,9 @@ bool ImageService::fail_applied(Source source, const char* path, const char* for
 			Log::warn(kTag, "no stored image to return to: the device has no image");
 		}
 	}
+	if (!restoring_ && !loaded_ && provider_count_ > 0) {
+		reload_dynamic("no image after a failed apply");
+	}
 	report_.clear();
 	report_.add(Report::Kind::apply, where, "%s", reason);
 	if (changed_ && !restoring_) {
@@ -374,6 +718,11 @@ void ImageService::tear_down() {
 	// Without deleting persisted state: the stored image is loaded again next.
 	engine_.flush();
 	model_.clear();
+	for (size_t i = 0; i < provider_count_; ++i) {
+		providers_[i]->model_cleared();
+	}
+	dynamic_count_ = 0;
+	drop_plan();
 	NoSchedules none;
 	JsonSpanDocument document;
 	engine_.load(document.value(JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array}), &none, nullptr);
@@ -390,7 +739,17 @@ void ImageService::tear_down() {
 
 bool ImageService::unload(const char** error) {
 	engine_.flush();
-	model_.clear();
+	bool had = loaded_;
+	loaded_ = false;
+	drop_plan();
+	// The providers' datapoints stay, with their values; everything else goes.
+	if (provider_count_ == 0 || !reload_dynamic("the image is removed")) {
+		model_.clear();
+		for (size_t i = 0; i < provider_count_; ++i) {
+			providers_[i]->model_cleared();
+		}
+		dynamic_count_ = 0;
+	}
 	NoSchedules none;
 	JsonSpanDocument document;
 	engine_.load(document.value(JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array}), &none, nullptr);
@@ -402,8 +761,6 @@ bool ImageService::unload(const char** error) {
 	scheduler_.load(nullptr, 0);
 	value_store_.load();
 	history_.load(nullptr, 0, 0);
-	bool had = loaded_;
-	loaded_ = false;
 	has_knx_ = false;
 	info_ = ImageInfo();
 	report_.clear();

@@ -149,6 +149,7 @@ private:
 	void log(const WebRequest& request, WebResponse& response);
 	void settings(WebResponse& response);
 	void put_setting(const char* key, const WebRequest& request, WebResponse& response);
+	void coredump(WebResponse& response);
 	void image(const WebRequest& request, WebResponse& response);
 	void ui_model(const WebRequest& request, WebResponse& response);
 	void history(const WebRequest& request, WebResponse& response);

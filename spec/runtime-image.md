@@ -127,7 +127,8 @@ An array of datapoint objects (at most 1024). The array order is the model order
 | `persist` | boolean | no, false | The last value is kept across restarts (`doc/persistence.md`). |
 | `history` | `{"retention": s, "spacing": s}` | no | A short-term history ring: `spacing` 10..86400 s, `retention` from the spacing up to 31 days, at most 2048 samples; only `boolean`, `unsigned`, `signed`, `real`. |
 | `knx` | object | no | The KNX binding, below. |
-| `virtual` | object (members reserved) | no | A value of the application: no technology; rules and the UI command it. Excludes `knx`. |
+| `zigbee` | object | no | The Zigbee binding, below. Excludes `knx` and `virtual`. |
+| `virtual` | object (members reserved) | no | A value of the application: no technology; rules and the UI command it. Excludes `knx` and `zigbee`. |
 
 The KNX binding:
 
@@ -137,8 +138,27 @@ The KNX binding:
 | `send` | group address `"main/middle/sub"` | if `transmit` or `readable` | The address the device writes and answers on. |
 | `listen` | array of up to 8 group addresses | no | Further addresses whose telegrams update the datapoint (status feedback, other senders). |
 
-A KNX datapoint needs at least one address. A datapoint without `knx` and without `virtual` is a
+A KNX datapoint needs at least one address. A datapoint without `knx`, `zigbee` and `virtual` is a
 plain application value too; a schedule may own it as its `output`.
+
+The Zigbee binding (issue #29; the bindings, the checks and their refusals in `spec/zigbee.md`
+"Bindings"): the datapoint stands for one function of one endpoint of a joined (or not yet joined)
+device, and a device with a binding gets only its bound datapoints.
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `ieee` | string, 16 hex digits (colons allowed) | yes | The device's IEEE address; not 0, not all ones. |
+| `endpoint` | integer 1..240 | yes | |
+| `cluster` | integer 0..65535 | yes | With `attribute`, one function of the table in `doc/zigbee.md`; its value type must fit `type` (numeric types and enumeration are interchangeable). |
+| `attribute` | integer 0..65535 | unless `client` | |
+| `client` | boolean | no, false | The device's client cluster commands (a button, cluster 6 or 8): an `enumeration` of actions. |
+| `command` | integer 0..65534 | if `transmit` | The cluster the commands go to: the function's own, or 8 (Level Control) for On/Off. Absent: read-only. |
+
+At most 512 Zigbee bindings; no function of an endpoint is bound twice. The controller adds the
+generic datapoints of the joined devices without bindings behind the image's datapoints
+(`zigbee.<ieee>.<endpoint>.<suffix>`, `doc/image.md` "Dynamic datapoints"); an `id` equal to one of
+them refuses the image while that device is joined. Rules and functions name Zigbee datapoints
+through bindings: the generic names are not the image's.
 
 ### 3.4 `locations`
 

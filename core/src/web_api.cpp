@@ -3,6 +3,8 @@
  */
 #include "hc/web_api.h"
 
+#include "hc/diagnostics.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -302,6 +304,14 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		put_setting(path + 14, request, response);
 		return;
 	}
+	if (std::strcmp(path, "/api/coredump") == 0) {
+		if (request.method != HttpMethod::get) {
+			refuse(response, 405, "api.method_not_allowed", "use GET");
+			return;
+		}
+		coredump(response);
+		return;
+	}
 	if (std::strcmp(path, "/api/image") == 0) {
 		image(request, response);
 		return;
@@ -558,6 +568,7 @@ void WebApi::write_status(JsonWriter& json) {
 		.member("ui", host_.ui_version())
 		.end_object();
 	json.member("uptime_s", ctl.uptime_ms() / 1000);
+	write_boot_status(json, ctl.diagnostics());
 	char mdns[80];
 	std::snprintf(mdns, sizeof(mdns), "%s.local", host_.device_name());
 	json.key("network").begin_object()
@@ -943,9 +954,46 @@ size_t WebApi::body_limit(HttpMethod method, const char* path) {
 	return kMaxBody;
 }
 
+namespace {
+
+/// Streamed documents: the stored image's token with this bit cleared, the core dump with it set.
+constexpr uint32_t kCoreDumpStream = 0x80000000u;
+
+} // namespace
+
 bool WebApi::read_stream(uint32_t token, size_t offset, char* buffer, size_t size, size_t& length) {
-	length = 0;
-	return image_ != nullptr && image_->read_stored(token, offset, buffer, size, length);
+	if ((token & kCoreDumpStream) != 0) {
+		const Diagnostics* diagnostics = controller_.diagnostics();
+		size_t total = diagnostics != nullptr ? diagnostics->coredump_size() : 0;
+		if (offset >= total) {
+			return false;
+		}
+		size_t piece = size < total - offset ? size : total - offset;
+		if (!diagnostics->coredump_read(offset, buffer, piece)) {
+			return false;
+		}
+		length = piece;
+		return true;
+	}
+	if (image_ == nullptr) {
+		return false;
+	}
+	uint32_t current = image_->store_token();
+	return (current & ~kCoreDumpStream) == token && image_->read_stored(current, offset, buffer, size, length);
+}
+
+void WebApi::coredump(WebResponse& response) {
+	const Diagnostics* diagnostics = controller_.diagnostics();
+	size_t bytes = diagnostics != nullptr ? diagnostics->coredump_size() : 0;
+	if (bytes == 0) {
+		refuse(response, 404, "coredump.none", "no core dump is stored (doc/diagnostics.md)");
+		return;
+	}
+	response.content_type = "application/octet-stream";
+	response.stream = true;
+	response.stream_length = bytes;
+	response.stream_token = kCoreDumpStream;
+	response.length = 0;
 }
 
 void WebApi::image(const WebRequest& request, WebResponse& response) {
@@ -961,7 +1009,7 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 		}
 		response.stream = true;
 		response.stream_length = bytes;
-		response.stream_token = image_->store_token();
+		response.stream_token = image_->store_token() & ~kCoreDumpStream;
 		response.length = 0;
 		return;
 	}

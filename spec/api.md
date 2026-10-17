@@ -414,3 +414,8 @@ curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/history?ids=4&points=24"
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"value": 600000}' $DEV/api/rules/hall-presence-light/parameters/timeout
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"enabled": false}' $DEV/api/schedules/workdayMorning
 ```
+
+## Diagnostics
+
+- `GET /api/status` carries a `boot` member: `{"reason": "<reset reason in words>", "count": <boots>, "brownouts": <n>, "previous_uptime_s": <s>, "coredump": <bool>}` (doc/diagnostics.md; a POSIX build reports its PID, start time and the signal that stopped the previous run instead).
+- `GET /api/coredump` streams the stored core dump (`application/octet-stream`, the ELF the IDF wrote) for `esp-coredump info_corefile -c core.bin -t raw <homecontrol.elf>`; `404 coredump.none` without one. Session or token as for every route.

@@ -142,7 +142,7 @@ void loop_task(void*) {
 	g_diag.start(ctl.loop(), g_clock);
 	// ---- end diagnostics ----
 	knx().init();
-	zigbee().init();
+	zigbee().init(image()); // the adapter becomes a dynamic spec provider of the image service
 	// ---- runtime image ----
 	g_blobs.start(); // mounts /storage (shared with the web server's UI files) and opens /storage/state
 	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services));

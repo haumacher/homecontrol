@@ -76,7 +76,7 @@ int devices(ZigbeeService& service, zigbee::ZigbeeAdapter& adapter) {
 			if (adapter.point(p).ieee != device.ieee) {
 				continue;
 			}
-			const Datapoint* dp = service.model().get(static_cast<uint16_t>(p));
+			const Datapoint* dp = service.model().get(adapter.point_id(p));
 			if (dp == nullptr) {
 				continue;
 			}

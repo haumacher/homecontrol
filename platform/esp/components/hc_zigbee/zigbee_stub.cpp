@@ -26,6 +26,8 @@ ZigbeeService::ZigbeeService(Controller& controller, LoopQueue& queue, Datapoint
 
 void ZigbeeService::init(BlobStore*) {}
 
+void ZigbeeService::init(image::ImageService&, BlobStore*) {}
+
 bool ZigbeeService::available() const {
 	return false;
 }

@@ -14,6 +14,7 @@
 #include "hc/network_settings.h"
 #include "hc/rules/rule_set.h"
 #include "hc/tz.h"
+#include "hc/zigbee/adapter.h"
 
 namespace hc {
 namespace image {
@@ -678,6 +679,114 @@ struct KnxDraft {
 	size_t listen_count = 0;
 };
 
+/// Per datapoint, what the `zigbee` member said (spec/zigbee.md "Bindings").
+struct ZigbeeDraft {
+	bool present = false; ///< Valid: `binding` holds it.
+	zigbee::ZigbeeOverride binding;
+	zigbee::Function function = zigbee::Function::on_off;
+};
+
+/// The `zigbee` member of a datapoint: the device function it stands for. Checks the address, the
+/// endpoint, the cluster/attribute against the function table, the command cluster, the function's
+/// value type against the datapoint's and that a transmitting datapoint can be commanded.
+void parse_zigbee(Ctx& c, const JsonSpan& value, const DatapointSpec& spec, ZigbeeDraft& draft) {
+	if (!c.object(value, "zigbee")) {
+		return;
+	}
+	zigbee::ZigbeeOverride binding;
+	bool ok = true;
+	JsonSpan member;
+	{
+		Path q(c, ".ieee");
+		char text[32];
+		if (!c.member(value, "ieee", member)) {
+			c.refuse("ieee is missing");
+			ok = false;
+		} else if (!c.string(member, text, sizeof(text), 1, 23, true, "ieee")) {
+			ok = false;
+		} else if (!zigbee::parse_ieee(text, binding.ieee)) {
+			c.refuse("\"%s\" is not an IEEE address (16 hex digits, colons allowed; not 0 and not all ones)", text);
+			ok = false;
+		}
+	}
+	int64_t number = 0;
+	{
+		Path q(c, ".endpoint");
+		if (!c.member(value, "endpoint", member)) {
+			c.refuse("endpoint is missing");
+			ok = false;
+		} else if (c.integer(member, 1, 240, number, "endpoint")) {
+			binding.endpoint = static_cast<uint8_t>(number);
+		} else {
+			ok = false;
+		}
+	}
+	if (c.member(value, "client", member)) {
+		Path q(c, ".client");
+		ok = c.boolean(member, binding.client, "client") && ok;
+	}
+	{
+		Path q(c, ".cluster");
+		if (!c.member(value, "cluster", member)) {
+			c.refuse("cluster is missing");
+			ok = false;
+		} else if (c.integer(member, 0, 65535, number, "cluster")) {
+			binding.cluster = static_cast<uint16_t>(number);
+		} else {
+			ok = false;
+		}
+	}
+	if (c.member(value, "attribute", member)) {
+		Path q(c, ".attribute");
+		if (c.integer(member, 0, 65535, number, "attribute")) {
+			binding.attribute = static_cast<uint16_t>(number);
+		} else {
+			ok = false;
+		}
+	} else if (!binding.client) {
+		c.refuse("attribute is missing (only a client binding, a button's commands, has none)");
+		ok = false;
+	}
+	if (c.member(value, "command", member)) {
+		Path q(c, ".command");
+		if (c.integer(member, 0, 65534, number, "command (the cluster commands go to)")) {
+			binding.command_cluster = static_cast<uint16_t>(number);
+		} else {
+			ok = false;
+		}
+	}
+	if (!ok) {
+		return;
+	}
+	binding.name = spec.name != nullptr ? spec.name : "?";
+	const char* why = nullptr;
+	std::optional<zigbee::ZigbeePoint> point = zigbee::override_point(binding, &why);
+	if (!point) {
+		if (binding.client) {
+			c.refuse("client cluster %u: %s", static_cast<unsigned>(binding.cluster), why);
+		} else {
+			c.refuse("cluster %u attribute %u: %s", static_cast<unsigned>(binding.cluster),
+				static_cast<unsigned>(binding.attribute), why);
+		}
+		return;
+	}
+	const zigbee::FunctionInfo& info = zigbee::function_info(point->function);
+	if (spec.type != ValueType::none && info.value_type != spec.type &&
+		!(numeric(info.value_type) && numeric(spec.type))) {
+		c.refuse("the function %s carries %s values, the datapoint is %s", info.key, value_type_label(info.value_type),
+			value_type_label(spec.type));
+		return;
+	}
+	if ((spec.flags & DatapointFlags::kTransmit) != 0 && !point->commandable()) {
+		c.refuse("a transmitting Zigbee datapoint needs the cluster its commands go to (command); %s",
+			binding.client ? "a client binding (button commands) cannot be commanded" : "without it the binding is read-only");
+		return;
+	}
+	draft.present = spec.name != nullptr;
+	draft.binding = binding;
+	draft.function = point->function;
+}
+
 /// Sorted datapoint ids for lookups by name.
 struct Index {
 	const Plan& plan;
@@ -704,8 +813,8 @@ struct Index {
 	}
 };
 
-void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, HistorySpec* history,
-	size_t& history_count) {
+void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, ZigbeeDraft& zigbee_draft,
+	HistorySpec* history, size_t& history_count) {
 	Plan& plan = c.plan;
 	DatapointSpec& spec = plan.datapoints[i];
 	if (!c.object(dp, "a datapoint")) {
@@ -811,6 +920,18 @@ void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, 
 		Path p(c, ".virtual");
 		c.object(virtual_member, "virtual");
 	}
+	JsonSpan zigbee_member;
+	if (c.member(dp, "zigbee", zigbee_member)) {
+		Path p(c, ".zigbee");
+		if (has_virtual) {
+			c.refuse("a datapoint is either zigbee or virtual");
+		} else if (c.member(dp, "knx", value)) {
+			c.refuse("a datapoint is either knx or zigbee");
+		} else {
+			parse_zigbee(c, zigbee_member, spec, zigbee_draft);
+		}
+		return;
+	}
 	if (!c.member(dp, "knx", value)) {
 		return;
 	}
@@ -913,9 +1034,10 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 	plan.datapoints = plan.arena.array<DatapointSpec>(total);
 	plan.bindings = plan.arena.array<Binding>(total);
 	KnxDraft* drafts = plan.arena.array<KnxDraft>(declared);
+	ZigbeeDraft* zigbee_drafts = plan.arena.array<ZigbeeDraft>(declared);
 	HistorySpec* history = plan.arena.array<HistorySpec>(declared);
 	if (total > 0 && (plan.datapoints == nullptr || plan.bindings == nullptr || (declared > 0 && (drafts == nullptr ||
-		history == nullptr)))) {
+		zigbee_drafts == nullptr || history == nullptr)))) {
 		c.no_memory("the datapoint table");
 		return;
 	}
@@ -928,7 +1050,7 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 		size_t i = 0;
 		while (json_next_item(list, position, item) && !c.stopped()) {
 			Path q(c, "[%u]", static_cast<unsigned>(i));
-			parse_datapoint(c, item, i, drafts[i], history, history_count);
+			parse_datapoint(c, item, i, drafts[i], zigbee_drafts[i], history, history_count);
 			++i;
 		}
 	}
@@ -1015,6 +1137,44 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 	}
 	plan.mapping_count = knx_count;
 	plan.info.knx_datapoints = knx_count;
+	// Zigbee bindings: at most what the adapter takes, no function of an endpoint twice.
+	size_t zigbee_count = 0;
+	for (size_t i = 0; i < declared; ++i) {
+		zigbee_count += zigbee_drafts[i].present ? 1 : 0;
+	}
+	if (zigbee_count > zigbee::ZigbeeAdapter::kMaxOverrides) {
+		Path p(c, "datapoints");
+		c.refuse("%u Zigbee bindings exceed the limit of %u", static_cast<unsigned>(zigbee_count),
+			static_cast<unsigned>(zigbee::ZigbeeAdapter::kMaxOverrides));
+		return;
+	}
+	plan.zigbee = plan.arena.array<zigbee::ZigbeeOverride>(zigbee_count);
+	if (zigbee_count > 0 && plan.zigbee == nullptr) {
+		c.no_memory("the Zigbee bindings");
+		return;
+	}
+	for (size_t i = 0; i < declared; ++i) {
+		const ZigbeeDraft& d = zigbee_drafts[i];
+		if (!d.present) {
+			continue;
+		}
+		for (size_t k = 0; k < i; ++k) {
+			const ZigbeeDraft& e = zigbee_drafts[k];
+			if (e.present && e.binding.ieee == d.binding.ieee && e.binding.endpoint == d.binding.endpoint &&
+				e.function == d.function) {
+				char ieee[zigbee::kIeeeText];
+				zigbee::format_ieee(d.binding.ieee, ieee);
+				Path p(c, "datapoints[%u].zigbee", static_cast<unsigned>(i));
+				c.refuse("device %s endpoint %u: the function %s is bound twice (also datapoints[%u] '%s')", ieee,
+					static_cast<unsigned>(d.binding.endpoint), zigbee::function_info(d.function).key,
+					static_cast<unsigned>(k), e.binding.name);
+				break;
+			}
+		}
+		plan.zigbee[plan.zigbee_count++] = d.binding;
+		plan.bindings[i] = Binding::zigbee;
+	}
+	plan.info.zigbee_datapoints = plan.zigbee_count;
 	// The time master's addresses must not be sent on by a datapoint of the image.
 	if (plan.has_time_master) {
 		const char* names[] = {"time", "date", "dateTime"};
@@ -1589,6 +1749,7 @@ void parse_schedule(Ctx& c, const JsonSpan& item, ScheduleSpec& spec, const Inde
 				c.refuse("outputConflict: output '%s' is owned by %s", spec.output,
 					c.plan.bindings[dp] == Binding::knx ? "the KNX adapter"
 					: c.plan.bindings[dp] == Binding::schedule ? "another schedule entry"
+					: c.plan.bindings[dp] == Binding::zigbee ? "the Zigbee adapter"
 					: "the time master");
 			} else {
 				c.plan.bindings[dp] = Binding::schedule;
