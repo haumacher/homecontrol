@@ -10,6 +10,7 @@
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
+#include "hc/external_values.h"
 #include "hc/history.h"
 #include "hc/image/image.h"
 #include "hc/image/image_store.h"
@@ -107,6 +108,10 @@ public:
 	void write_report(JsonWriter& json) const;
 
 	/// Called when the image changed ntp.server (the platform restarts SNTP).
+	/// The external values (weather and other HTTP sources, doc/external.md) the image's `external`
+	/// member configures after every load and clears on unload; nullptr: the member is ignored.
+	void set_external(ExternalValues* external) { external_ = external; }
+
 	void set_ntp_changed(Callback callback) { ntp_changed_ = callback; }
 	/// Called after every change of the loaded image (load, swap, restore, unload): the model's ids
 	/// may have changed (the web API resyncs its live feed).
@@ -155,6 +160,7 @@ private:
 	bool stored_ok_ = false;
 	char store_error_[64] = {};
 	uint64_t loaded_ms_ = 0;
+	ExternalValues* external_ = nullptr;
 	Callback ntp_changed_;
 	Callback changed_;
 };

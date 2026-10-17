@@ -27,7 +27,10 @@
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/demo.h"
+#include "hc/external_values.h"
 #include "hc/image/image_service.h"
+#include "hc/posix/file_blob_store.h"
+#include "hc/posix/httplib_fetcher.h"
 #include "hc/image/memory_blob_store.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/knx_settings.h"
@@ -49,7 +52,6 @@ constexpr unsigned kDefaultHttpPort = 8080;
 
 /// The RAM blob store's capacity (the stand-in for the file store): the image and its persisted
 /// state with room to spare.
-constexpr size_t kBlobCapacity = 4 * 1024 * 1024;
 
 #ifndef HC_WEB_UI_DIR
 #define HC_WEB_UI_DIR "web/ui/dist"
@@ -221,8 +223,11 @@ int main(int argc, char** argv) {
 	hc::knx::TelegramLog telegrams(clock);
 	hc::knx::KnxTunnel tunnel(controller.loop(), clock, controller.connectivity(), knx_socket);
 	hc::knx::KnxAdapter adapter(controller.loop(), clock, model, tunnel, &telegrams);
-	hc::image::MemoryBlobStore blobs(kBlobCapacity);
+	hc::posix::FileBlobStore blobs(hc::posix::FileBlobStore::directory_for_settings(settings_path));
 	hc::image::ImageService image(controller, model, blobs, adapter, &tunnel);
+	hc::posix::HttplibFetcher fetcher(executor);
+	hc::ExternalValues external(controller.loop(), controller.time(), settings, controller.connectivity(), model, fetcher);
+	image.set_external(&external);
 	bool knx = !gateway.empty();
 	if (knx) {
 		adapter.start();
@@ -242,8 +247,7 @@ int main(int argc, char** argv) {
 	if (demo) {
 		demo_technology.load(); // without the image service: /api/image answers image.unavailable
 	} else {
-		hc::Log::info(kTag, "blobs are kept in RAM (up to %u KB) until the POSIX blob store is merged: the image "
-			"and the persisted values do not survive a restart", static_cast<unsigned>(kBlobCapacity / 1024));
+		blobs.start();
 		image.start();
 		if (image_path != nullptr) {
 			std::string text;

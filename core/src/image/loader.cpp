@@ -1972,6 +1972,14 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 		Path p(c, "ui");
 		c.object(ui, "'ui'");
 	}
+	JsonSpan external;
+	if (c.member(root, "external", external)) {
+		Path p(c, "external");
+		if (c.object(external, "'external'")) {
+			plan.has_external = true;
+			plan.external = external;
+		}
+	}
 	if (!c.stopped()) {
 		parse_rules(c, root, clock_);
 	}

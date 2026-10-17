@@ -21,7 +21,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   short-term history over the platform's `BlobStore` (`ValueStore`, `History`, `doc/persistence.md`),
   the web server's portable half (JSON API `WebApi`, WebSocket feed `LiveFeed` and codec `websocket`,
   `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); the rule interpreter (`hc::rules`, `doc/rules.md`); the runtime image (`hc::image`: `Loader`,
-  `ImageService`, `ImageStore`, the RAM stand-in `MemoryBlobStore`; `doc/image.md`). Plain C++17, no ESP-IDF or POSIX
+  `ImageService`, `ImageStore`, the RAM stand-in `MemoryBlobStore`; `doc/image.md`). external values from HTTP JSON sources (`ExternalValues`, `doc/external.md`); Plain C++17, no ESP-IDF or POSIX
   includes; everything the platform provides (clock, settings, time zone, network driver, status
   light, logging, the Improv serial port, the WiFi scan) is an interface in `core/include/hc/platform/`. Unit tests in `core/test/`.
   `core/hc_core.cmake` is the single source list of both builds; the event loop model is in

@@ -93,3 +93,5 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/image/rules_clock.cpp"
 	"${HC_CORE_DIR}/src/image/memory_blob_store.cpp"
 )
+# External values: HTTP JSON sources as datapoints, Open-Meteo as the first (issue #17, doc/external.md).
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/external_values.cpp")

@@ -314,6 +314,17 @@ bool ImageService::apply(Plan& plan, Source source) {
 		return fail_applied(source, "schedules", "the scheduler refused: %s", schedule_status_name(schedule_status));
 	}
 
+	// 7b: external values, after the model they bind to.
+	if (external_ != nullptr) {
+		if (plan.has_external) {
+			if (!external_->configure_json(plan.external.data, plan.external.length, &error)) {
+				return fail_applied(source, "external", "the external values refused: %s", error);
+			}
+		} else {
+			external_->clear();
+		}
+	}
+
 	// 8: start.
 	info_ = plan.info;
 	source_ = source;
@@ -368,6 +379,9 @@ void ImageService::tear_down() {
 	adapter_.clear();
 	time_master_.clear();
 	scheduler_.clear();
+	if (external_ != nullptr) {
+		external_->clear();
+	}
 	loaded_ = false;
 	has_knx_ = false;
 	info_ = ImageInfo();
@@ -379,6 +393,9 @@ bool ImageService::unload(const char** error) {
 	NoSchedules none;
 	JsonSpanDocument document;
 	engine_.load(document.value(JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array}), &none, nullptr);
+	if (external_ != nullptr) {
+		external_->clear();
+	}
 	adapter_.clear();
 	time_master_.clear();
 	scheduler_.load(nullptr, 0);

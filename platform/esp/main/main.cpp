@@ -16,6 +16,8 @@
 #include "esp_platform.h"
 #include "esp_status_light.h"
 #include "hc/controller.h"
+#include "external_service.h"
+#include "littlefs_blob_store.h"
 #include "knx_service.h"
 #include "loop_queue.h"
 #include "net_services.h"
@@ -63,10 +65,9 @@ hc::esp::OtaService g_ota(g_queue);
 // ---- web server (issue #5): the datapoint model the technologies fill, and the server ----
 hc::DatapointModel g_model(g_clock);
 // ---- end web server ----
-// ---- runtime image (issue #8): until the LittleFS blob store is merged, the blobs (the stored
-// image, persisted values, history rings) are kept in RAM and lost on restart ----
-constexpr size_t kBlobCapacity = 96 * 1024;
-hc::image::MemoryBlobStore g_blobs(kBlobCapacity);
+// ---- runtime image (issue #8) and persistence (issue #21): the blobs (the stored image, persisted
+// values, history rings) live on the LittleFS partition under /storage/state ----
+hc::esp::LittleFsBlobStore g_blobs;
 // ---- end runtime image ----
 
 hc::Controller& controller() {
@@ -96,6 +97,13 @@ hc::image::ImageService& image() {
 	return instance;
 }
 
+// ---- external values (issue #17): weather and other HTTP JSON sources as datapoints ----
+hc::esp::ExternalService& external() {
+	static hc::esp::ExternalService instance(controller(), g_queue, g_model);
+	return instance;
+}
+// ---- end external values ----
+
 hc::esp::ImageConsole& image_console() {
 	static hc::esp::ImageConsole instance(image(), g_queue);
 	return instance;
@@ -111,10 +119,11 @@ void loop_task(void*) {
 	ctl.start(); // opens the Improv window
 	knx().init();
 	// ---- runtime image ----
+	g_blobs.start(); // mounts /storage (shared with the web server's UI files) and opens /storage/state
 	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services));
+	image().set_external(&external().values());
 	image().start();
-	hc::Log::info(kTag, "runtime image: blobs in RAM (up to %u KB) until the flash blob store is merged; event-loop "
-		"stack reserve %u B", static_cast<unsigned>(kBlobCapacity / 1024),
+	hc::Log::info(kTag, "runtime image started; event-loop stack reserve %u B",
 		static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
 	// ---- end runtime image ----
 	if (serial_ready) {
@@ -129,12 +138,15 @@ void loop_task(void*) {
 	web.start();
 	// ---- end web server ----
 	if (serial_ready) {
-		// The commands other components contribute: the web server's, the KNX service's, the image's.
-		static hc::esp::ConsoleCommand extensions[3] = {
+		// The commands other components contribute: the web server's, the storage's, the KNX
+		// service's, the image's and the external values'.
+		static hc::esp::ConsoleCommand extensions[5] = {
 			*web.console_commands(),
+			*g_blobs.console_commands(),
 			{"knx", hc::esp::kKnxCommandHint, hc::esp::kKnxCommandHelp, &knx_console, nullptr},
 			{"image", hc::esp::kImageCommandHint, hc::esp::kImageCommandHelp, &hc::esp::ImageConsole::run,
 				&image_console()},
+			*external().console_command(),
 		};
 		static hc::esp::ConsoleContext console{ctl, g_queue, g_wifi, g_services, g_ota,
 			hc::esp::SerialMux::kConsoleInput, extensions, sizeof(extensions) / sizeof(extensions[0])};

@@ -99,6 +99,10 @@ struct Plan {
 	bool has_rules = false;
 	JsonSpan rules;
 
+	/// The `external` member (spec/external-values.md), handed to ExternalValues after the model swap.
+	bool has_external = false;
+	JsonSpan external;
+
 	Arena arena;
 
 	/// The schedule ids, for the rule loader's `schedule` triggers.

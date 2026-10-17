@@ -201,7 +201,15 @@ addresses (after the image's own). The addresses must not be the sending address
 need. Refused when the rings need more than the budget, or the budget exceeds the device's cap
 (64 KB on the ESP32-C6, `HistoryLimits::cap_bytes`).
 
-### 3.8 `ui`
+### 3.8 `external`
+
+Optional. The HTTP JSON sources (weather and other services) that feed datapoints, in the shape of
+`spec/external-values.md` (`{"sources": [...]}`): sources with a `url` or a `preset`, an interval and
+bindings from JSON paths or preset variables to datapoints of this image. It is validated and applied
+after the datapoint model it binds to; a refusal names the path under `external` and the image is not
+applied.
+
+### 3.9 `ui`
 
 An object reserved for E-Home's presentation hints (dashboard order, icons). Version 1.0 defines
 no members; the device checks only that it is an object.

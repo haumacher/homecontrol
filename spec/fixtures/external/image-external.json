@@ -1,0 +1,26 @@
+{
+	"sources": [
+		{
+			"id": "weather",
+			"preset": "open-meteo",
+			"interval": 900,
+			"bindings": [
+				{"datapoint": "weather.temperature", "variable": "temperature"},
+				{"datapoint": "weather.humidity", "variable": "humidity"},
+				{"datapoint": "weather.wind", "variable": "wind_speed"},
+				{"datapoint": "weather.code", "variable": "weather_code"},
+				{"datapoint": "weather.temperature_3h", "variable": "temperature_3h"},
+				{"datapoint": "weather.rain_1h", "variable": "precipitation_1h"}
+			]
+		},
+		{
+			"id": "pv",
+			"url": "http://pv.example/api/status.json",
+			"interval": 300,
+			"bindings": [
+				{"datapoint": "pv.power", "path": "inverters[0].ac.power", "scale": 0.001, "unit": "kW"},
+				{"datapoint": "pv.online", "path": "online"}
+			]
+		}
+	]
+}

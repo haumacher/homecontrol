@@ -174,7 +174,7 @@ again in 1 s`. The heartbeat line names the link state and, if it is not `normal
 |---|---|
 | fast blink, 100 ms on / 100 ms off | pairing (WPS): press the router's WPS button; or an Improv WiFi setup is connecting |
 | slow blink, 500 ms on / 500 ms off | no IP address yet, or reconnecting |
-| short pulse, 100 ms on / 900 ms off | online, setup unfinished: no runtime image loaded (always, until issue #8) |
+| short pulse, 100 ms on / 900 ms off | online but no runtime image loaded yet; with an image the LED shows `ready`, or `degraded` while the KNX tunnel is down under a KNX image |
 | short dropout, 900 ms on / 100 ms off | degraded: configured, but something fails (reserved for later packages) |
 | solid | ready |
 
