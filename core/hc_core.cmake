@@ -25,6 +25,9 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/tz.cpp"
 	"${HC_CORE_DIR}/src/version.cpp"
 	"${HC_CORE_DIR}/src/update_check.cpp"
+	"${HC_CORE_DIR}/src/astro.cpp"
+	"${HC_CORE_DIR}/src/time_service.cpp"
+	"${HC_CORE_DIR}/src/scheduler.cpp"
 )
 
 # The build id is taken at configure time; reconfigure to refresh it after a commit.
