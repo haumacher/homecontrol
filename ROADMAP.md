@@ -76,3 +76,6 @@ outside world (weather, external services).
   design effort is spent on it now.
 - **2026-10-17 — Zigbee integration is the goal; no version is scheduled yet.**
 - **2026-10-17 — The GitHub issue tracker is the work queue; direction lives here.**
+- **2026-10-17 — The name stays HomeControl.** Generic, but it says what the project is and pairs
+  with E-Home; "homedriver" (the local checkout's directory name) was the alternative considered,
+  a rename would be a single commit plus the GitHub repository and must precede the first release.
