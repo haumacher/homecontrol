@@ -63,6 +63,21 @@ the default single-app table's 1 MB partition allows with any margin, so `sdkcon
 selects the single-app *large* table (1.5 MB application, NVS unchanged at 0x9000) until the OTA
 layout of issue #3 replaces it.
 
+## Flash clock: 40 MHz on this board
+
+The C6 on the desk has its flash in the package (esptool: "Unknown Embedded Flash", JEDEC
+manufacturer `c4`, device `6016`: a 4 MB Giga Device part). At the IDF default of **80 MHz** it
+misreads: the bootloader rejected a partition table that `read_flash` proved byte-identical to the
+image ("partition 0 invalid magic number"), and the application died with "Illegal instruction"
+panics while starting WPS; the firmware found on the board at first contact crash-looped the same
+way. At **40 MHz** (`CONFIG_ESPTOOLPY_FLASHFREQ_40M=y` in `sdkconfig.defaults`) the same images run
+without a fault. Keep 40 MHz until a board is proven at 80 MHz; the setting lives in the
+bootloader's image header, so changing it means reflashing the bootloader as well.
+
+Diagnosis recipe when a board misbehaves right after a verified flash: `esptool.py read_flash
+<offset> <length> <file>` and `cmp` against the build output. Identical content plus boot errors
+means the read side, not the write side.
+
 ## KNX
 
 The controller reaches the bus over KNXnet/IP. Two installations are reachable from the

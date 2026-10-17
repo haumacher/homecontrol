@@ -22,3 +22,8 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # The firmware with WiFi, mDNS, the console and WPS does not fit the default 1 MB app partition of
 # the single-app table; until the OTA layout of issue #3 replaces it, use the 1.5 MB variant.
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# The C6 on the desk (in-package Giga Device flash, JEDEC c4 6016) misreads at the default 80 MHz:
+# the bootloader rejects a byte-identical partition table and the app dies with illegal
+# instructions. 40 MHz is reliable; see doc/hardware.md.
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
