@@ -102,3 +102,8 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/zigbee/cluster_mapping.cpp"
 	"${HC_CORE_DIR}/src/zigbee/adapter.cpp"
 )
+# The MQTT client: Home Assistant discovery, commands, history export (issue #18, doc/mqtt.md).
+list(APPEND HC_CORE_SOURCES
+	"${HC_CORE_DIR}/src/mqtt.cpp"
+	"${HC_CORE_DIR}/src/mqtt_codec.cpp"
+)
