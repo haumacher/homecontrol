@@ -82,7 +82,7 @@ protected:
 /// Threading: every method is called on the event loop's thread.
 class Connectivity {
 public:
-	static constexpr size_t kListenerCapacity = 4;
+	static constexpr size_t kListenerCapacity = 8;
 
 	/// An attempt without an outcome after this long counts as failed.
 	static constexpr uint32_t kConnectTimeoutMs = 30000;
