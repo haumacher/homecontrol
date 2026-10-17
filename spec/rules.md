@@ -1,0 +1,1305 @@
+# Rules: model, expression language and semantics
+
+*Specification of issue #11 (phase 3). Implemented by the C++ interpreter of the core (issue #12)
+and the Java reference interpreter of E-Home (issue #13); both are tested against the conformance
+corpus `spec/fixtures/rules/` (format in `spec/fixtures/rules/README.md`). The text grammar of
+expressions is also in `spec/rules-grammar.ebnf`. Rules travel in the runtime image (issue #8);
+this document defines the `rules` member of the image and everything the interpreters do with it.*
+
+## 1. Introduction
+
+A *rule* is engineered in E-Home and executed by the controller. It reacts to *events* (a datapoint
+changed, a schedule fired, a timer expired, the rules started, a parameter changed), checks
+*conditions* written in a small typed *expression language*, and performs *actions* (command a
+datapoint, start or cancel a timer, change a parameter, write a log line). A rule may own *timers*,
+*adjustable parameters* and the *states* of a small state machine.
+
+### 1.1 Decisions of the author
+
+These are the author's decisions; this specification implements them.
+
+1. **Rules are declarative data, not scripts.** A rule is a structure of triggers, conditions,
+   actions, timers and states; expressions have no loops, no assignments, no user-defined
+   functions, and evaluate in bounded time without allocation.
+2. **One semantics in two interpreters.** The C++ core runs rules on the device; E-Home's Java
+   interpreter simulates them against the virtual installation before deployment. The shared
+   conformance corpus keeps both identical: a semantic change lands with new corpus cases.
+3. **Engineering happens in E-Home; the device executes.** The device never edits a rule. Its UI
+   and API change only the *adjustable parameters* a rule declares (times, setpoints, the enable
+   switch); everything else is refused with a reason.
+
+### 1.2 Decisions taken in this specification
+
+Each decision names the alternatives that were considered and why they lost. They favour the
+long-term benefit of the project over the ease of implementation.
+
+**D1. Expressions are a JSON AST in the image and a text syntax in E-Home.** The runtime image
+stores every expression as a tree of JSON nodes (section 5); E-Home shows and edits a text syntax
+(section 4) defined by a grammar, with exactly one canonical text per tree. *Alternatives:* text in
+the image, parsed on both sides (two parsers to keep identical, a parser on a 512 KB device,
+ambiguities discovered in the field); AST only, edited as a form tree in E-Home (unusable for real
+expressions). The AST costs a printer and a parser in E-Home only; the device reads plain JSON it
+must parse anyway.
+
+**D2. The type system follows `hc::Value`, with one integer type, a duration type and "no value".**
+Expression values have the types `boolean`, `integer`, `real`, `string`, `duration`, `timeOfDay`,
+`date`, `dateTime`, `enumeration`, `controlled`, `color` and `raw` (section 3). Datapoints of the
+value types `unsigned` and `signed` read as `integer` (64-bit signed); a command converts back
+exactly or is refused. *No value* is the result of reading a datapoint whose quality is not good
+(unknown or stale) and propagates like SQL NULL; a condition that has no value is not satisfied
+and is logged once, never a crash. *Alternatives:* keep `unsigned` and `signed` distinct in
+arithmetic (C-style promotion rules are a known source of wrong results; nothing in a house needs
+both 32-bit ranges at once); a default value instead of no value (a missing sensor would silently
+act as 0 °C); an exception that stops the rule (the same effect with less control). Typing is
+static: E-Home and the device check every expression against the declared datapoint and parameter
+types when the image is built and loaded, so a type error is an engineering error, never a
+runtime surprise.
+
+**D3. Evaluation is event-driven on the single-threaded event loop, with a queue and a loop
+guard.** An event enqueues; actions that change datapoints enqueue further events (a queue, not
+recursion); the events caused by one external event form a *cascade*, processed to completion
+before the next external event; a cascade is refused after 32 rule firings caused by rule actions
+(section 7). *Alternatives:* recursive evaluation (unbounded stack, order depends on nesting);
+cyclic evaluation every N ms like a PLC (latency, wasted work, no natural notion of "changed");
+a depth limit instead of a count (a wide cascade of legitimate firings would pass while a long
+ping-pong between two rules is the same harm).
+
+**D4. Timers and state machines are first-class.** A rule declares named timers and, optionally,
+named states with entry and exit actions; its reactions can be transitions between states guarded
+by conditions (section 2.6). Blinds, heating, staircase lights and presence logic need memory and
+time; expressing them with helper datapoints and extra rules is fragile and invisible in the UI.
+*Alternatives:* timers only, state kept in virtual datapoints (no entry/exit semantics, state
+spread over several objects); a full statechart (hierarchy, parallel regions, history: too much to
+specify twice and verify on a small device).
+
+**D5. Adjustable parameters are declared, typed, bounded and persisted by rule id and parameter
+id.** A parameter declares its type, range or choices, unit, default and label; a value set by the
+inhabitant persists on the device under `<ruleId>/<parameterId>` and survives a new image while the
+declaration still exists with a compatible type and the value is still valid; otherwise it is reset
+to the new default with a log line (section 8). Only values the inhabitant (or a rule action) set
+are persisted: a parameter never touched follows the default of each new image. *Alternatives:*
+persist every value (E-Home could never change a default again); key by position (any edit in E-Home
+would scramble the stored values); expose arbitrary datapoints for editing (contradicts decision 3
+of the author).
+
+**D6. Every rule has a stable id, a name, an enabled switch and a diagnostics contract.** E-Home
+assigns the id; it never changes for the life of the rule and is the key for state, timers and
+parameters across image swaps. The enabled flag is an adjustable boolean parameter named `enabled`
+unless the rule declares it fixed. Every interpreter provides, per rule, the last trigger, the last
+action and the last error with their times (section 9). *Alternatives:* names as keys (renaming
+would lose the inhabitant's settings); diagnostics as an optional extra (the first question about
+an automation in a house is always "why did it (not) do that?").
+
+**D7. A rule is a list of reactions sharing timers, parameters and states.** A *reaction* is
+"when (triggers) if (condition) then (actions) else (actions)"; in a rule with states, a reaction
+can name the states it applies in and the state it leads to, which makes it a transition. One
+structure covers simple event-condition-action rules, rules that need a timer from two sides (the
+presence light: one reaction starts the timer, another reacts to its expiry) and state machines.
+*Alternatives:* a single trigger-condition-action triple per rule (timers could not be shared
+between the reaction that starts them and the one that handles their expiry); separate classes for
+plain rules and state machines (two structures with the same parts).
+
+**D8. Datapoints are referenced by name in the image.** The image loader resolves names to ids
+when it loads; a dangling name refuses the image. *Alternatives:* numeric ids (the AST would be
+unreadable in a diff and break when E-Home reorders datapoints).
+
+**D9. Time is monotonic for durations and local wall time for the calendar.** Timers, `sinceChange`
+and the loop run on the monotonic clock; `now()`, `time()`, `weekday()` and the sun functions use
+the local wall time of the time service (issue #9) and have no value while the wall clock is not
+synchronized. Within one cascade every expression sees the same time.
+
+### 1.3 Terms
+
+| Term | Definition |
+|---|---|
+| rule | A unit of automation with a stable id: parameters, timers, optional states and reactions (section 2). |
+| reaction | Triggers, an optional condition, actions and optional else-actions; with states also `from` and `to`. |
+| trigger | Describes which events activate a reaction (section 2.3). |
+| event | Something that happened: a datapoint update, a schedule firing, a timer expiry, a rule start, a parameter change. |
+| external event | An event not caused by a rule action in the current cascade: a report or command from outside the rule engine, a schedule firing, a timer expiry, a rule start, a parameter change from the UI or API. |
+| derived event | A datapoint update or parameter change caused by a rule action. |
+| cascade | An external event and all events derived from it, processed to completion (section 7). |
+| firing | The activation of one rule by one event: at least one trigger of the rule matched (section 7.2). |
+| condition | A boolean expression; *satisfied* only when it evaluates to `true`. |
+| no value | The result of an expression that cannot be computed from what is known (section 3.3). |
+| parameter | A named, typed value of a rule, adjustable on the device when declared so (section 8). |
+| timer | A named one-shot countdown of a rule on the monotonic clock (section 2.5). |
+| state | A named state of a rule with states; the rule is in exactly one of its states (section 2.6). |
+| image swap | Replacing the loaded runtime image by a new one without a reboot (section 7.6). |
+
+## 2. The data model
+
+The runtime image holds a member `rules`, an array of rule objects. All member names are
+camelCase and chosen to be usable unchanged as attribute names of E-Home's model (the classes
+`Rule`, `RuleParameter`, `RuleTimer`, `RuleState`, `Reaction`, `Trigger`, `Action` and their
+subclasses). Members not defined here are refused by the loader, except `description` and
+`comment`, which every object may carry and the interpreters ignore. The values of `kind` are
+scoped to the object family the position admits (trigger, action, expression node): a trigger of
+kind `datapoint` and an expression node of kind `datapoint` are different things.
+
+### 2.1 Identifiers
+
+| What | Form | Unique within |
+|---|---|---|
+| rule id | 1..32 characters of `A-Z a-z 0-9 _ -` | the image |
+| parameter, timer and state id | an *identifier*: 1..24 characters, `[A-Za-z_][A-Za-z0-9_]*`, not a keyword | the rule (each kind separately) |
+| schedule id | the id of a schedule entry of the image (issue #10), same form as a rule id | the image |
+| datapoint name | as in the datapoint model: 1..63 printable bytes | the image |
+
+The parameter id `enabled` is reserved for the enable switch (section 8.3).
+
+### 2.2 Rule
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | rule id | yes | Stable identity assigned by E-Home. |
+| `name` | string, 1..63 bytes | yes | Shown in the UI, the log and the diagnostics. |
+| `description` | string | no | For people; ignored. |
+| `enabled` | boolean | no, `true` | Default of the enable switch. |
+| `enabledAdjustable` | boolean | no, `true` | Whether the inhabitant may switch the rule on and off (section 8.3). |
+| `parameters` | array of parameter | no | Section 8. |
+| `timers` | array of timer | no | Section 2.5. |
+| `states` | array of state | no | Section 2.6; present and non-empty makes this a *rule with states*. |
+| `initialState` | state id | with `states` | The state the rule enters when it starts without a preserved state. |
+| `reactions` | array of reaction | yes, 1 or more | Section 2.4. |
+
+### 2.3 Triggers
+
+A trigger is an object with a `kind`:
+
+| `kind` | Members | Matches |
+|---|---|---|
+| `datapoint` | `datapoint` (name); `on`: `change` (default) or `update`; `origin`: `any` (default), `report` or `command` | An update of the datapoint. With `change`, only when value or quality differ from before the update (`DatapointUpdate::changed()`); with `update`, every update, also a repeated report of the same value. `origin` restricts to updates reported by the technology (`report`, also a change to stale) or commanded by the application (`command`: a rule or the UI). |
+| `match` | `condition` (expression) | The condition becomes true: it evaluates to `true` now and did not (false or no value) at its previous evaluation. Section 7.4. |
+| `schedule` | `schedule` (schedule id) | The scheduler fired this schedule entry (issue #10). |
+| `timer` | `timer` (timer id of this rule) | The timer expired. |
+| `start` | `reasons`: array of `boot`, `image`, `enable` (default: all three) | The rule starts: after a boot, after an image swap (every rule of the new image), when the rule is enabled. |
+| `parameter` | `parameter` (parameter id of this rule) | The parameter's value changed (from the UI or API, or by a `setParameter` action). |
+
+A `match` condition may reference datapoints, parameters of the rule, literals and the pure
+functions of section 4.7 (no time, history, timer or state functions; refused at load), because it
+is evaluated only when one of its inputs changes.
+
+### 2.4 Reaction
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `triggers` | array of trigger | yes, 1 or more | Any one matching activates the reaction. |
+| `condition` | expression of type boolean | no (always satisfied) | Checked when the reaction is activated. |
+| `actions` | array of action | yes (may be empty) | Run in order when the condition is satisfied. |
+| `elseActions` | array of action | no | Run in order when the condition evaluates to `false`; not when it has no value. Not allowed together with `to`. |
+| `from` | array of state ids | no (all states) | Only in a rule with states: the reaction applies only while the rule is in one of these states. |
+| `to` | state id | no | Only in a rule with states: after the actions, the rule changes to this state (a *transition*, section 2.6). |
+
+### 2.5 Timer
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | identifier | yes | |
+| `duration` | expression of type duration | yes | Evaluated when a `startTimer` or `restartTimer` action without its own `duration` runs. |
+
+A timer is *running* or *stopped*; it starts stopped. A running timer has a deadline on the
+monotonic clock; when the deadline passes the timer stops and a timer-expired event is processed
+as an external event (its own cascade). A timer duration must lie in 100 ms .. 30 d; another value
+refuses the starting action (`timerRefused`).
+
+### 2.6 States and transitions
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | identifier | yes | |
+| `entry` | array of action | no | Run when the rule enters the state. |
+| `exit` | array of action | no | Run when the rule leaves the state. |
+
+A reaction with `to` is a transition. When it runs: the exit actions of the current state, the
+reaction's actions, the change of the current state to `to`, the entry actions of `to`. A
+transition to the current state (a *self-transition*) leaves and re-enters the state, running exit
+and entry actions. A reaction without `to` in a rule with states is an *internal reaction*: it runs
+its actions and the state does not change.
+
+When a rule with states starts without a preserved state (boot, new rule, state not preserved by an
+image swap), its current state becomes `initialState` and that state's entry actions run (section
+7.5). There are no other ways to change the state: there is no "set state" action, because a state
+change must come from a guarded transition with defined exit and entry actions.
+
+### 2.7 Actions
+
+An action is an object with a `kind`:
+
+| `kind` | Members | Effect |
+|---|---|---|
+| `write` | `datapoint` (name); `value` (expression); `onlyOnChange` (boolean, default `false`) | Commands the datapoint with the value (section 7.3). With `onlyOnChange`, nothing happens when the datapoint's quality is good and its value equals the converted value. |
+| `startTimer` | `timer` (id); `duration` (expression, optional) | Starts the timer if it is stopped; no effect if it is running. |
+| `restartTimer` | `timer` (id); `duration` (expression, optional) | Starts the timer, or restarts a running one with a new deadline. |
+| `cancelTimer` | `timer` (id) | Stops the timer; no effect if it is stopped. The timer does not fire. |
+| `setParameter` | `parameter` (id of this rule); `value` (expression) | Sets the parameter like the UI does (validated, persisted, a parameter-changed event when the value differs). |
+| `log` | `level`: `info`, `warning` or `error`; `message`: array of strings and expressions | Writes a log line: the strings verbatim and each expression formatted (section 4.9), concatenated. |
+
+Actions of one list run in order; each sees the effects of the previous ones (a written value, a
+started timer). A failing action (no value, refusal) is logged and skipped; the following actions
+still run.
+
+## 3. Types and values
+
+### 3.1 Value types
+
+| Expression type | Values | Read from datapoints of type | JSON literal value |
+|---|---|---|---|
+| `boolean` | `true`, `false` | `boolean` | `true` / `false` |
+| `integer` | 64-bit signed | `unsigned`, `signed` | a JSON number without fraction, at most 2^53-1 in magnitude |
+| `real` | IEEE 754 double, finite | `real` | a JSON number |
+| `string` | UTF-8, at most 28 bytes | `string` | a JSON string |
+| `duration` | signed milliseconds (64-bit) | — | integer milliseconds |
+| `timeOfDay` | hour, minute, second, day of week 0..7 (0: none) | `timeOfDay` | `{"hour", "minute", "second"}`, optional `"dayOfWeek"` (default 0) |
+| `date` | year, month, day | `date` | `{"year", "month", "day"}` |
+| `dateTime` | date, time of day, day of week, flags | `dateTime` | `{"year", "month", "day", "hour", "minute", "second"}` |
+| `enumeration` | element number 0..2^32-1 | `enumeration` | a JSON number |
+| `controlled` | control bit, number 0..255 | `controlled` | `{"control": bool, "value": n}` |
+| `color` | red, green, blue, white 0..255, valid channels | `color` | `{"red", "green", "blue"}` (RGB valid), optional `"white"` (all four valid) |
+| `raw` | at most 14 bytes | `raw` | hex octets separated by single spaces, `"0A FF"` |
+
+The datapoint value types are those of `doc/datapoints.md` written in camelCase (`boolean`,
+`unsigned`, `signed`, `real`, `string`, `timeOfDay`, `date`, `dateTime`, `enumeration`,
+`controlled`, `color`, `raw`). A `dateTime` read from a datapoint keeps its fields and flags as
+received; comparisons and arithmetic ignore the flags and the day of week. A `dateTime` produced by
+the language (a literal, `now()`, arithmetic) has no flags and the day of week of its date.
+
+### 3.2 Conversions
+
+There are only these implicit conversions:
+
+- `integer` to `real` where an operator or function mixes the two (exact up to 2^53).
+- On reading: `unsigned` and `signed` to `integer`.
+- On writing (a `write` action, a parameter value): to the target type as listed below. A
+  conversion that is not exact at run time refuses the write (`writeRefused`) or the parameter
+  value (`parameterRefused`).
+
+| Expression type | Datapoint or parameter types it may be written to |
+|---|---|
+| `boolean` | `boolean` |
+| `integer` | `unsigned` (0..4294967295), `signed` (-2147483648..2147483647), `real`, `enumeration` (0..4294967295), parameter `integer` and `real` |
+| `real` | `real`; `unsigned`, `signed`, `enumeration`, parameter `integer` only when integral and in range |
+| `enumeration` | `enumeration`, `unsigned`, `signed` |
+| `duration` | parameter `duration` (no datapoint holds a duration; write `d / 1s` or `round(d / 1min)`) |
+| every other type | the same type |
+
+A combination outside the table is a type error and refuses the image (section 10). Explicit
+conversions are functions (section 4.7): `round`, `floor`, `ceil`, `trunc` (real to integer),
+`toInt` (enumeration or boolean to integer), `toString`.
+
+### 3.3 No value
+
+*No value* is not a type; any expression of any type may have no value. It arises from:
+
+- a datapoint reference whose datapoint has quality `unknown` or `stale`;
+- a time function while the wall clock is not synchronized, a sun function without a result;
+- `remaining(t)` of a stopped timer; `weekday(t)` of a time of day without a day;
+- an *evaluation error*: integer overflow, division or remainder by zero, a result that is not
+  a finite real, a string longer than 28 bytes, a function argument outside its domain (`clamp`
+  with `low > high`, `hysteresis` with `low >= high`, `roundTo` with a step not above 0, a color
+  level or controlled number outside 0..255). An evaluation error also logs `evalError` (once,
+  section 9.2).
+
+Propagation: an operator or function with an argument that has no value has no value, except:
+
+| Construct | With no value |
+|---|---|
+| `a and b` | `false` if either operand is `false`, otherwise no value if either has no value |
+| `a or b` | `true` if either operand is `true`, otherwise no value if either has no value |
+| `known(x)` | `false` |
+| `coalesce(x, y)` | `y` when `x` has no value |
+| `if(c, a, b)` | no value when `c` has no value; only the selected branch is evaluated |
+| `hysteresis(x, low, high, previous)` | `previous` is needed only when `low < x < high` |
+| `changedWithin(@d, t)` | `false` when no change of the datapoint is known |
+| `quality(@d)`, `running(t)`, `lastKnown(@d)` | never caused by the datapoint's quality or the timer being stopped |
+
+Where no value meets a decision:
+
+- A reaction's condition with no value is *not satisfied*: neither `actions` nor `elseActions` run.
+  The interpreter logs `conditionNoValue` once (section 9.2).
+- A transition's condition with no value: the transition is not taken (and logged the same way);
+  the next reaction is considered.
+- A `match` trigger with no value counts as not true.
+- A `write` whose value has no value does not command anything and logs `valueNoValue` (once).
+- A timer duration with no value refuses the timer action (`timerRefused`).
+- A log message formats no value as `none`.
+
+## 4. The expression language
+
+### 4.1 Overview
+
+An expression is side-effect free and evaluates to one value (or no value). It is statically typed:
+the type of every node is known from the image (datapoint types, parameter types, literal types),
+and E-Home and the loader refuse an expression with a type error. Evaluation needs no allocation:
+the interpreters size an evaluation stack from the maximum expression depth (section 10).
+
+### 4.2 Literals
+
+| Literal | Examples | Type | Canonical text |
+|---|---|---|---|
+| boolean | `true`, `false` | boolean | as written |
+| integer | `0`, `42`, `-7` | integer | decimal, no leading zeros; a negative literal is a minus folded into the literal |
+| real | `21.5`, `0.25`, `1.5e-5` | real | the shortest decimal that reads back as the same double, with at least one digit after the point; exponent form (`1.5e20`, `1.0e-5`) when the magnitude is at least 1e15 or below 1e-4 |
+| duration | `500ms`, `45s`, `30min`, `1h30min`, `2d` | duration | normalized into `d h min s ms`, largest unit first, zero parts omitted, `0s` for zero |
+| time of day | `20:30`, `06:05:30`, `6:05` | timeOfDay (day 0) | two-digit hour, `HH:MM`, `:SS` only when the seconds are not zero |
+| date | `2026-10-17` | date | `YYYY-MM-DD` |
+| date and time | `2026-10-17T20:30`, `2026-10-17T20:30:15` | dateTime | `YYYY-MM-DDTHH:MM`, `:SS` only when not zero |
+| string | `"Hall"`, `"say \"hi\""` | string | double quotes; `\"`, `\\`, `\n`, `\t` escaped, nothing else |
+| color | `#ff8000`, `#ff8000c0` | color | lowercase; six digits (RGB valid) or eight (RGBW, all valid) |
+| raw | `x"0AFF"`, `x""` | raw | uppercase hex, no spaces |
+
+There is no literal for enumerations (compare with integers, `@mode == 3`; see the open questions),
+for `controlled` values (use `controlled(true, 3)`) or for no value.
+
+The lexer takes the longest token; `2026-10-17` is a date, not a subtraction (canonical text
+always puts spaces around binary operators), `30min` is a duration, `30 min` an error.
+
+### 4.3 References
+
+| Text | Meaning | Type |
+|---|---|---|
+| `@living.light`, `@"Living room light 1"` | The current value of the datapoint (no value unless the quality is good). A name that is not an identifier with dot-separated parts is written as a string. | from the datapoint type (section 3.1) |
+| `$timeout` | The current value of the rule's parameter. | the parameter's type |
+| `running(off)`, `remaining(off)` | Whether the rule's timer runs; the time until it expires (no value when stopped). | boolean; duration |
+| `state()`, `state("stairs")` | The current state id of this rule, or of the rule with the given id (a literal; that rule must have states). | string |
+
+Parameters, timers and states are always those of the rule the expression belongs to; another
+rule's state is readable by its id, nothing else of another rule is.
+
+### 4.4 Operators
+
+From the loosest to the tightest binding:
+
+| Level | Operators | Associativity | Operand types → result |
+|---|---|---|---|
+| 1 | `or` | left | boolean, boolean → boolean (three-valued, section 3.3; the right operand is not evaluated when the left is `true`) |
+| 2 | `and` | left | boolean, boolean → boolean (three-valued; the right operand is not evaluated when the left is `false`) |
+| 3 | `not` (prefix) | — | boolean → boolean |
+| 4 | `==` `!=` `<` `<=` `>` `>=` | none (`a < b < c` is a syntax error) | see 4.5 → boolean |
+| 5 | `+` `-` | left | see 4.6 |
+| 6 | `*` `/` `%` | left | see 4.6 |
+| 7 | `-` (prefix) | — | integer, real, duration → same |
+
+Parentheses group. `not a == b` is `not (a == b)`; `-x * y` is `(-x) * y`.
+
+### 4.5 Comparisons
+
+| Operand types | `==` `!=` | `<` `<=` `>` `>=` |
+|---|---|---|
+| integer, real (mixed allowed) | numeric (integer converted to real when mixed) | numeric |
+| duration | yes | yes |
+| timeOfDay | hour, minute, second (the day of week is ignored) | by seconds since midnight |
+| date, dateTime | the fields (flags and day of week ignored) | chronological |
+| string | bytes | bytewise lexicographic (UTF-8) |
+| boolean, enumeration, controlled, color, raw | all fields (color: levels and valid channels) | type error |
+| enumeration with integer | the element number with the integer | type error |
+
+Any other combination is a type error. Reals compare exactly (E-Home should warn about `==` on
+reals).
+
+### 4.6 Arithmetic
+
+| Expression | Types | Result |
+|---|---|---|
+| `a + b`, `a - b` | integer, integer | integer (overflow: evaluation error) |
+| | integer/real mixed, real | real |
+| | duration, duration | duration |
+| | timeOfDay ± duration | timeOfDay, modulo 24 h; the duration is truncated to whole seconds toward zero first; the day of week is kept |
+| | dateTime ± duration | dateTime, calendar arithmetic on the local fields as if every day had 24 h; whole seconds |
+| `a - b` | timeOfDay − timeOfDay | duration, −24 h < d < 24 h, no wrap (`(a - b + 1d) % 1d` wraps) |
+| | dateTime − dateTime | duration (local fields, as above) |
+| | date − date | duration, whole days of 24 h |
+| `a + b` | string, string | string (longer than 28 bytes: evaluation error) |
+| `a * b` | integer, integer | integer |
+| | integer/real mixed, real | real |
+| | duration × integer or real, integer or real × duration | duration, rounded to the millisecond, half away from zero |
+| `a / b` | integer or real, integer or real | **real**, also for two integers (`7 / 2` is `3.5`); division by zero: evaluation error |
+| | duration / integer or real | duration, rounded as for `*` |
+| | duration / duration | real |
+| `a % b` | integer, integer | integer, truncated remainder (sign of `a`, `-7 % 3` is `-1`) |
+| | duration, duration | duration, likewise |
+| `-a` | integer, real, duration | same type |
+
+Every other combination is a type error. A real result that is not finite is an evaluation error.
+Numbers become durations by multiplication (`$minutes * 1min`) and durations numbers by division
+(`d / 1s`).
+
+### 4.7 Function library
+
+Arguments are evaluated left to right; `if`, `coalesce`, `and`, `or` and `hysteresis` evaluate only
+what they need. "numeric" is integer or real (mixed promotes to real); "ordered" is any type with
+`<` (section 4.5), all arguments of one kind. Unless the table says otherwise, a function has no
+value when an argument has no value.
+
+**Logic and no value**
+
+| Function | Types | Result |
+|---|---|---|
+| `if(c, a, b)` | boolean, T, T | `a` if `c` is true, `b` if false, no value if `c` has none |
+| `known(x)` | any | `true` if `x` has a value |
+| `coalesce(x, y)` | T, T | `x` if it has a value, else `y` |
+| `between(x, low, high)` | ordered | `low <= x and x <= high` (false when `low > high`) |
+| `hysteresis(x, low, high, previous)` | numeric or duration ×3, boolean | `true` if `x >= high`, `false` if `x <= low`, otherwise `previous`; `low >= high` is an evaluation error |
+
+`hysteresis` keeps no hidden memory: the previous result is an argument, usually the output
+datapoint (`hysteresis(@fan.humidity, 60, 70, @fan.on)` switches on at 70, off at 60).
+
+**Numbers**
+
+| Function | Types | Result |
+|---|---|---|
+| `abs(x)` | numeric, duration | same type |
+| `min(a, b, ...)`, `max(a, b, ...)` | 2..8 ordered arguments | the smallest, largest (mixed integer/real gives real) |
+| `clamp(x, low, high)` | ordered | `max(low, min(x, high))`; `low > high` is an evaluation error |
+| `round(x)` | real | integer, half away from zero (`round(-2.5)` is `-3`) |
+| `floor(x)`, `ceil(x)`, `trunc(x)` | real | integer |
+| `roundTo(x, step)` | numeric, numeric > 0 | real: `round(x / step) * step` (`roundTo(21.26, 0.5)` is `21.5`) |
+| `toInt(x)` | enumeration, boolean | integer (`true` is 1) |
+
+`round`, `floor`, `ceil` and `trunc` accept an integer argument and return it unchanged.
+
+**Time** (wall clock, local time; no value while not synchronized)
+
+| Function | Types | Result |
+|---|---|---|
+| `now()` | — | dateTime of the cascade |
+| `today()` | — | date |
+| `time()` | — | timeOfDay, with the day of week |
+| `weekday()`, `weekday(x)` | —, date / dateTime / timeOfDay | integer 1 (Monday) .. 7 (Sunday); no value for a time of day without a day |
+| `hour(x)`, `minute(x)`, `second(x)` | timeOfDay, dateTime | integer |
+| `year(x)`, `month(x)`, `day(x)` | date, dateTime | integer |
+| `dateOf(x)`, `timeOf(x)` | dateTime | date; timeOfDay (with the day of week) |
+| `inWindow(t, from, until)` | timeOfDay or dateTime, timeOfDay, timeOfDay | `from <= t < until` when `from < until`; `t >= from or t < until` when `from > until` (across midnight); `false` when equal; a dateTime uses its time of day |
+| `sunrise()`, `sunset()`, `dawn()`, `dusk()` | — | timeOfDay of today's event (dawn and dusk: civil twilight) from the time service; no value without coordinates or when the event does not occur |
+
+**Datapoint history** (the first argument must be a datapoint reference)
+
+| Function | Types | Result |
+|---|---|---|
+| `sinceUpdate(@d)` | any datapoint | duration since the datapoint's last update; no value before the first |
+| `sinceChange(@d)` | any datapoint | duration since the last change of value or quality (section 7.7); no value when none is known |
+| `changedWithin(@d, t)` | any datapoint, duration | `sinceChange(@d) <= t`; `false` when no change is known |
+| `lastKnown(@d)` | any datapoint | the value also when stale; no value only when unknown |
+| `quality(@d)` | any datapoint | string `"good"`, `"stale"` or `"unknown"` |
+
+**Timers and states**: `running(t)`, `remaining(t)`, `state()`, `state("id")` (section 4.3).
+
+**Strings**
+
+| Function | Types | Result |
+|---|---|---|
+| `length(s)` | string | integer, bytes |
+| `contains(s, part)`, `startsWith(s, part)`, `endsWith(s, part)` | string, string | boolean |
+| `toString(x)` | any | string formatted as in section 4.9 (longer than 28 bytes: evaluation error) |
+
+**Colors and controlled values**
+
+| Function | Types | Result |
+|---|---|---|
+| `rgb(r, g, b)`, `rgbw(r, g, b, w)` | integers 0..255 (outside: evaluation error) | color (RGB valid; all four valid) |
+| `red(c)`, `green(c)`, `blue(c)`, `white(c)` | color | integer; no value when the channel is not valid |
+| `controlled(bit, n)` | boolean, integer 0..255 | controlled |
+| `controlBit(x)`, `controlValue(x)` | controlled | boolean; integer |
+
+The pure functions allowed in a `match` trigger are all of the above except the time, history,
+timer and state functions.
+
+### 4.8 Canonical text
+
+E-Home prints every AST in exactly one way, and parsing the printed text gives the same AST:
+
+- binary operators with one space on each side; `not` followed by one space; prefix `-` without a
+  space; `f(a, b)` with a space after each comma; references and literals as in 4.2 and 4.3;
+- parentheses only where needed: around an operand of lower level than its operator; around the
+  right operand of a left-associative operator at the same level (`a - (b - c)`, `a or (b or c)`);
+  around a comparison that is an operand of a comparison; around the operand of prefix `-` when it
+  is not a literal, reference or call, or when its text starts with `-` (`-(-5)`);
+- a minus applied directly to an integer, real or duration literal is part of the literal (the AST
+  has a negative literal, not a `unary` node).
+
+### 4.9 Formatting values
+
+Used by `log` messages and `toString`:
+
+| Type | Format |
+|---|---|
+| boolean | `true`, `false` |
+| integer, enumeration | decimal |
+| real | the exact binary value rounded to 6 decimals, a tie away from zero (`0.0078125` gives `0.007813`; C's `printf` rounds ties to even and cannot be used as is), then trailing zeros and a trailing point removed: `21.5`, `21`, `0.333333`, `-0.5`; a result of zero is `0`, never `-0` |
+| duration, timeOfDay, date, dateTime, color, raw | the canonical literal text (4.2) |
+| string | the bytes, without quotes |
+| controlled | `controlled(true, 3)` |
+| no value | `none` |
+
+A formatted log message longer than 200 bytes is cut at a character boundary to at most 197 bytes
+and `...` is appended.
+
+## 5. The JSON AST
+
+Every expression in the image (a condition, a value, a duration, a log message part) is one node
+object. The member `kind` selects the node kind; the members are exact, others are refused.
+
+| `kind` | Members | Text form |
+|---|---|---|
+| `literal` | `type` (an expression type of 3.1), `value` (its JSON literal value, 3.1) | a literal (4.2) |
+| `datapoint` | `name` (datapoint name) | `@name`, `@"name"` |
+| `parameter` | `id` (parameter id of the rule) | `$id` |
+| `timer` | `id` (timer id of the rule) | the identifier inside `running(...)` or `remaining(...)`; valid only as their argument |
+| `unary` | `op` (`-` or `not`), `operand` (node) | `-x`, `not x` |
+| `binary` | `op` (`or`, `and`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`), `left`, `right` (nodes) | `a op b` |
+| `call` | `function` (a name of 4.7), `args` (array of nodes, possibly empty) | `f(a, b)` |
+
+The parser builds left-associative chains as left-nested `binary` nodes (`a - b - c` is
+`binary(-, binary(-, a, b), c)`), folds a minus before an integer, real or duration literal into the
+literal, and drops parentheses. A real literal always has `"type": "real"` (its JSON value may look
+like an integer: `{"kind": "literal", "type": "real", "value": 21}` is 21.0). `state()` and
+`state("stairs")` are calls with no argument and with one string literal.
+
+Example: `@hall.presence and (@hall.light or @hall.lux < $darkBelow)` is
+
+```json
+{"kind": "binary", "op": "and",
+ "left": {"kind": "datapoint", "name": "hall.presence"},
+ "right": {"kind": "binary", "op": "or",
+  "left": {"kind": "datapoint", "name": "hall.light"},
+  "right": {"kind": "binary", "op": "<",
+   "left": {"kind": "datapoint", "name": "hall.lux"},
+   "right": {"kind": "parameter", "id": "darkBelow"}}}}
+```
+
+and `remaining(off) > 1min30s` is
+
+```json
+{"kind": "binary", "op": ">",
+ "left": {"kind": "call", "function": "remaining", "args": [{"kind": "timer", "id": "off"}]},
+ "right": {"kind": "literal", "type": "duration", "value": 90000}}
+```
+
+A log message is an array whose elements are JSON strings (verbatim text) or nodes:
+`["Light off after ", {"kind": "parameter", "id": "timeout"}]`. E-Home shows it as a string with
+`{expression}` placeholders (`Light off after {$timeout}`); `{{` and `}}` stand for literal braces.
+
+## 6. The `rules` member
+
+The runtime image (issue #8) carries `"rules": [ ... ]`. The order of the array is significant: it is
+the *rule order* in which rules are considered for every event (section 7.2), and the order of
+their start cascades. E-Home exports rules in an order the author can see and change.
+
+## 7. Runtime semantics
+
+### 7.1 Events and cascades
+
+The rule engine runs on the event loop's thread and processes one *cascade* at a time:
+
+1. An external event arrives: the datapoint model reports an update not caused by a rule action (a
+   telegram, a device report, a stale report, a command from the UI or API), the scheduler fires an
+   entry, a timer of a rule expires, a rule starts (7.5), or a parameter is changed from the UI or
+   API.
+2. The engine puts it into an empty FIFO *event queue* and fixes the *cascade time*: the monotonic
+   time and the wall time at which the cascade starts. Every expression in the cascade sees this
+   time (`now()`, `sinceChange`, timer deadlines).
+3. It takes events from the front of the queue and processes them (7.2) until the queue is empty.
+   Datapoint updates caused by `write` actions and parameter changes caused by `setParameter` are
+   *derived events*; they are appended to the queue in the order they happen.
+
+A cascade completes before the next external event is taken; nothing runs recursively. Before an
+external event with time `t` is processed, the engine processes the expiries of its timers with
+deadlines up to `t` (each a cascade, in the order of 7.8).
+
+### 7.2 Processing an event
+
+For one event:
+
+1. **Match memories.** Every `match` trigger (of every rule, enabled or not, in rule order) whose
+   condition references the updated datapoint or the changed parameter is evaluated against the
+   current model; it *matches this event* when it is `true` now and was not at its previous
+   evaluation. The result becomes its new memory.
+2. **Rules.** For each rule in rule order that is enabled: the rule's *active reactions* are those
+   with a trigger matching the event (2.3) whose `from` contains the current state (or have no
+   `from`). If there is none, the rule does not fire. Otherwise the rule *fires*:
+   - If the event is derived, the cascade's derived-firing count is incremented first; a firing
+     that would make it exceed 32 is refused instead: the engine logs `loopGuard` naming this rule,
+     empties the queue and ends the cascade (the model keeps the values already written).
+   - The diagnostics record the trigger (9.1).
+   - The reactions of the rule are considered in their order. A reaction is executed when one of
+     its triggers matches the event and its `from` contains the current state *at this moment*:
+     its condition is evaluated (absent: `true`); `true` runs the actions — for a transition,
+     exactly in the order exit actions of the current state, the reaction's actions, change of
+     state, entry actions of `to` — and `false` runs the `elseActions`; no value runs nothing and
+     logs `conditionNoValue` (once, 9.2). After a transition has run, no further reaction of this
+     rule is considered for this event.
+
+Every expression reads the model as it is when it is evaluated: an event identifies *what* happened,
+not a snapshot of the values. A condition evaluated for an earlier event of the queue may therefore
+see values written later in the same cascade.
+
+A datapoint trigger with `on: change` uses the event's own old and new value and quality (the update
+changed something), not the current value.
+
+### 7.3 The write action
+
+1. Evaluate `value`. No value: log `valueNoValue` (once) and skip. Evaluation error: `evalError`
+   (once) and skip.
+2. Convert to the datapoint's type (3.2). Not exact: log `writeRefused` and skip.
+3. With `onlyOnChange`: if the datapoint's quality is good and its value equals the converted value,
+   skip (no log).
+4. `DatapointModel::command()`. A refusal (the technology refused it) logs `writeRefused`. On
+   success the model stores the value and tells its listeners; the update is a derived event of
+   the cascade, even when the value did not change (`on: update` triggers see it, `on: change`
+   triggers do not).
+
+### 7.4 Match triggers
+
+A `match` trigger's memory is set without firing whenever the rules start (boot and image swap): its
+condition is evaluated then and the result stored. After that, every event that updates one of the
+datapoints or parameters it references re-evaluates it (7.2 step 1); it matches when the result is
+`true` and the memory was not `true`. Consequences: a condition already true at a swap does not
+fire; at boot every datapoint is unknown, so the first report that makes the condition true fires
+it.
+
+### 7.5 Starting rules
+
+A rule *starts* at boot, at every image swap (every rule of the new image) and when it is enabled.
+For each starting rule, in rule order, one cascade with an external *start event* for this rule
+alone:
+
+1. A rule with states and no preserved state takes `initialState`; if the rule is enabled, the
+   entry actions of that state run.
+2. If the rule is enabled, the start event is processed like any event (7.2): it matches the
+   rule's `start` triggers whose `reasons` contain the start reason (`boot`, `image` or `enable`).
+
+A disabled rule with states takes its initial state without running entry actions. Enabling a rule
+does not re-run the entry actions of its current state.
+
+### 7.6 Image swap
+
+When a new image is loaded without a reboot:
+
+1. The new rules are validated completely (section 10); a refused image changes nothing.
+2. Rules whose id is not in the new image: their timers are cancelled, their persisted parameter
+   values deleted, their state forgotten.
+3. Rules whose id is in both images keep:
+   - parameter values set by the inhabitant or a rule, per section 8.4 (otherwise `parameterReset`);
+   - running timers whose id is still declared, with their deadlines; other timers are cancelled;
+   - the current state when the new rule has a state with that id; otherwise the state is lost,
+     `stateReset` is logged and the rule enters its initial state when it starts;
+   - the diagnostics.
+4. Rules with a new id start fresh.
+5. The memories of all `match` triggers are re-baselined (7.4); change tracking (7.7) continues
+   for datapoints that still exist.
+6. Every rule of the new image starts with the reason `image` (7.5).
+
+The datapoint values themselves are the image loader's business (issue #8); this specification
+assumes that a datapoint with the same name and value type keeps its value, quality and update
+time across a swap (open question 2).
+
+### 7.7 Change tracking and time
+
+For every datapoint referenced by `sinceChange` or `changedWithin`, the engine records the
+monotonic time of the last update that changed value or quality. When the rules start at boot the
+record is the datapoint's last update time if its quality is not unknown, and none otherwise; it
+then follows every changing update. It survives image swaps, not reboots. `sinceUpdate` uses the
+datapoint model's own update time.
+
+Durations are measured on the monotonic clock. The wall clock (local time, time zone from the
+image) serves `now()`, `today()`, `time()`, `weekday()` and the sun functions; while the time
+service reports the wall clock as not synchronized they have no value. `dateTime` arithmetic is
+naive local-field arithmetic (open question 7).
+
+### 7.8 Timers
+
+Starting a timer evaluates the action's `duration`, or the timer's declared `duration` when the
+action has none, and sets the deadline to cascade time + duration. Expiries are processed in the
+order of their deadlines; equal deadlines in the order the timers were (re)started. The expiry
+stops the timer before the timer event is processed, so `running(t)` is `false` and `remaining(t)`
+has no value in the reactions that handle it. The event loop needs only one platform timer for all
+rule timers: the engine keeps its own deadline list.
+
+### 7.9 Enabling and disabling
+
+The enable switch is the parameter `enabled` (8.3). When it changes to `false`, the rule's running
+timers are cancelled and it stops firing; its state and parameters stay. When it changes to `true`,
+the rule starts with the reason `enable` (7.5), in the cascade of the parameter change.
+
+### 7.10 Reboot
+
+A reboot loses everything held in RAM: states, timers, match memories, change tracking, the
+diagnostics. Persisted parameter values survive. After the image is loaded at boot every rule
+starts with the reason `boot`. Whether states should survive a reboot is open question 3.
+
+## 8. Adjustable parameters
+
+### 8.1 Declaration
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | identifier | yes | Unique in the rule; not `enabled`. |
+| `label` | string, 1..63 bytes | yes | Shown in the device UI. |
+| `type` | `boolean`, `integer`, `real`, `string`, `duration`, `timeOfDay`, `enumeration`, `color` | yes | |
+| `default` | JSON value of the type (3.1) | yes | Must itself be valid. |
+| `min`, `max` | JSON value of the type | no | For `integer`, `real`, `duration`, `timeOfDay`; inclusive. |
+| `step` | number or duration (ms) | no | A hint for the UI's control; not enforced. |
+| `unit` | string, at most 15 bytes | no | Display unit: `°C`, `%`, `lx`; for a duration the unit the UI edits in (`s`, `min`, `h`). |
+| `choices` | array of `{"value": v, "label": "..."}` | no | For `integer`, `string`, `enumeration`; the value must be one of them. |
+| `adjustable` | boolean | no, `true` | Whether the UI and API may change it. A parameter that is not adjustable is a named constant E-Home can change with the next image. |
+
+A value is *valid* for a declaration when it has the type (after the conversions of 3.2), lies
+within `min` and `max` and is one of the `choices` when they are given.
+
+### 8.2 Changing a value
+
+From the UI or API (`setParameter(rule, parameter, value)`): refused with `parameterRefused` and a
+reason returned to the caller when the rule or parameter does not exist, the parameter is not
+adjustable or the value is not valid. Otherwise the value becomes the parameter's *override*,
+which is persisted; if it differs from the current value, a parameter-changed event starts a
+cascade. Resetting a parameter removes the override; the value returns to the default (an event if
+that changes the value).
+
+From a `setParameter` action: the same, except that `adjustable` is not required; a value that is
+not valid (or has no value) logs `parameterRefused`; the change is a derived event of the cascade.
+
+### 8.3 The enable switch
+
+Every rule has the boolean parameter `enabled`, default the rule's `enabled` member, adjustable
+unless the rule says `enabledAdjustable: false` (then it is fixed by the image). It is persisted
+like any parameter. Expressions, triggers and actions cannot reference it (refused at load); its
+effects are those of 7.9.
+
+### 8.4 Persistence and image swaps
+
+An override is stored under the logical key `<ruleId>/<parameterId>` with its type. The device's
+storage is the platform's choice (NVS keys are limited to 15 characters, so the ESP platform maps
+the logical key, for example to a LittleFS file or a hashed NVS key holding the full key; issue
+#12). Writes may be delayed by up to 10 s and coalesced to protect the flash; a power loss within
+that window loses the latest change. E-Home should warn about a rule that sets a parameter more
+often than once a minute.
+
+When a new image is loaded (swap or boot), each override is checked against the new declaration:
+
+| New image | Override |
+|---|---|
+| declares the parameter with the same type, and the value is valid | kept |
+| declares it with another type, or the value is no longer valid (range, choices) | deleted, the value becomes the new default, `parameterReset` logged |
+| does not declare the parameter, or the rule is gone | deleted silently (E-Home removed it) |
+
+A parameter that never had an override follows the default of each new image.
+
+## 9. Diagnostics
+
+### 9.1 Per-rule state
+
+Every interpreter maintains and exposes for each rule (device: `/api/rules` and the UI, issues #12
+and #14; E-Home: the simulation view):
+
+| Member | Meaning |
+|---|---|
+| `id`, `name`, `enabled` | |
+| `firings` | Number of firings since the rules started at boot. |
+| `lastTriggerAt`, `lastTrigger` | Cascade time of the last firing (wall time when synchronized, uptime always) and what matched: `datapoint hall.presence`, `match`, `schedule evening`, `timer off`, `start boot`, `parameter timeout`. |
+| `lastActionAt`, `lastAction` | The last action that took effect: `write hall.light = true`, `restartTimer off 3min`, `setParameter comfort = 21.5`, `log`. |
+| `errors`, `lastErrorAt`, `lastError` | Number of logged errors and warnings of the rule, the last one's time, code (9.2) and text. |
+| `state` | The current state id (rules with states). |
+| `timers` | For each timer: `id`, `running`, `remaining`. |
+| `parameters` | For each parameter: `id`, value, whether it has an override. |
+
+### 9.2 Log entries
+
+The engine logs with the tag `hc.rule`; every entry names the rule id. The codes are part of the
+contract (the corpus compares them); the text after the code is free.
+
+| Code | Level | When | Repetition |
+|---|---|---|---|
+| `log` | the action's | a `log` action | every time |
+| `conditionNoValue` | warning | a reaction condition has no value (not by an evaluation error) | once per condition, again only after it had a value |
+| `valueNoValue` | warning | a `write` value has no value (not by an evaluation error) | once per action, again only after it had a value |
+| `evalError` | error | an evaluation error in any expression (the text names it) | once per expression, again only after it evaluated without error |
+| `writeRefused` | error | conversion not exact, or the model refused the command | every time |
+| `timerRefused` | error | a timer duration has no value or lies outside 100 ms .. 30 d | every time |
+| `parameterRefused` | warning | a parameter value was refused (UI, API or action) | every time |
+| `parameterReset` | warning | an override was deleted by a new image because it no longer fits (8.4) | every time |
+| `stateReset` | warning | a new image does not have the rule's current state (7.6) | every time |
+| `loopGuard` | error | a cascade exceeded 32 derived firings (7.2) | once per cascade |
+| `queueOverflow` | error | the event queue was full; the event was dropped | once per cascade |
+
+"Once" keeps a flag per expression site: a site whose problem persists logs it on the first
+occurrence only; the diagnostics' `errors` counter counts logged entries only.
+
+## 10. Loading: checks and limits
+
+### 10.1 Checks
+
+The loader (device) and E-Home's export check every rule before the image is accepted; the first
+failure refuses the whole image with the rule id, the JSON path and one of these reasons:
+
+| Reason | Examples |
+|---|---|
+| `malformed` | wrong JSON type, missing or unknown member, unknown `kind`, `function` or `op` |
+| `duplicateId` | two rules, or two parameters/timers/states of one rule, with the same id |
+| `unknownReference` | a datapoint, schedule, parameter, timer, state or rule (in `state("id")`) that does not exist |
+| `typeError` | operand or argument types (4.4–4.7), a condition that is not boolean, a write value that does not convert to the datapoint type (3.2), a timer duration that is not a duration |
+| `invalidLiteral` | a literal value out of its range (`25:00`, a color level of 256, a string longer than 28 bytes, an integer beyond 2^53-1) |
+| `invalidParameter` | a default that is not valid, `min > max`, `choices` on a type without them |
+| `notWritable` | a `write` to a datapoint without the writable flag |
+| `forbidden` | a time, history, timer or state function in a `match` condition; a reference to `enabled`; `from` or `to` in a rule without states; `elseActions` together with `to`; a `timer` node outside `running`/`remaining`; `state()` arguments other than one string literal |
+| `limitExceeded` | a limit of 10.2 |
+
+### 10.2 Limits
+
+Chosen for a controller with 512 KB of RAM of which the rule engine may use about 64 KB; the
+interpreters refuse beyond them (load refusal `limitExceeded`, or the run-time log code given):
+
+| What | Limit |
+|---|---|
+| Rules per image | 128 |
+| Reactions per rule | 16 |
+| Triggers per reaction | 8 |
+| Actions per action list (actions, elseActions, entry, exit) | 16 |
+| Parameters per rule (with `enabled`) | 8 |
+| Timers per rule | 8 |
+| States per rule | 16 |
+| Nodes per expression | 64 |
+| Expression depth (a leaf has depth 1) | 12 |
+| Arguments per call | 8 |
+| Parts of a log message | 8 |
+| Nodes in all expressions of an image | 4096 |
+| Derived firings per cascade | 32 (`loopGuard`) |
+| Events waiting in the queue | 128 (`queueOverflow`) |
+| Timer duration | 100 ms .. 30 d (`timerRefused`) |
+| String value | 28 bytes |
+| Formatted log message | 200 bytes (cut, 4.9) |
+
+Budget: a compact node takes 16 bytes on the ESP32 (kind, operator or function, a type, two child
+indices or a 64-bit literal; longer literals in a side table), so 4096 nodes take 64 KB at most;
+a typical 50-rule image uses under 1500 nodes (about 24 KB) plus about 100 bytes per rule, 24 per
+timer and 48 per parameter. The event queue holds 128 entries of 8 bytes. Evaluation uses a stack
+of at most 12 frames of values (12 × 32 bytes).
+
+## 11. Worked examples
+
+Each example is shown as an outline (a notation of this document only: E-Home edits rules in forms
+and only expressions as text) and as the JSON of the image. Each is also a corpus case that runs it
+against a timeline.
+
+### 11.1 Presence light with a switch-off delay
+
+Two reactions share the timer `off`: one restarts it when presence ends, the other handles its
+expiry. `onlyOnChange` avoids a telegram when the light is already on; the light switches on only
+when it is dark, but presence keeps a light that is already on. Corpus:
+`spec/fixtures/rules/05-timer-presence-light.json`.
+
+```
+rule hall-presence-light "Hall light by presence"
+  parameter timeout: duration = 3min, 30s..1h, unit "min", label "Switch-off delay"
+  parameter darkBelow: real = 80.0, 0.0..2000.0, unit "lx", label "Dark below"
+  timer off = $timeout
+  when datapoint hall.presence
+    if @hall.presence and (@hall.light or @hall.lux < $darkBelow)
+    then cancelTimer off; write hall.light := true (onlyOnChange)
+  when datapoint hall.presence
+    if not @hall.presence
+    then restartTimer off
+  when timer off
+    then write hall.light := false
+```
+
+```json
+{
+	"id": "hall-presence-light",
+	"name": "Hall light by presence",
+	"description": "Switch on when someone is present and it is dark (or the light is on already); switch off $timeout after the last presence.",
+	"parameters": [
+		{
+			"id": "timeout",
+			"label": "Switch-off delay",
+			"type": "duration",
+			"default": 180000,
+			"min": 30000,
+			"max": 3600000,
+			"step": 30000,
+			"unit": "min"
+		},
+		{
+			"id": "darkBelow",
+			"label": "Dark below",
+			"type": "real",
+			"default": 80.0,
+			"min": 0.0,
+			"max": 2000.0,
+			"step": 10,
+			"unit": "lx"
+		}
+	],
+	"timers": [{"id": "off", "duration": {"kind": "parameter", "id": "timeout"}}],
+	"reactions": [
+		{
+			"triggers": [{"kind": "datapoint", "datapoint": "hall.presence"}],
+			"condition": {"kind": "binary", "op": "and", "left": {"kind": "datapoint", "name": "hall.presence"}, "right": {"kind": "binary", "op": "or", "left": {"kind": "datapoint", "name": "hall.light"}, "right": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "hall.lux"}, "right": {"kind": "parameter", "id": "darkBelow"}}}},
+			"actions": [
+				{"kind": "cancelTimer", "timer": "off"},
+				{
+					"kind": "write",
+					"datapoint": "hall.light",
+					"value": {"kind": "literal", "type": "boolean", "value": true},
+					"onlyOnChange": true
+				}
+			]
+		},
+		{
+			"triggers": [{"kind": "datapoint", "datapoint": "hall.presence"}],
+			"condition": {"kind": "unary", "op": "not", "operand": {"kind": "datapoint", "name": "hall.presence"}},
+			"actions": [{"kind": "restartTimer", "timer": "off"}]
+		},
+		{
+			"triggers": [{"kind": "timer", "timer": "off"}],
+			"actions": [
+				{
+					"kind": "write",
+					"datapoint": "hall.light",
+					"value": {"kind": "literal", "type": "boolean", "value": false}
+				}
+			]
+		}
+	]
+}
+```
+
+### 11.2 Blind by sun and wind
+
+Strong wind opens the blind and (re)starts a hold timer; while it runs the sun reaction stays quiet;
+its expiry re-evaluates the sun. `hysteresis` takes the blind's own position as the previous state,
+so no hidden memory is needed: shade at `$sunLux`, open again below half of it, and only between
+sunrise and sunset. Corpus: `spec/fixtures/rules/35-example-blind-sun-wind.json`.
+
+```
+rule living-blind "Living room blind: sun and wind"
+  parameter sunLux: real = 40000.0, 10000.0..100000.0, unit "lx", label "Shade above"
+  parameter windLimit: real = 10.0, 5.0..20.0, unit "m/s", label "Wind limit"
+  parameter shade: real = 75.0, 0.0..100.0, unit "%", label "Shade position"
+  timer windHold = 15min
+  when datapoint weather.wind (update)
+    if @weather.wind >= $windLimit
+    then write living.blind := 0.0 (onlyOnChange); restartTimer windHold
+  when datapoint weather.lux | timer windHold
+    if not running(windHold) and @weather.wind < $windLimit
+    then write living.blind := if(inWindow(time(), sunrise(), sunset()) and hysteresis(@weather.lux, $sunLux / 2, $sunLux, coalesce(@living.blind > 0.0, false)), $shade, 0.0) (onlyOnChange)
+```
+
+```json
+{
+	"id": "living-blind",
+	"name": "Living room blind: sun and wind",
+	"description": "Wind above the limit opens the blind (0 %) and holds it open for 15 min after the last strong gust; otherwise the blind shades while the sun is up and bright (on at $sunLux, off below half of it).",
+	"parameters": [
+		{
+			"id": "sunLux",
+			"label": "Shade above",
+			"type": "real",
+			"default": 40000.0,
+			"min": 10000.0,
+			"max": 100000.0,
+			"step": 1000,
+			"unit": "lx"
+		},
+		{
+			"id": "windLimit",
+			"label": "Wind limit",
+			"type": "real",
+			"default": 10.0,
+			"min": 5.0,
+			"max": 20.0,
+			"step": 0.5,
+			"unit": "m/s"
+		},
+		{
+			"id": "shade",
+			"label": "Shade position",
+			"type": "real",
+			"default": 75.0,
+			"min": 0.0,
+			"max": 100.0,
+			"step": 5,
+			"unit": "%"
+		}
+	],
+	"timers": [{"id": "windHold", "duration": {"kind": "literal", "type": "duration", "value": 900000}}],
+	"reactions": [
+		{
+			"triggers": [{"kind": "datapoint", "datapoint": "weather.wind", "on": "update"}],
+			"condition": {"kind": "binary", "op": ">=", "left": {"kind": "datapoint", "name": "weather.wind"}, "right": {"kind": "parameter", "id": "windLimit"}},
+			"actions": [
+				{
+					"kind": "write",
+					"datapoint": "living.blind",
+					"value": {"kind": "literal", "type": "real", "value": 0.0},
+					"onlyOnChange": true
+				},
+				{"kind": "restartTimer", "timer": "windHold"}
+			]
+		},
+		{
+			"triggers": [
+				{"kind": "datapoint", "datapoint": "weather.lux"},
+				{"kind": "timer", "timer": "windHold"}
+			],
+			"condition": {"kind": "binary", "op": "and", "left": {"kind": "unary", "op": "not", "operand": {"kind": "call", "function": "running", "args": [{"kind": "timer", "id": "windHold"}]}}, "right": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "weather.wind"}, "right": {"kind": "parameter", "id": "windLimit"}}},
+			"actions": [
+				{
+					"kind": "write",
+					"datapoint": "living.blind",
+					"value": {"kind": "call", "function": "if", "args": [{"kind": "binary", "op": "and", "left": {"kind": "call", "function": "inWindow", "args": [{"kind": "call", "function": "time", "args": []}, {"kind": "call", "function": "sunrise", "args": []}, {"kind": "call", "function": "sunset", "args": []}]}, "right": {"kind": "call", "function": "hysteresis", "args": [{"kind": "datapoint", "name": "weather.lux"}, {"kind": "binary", "op": "/", "left": {"kind": "parameter", "id": "sunLux"}, "right": {"kind": "literal", "type": "integer", "value": 2}}, {"kind": "parameter", "id": "sunLux"}, {"kind": "call", "function": "coalesce", "args": [{"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "living.blind"}, "right": {"kind": "literal", "type": "real", "value": 0.0}}, {"kind": "literal", "type": "boolean", "value": false}]}]}}, {"kind": "parameter", "id": "shade"}, {"kind": "literal", "type": "real", "value": 0.0}]},
+					"onlyOnChange": true
+				}
+			]
+		}
+	]
+}
+```
+
+### 11.3 Heating setback
+
+The rule computes the setpoint from state, not from moments: the scheduler (issue #10) publishes the
+comfort period as a datapoint, so the rule is right after a boot, a swap, a window change or a
+parameter change alike. Unknown inputs fall back to comfort and window closed through `coalesce`.
+Corpus: `spec/fixtures/rules/34-example-heating-setback.json`.
+
+```
+rule living-heating "Living room heating"
+  parameter comfort: real = 21.0, 16.0..26.0, unit "°C", label "Comfort temperature"
+  parameter setback: real = 17.0, 12.0..22.0, unit "°C", label "Setback temperature"
+  parameter frost: real = 7.0, 5.0..12.0, unit "°C", label "Frost protection"
+  when start | datapoint schedule.living.comfort | datapoint living.window | parameter comfort | parameter setback | parameter frost
+    then write living.setpoint := if(coalesce(@living.window, false), $frost, if(coalesce(@schedule.living.comfort, true), $comfort, $setback)) (onlyOnChange)
+```
+
+```json
+{
+	"id": "living-heating",
+	"name": "Living room heating",
+	"description": "The setpoint follows the comfort period of the schedule (a datapoint of the scheduler), frost protection while the window is open.",
+	"parameters": [
+		{
+			"id": "comfort",
+			"label": "Comfort temperature",
+			"type": "real",
+			"default": 21.0,
+			"min": 16.0,
+			"max": 26.0,
+			"step": 0.5,
+			"unit": "°C"
+		},
+		{
+			"id": "setback",
+			"label": "Setback temperature",
+			"type": "real",
+			"default": 17.0,
+			"min": 12.0,
+			"max": 22.0,
+			"step": 0.5,
+			"unit": "°C"
+		},
+		{
+			"id": "frost",
+			"label": "Frost protection",
+			"type": "real",
+			"default": 7.0,
+			"min": 5.0,
+			"max": 12.0,
+			"step": 0.5,
+			"unit": "°C"
+		}
+	],
+	"reactions": [
+		{
+			"triggers": [
+				{"kind": "start"},
+				{"kind": "datapoint", "datapoint": "schedule.living.comfort"},
+				{"kind": "datapoint", "datapoint": "living.window"},
+				{"kind": "parameter", "parameter": "comfort"},
+				{"kind": "parameter", "parameter": "setback"},
+				{"kind": "parameter", "parameter": "frost"}
+			],
+			"actions": [
+				{
+					"kind": "write",
+					"datapoint": "living.setpoint",
+					"value": {"kind": "call", "function": "if", "args": [{"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "living.window"}, {"kind": "literal", "type": "boolean", "value": false}]}, {"kind": "parameter", "id": "frost"}, {"kind": "call", "function": "if", "args": [{"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "schedule.living.comfort"}, {"kind": "literal", "type": "boolean", "value": true}]}, {"kind": "parameter", "id": "comfort"}, {"kind": "parameter", "id": "setback"}]}]},
+					"onlyOnChange": true
+				}
+			]
+		}
+	]
+}
+```
+
+### 11.4 Staircase light
+
+A state machine: a press in any state is a transition to `on` (from `on` itself a self-transition,
+which re-runs the entry actions and so restarts the timer); the timer leads from `on` to `warning`
+and from `warning` to `off`. Corpus: `spec/fixtures/rules/21-state-machine-staircase.json`.
+
+```
+rule stairs "Staircase light"
+  parameter onTime: duration = 3min, 30s..30min, unit "min", label "On time"
+  parameter warnLevel: real = 20.0, 5.0..50.0, unit "%", label "Warning brightness"
+  parameter warnTime: duration = 30s, 10s..2min, unit "s", label "Warning time"
+  timer t = $onTime
+  state off
+    entry: write stairs.light := 0.0
+  state on
+    entry: write stairs.light := 100.0; restartTimer t
+  state warning
+    entry: write stairs.light := $warnLevel; restartTimer t $warnTime
+  initial off
+  when datapoint stairs.button (update)
+    if @stairs.button
+    to on
+  from on when timer t
+    to warning
+  from warning when timer t
+    to off
+```
+
+```json
+{
+	"id": "stairs",
+	"name": "Staircase light",
+	"description": "A press switches on for $onTime (a press while on restarts it); then dims to $warnLevel for $warnTime as a warning, then off.",
+	"parameters": [
+		{
+			"id": "onTime",
+			"label": "On time",
+			"type": "duration",
+			"default": 180000,
+			"min": 30000,
+			"max": 1800000,
+			"step": 30000,
+			"unit": "min"
+		},
+		{
+			"id": "warnLevel",
+			"label": "Warning brightness",
+			"type": "real",
+			"default": 20.0,
+			"min": 5.0,
+			"max": 50.0,
+			"step": 5,
+			"unit": "%"
+		},
+		{
+			"id": "warnTime",
+			"label": "Warning time",
+			"type": "duration",
+			"default": 30000,
+			"min": 10000,
+			"max": 120000,
+			"step": 10000,
+			"unit": "s"
+		}
+	],
+	"timers": [{"id": "t", "duration": {"kind": "parameter", "id": "onTime"}}],
+	"states": [
+		{
+			"id": "off",
+			"entry": [
+				{
+					"kind": "write",
+					"datapoint": "stairs.light",
+					"value": {"kind": "literal", "type": "real", "value": 0.0}
+				}
+			]
+		},
+		{
+			"id": "on",
+			"entry": [
+				{
+					"kind": "write",
+					"datapoint": "stairs.light",
+					"value": {"kind": "literal", "type": "real", "value": 100.0}
+				},
+				{"kind": "restartTimer", "timer": "t"}
+			]
+		},
+		{
+			"id": "warning",
+			"entry": [
+				{
+					"kind": "write",
+					"datapoint": "stairs.light",
+					"value": {"kind": "parameter", "id": "warnLevel"}
+				},
+				{
+					"kind": "restartTimer",
+					"timer": "t",
+					"duration": {"kind": "parameter", "id": "warnTime"}
+				}
+			]
+		}
+	],
+	"initialState": "off",
+	"reactions": [
+		{
+			"triggers": [{"kind": "datapoint", "datapoint": "stairs.button", "on": "update"}],
+			"condition": {"kind": "datapoint", "name": "stairs.button"},
+			"actions": [],
+			"to": "on"
+		},
+		{
+			"triggers": [{"kind": "timer", "timer": "t"}],
+			"actions": [],
+			"from": ["on"],
+			"to": "warning"
+		},
+		{
+			"triggers": [{"kind": "timer", "timer": "t"}],
+			"actions": [],
+			"from": ["warning"],
+			"to": "off"
+		}
+	]
+}
+```
+
+## 12. Open questions for the author
+
+Points where a different choice is plausible. Each is decided in this specification as stated; a
+reversal changes the spec, the corpus cases named and both interpreters.
+
+1. **A condition without value runs neither branch.** Alternative: treat it as `false` and run the
+   `elseActions` (simpler to explain, but "if dark then on else off" would switch off whenever the
+   light sensor is unknown). Case 13.
+2. **Datapoint values across an image swap.** The spec assumes that the image loader (issue #8) keeps
+   value, quality and update time of a datapoint whose name and value type are unchanged; otherwise
+   every swap would make all inputs unknown until the next report. To be decided in #8.
+3. **States and timers do not survive a reboot.** A rule with states starts in its initial state
+   after a power cut. Alternative: persist the current state (flash wear on every transition; a
+   timer cannot be resumed meaningfully). Rules that derive their outputs from state (worked example
+   3) do not need it.
+4. **Disabling a rule cancels its timers.** A light switched on by the rule stays on. Alternatives:
+   let running timers expire (the rule acts while disabled), or declare "disable actions". Case 28.
+5. **The `start` trigger fires for every rule at every image swap**, also for unchanged rules.
+   Alternative: only for new and changed rules (needs a content hash per rule; unchanged rules would
+   not re-assert their outputs). Case 6.
+6. **No enumeration literals.** `@hvac.mode == 1` is the canonical text; E-Home could show and accept
+   the names of the datapoint type's values (`@hvac.mode == #comfort`), which needs the value table in
+   the AST or a type-directed printer.
+7. **`dateTime` arithmetic is naive local-field arithmetic** (`now() + 1h` across a DST change is off
+   by an hour). Alternative: compute in UTC and convert back (needs the time zone in both
+   interpreters' expression evaluators). Only `dateTime` is affected; timers are monotonic.
+8. **The loop guard counts derived firings per cascade, limit 32.** Alternatives: a per-rule limit
+   (a single runaway rule is found faster), a different number. Case 24.
+9. **`between` is inclusive, `inWindow` half-open with `from == until` empty.** Alternative: a
+   window with equal ends means the whole day.
+10. **Rule parameters are not datapoints.** ROADMAP item 2 lists rule parameters among the
+    datapoints. Mirroring each parameter as an application datapoint (named, for example,
+    `rule/<ruleId>/<parameterId>`) would let the UI, the log and MQTT treat them uniformly; the
+    validation, persistence and swap rules of section 8 would still apply.
+11. **Labels are in one language.** Alternative: a map from language to label in the image, chosen by
+    the UI's language.
+12. **No `read` action and no "no update within" trigger.** A rule cannot ask a device for its value
+    (KNX GroupValueRead) and cannot react to a sensor that went silent except through `sinceUpdate`
+    in a periodically triggered condition.
+13. **A `match` condition may not use time.** Alternative: re-evaluate time-dependent match
+    conditions every minute (a hidden periodic load); schedules cover the time-based cases now.
+14. **Timer durations are limited to 100 ms .. 30 d.**
+15. **Setting a parameter to its current value still stores an override**, which pins the value
+    against later default changes in E-Home.

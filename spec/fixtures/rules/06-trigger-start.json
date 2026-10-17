@@ -1,0 +1,121 @@
+{
+	"title": "Start trigger: boot, image swap and reboot, filtered by reason",
+	"description": "The image at 1000 is identical to the boot image. The reboot at 2000 loses the datapoint values, so the boot counter starts again at 1.",
+	"note": "Review: the start trigger fires for every rule of a new image, also for rules that did not change (open question 5).",
+	"datapoints": [{"name": "status.ready", "type": "boolean"}, {"name": "status.boots", "type": "unsigned"}],
+	"rules": [
+		{
+			"id": "init",
+			"name": "Init",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "status.ready",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						},
+						{"kind": "log", "level": "info", "message": ["started"]}
+					]
+				}
+			]
+		},
+		{
+			"id": "bootOnly",
+			"name": "Boot counter",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start", "reasons": ["boot"]}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "status.boots",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "status.boots"}, {"kind": "literal", "type": "integer", "value": 0}]}, "right": {"kind": "literal", "type": "integer", "value": 1}}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "imageOnly",
+			"name": "Image",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start", "reasons": ["image"]}],
+					"actions": [{"kind": "log", "level": "info", "message": ["new image"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"image": {
+				"rules": [
+					{
+						"id": "init",
+						"name": "Init",
+						"reactions": [
+							{
+								"triggers": [{"kind": "start"}],
+								"actions": [
+									{
+										"kind": "write",
+										"datapoint": "status.ready",
+										"value": {"kind": "literal", "type": "boolean", "value": true}
+									},
+									{"kind": "log", "level": "info", "message": ["started"]}
+								]
+							}
+						]
+					},
+					{
+						"id": "bootOnly",
+						"name": "Boot counter",
+						"reactions": [
+							{
+								"triggers": [{"kind": "start", "reasons": ["boot"]}],
+								"actions": [
+									{
+										"kind": "write",
+										"datapoint": "status.boots",
+										"value": {"kind": "binary", "op": "+", "left": {"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "status.boots"}, {"kind": "literal", "type": "integer", "value": 0}]}, "right": {"kind": "literal", "type": "integer", "value": 1}}
+									}
+								]
+							}
+						]
+					},
+					{
+						"id": "imageOnly",
+						"name": "Image",
+						"reactions": [
+							{
+								"triggers": [{"kind": "start", "reasons": ["image"]}],
+								"actions": [{"kind": "log", "level": "info", "message": ["new image"]}]
+							}
+						]
+					}
+				]
+			}
+		},
+		{"at": 2000, "reboot": true}
+	],
+	"end": 3000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "init", "datapoint": "status.ready", "value": true},
+			{"at": 0, "rule": "bootOnly", "datapoint": "status.boots", "value": 1},
+			{"at": 1000, "rule": "init", "datapoint": "status.ready", "value": true},
+			{"at": 2000, "rule": "init", "datapoint": "status.ready", "value": true},
+			{"at": 2000, "rule": "bootOnly", "datapoint": "status.boots", "value": 1}
+		],
+		"logs": [
+			{"at": 0, "rule": "init", "code": "log", "level": "info", "message": "started"},
+			{"at": 1000, "rule": "init", "code": "log", "level": "info", "message": "started"},
+			{"at": 1000, "rule": "imageOnly", "code": "log", "level": "info", "message": "new image"},
+			{"at": 2000, "rule": "init", "code": "log", "level": "info", "message": "started"}
+		],
+		"final": {"firings": {"init": 1, "bootOnly": 1, "imageOnly": 0}}
+	}
+}

@@ -1,0 +1,79 @@
+{
+	"title": "The enable switch: disabling cancels timers and stops firing; enabling starts with reason enable; a fixed switch is refused",
+	"note": "Review: disabling a rule cancels its running timers; its light stays on (open question 4).",
+	"datapoints": [{"name": "m.motion", "type": "boolean"}, {"name": "m.light", "type": "boolean"}],
+	"rules": [
+		{
+			"id": "auto",
+			"name": "Auto light",
+			"timers": [{"id": "off", "duration": {"kind": "literal", "type": "duration", "value": 60000}}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "m.motion", "on": "update"}],
+					"condition": {"kind": "datapoint", "name": "m.motion"},
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "m.light",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						},
+						{"kind": "restartTimer", "timer": "off"}
+					]
+				},
+				{
+					"triggers": [{"kind": "timer", "timer": "off"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "m.light",
+							"value": {"kind": "literal", "type": "boolean", "value": false}
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "start", "reasons": ["enable"]}],
+					"actions": [{"kind": "log", "level": "info", "message": ["enabled again"]}]
+				}
+			]
+		},
+		{
+			"id": "fixed",
+			"name": "Fixed",
+			"enabledAdjustable": false,
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "m.motion", "on": "update"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["fixed"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "m.motion", "value": true}},
+		{"at": 2000, "setParameter": {"rule": "auto", "parameter": "enabled", "value": false}},
+		{"at": 3000, "report": {"datapoint": "m.motion", "value": true}},
+		{"at": 4000, "setParameter": {"rule": "fixed", "parameter": "enabled", "value": false}},
+		{"at": 80000, "setParameter": {"rule": "auto", "parameter": "enabled", "value": true}},
+		{"at": 90000, "report": {"datapoint": "m.motion", "value": true}}
+	],
+	"end": 200000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "auto", "datapoint": "m.light", "value": true},
+			{"at": 90000, "rule": "auto", "datapoint": "m.light", "value": true},
+			{"at": 150000, "rule": "auto", "datapoint": "m.light", "value": false}
+		],
+		"logs": [
+			{"at": 1000, "rule": "fixed", "code": "log", "level": "info", "message": "fixed"},
+			{"at": 3000, "rule": "fixed", "code": "log", "level": "info", "message": "fixed"},
+			{"at": 4000, "rule": "fixed", "code": "parameterRefused"},
+			{"at": 80000, "rule": "auto", "code": "log", "level": "info", "message": "enabled again"},
+			{"at": 90000, "rule": "fixed", "code": "log", "level": "info", "message": "fixed"}
+		],
+		"final": {
+			"persisted": {"auto/enabled": true},
+			"parameters": {"auto/enabled": true, "fixed/enabled": true},
+			"firings": {"auto": 4, "fixed": 3}
+		}
+	}
+}

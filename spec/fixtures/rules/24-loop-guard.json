@@ -1,0 +1,101 @@
+{
+	"title": "Loop guard: a ping-pong between two rules is refused after 32 derived firings; the next external event works normally",
+	"description": "The direct firing of ping by the external report is not counted; derived firings 1..32 alternate pong, ping; the 33rd (pong) is refused.",
+	"note": "Review: the direct firings of the external event are not counted; the limit is 32 derived firings.",
+	"datapoints": [
+		{"name": "x.a", "type": "unsigned"},
+		{"name": "x.b", "type": "unsigned"},
+		{"name": "x.c", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "ping",
+			"name": "Ping",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.a", "on": "update"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "x.b",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "x.b"}, {"kind": "literal", "type": "integer", "value": 0}]}, "right": {"kind": "literal", "type": "integer", "value": 1}}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "pong",
+			"name": "Pong",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.b", "on": "update"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "x.a",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "x.a"}, {"kind": "literal", "type": "integer", "value": 0}]}, "right": {"kind": "literal", "type": "integer", "value": 1}}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "watch",
+			"name": "Watch",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.c"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["c ok"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "x.a", "value": 0}},
+		{"at": 2000, "report": {"datapoint": "x.c", "value": true}}
+	],
+	"end": 3000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 1},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 1},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 2},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 2},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 3},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 3},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 4},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 4},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 5},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 5},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 6},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 6},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 7},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 7},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 8},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 8},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 9},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 9},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 10},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 10},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 11},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 11},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 12},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 12},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 13},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 13},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 14},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 14},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 15},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 15},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 16},
+			{"at": 1000, "rule": "pong", "datapoint": "x.a", "value": 16},
+			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 17}
+		],
+		"logs": [
+			{"at": 1000, "rule": "pong", "code": "loopGuard"},
+			{"at": 2000, "rule": "watch", "code": "log", "level": "info", "message": "c ok"}
+		],
+		"final": {"datapoints": {"x.a": 16, "x.b": 17}, "firings": {"ping": 17, "pong": 16, "watch": 1}}
+	}
+}

@@ -1,0 +1,110 @@
+{
+	"title": "sinceChange, changedWithin, sinceUpdate; a repeated report is an update, not a change",
+	"note": "Review: the change time of a datapoint known at boot is its last update time (here the initial value at 0), because the model keeps no separate change time.",
+	"datapoints": [
+		{"name": "door.open", "type": "boolean"},
+		{"name": "door.alarm", "type": "boolean"},
+		{"name": "door.recent", "type": "boolean"},
+		{"name": "door.update", "type": "real"},
+		{"name": "m.temp", "type": "real"},
+		{"name": "door.never", "type": "boolean"},
+		{"name": "door.nv", "type": "boolean"}
+	],
+	"schedules": ["check"],
+	"initial": {"door.open": false},
+	"rules": [
+		{
+			"id": "door",
+			"name": "Door open too long",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "check"}],
+					"condition": {"kind": "binary", "op": "and", "left": {"kind": "datapoint", "name": "door.open"}, "right": {"kind": "binary", "op": ">=", "left": {"kind": "call", "function": "sinceChange", "args": [{"kind": "datapoint", "name": "door.open"}]}, "right": {"kind": "literal", "type": "duration", "value": 600000}}},
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "door.alarm",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						},
+						{
+							"kind": "log",
+							"level": "warning",
+							"message": [
+								"door open ",
+								{"kind": "call", "function": "sinceChange", "args": [{"kind": "datapoint", "name": "door.open"}]}
+							]
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "recent",
+			"name": "Recent",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "check"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "door.recent",
+							"value": {"kind": "call", "function": "changedWithin", "args": [{"kind": "datapoint", "name": "door.open"}, {"kind": "literal", "type": "duration", "value": 60000}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "door.update",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "call", "function": "sinceUpdate", "args": [{"kind": "datapoint", "name": "door.open"}]}, "right": {"kind": "literal", "type": "duration", "value": 1000}}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "never",
+			"name": "Never known",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "check"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "door.never",
+							"value": {"kind": "call", "function": "changedWithin", "args": [{"kind": "datapoint", "name": "m.temp"}, {"kind": "literal", "type": "duration", "value": 3600000}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "door.nv",
+							"value": {"kind": "call", "function": "known", "args": [{"kind": "call", "function": "sinceChange", "args": [{"kind": "datapoint", "name": "m.temp"}]}]}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 30000, "schedule": "check"},
+		{"at": 100000, "report": {"datapoint": "door.open", "value": true}},
+		{"at": 400000, "schedule": "check"},
+		{"at": 500000, "report": {"datapoint": "door.open", "value": true}},
+		{"at": 760000, "schedule": "check"}
+	],
+	"end": 800000,
+	"expected": {
+		"commands": [
+			{"at": 30000, "rule": "recent", "datapoint": "door.recent", "value": true},
+			{"at": 30000, "rule": "recent", "datapoint": "door.update", "value": 30.0},
+			{"at": 30000, "rule": "never", "datapoint": "door.never", "value": false},
+			{"at": 30000, "rule": "never", "datapoint": "door.nv", "value": false},
+			{"at": 400000, "rule": "recent", "datapoint": "door.recent", "value": false},
+			{"at": 400000, "rule": "recent", "datapoint": "door.update", "value": 300.0},
+			{"at": 400000, "rule": "never", "datapoint": "door.never", "value": false},
+			{"at": 400000, "rule": "never", "datapoint": "door.nv", "value": false},
+			{"at": 760000, "rule": "door", "datapoint": "door.alarm", "value": true},
+			{"at": 760000, "rule": "recent", "datapoint": "door.recent", "value": false},
+			{"at": 760000, "rule": "recent", "datapoint": "door.update", "value": 260.0},
+			{"at": 760000, "rule": "never", "datapoint": "door.never", "value": false},
+			{"at": 760000, "rule": "never", "datapoint": "door.nv", "value": false}
+		],
+		"logs": [{"at": 760000, "rule": "door", "code": "log", "level": "warning", "message": "door open 11min"}]
+	}
+}

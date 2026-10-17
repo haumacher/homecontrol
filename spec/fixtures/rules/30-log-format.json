@@ -1,0 +1,104 @@
+{
+	"title": "Formatting values in log messages; cutting a long message at a character boundary",
+	"note": "Review: a real that rounds to zero prints 0, not -0. 0.0078125 is an exact binary tie and rounds away from zero to 0.007813 (C's printf rounds ties to even and must not be used as is).",
+	"datapoints": [{"name": "unknown.dp", "type": "real"}, {"name": "m.enum", "type": "enumeration"}],
+	"initial": {"m.enum": 4},
+	"rules": [
+		{
+			"id": "fmt",
+			"name": "Format",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": [
+								"b=",
+								{"kind": "literal", "type": "boolean", "value": true},
+								" i=",
+								{"kind": "literal", "type": "integer", "value": -42},
+								" r=",
+								{"kind": "literal", "type": "real", "value": 21.0},
+								" r2=",
+								{"kind": "binary", "op": "/", "left": {"kind": "literal", "type": "integer", "value": 1}, "right": {"kind": "literal", "type": "integer", "value": 3}},
+								" r3=",
+								{"kind": "literal", "type": "real", "value": -4e-07},
+								" r4=",
+								{"kind": "literal", "type": "real", "value": 0.0078125}
+							]
+						},
+						{
+							"kind": "log",
+							"level": "info",
+							"message": [
+								"d=",
+								{"kind": "literal", "type": "duration", "value": 90061001},
+								" neg=",
+								{"kind": "literal", "type": "duration", "value": -90000},
+								" z=",
+								{"kind": "literal", "type": "duration", "value": 0},
+								" t=",
+								{"kind": "literal", "type": "timeOfDay", "value": {"hour": 6, "minute": 5, "second": 30}},
+								" t2=",
+								{"kind": "literal", "type": "timeOfDay", "value": {"hour": 20, "minute": 30, "second": 0}},
+								" dt=",
+								{"kind": "literal", "type": "dateTime", "value": {"year": 2026, "month": 10, "day": 19, "hour": 7, "minute": 0, "second": 0}},
+								" c=",
+								{"kind": "literal", "type": "color", "value": {"red": 0, "green": 255, "blue": 127}},
+								" w=",
+								{"kind": "literal", "type": "color", "value": {"red": 0, "green": 255, "blue": 127, "white": 128}},
+								" raw=",
+								{"kind": "literal", "type": "raw", "value": "0A FF"},
+								" ctl=",
+								{"kind": "call", "function": "controlled", "args": [{"kind": "literal", "type": "boolean", "value": false}, {"kind": "literal", "type": "integer", "value": 7}]},
+								" n=",
+								{"kind": "datapoint", "name": "unknown.dp"},
+								" s=",
+								{"kind": "literal", "type": "string", "value": "txt"},
+								" e=",
+								{"kind": "datapoint", "name": "m.enum"}
+							]
+						},
+						{
+							"kind": "log",
+							"level": "warning",
+							"message": [
+								"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaé",
+								{"kind": "literal", "type": "string", "value": "bbbb"}
+							]
+						}
+					]
+				}
+			]
+		}
+	],
+	"end": 1000,
+	"expected": {
+		"commands": [],
+		"logs": [
+			{
+				"at": 0,
+				"rule": "fmt",
+				"code": "log",
+				"level": "info",
+				"message": "b=true i=-42 r=21 r2=0.333333 r3=0 r4=0.007813"
+			},
+			{
+				"at": 0,
+				"rule": "fmt",
+				"code": "log",
+				"level": "info",
+				"message": "d=1d1h1min1s1ms neg=-1min30s z=0s t=06:05:30 t2=20:30 dt=2026-10-19T07:00 c=#00ff7f w=#00ff7f80 raw=x\"0AFF\" ctl=controlled(false, 7) n=none s=txt e=4"
+			},
+			{
+				"at": 0,
+				"rule": "fmt",
+				"code": "log",
+				"level": "warning",
+				"message": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..."
+			}
+		]
+	}
+}

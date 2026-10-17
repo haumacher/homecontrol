@@ -1,0 +1,60 @@
+{
+	"title": "Datapoint trigger: on change versus on update",
+	"description": "follow copies the switch on change; count counts every update, also a repeated report of the same value.",
+	"datapoints": [
+		{"name": "hall.switch", "type": "boolean"},
+		{"name": "hall.light", "type": "boolean"},
+		{"name": "hall.count", "type": "unsigned"}
+	],
+	"rules": [
+		{
+			"id": "follow",
+			"name": "Light follows switch",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "hall.switch"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "hall.light",
+							"value": {"kind": "datapoint", "name": "hall.switch"}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "count",
+			"name": "Count switch reports",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "hall.switch", "on": "update"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "hall.count",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "hall.count"}, {"kind": "literal", "type": "integer", "value": 0}]}, "right": {"kind": "literal", "type": "integer", "value": 1}}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "hall.switch", "value": true}},
+		{"at": 2000, "report": {"datapoint": "hall.switch", "value": true}},
+		{"at": 3000, "report": {"datapoint": "hall.switch", "value": false}}
+	],
+	"end": 4000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "follow", "datapoint": "hall.light", "value": true},
+			{"at": 1000, "rule": "count", "datapoint": "hall.count", "value": 1},
+			{"at": 2000, "rule": "count", "datapoint": "hall.count", "value": 2},
+			{"at": 3000, "rule": "follow", "datapoint": "hall.light", "value": false},
+			{"at": 3000, "rule": "count", "datapoint": "hall.count", "value": 3}
+		],
+		"logs": [],
+		"final": {"datapoints": {"hall.light": false, "hall.count": 3}, "firings": {"follow": 2, "count": 3}}
+	}
+}

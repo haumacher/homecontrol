@@ -1,0 +1,101 @@
+{
+	"title": "Worked example 2: blind by sun and wind, with a wind hold timer and hysteresis",
+	"description": "Wall clock Monday 2026-10-19 10:00:00, sunrise 07:45, sunset 18:20.",
+	"datapoints": [
+		{"name": "weather.lux", "type": "real"},
+		{"name": "weather.wind", "type": "real"},
+		{"name": "living.blind", "type": "real"}
+	],
+	"clock": {"start": "2026-10-19T10:00:00", "synchronized": true},
+	"astro": {"sunrise": {"hour": 7, "minute": 45, "second": 0}, "sunset": {"hour": 18, "minute": 20, "second": 0}},
+	"initial": {"living.blind": 0.0, "weather.wind": 3.0},
+	"rules": [
+		{
+			"id": "living-blind",
+			"name": "Living room blind: sun and wind",
+			"description": "Wind above the limit opens the blind (0 %) and holds it open for 15 min after the last strong gust; otherwise the blind shades while the sun is up and bright (on at $sunLux, off below half of it).",
+			"parameters": [
+				{
+					"id": "sunLux",
+					"label": "Shade above",
+					"type": "real",
+					"default": 40000.0,
+					"min": 10000.0,
+					"max": 100000.0,
+					"step": 1000,
+					"unit": "lx"
+				},
+				{
+					"id": "windLimit",
+					"label": "Wind limit",
+					"type": "real",
+					"default": 10.0,
+					"min": 5.0,
+					"max": 20.0,
+					"step": 0.5,
+					"unit": "m/s"
+				},
+				{
+					"id": "shade",
+					"label": "Shade position",
+					"type": "real",
+					"default": 75.0,
+					"min": 0.0,
+					"max": 100.0,
+					"step": 5,
+					"unit": "%"
+				}
+			],
+			"timers": [{"id": "windHold", "duration": {"kind": "literal", "type": "duration", "value": 900000}}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "weather.wind", "on": "update"}],
+					"condition": {"kind": "binary", "op": ">=", "left": {"kind": "datapoint", "name": "weather.wind"}, "right": {"kind": "parameter", "id": "windLimit"}},
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "living.blind",
+							"value": {"kind": "literal", "type": "real", "value": 0.0},
+							"onlyOnChange": true
+						},
+						{"kind": "restartTimer", "timer": "windHold"}
+					]
+				},
+				{
+					"triggers": [
+						{"kind": "datapoint", "datapoint": "weather.lux"},
+						{"kind": "timer", "timer": "windHold"}
+					],
+					"condition": {"kind": "binary", "op": "and", "left": {"kind": "unary", "op": "not", "operand": {"kind": "call", "function": "running", "args": [{"kind": "timer", "id": "windHold"}]}}, "right": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "weather.wind"}, "right": {"kind": "parameter", "id": "windLimit"}}},
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "living.blind",
+							"value": {"kind": "call", "function": "if", "args": [{"kind": "binary", "op": "and", "left": {"kind": "call", "function": "inWindow", "args": [{"kind": "call", "function": "time", "args": []}, {"kind": "call", "function": "sunrise", "args": []}, {"kind": "call", "function": "sunset", "args": []}]}, "right": {"kind": "call", "function": "hysteresis", "args": [{"kind": "datapoint", "name": "weather.lux"}, {"kind": "binary", "op": "/", "left": {"kind": "parameter", "id": "sunLux"}, "right": {"kind": "literal", "type": "integer", "value": 2}}, {"kind": "parameter", "id": "sunLux"}, {"kind": "call", "function": "coalesce", "args": [{"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "living.blind"}, "right": {"kind": "literal", "type": "real", "value": 0.0}}, {"kind": "literal", "type": "boolean", "value": false}]}]}}, {"kind": "parameter", "id": "shade"}, {"kind": "literal", "type": "real", "value": 0.0}]},
+							"onlyOnChange": true
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "weather.lux", "value": 30000.0}},
+		{"at": 2000, "report": {"datapoint": "weather.lux", "value": 45000.0}},
+		{"at": 3000, "report": {"datapoint": "weather.lux", "value": 25000.0}},
+		{"at": 4000, "report": {"datapoint": "weather.wind", "value": 12.0}},
+		{"at": 5000, "report": {"datapoint": "weather.lux", "value": 50000.0}},
+		{"at": 600000, "report": {"datapoint": "weather.wind", "value": 11.0}},
+		{"at": 700000, "report": {"datapoint": "weather.wind", "value": 4.0}}
+	],
+	"end": 1600000,
+	"expected": {
+		"commands": [
+			{"at": 2000, "rule": "living-blind", "datapoint": "living.blind", "value": 75.0},
+			{"at": 4000, "rule": "living-blind", "datapoint": "living.blind", "value": 0.0},
+			{"at": 1500000, "rule": "living-blind", "datapoint": "living.blind", "value": 75.0}
+		],
+		"logs": [],
+		"final": {"timers": {"living-blind/windHold": null}}
+	}
+}

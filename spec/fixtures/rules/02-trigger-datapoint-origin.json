@@ -1,0 +1,91 @@
+{
+	"title": "Datapoint trigger: origin report versus command; a stale report counts as report",
+	"description": "set commands room.light from a scene; manual reacts only to bus reports of room.light (a wall switch, or the bus going stale); commanded only to commands (from rules or the UI).",
+	"note": "Review: a change to stale counts as origin report (the technology reported it). Plausible alternative: a separate origin filter value for stale.",
+	"datapoints": [
+		{"name": "ui.scene", "type": "unsigned"},
+		{"name": "room.light", "type": "boolean"},
+		{"name": "room.manual", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "set",
+			"name": "Scene to light",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "ui.scene"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "room.light",
+							"value": {"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "ui.scene"}, "right": {"kind": "literal", "type": "integer", "value": 0}}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "manual",
+			"name": "Manual operation",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "room.light", "origin": "report"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "room.manual",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "commanded",
+			"name": "Commanded",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "room.light", "on": "update", "origin": "command"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": ["light commanded ", {"kind": "datapoint", "name": "room.light"}]
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "ui.scene", "value": 2}},
+		{"at": 2000, "report": {"datapoint": "room.light", "value": false}},
+		{"at": 3000, "command": {"datapoint": "room.light", "value": true}},
+		{"at": 4000, "stale": "room.light"}
+	],
+	"end": 5000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "set", "datapoint": "room.light", "value": true},
+			{"at": 2000, "rule": "manual", "datapoint": "room.manual", "value": true},
+			{"at": 4000, "rule": "manual", "datapoint": "room.manual", "value": true}
+		],
+		"logs": [
+			{
+				"at": 1000,
+				"rule": "commanded",
+				"code": "log",
+				"level": "info",
+				"message": "light commanded true"
+			},
+			{
+				"at": 3000,
+				"rule": "commanded",
+				"code": "log",
+				"level": "info",
+				"message": "light commanded true"
+			}
+		],
+		"final": {"datapoints": {"room.manual": true}, "firings": {"set": 1, "manual": 2, "commanded": 2}}
+	}
+}

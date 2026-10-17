@@ -1,0 +1,113 @@
+{
+	"title": "Durations, times of day, dates: literals and arithmetic",
+	"datapoints": [
+		{"name": "dur.d1", "type": "real"},
+		{"name": "dur.d2", "type": "timeOfDay"},
+		{"name": "dur.d3", "type": "timeOfDay"},
+		{"name": "dur.d4", "type": "real"},
+		{"name": "dur.d5", "type": "real"},
+		{"name": "dur.d6", "type": "real"},
+		{"name": "dur.d7", "type": "boolean"},
+		{"name": "dur.d8", "type": "real"},
+		{"name": "dur.d9", "type": "real"},
+		{"name": "dur.d10", "type": "unsigned"},
+		{"name": "dur.d11", "type": "dateTime"},
+		{"name": "dur.d12", "type": "timeOfDay"}
+	],
+	"rules": [
+		{
+			"id": "dur",
+			"name": "Durations",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "dur.d1",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "duration", "value": 5400000}, "right": {"kind": "literal", "type": "duration", "value": 45000}}, "right": {"kind": "literal", "type": "duration", "value": 60000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d2",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 23, "minute": 30, "second": 0}}, "right": {"kind": "literal", "type": "duration", "value": 2700000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d3",
+							"value": {"kind": "binary", "op": "-", "left": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 0, "minute": 10, "second": 0}}, "right": {"kind": "literal", "type": "duration", "value": 1200000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d4",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "binary", "op": "-", "left": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 6, "minute": 0, "second": 0}}, "right": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 22, "minute": 0, "second": 0}}}, "right": {"kind": "literal", "type": "duration", "value": 3600000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d5",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "binary", "op": "%", "left": {"kind": "binary", "op": "+", "left": {"kind": "binary", "op": "-", "left": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 6, "minute": 0, "second": 0}}, "right": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 22, "minute": 0, "second": 0}}}, "right": {"kind": "literal", "type": "duration", "value": 86400000}}, "right": {"kind": "literal", "type": "duration", "value": 86400000}}, "right": {"kind": "literal", "type": "duration", "value": 3600000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d6",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "binary", "op": "+", "left": {"kind": "binary", "op": "*", "left": {"kind": "literal", "type": "integer", "value": 2}, "right": {"kind": "literal", "type": "duration", "value": 1800000}}, "right": {"kind": "binary", "op": "/", "left": {"kind": "literal", "type": "duration", "value": 90000}, "right": {"kind": "literal", "type": "integer", "value": 2}}}, "right": {"kind": "literal", "type": "duration", "value": 1000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d7",
+							"value": {"kind": "binary", "op": "and", "left": {"kind": "binary", "op": "==", "left": {"kind": "literal", "type": "duration", "value": 5400000}, "right": {"kind": "literal", "type": "duration", "value": 5400000}}, "right": {"kind": "binary", "op": ">", "left": {"kind": "literal", "type": "duration", "value": 86400000}, "right": {"kind": "literal", "type": "duration", "value": 82800000}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d8",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "binary", "op": "-", "left": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "dateTime", "value": {"year": 2026, "month": 10, "day": 19, "hour": 7, "minute": 0, "second": 0}}, "right": {"kind": "literal", "type": "duration", "value": 86400000}}, "right": {"kind": "literal", "type": "dateTime", "value": {"year": 2026, "month": 10, "day": 19, "hour": 6, "minute": 30, "second": 0}}}, "right": {"kind": "literal", "type": "duration", "value": 3600000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d9",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "binary", "op": "-", "left": {"kind": "literal", "type": "date", "value": {"year": 2026, "month": 12, "day": 24}}, "right": {"kind": "literal", "type": "date", "value": {"year": 2026, "month": 10, "day": 19}}}, "right": {"kind": "literal", "type": "duration", "value": 86400000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d10",
+							"value": {"kind": "call", "function": "round", "args": [{"kind": "binary", "op": "/", "left": {"kind": "literal", "type": "duration", "value": 2500}, "right": {"kind": "literal", "type": "duration", "value": 1000}}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d11",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "dateTime", "value": {"year": 2026, "month": 10, "day": 19, "hour": 23, "minute": 30, "second": 0}}, "right": {"kind": "literal", "type": "duration", "value": 2700000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "dur.d12",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 12, "minute": 0, "second": 30}}, "right": {"kind": "literal", "type": "duration", "value": 1500}}
+						}
+					]
+				}
+			]
+		}
+	],
+	"end": 1000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "dur", "datapoint": "dur.d1", "value": 90.75},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d2", "value": {"hour": 0, "minute": 15, "second": 0}},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d3", "value": {"hour": 23, "minute": 50, "second": 0}},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d4", "value": -16.0},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d5", "value": 8.0},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d6", "value": 3645.0},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d7", "value": true},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d8", "value": 24.5},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d9", "value": 66.0},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d10", "value": 3},
+			{
+				"at": 0,
+				"rule": "dur",
+				"datapoint": "dur.d11",
+				"value": {"year": 2026, "month": 10, "day": 20, "hour": 0, "minute": 15, "second": 0, "dayOfWeek": 2}
+			},
+			{"at": 0, "rule": "dur", "datapoint": "dur.d12", "value": {"hour": 12, "minute": 0, "second": 31}}
+		],
+		"logs": []
+	}
+}

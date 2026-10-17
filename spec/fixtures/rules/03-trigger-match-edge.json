@@ -1,0 +1,69 @@
+{
+	"title": "Match trigger: fires on the rising edge only; baseline at start; no value resets the edge",
+	"description": "hot fires when @room.temp > 25.0 becomes true. cold's condition is already true at boot (baseline, no firing) and fires again only after the stale report made it not true.",
+	"datapoints": [{"name": "room.temp", "type": "real"}, {"name": "room.fan", "type": "boolean"}],
+	"initial": {"room.temp": 24.0},
+	"rules": [
+		{
+			"id": "hot",
+			"name": "Fan when hot",
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "match",
+							"condition": {"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "room.temp"}, "right": {"kind": "literal", "type": "real", "value": 25.0}}
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "room.fan",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						},
+						{
+							"kind": "log",
+							"level": "warning",
+							"message": ["hot ", {"kind": "datapoint", "name": "room.temp"}]
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "cold",
+			"name": "Below 30 again",
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "match",
+							"condition": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "room.temp"}, "right": {"kind": "literal", "type": "real", "value": 30.0}}
+						}
+					],
+					"actions": [{"kind": "log", "level": "info", "message": ["below 30 again"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "room.temp", "value": 26.5}},
+		{"at": 2000, "report": {"datapoint": "room.temp", "value": 27.0}},
+		{"at": 3000, "report": {"datapoint": "room.temp", "value": 25.0}},
+		{"at": 4000, "stale": "room.temp"},
+		{"at": 5000, "report": {"datapoint": "room.temp", "value": 26.0}}
+	],
+	"end": 6000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "hot", "datapoint": "room.fan", "value": true},
+			{"at": 5000, "rule": "hot", "datapoint": "room.fan", "value": true}
+		],
+		"logs": [
+			{"at": 1000, "rule": "hot", "code": "log", "level": "warning", "message": "hot 26.5"},
+			{"at": 5000, "rule": "hot", "code": "log", "level": "warning", "message": "hot 26"},
+			{"at": 5000, "rule": "cold", "code": "log", "level": "info", "message": "below 30 again"}
+		],
+		"final": {"firings": {"hot": 2, "cold": 1}}
+	}
+}

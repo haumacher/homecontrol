@@ -1,0 +1,74 @@
+{
+	"title": "setParameter action: a derived parameter change, persisted; an invalid value is refused",
+	"datapoints": [
+		{"name": "lamp.dim", "type": "real"},
+		{"name": "btn.learn", "type": "boolean"},
+		{"name": "btn.recall", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "learn",
+			"name": "Learn brightness",
+			"parameters": [
+				{
+					"id": "level",
+					"label": "Brightness",
+					"type": "real",
+					"default": 50.0,
+					"min": 0.0,
+					"max": 100.0,
+					"unit": "%"
+				}
+			],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "btn.learn", "on": "update"}],
+					"actions": [
+						{
+							"kind": "setParameter",
+							"parameter": "level",
+							"value": {"kind": "datapoint", "name": "lamp.dim"}
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "parameter", "parameter": "level"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": ["level now ", {"kind": "parameter", "id": "level"}]
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "btn.recall", "on": "update"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "lamp.dim",
+							"value": {"kind": "parameter", "id": "level"}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "lamp.dim", "value": 30.0}},
+		{"at": 2000, "report": {"datapoint": "btn.learn", "value": true}},
+		{"at": 3000, "report": {"datapoint": "lamp.dim", "value": 80.0}},
+		{"at": 4000, "report": {"datapoint": "btn.recall", "value": true}},
+		{"at": 5000, "report": {"datapoint": "lamp.dim", "value": 150.0}},
+		{"at": 6000, "report": {"datapoint": "btn.learn", "value": true}}
+	],
+	"end": 7000,
+	"expected": {
+		"commands": [{"at": 4000, "rule": "learn", "datapoint": "lamp.dim", "value": 30.0}],
+		"logs": [
+			{"at": 2000, "rule": "learn", "code": "log", "level": "info", "message": "level now 30"},
+			{"at": 6000, "rule": "learn", "code": "parameterRefused"}
+		],
+		"final": {"parameters": {"learn/level": 30.0}, "persisted": {"learn/level": 30.0}, "firings": {"learn": 4}}
+	}
+}

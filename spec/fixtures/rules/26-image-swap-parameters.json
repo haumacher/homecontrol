@@ -1,0 +1,274 @@
+{
+	"title": "Image swap: parameter overrides survive while declared, type-compatible and valid; otherwise reset or deleted",
+	"description": "At 5000: delay keeps 10min although its default changed; level changed type (reset); mode 3 is no longer a choice (reset); label is no longer declared (deleted silently); rule q is gone (its override deleted). At 6000 q returns with its default.",
+	"datapoints": [{"name": "out.level", "type": "real"}],
+	"rules": [
+		{
+			"id": "p",
+			"name": "Parameters",
+			"parameters": [
+				{
+					"id": "delay",
+					"label": "Delay",
+					"type": "duration",
+					"default": 300000,
+					"min": 60000,
+					"max": 3600000,
+					"unit": "min"
+				},
+				{
+					"id": "level",
+					"label": "Level",
+					"type": "real",
+					"default": 50.0,
+					"min": 0.0,
+					"max": 100.0,
+					"unit": "%"
+				},
+				{
+					"id": "mode",
+					"label": "Mode",
+					"type": "integer",
+					"default": 1,
+					"choices": [
+						{"value": 1, "label": "Eco"},
+						{"value": 2, "label": "Normal"},
+						{"value": 3, "label": "Boost"}
+					]
+				},
+				{"id": "label", "label": "Label", "type": "string", "default": "a"}
+			],
+			"reactions": [
+				{
+					"triggers": [{"kind": "parameter", "parameter": "level"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "out.level",
+							"value": {"kind": "parameter", "id": "level"}
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": [
+								"delay ",
+								{"kind": "parameter", "id": "delay"},
+								" level ",
+								{"kind": "parameter", "id": "level"},
+								" mode ",
+								{"kind": "parameter", "id": "mode"},
+								" label ",
+								{"kind": "parameter", "id": "label"}
+							]
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "q",
+			"name": "Q",
+			"parameters": [{"id": "x", "label": "X", "type": "integer", "default": 3}],
+			"reactions": [{"triggers": [{"kind": "parameter", "parameter": "x"}], "actions": []}]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "setParameter": {"rule": "p", "parameter": "delay", "value": 600000}},
+		{"at": 2000, "setParameter": {"rule": "p", "parameter": "level", "value": 75.0}},
+		{"at": 3000, "setParameter": {"rule": "p", "parameter": "mode", "value": 3}},
+		{"at": 4000, "setParameter": {"rule": "p", "parameter": "label", "value": "b"}},
+		{"at": 4000, "setParameter": {"rule": "q", "parameter": "x", "value": 7}},
+		{
+			"at": 5000,
+			"image": {
+				"rules": [
+					{
+						"id": "p",
+						"name": "Parameters",
+						"parameters": [
+							{
+								"id": "delay",
+								"label": "Delay",
+								"type": "duration",
+								"default": 420000,
+								"min": 60000,
+								"max": 3600000,
+								"unit": "min"
+							},
+							{
+								"id": "level",
+								"label": "Level",
+								"type": "integer",
+								"default": 40,
+								"min": 0,
+								"max": 100,
+								"unit": "%"
+							},
+							{
+								"id": "mode",
+								"label": "Mode",
+								"type": "integer",
+								"default": 1,
+								"choices": [{"value": 1, "label": "Eco"}, {"value": 2, "label": "Normal"}]
+							},
+							{"id": "extra", "label": "Extra", "type": "boolean", "default": true}
+						],
+						"reactions": [
+							{
+								"triggers": [{"kind": "parameter", "parameter": "level"}],
+								"actions": [
+									{
+										"kind": "write",
+										"datapoint": "out.level",
+										"value": {"kind": "parameter", "id": "level"}
+									}
+								]
+							},
+							{
+								"triggers": [{"kind": "start"}],
+								"actions": [
+									{
+										"kind": "log",
+										"level": "info",
+										"message": [
+											"delay ",
+											{"kind": "parameter", "id": "delay"},
+											" level ",
+											{"kind": "parameter", "id": "level"},
+											" mode ",
+											{"kind": "parameter", "id": "mode"}
+										]
+									}
+								]
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"at": 6000,
+			"image": {
+				"rules": [
+					{
+						"id": "p",
+						"name": "Parameters",
+						"parameters": [
+							{
+								"id": "delay",
+								"label": "Delay",
+								"type": "duration",
+								"default": 420000,
+								"min": 60000,
+								"max": 3600000,
+								"unit": "min"
+							},
+							{
+								"id": "level",
+								"label": "Level",
+								"type": "integer",
+								"default": 40,
+								"min": 0,
+								"max": 100,
+								"unit": "%"
+							},
+							{
+								"id": "mode",
+								"label": "Mode",
+								"type": "integer",
+								"default": 1,
+								"choices": [{"value": 1, "label": "Eco"}, {"value": 2, "label": "Normal"}]
+							},
+							{"id": "extra", "label": "Extra", "type": "boolean", "default": true}
+						],
+						"reactions": [
+							{
+								"triggers": [{"kind": "parameter", "parameter": "level"}],
+								"actions": [
+									{
+										"kind": "write",
+										"datapoint": "out.level",
+										"value": {"kind": "parameter", "id": "level"}
+									}
+								]
+							},
+							{
+								"triggers": [{"kind": "start"}],
+								"actions": [
+									{
+										"kind": "log",
+										"level": "info",
+										"message": [
+											"delay ",
+											{"kind": "parameter", "id": "delay"},
+											" level ",
+											{"kind": "parameter", "id": "level"},
+											" mode ",
+											{"kind": "parameter", "id": "mode"}
+										]
+									}
+								]
+							}
+						]
+					},
+					{
+						"id": "q",
+						"name": "Q",
+						"parameters": [{"id": "x", "label": "X", "type": "integer", "default": 3}],
+						"reactions": [
+							{
+								"triggers": [{"kind": "start"}],
+								"actions": [
+									{
+										"kind": "log",
+										"level": "info",
+										"message": ["x ", {"kind": "parameter", "id": "x"}]
+									}
+								]
+							}
+						]
+					}
+				]
+			}
+		}
+	],
+	"end": 7000,
+	"expected": {
+		"commands": [{"at": 2000, "rule": "p", "datapoint": "out.level", "value": 75.0}],
+		"logs": [
+			{
+				"at": 0,
+				"rule": "p",
+				"code": "log",
+				"level": "info",
+				"message": "delay 5min level 50 mode 1 label a"
+			},
+			{"at": 5000, "rule": "p", "code": "parameterReset"},
+			{"at": 5000, "rule": "p", "code": "parameterReset"},
+			{
+				"at": 5000,
+				"rule": "p",
+				"code": "log",
+				"level": "info",
+				"message": "delay 10min level 40 mode 1"
+			},
+			{
+				"at": 6000,
+				"rule": "p",
+				"code": "log",
+				"level": "info",
+				"message": "delay 10min level 40 mode 1"
+			},
+			{"at": 6000, "rule": "q", "code": "log", "level": "info", "message": "x 3"}
+		],
+		"final": {
+			"parameters": {"p/delay": 600000, "p/level": 40, "p/mode": 1, "p/extra": true, "p/enabled": true, "q/x": 3},
+			"persisted": {"p/delay": 600000}
+		}
+	}
+}

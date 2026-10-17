@@ -1,0 +1,61 @@
+{
+	"title": "hysteresis with the output datapoint as the previous state",
+	"datapoints": [
+		{"name": "bath.humidity", "type": "real"},
+		{"name": "bath.fan", "type": "boolean"},
+		{"name": "bath.fan2", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "fan",
+			"name": "Bath fan",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "bath.humidity"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "bath.fan",
+							"value": {"kind": "call", "function": "hysteresis", "args": [{"kind": "datapoint", "name": "bath.humidity"}, {"kind": "literal", "type": "real", "value": 60.0}, {"kind": "literal", "type": "real", "value": 70.0}, {"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "bath.fan"}, {"kind": "literal", "type": "boolean", "value": false}]}]},
+							"onlyOnChange": true
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "bad",
+			"name": "Wrong band",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "bath.humidity"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "bath.fan2",
+							"value": {"kind": "call", "function": "hysteresis", "args": [{"kind": "datapoint", "name": "bath.humidity"}, {"kind": "literal", "type": "real", "value": 70.0}, {"kind": "literal", "type": "real", "value": 60.0}, {"kind": "literal", "type": "boolean", "value": false}]}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "bath.humidity", "value": 65.0}},
+		{"at": 2000, "report": {"datapoint": "bath.humidity", "value": 72.0}},
+		{"at": 3000, "report": {"datapoint": "bath.humidity", "value": 65.0}},
+		{"at": 4000, "report": {"datapoint": "bath.humidity", "value": 60.0}},
+		{"at": 5000, "report": {"datapoint": "bath.humidity", "value": 69.9}},
+		{"at": 6000, "report": {"datapoint": "bath.humidity", "value": 70.0}}
+	],
+	"end": 7000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "fan", "datapoint": "bath.fan", "value": false},
+			{"at": 2000, "rule": "fan", "datapoint": "bath.fan", "value": true},
+			{"at": 4000, "rule": "fan", "datapoint": "bath.fan", "value": false},
+			{"at": 6000, "rule": "fan", "datapoint": "bath.fan", "value": true}
+		],
+		"logs": [{"at": 1000, "rule": "bad", "code": "evalError"}]
+	}
+}

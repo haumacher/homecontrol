@@ -1,0 +1,137 @@
+{
+	"title": "Numeric functions: rounding half away from zero, clamp, min, max, between, roundTo",
+	"datapoints": [
+		{"name": "num.n1", "type": "signed"},
+		{"name": "num.n2", "type": "signed"},
+		{"name": "num.n3", "type": "signed"},
+		{"name": "num.n4", "type": "signed"},
+		{"name": "num.n5", "type": "signed"},
+		{"name": "num.n6", "type": "real"},
+		{"name": "num.n7", "type": "real"},
+		{"name": "num.n8", "type": "signed"},
+		{"name": "num.n9", "type": "real"},
+		{"name": "num.n10", "type": "signed"},
+		{"name": "num.n11", "type": "boolean"},
+		{"name": "num.n12", "type": "boolean"},
+		{"name": "num.n13", "type": "real"},
+		{"name": "num.n14", "type": "signed"},
+		{"name": "num.n15", "type": "real"},
+		{"name": "num.n16", "type": "signed"},
+		{"name": "mode", "type": "enumeration"}
+	],
+	"initial": {"mode": 4},
+	"rules": [
+		{
+			"id": "num",
+			"name": "Numbers",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "num.n1",
+							"value": {"kind": "call", "function": "round", "args": [{"kind": "literal", "type": "real", "value": -2.5}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n2",
+							"value": {"kind": "call", "function": "round", "args": [{"kind": "literal", "type": "real", "value": 2.5}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n3",
+							"value": {"kind": "call", "function": "floor", "args": [{"kind": "literal", "type": "real", "value": -2.5}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n4",
+							"value": {"kind": "call", "function": "ceil", "args": [{"kind": "literal", "type": "real", "value": -2.5}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n5",
+							"value": {"kind": "call", "function": "trunc", "args": [{"kind": "literal", "type": "real", "value": -2.7}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n6",
+							"value": {"kind": "call", "function": "roundTo", "args": [{"kind": "literal", "type": "real", "value": 21.26}, {"kind": "literal", "type": "real", "value": 0.5}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n7",
+							"value": {"kind": "call", "function": "clamp", "args": [{"kind": "literal", "type": "real", "value": 30.0}, {"kind": "literal", "type": "integer", "value": 16}, {"kind": "literal", "type": "integer", "value": 26}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n8",
+							"value": {"kind": "call", "function": "max", "args": [{"kind": "literal", "type": "integer", "value": 3}, {"kind": "literal", "type": "integer", "value": 9}, {"kind": "literal", "type": "integer", "value": -2}, {"kind": "literal", "type": "integer", "value": 7}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n9",
+							"value": {"kind": "call", "function": "min", "args": [{"kind": "literal", "type": "integer", "value": 4}, {"kind": "literal", "type": "real", "value": 2.5}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n10",
+							"value": {"kind": "call", "function": "abs", "args": [{"kind": "literal", "type": "integer", "value": -12}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n11",
+							"value": {"kind": "call", "function": "between", "args": [{"kind": "literal", "type": "integer", "value": 5}, {"kind": "literal", "type": "integer", "value": 1}, {"kind": "literal", "type": "integer", "value": 5}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n12",
+							"value": {"kind": "call", "function": "between", "args": [{"kind": "literal", "type": "integer", "value": 5}, {"kind": "literal", "type": "integer", "value": 6}, {"kind": "literal", "type": "integer", "value": 1}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n13",
+							"value": {"kind": "call", "function": "clamp", "args": [{"kind": "literal", "type": "real", "value": 1.0}, {"kind": "literal", "type": "integer", "value": 2}, {"kind": "literal", "type": "integer", "value": 1}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n14",
+							"value": {"kind": "call", "function": "toInt", "args": [{"kind": "datapoint", "name": "mode"}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n15",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "call", "function": "max", "args": [{"kind": "literal", "type": "duration", "value": 600000}, {"kind": "literal", "type": "duration", "value": 90000}]}, "right": {"kind": "literal", "type": "duration", "value": 1000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "num.n16",
+							"value": {"kind": "call", "function": "round", "args": [{"kind": "literal", "type": "integer", "value": 7}]}
+						}
+					]
+				}
+			]
+		}
+	],
+	"end": 1000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "num", "datapoint": "num.n1", "value": -3},
+			{"at": 0, "rule": "num", "datapoint": "num.n2", "value": 3},
+			{"at": 0, "rule": "num", "datapoint": "num.n3", "value": -3},
+			{"at": 0, "rule": "num", "datapoint": "num.n4", "value": -2},
+			{"at": 0, "rule": "num", "datapoint": "num.n5", "value": -2},
+			{"at": 0, "rule": "num", "datapoint": "num.n6", "value": 21.5},
+			{"at": 0, "rule": "num", "datapoint": "num.n7", "value": 26.0},
+			{"at": 0, "rule": "num", "datapoint": "num.n8", "value": 9},
+			{"at": 0, "rule": "num", "datapoint": "num.n9", "value": 2.5},
+			{"at": 0, "rule": "num", "datapoint": "num.n10", "value": 12},
+			{"at": 0, "rule": "num", "datapoint": "num.n11", "value": true},
+			{"at": 0, "rule": "num", "datapoint": "num.n12", "value": false},
+			{"at": 0, "rule": "num", "datapoint": "num.n14", "value": 4},
+			{"at": 0, "rule": "num", "datapoint": "num.n15", "value": 600.0},
+			{"at": 0, "rule": "num", "datapoint": "num.n16", "value": 7}
+		],
+		"logs": [{"at": 0, "rule": "num", "code": "evalError"}]
+	}
+}

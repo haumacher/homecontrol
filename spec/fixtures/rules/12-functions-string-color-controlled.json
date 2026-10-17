@@ -1,0 +1,119 @@
+{
+	"title": "String, color and controlled-value functions; string length limit; an invalid color channel has no value",
+	"datapoints": [
+		{"name": "str.s1", "type": "unsigned"},
+		{"name": "str.s2", "type": "boolean"},
+		{"name": "str.s3", "type": "string"},
+		{"name": "str.s4", "type": "string"},
+		{"name": "str.s5", "type": "string"},
+		{"name": "str.s6", "type": "color"},
+		{"name": "str.s7", "type": "unsigned"},
+		{"name": "str.s8", "type": "unsigned"},
+		{"name": "str.s9", "type": "controlled"},
+		{"name": "str.s10", "type": "boolean"},
+		{"name": "str.s11", "type": "string"},
+		{"name": "str.s12", "type": "string"},
+		{"name": "info.text", "type": "string"},
+		{"name": "blind.step", "type": "controlled"},
+		{"name": "info.when", "type": "timeOfDay"}
+	],
+	"initial": {
+		"info.text": "Light rain",
+		"blind.step": {"control": true, "value": 5},
+		"info.when": {"hour": 6, "minute": 5, "second": 30}
+	},
+	"rules": [
+		{
+			"id": "str",
+			"name": "Strings",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "str.s1",
+							"value": {"kind": "call", "function": "length", "args": [{"kind": "literal", "type": "string", "value": "Grüße"}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s2",
+							"value": {"kind": "binary", "op": "and", "left": {"kind": "binary", "op": "and", "left": {"kind": "call", "function": "contains", "args": [{"kind": "datapoint", "name": "info.text"}, {"kind": "literal", "type": "string", "value": "rain"}]}, "right": {"kind": "call", "function": "startsWith", "args": [{"kind": "datapoint", "name": "info.text"}, {"kind": "literal", "type": "string", "value": "Light"}]}}, "right": {"kind": "unary", "op": "not", "operand": {"kind": "call", "function": "endsWith", "args": [{"kind": "datapoint", "name": "info.text"}, {"kind": "literal", "type": "string", "value": "x"}]}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s3",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "string", "value": "Temp "}, "right": {"kind": "call", "function": "toString", "args": [{"kind": "literal", "type": "real", "value": 21.5}]}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s4",
+							"value": {"kind": "call", "function": "toString", "args": [{"kind": "literal", "type": "duration", "value": 5400000}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s5",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "string", "value": "0123456789"}, "right": {"kind": "literal", "type": "string", "value": "0123456789"}}, "right": {"kind": "literal", "type": "string", "value": "012345678"}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s6",
+							"value": {"kind": "call", "function": "rgbw", "args": [{"kind": "literal", "type": "integer", "value": 255}, {"kind": "literal", "type": "integer", "value": 128}, {"kind": "literal", "type": "integer", "value": 0}, {"kind": "literal", "type": "integer", "value": 64}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s7",
+							"value": {"kind": "call", "function": "green", "args": [{"kind": "literal", "type": "color", "value": {"red": 16, "green": 160, "blue": 255}}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s8",
+							"value": {"kind": "call", "function": "white", "args": [{"kind": "literal", "type": "color", "value": {"red": 16, "green": 160, "blue": 255}}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s9",
+							"value": {"kind": "call", "function": "controlled", "args": [{"kind": "literal", "type": "boolean", "value": true}, {"kind": "literal", "type": "integer", "value": 3}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s10",
+							"value": {"kind": "binary", "op": "and", "left": {"kind": "call", "function": "controlBit", "args": [{"kind": "datapoint", "name": "blind.step"}]}, "right": {"kind": "binary", "op": "==", "left": {"kind": "call", "function": "controlValue", "args": [{"kind": "datapoint", "name": "blind.step"}]}, "right": {"kind": "literal", "type": "integer", "value": 5}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s11",
+							"value": {"kind": "call", "function": "toString", "args": [{"kind": "datapoint", "name": "info.when"}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "str.s12",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "call", "function": "toString", "args": [{"kind": "literal", "type": "raw", "value": "0A FF"}]}, "right": {"kind": "call", "function": "toString", "args": [{"kind": "literal", "type": "date", "value": {"year": 2026, "month": 10, "day": 19}}]}}
+						}
+					]
+				}
+			]
+		}
+	],
+	"end": 1000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "str", "datapoint": "str.s1", "value": 7},
+			{"at": 0, "rule": "str", "datapoint": "str.s2", "value": true},
+			{"at": 0, "rule": "str", "datapoint": "str.s3", "value": "Temp 21.5"},
+			{"at": 0, "rule": "str", "datapoint": "str.s4", "value": "1h30min"},
+			{
+				"at": 0,
+				"rule": "str",
+				"datapoint": "str.s6",
+				"value": {"red": 255, "green": 128, "blue": 0, "white": 64}
+			},
+			{"at": 0, "rule": "str", "datapoint": "str.s7", "value": 160},
+			{"at": 0, "rule": "str", "datapoint": "str.s9", "value": {"control": true, "value": 3}},
+			{"at": 0, "rule": "str", "datapoint": "str.s10", "value": true},
+			{"at": 0, "rule": "str", "datapoint": "str.s11", "value": "06:05:30"},
+			{"at": 0, "rule": "str", "datapoint": "str.s12", "value": "x\"0AFF\"2026-10-19"}
+		],
+		"logs": [{"at": 0, "rule": "str", "code": "evalError"}, {"at": 0, "rule": "str", "code": "valueNoValue"}]
+	}
+}

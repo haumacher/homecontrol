@@ -1,0 +1,103 @@
+{
+	"title": "State machine: first satisfied transition wins, exit/actions/entry order, a guard without value is skipped, internal reactions",
+	"datapoints": [{"name": "in.mode", "type": "unsigned"}, {"name": "in.temp", "type": "real"}],
+	"rules": [
+		{
+			"id": "sm",
+			"name": "Order",
+			"states": [
+				{
+					"id": "a",
+					"entry": [{"kind": "log", "level": "info", "message": ["enter a"]}],
+					"exit": [{"kind": "log", "level": "info", "message": ["exit a"]}]
+				},
+				{
+					"id": "b",
+					"entry": [{"kind": "log", "level": "info", "message": ["enter b"]}],
+					"exit": [{"kind": "log", "level": "info", "message": ["exit b"]}]
+				},
+				{"id": "c", "entry": [{"kind": "log", "level": "info", "message": ["enter c"]}]}
+			],
+			"initialState": "a",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.mode"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": ["internal ", {"kind": "datapoint", "name": "in.mode"}]
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.mode"}],
+					"condition": {"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "in.temp"}, "right": {"kind": "literal", "type": "real", "value": 0.0}},
+					"actions": [{"kind": "log", "level": "info", "message": ["R1"]}],
+					"from": ["a"],
+					"to": "c"
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.mode"}],
+					"condition": {"kind": "binary", "op": "==", "left": {"kind": "datapoint", "name": "in.mode"}, "right": {"kind": "literal", "type": "integer", "value": 2}},
+					"actions": [{"kind": "log", "level": "info", "message": ["R2"]}],
+					"from": ["a"],
+					"to": "b"
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.mode"}],
+					"condition": {"kind": "binary", "op": ">=", "left": {"kind": "datapoint", "name": "in.mode"}, "right": {"kind": "literal", "type": "integer", "value": 1}},
+					"actions": [{"kind": "log", "level": "info", "message": ["R3"]}],
+					"from": ["a"],
+					"to": "c"
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.mode"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["R4"]}],
+					"from": ["b"],
+					"to": "a"
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.mode"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": ["after ", {"kind": "call", "function": "state", "args": []}]
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "in.mode", "value": 2}},
+		{"at": 2000, "report": {"datapoint": "in.mode", "value": 3}},
+		{"at": 3000, "report": {"datapoint": "in.mode", "value": 1}},
+		{"at": 4000, "report": {"datapoint": "in.temp", "value": 5.0}},
+		{"at": 5000, "report": {"datapoint": "in.mode", "value": 0}}
+	],
+	"end": 6000,
+	"expected": {
+		"commands": [],
+		"logs": [
+			{"at": 0, "rule": "sm", "code": "log", "level": "info", "message": "enter a"},
+			{"at": 1000, "rule": "sm", "code": "log", "level": "info", "message": "internal 2"},
+			{"at": 1000, "rule": "sm", "code": "conditionNoValue"},
+			{"at": 1000, "rule": "sm", "code": "log", "level": "info", "message": "exit a"},
+			{"at": 1000, "rule": "sm", "code": "log", "level": "info", "message": "R2"},
+			{"at": 1000, "rule": "sm", "code": "log", "level": "info", "message": "enter b"},
+			{"at": 2000, "rule": "sm", "code": "log", "level": "info", "message": "internal 3"},
+			{"at": 2000, "rule": "sm", "code": "log", "level": "info", "message": "exit b"},
+			{"at": 2000, "rule": "sm", "code": "log", "level": "info", "message": "R4"},
+			{"at": 2000, "rule": "sm", "code": "log", "level": "info", "message": "enter a"},
+			{"at": 3000, "rule": "sm", "code": "log", "level": "info", "message": "internal 1"},
+			{"at": 3000, "rule": "sm", "code": "log", "level": "info", "message": "exit a"},
+			{"at": 3000, "rule": "sm", "code": "log", "level": "info", "message": "R3"},
+			{"at": 3000, "rule": "sm", "code": "log", "level": "info", "message": "enter c"},
+			{"at": 5000, "rule": "sm", "code": "log", "level": "info", "message": "internal 0"},
+			{"at": 5000, "rule": "sm", "code": "log", "level": "info", "message": "after c"}
+		],
+		"final": {"states": {"sm": "c"}}
+	}
+}

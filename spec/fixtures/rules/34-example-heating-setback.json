@@ -1,0 +1,87 @@
+{
+	"title": "Worked example 3: heating setback by the schedule's comfort period, window open, parameter changes",
+	"datapoints": [
+		{"name": "living.setpoint", "type": "real"},
+		{"name": "living.window", "type": "boolean"},
+		{"name": "schedule.living.comfort", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "living-heating",
+			"name": "Living room heating",
+			"description": "The setpoint follows the comfort period of the schedule (a datapoint of the scheduler), frost protection while the window is open.",
+			"parameters": [
+				{
+					"id": "comfort",
+					"label": "Comfort temperature",
+					"type": "real",
+					"default": 21.0,
+					"min": 16.0,
+					"max": 26.0,
+					"step": 0.5,
+					"unit": "°C"
+				},
+				{
+					"id": "setback",
+					"label": "Setback temperature",
+					"type": "real",
+					"default": 17.0,
+					"min": 12.0,
+					"max": 22.0,
+					"step": 0.5,
+					"unit": "°C"
+				},
+				{
+					"id": "frost",
+					"label": "Frost protection",
+					"type": "real",
+					"default": 7.0,
+					"min": 5.0,
+					"max": 12.0,
+					"step": 0.5,
+					"unit": "°C"
+				}
+			],
+			"reactions": [
+				{
+					"triggers": [
+						{"kind": "start"},
+						{"kind": "datapoint", "datapoint": "schedule.living.comfort"},
+						{"kind": "datapoint", "datapoint": "living.window"},
+						{"kind": "parameter", "parameter": "comfort"},
+						{"kind": "parameter", "parameter": "setback"},
+						{"kind": "parameter", "parameter": "frost"}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "living.setpoint",
+							"value": {"kind": "call", "function": "if", "args": [{"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "living.window"}, {"kind": "literal", "type": "boolean", "value": false}]}, {"kind": "parameter", "id": "frost"}, {"kind": "call", "function": "if", "args": [{"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "schedule.living.comfort"}, {"kind": "literal", "type": "boolean", "value": true}]}, {"kind": "parameter", "id": "comfort"}, {"kind": "parameter", "id": "setback"}]}]},
+							"onlyOnChange": true
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "schedule.living.comfort", "value": false}},
+		{"at": 2000, "report": {"datapoint": "living.window", "value": true}},
+		{"at": 3000, "report": {"datapoint": "living.window", "value": false}},
+		{"at": 4000, "setParameter": {"rule": "living-heating", "parameter": "setback", "value": 16.5}},
+		{"at": 5000, "setParameter": {"rule": "living-heating", "parameter": "comfort", "value": 22.0}},
+		{"at": 6000, "report": {"datapoint": "schedule.living.comfort", "value": true}}
+	],
+	"end": 7000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "living-heating", "datapoint": "living.setpoint", "value": 21.0},
+			{"at": 1000, "rule": "living-heating", "datapoint": "living.setpoint", "value": 17.0},
+			{"at": 2000, "rule": "living-heating", "datapoint": "living.setpoint", "value": 7.0},
+			{"at": 3000, "rule": "living-heating", "datapoint": "living.setpoint", "value": 17.0},
+			{"at": 4000, "rule": "living-heating", "datapoint": "living.setpoint", "value": 16.5},
+			{"at": 6000, "rule": "living-heating", "datapoint": "living.setpoint", "value": 22.0}
+		],
+		"logs": []
+	}
+}

@@ -1,0 +1,56 @@
+{
+	"title": "Parameter trigger; refused parameter values; setting the same value",
+	"datapoints": [{"name": "room.setpoint", "type": "real"}],
+	"rules": [
+		{
+			"id": "setpoint",
+			"name": "Setpoint",
+			"parameters": [
+				{
+					"id": "target",
+					"label": "Setpoint",
+					"type": "real",
+					"default": 21.0,
+					"min": 16.0,
+					"max": 26.0,
+					"step": 0.5,
+					"unit": "°C"
+				}
+			],
+			"reactions": [
+				{
+					"triggers": [{"kind": "parameter", "parameter": "target"}, {"kind": "start"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "room.setpoint",
+							"value": {"kind": "parameter", "id": "target"}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "setParameter": {"rule": "setpoint", "parameter": "target", "value": 22.5}},
+		{"at": 2000, "setParameter": {"rule": "setpoint", "parameter": "target", "value": 30.0}},
+		{"at": 3000, "setParameter": {"rule": "setpoint", "parameter": "target", "value": 22.5}},
+		{"at": 4000, "setParameter": {"rule": "setpoint", "parameter": "nope", "value": 1}}
+	],
+	"end": 5000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "setpoint", "datapoint": "room.setpoint", "value": 21.0},
+			{"at": 1000, "rule": "setpoint", "datapoint": "room.setpoint", "value": 22.5}
+		],
+		"logs": [
+			{"at": 2000, "rule": "setpoint", "code": "parameterRefused"},
+			{"at": 4000, "rule": "setpoint", "code": "parameterRefused"}
+		],
+		"final": {
+			"parameters": {"setpoint/target": 22.5},
+			"persisted": {"setpoint/target": 22.5},
+			"firings": {"setpoint": 2}
+		}
+	}
+}

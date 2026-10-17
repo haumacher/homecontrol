@@ -1,0 +1,64 @@
+{
+	"title": "Evaluation errors: logged once per expression until it evaluates without error; the following actions still run",
+	"datapoints": [{"name": "m.count", "type": "unsigned"}, {"name": "m.ratio", "type": "real"}],
+	"rules": [
+		{
+			"id": "ratio",
+			"name": "Ratio",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "m.count", "on": "update"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "m.ratio",
+							"value": {"kind": "binary", "op": "/", "left": {"kind": "literal", "type": "integer", "value": 100}, "right": {"kind": "datapoint", "name": "m.count"}}
+						},
+						{
+							"kind": "log",
+							"level": "info",
+							"message": ["count ", {"kind": "datapoint", "name": "m.count"}]
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "guard",
+			"name": "Divides",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "m.count", "on": "update"}],
+					"condition": {"kind": "binary", "op": "==", "left": {"kind": "binary", "op": "%", "left": {"kind": "literal", "type": "integer", "value": 10}, "right": {"kind": "datapoint", "name": "m.count"}}, "right": {"kind": "literal", "type": "integer", "value": 0}},
+					"actions": [{"kind": "log", "level": "info", "message": ["divides"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "m.count", "value": 4}},
+		{"at": 2000, "report": {"datapoint": "m.count", "value": 0}},
+		{"at": 3000, "report": {"datapoint": "m.count", "value": 0}},
+		{"at": 4000, "report": {"datapoint": "m.count", "value": 5}},
+		{"at": 5000, "report": {"datapoint": "m.count", "value": 0}}
+	],
+	"end": 6000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "ratio", "datapoint": "m.ratio", "value": 25.0},
+			{"at": 4000, "rule": "ratio", "datapoint": "m.ratio", "value": 20.0}
+		],
+		"logs": [
+			{"at": 1000, "rule": "ratio", "code": "log", "level": "info", "message": "count 4"},
+			{"at": 2000, "rule": "ratio", "code": "evalError"},
+			{"at": 2000, "rule": "ratio", "code": "log", "level": "info", "message": "count 0"},
+			{"at": 2000, "rule": "guard", "code": "evalError"},
+			{"at": 3000, "rule": "ratio", "code": "log", "level": "info", "message": "count 0"},
+			{"at": 4000, "rule": "ratio", "code": "log", "level": "info", "message": "count 5"},
+			{"at": 4000, "rule": "guard", "code": "log", "level": "info", "message": "divides"},
+			{"at": 5000, "rule": "ratio", "code": "evalError"},
+			{"at": 5000, "rule": "ratio", "code": "log", "level": "info", "message": "count 0"},
+			{"at": 5000, "rule": "guard", "code": "evalError"}
+		]
+	}
+}

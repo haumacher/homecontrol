@@ -1,0 +1,19 @@
+{
+	"title": "Load refusal: an action starts a timer the rule does not declare",
+	"datapoints": [{"name": "in.x", "type": "boolean"}],
+	"rules": [
+		{
+			"id": "bad",
+			"name": "Bad",
+			"timers": [{"id": "off", "duration": {"kind": "literal", "type": "duration", "value": 60000}}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.x"}],
+					"actions": [{"kind": "restartTimer", "timer": "nope"}]
+				}
+			]
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "unknownReference"}
+}

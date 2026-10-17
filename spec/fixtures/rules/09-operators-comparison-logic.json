@@ -1,0 +1,111 @@
+{
+	"title": "Comparisons and boolean operators: precedence and types",
+	"description": "not binds looser than comparisons: not (1 < 2) == false is not ((1 < 2) == false).",
+	"datapoints": [
+		{"name": "cmp.b1", "type": "boolean"},
+		{"name": "cmp.b2", "type": "boolean"},
+		{"name": "cmp.b3", "type": "boolean"},
+		{"name": "cmp.b4", "type": "boolean"},
+		{"name": "cmp.b5", "type": "boolean"},
+		{"name": "cmp.b6", "type": "boolean"},
+		{"name": "cmp.b7", "type": "boolean"},
+		{"name": "cmp.b8", "type": "boolean"},
+		{"name": "cmp.b9", "type": "boolean"},
+		{"name": "cmp.b10", "type": "boolean"},
+		{"name": "cmp.b11", "type": "boolean"},
+		{"name": "cmp.b12", "type": "boolean"},
+		{"name": "x.enum", "type": "enumeration"}
+	],
+	"initial": {"x.enum": 3},
+	"rules": [
+		{
+			"id": "cmp",
+			"name": "Comparisons",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "cmp.b1",
+							"value": {"kind": "binary", "op": "and", "left": {"kind": "binary", "op": "<", "left": {"kind": "literal", "type": "integer", "value": 1}, "right": {"kind": "literal", "type": "integer", "value": 2}}, "right": {"kind": "binary", "op": ">=", "left": {"kind": "literal", "type": "real", "value": 2.5}, "right": {"kind": "literal", "type": "integer", "value": 2}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b2",
+							"value": {"kind": "binary", "op": "or", "left": {"kind": "unary", "op": "not", "operand": {"kind": "binary", "op": "==", "left": {"kind": "literal", "type": "integer", "value": 1}, "right": {"kind": "literal", "type": "integer", "value": 1}}}, "right": {"kind": "binary", "op": "!=", "left": {"kind": "literal", "type": "integer", "value": 3}, "right": {"kind": "literal", "type": "integer", "value": 3}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b3",
+							"value": {"kind": "binary", "op": "<", "left": {"kind": "literal", "type": "string", "value": "abc"}, "right": {"kind": "literal", "type": "string", "value": "abd"}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b4",
+							"value": {"kind": "binary", "op": "==", "left": {"kind": "literal", "type": "integer", "value": 2}, "right": {"kind": "literal", "type": "real", "value": 2.0}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b5",
+							"value": {"kind": "binary", "op": "or", "left": {"kind": "binary", "op": "and", "left": {"kind": "literal", "type": "boolean", "value": true}, "right": {"kind": "unary", "op": "not", "operand": {"kind": "literal", "type": "boolean", "value": false}}}, "right": {"kind": "literal", "type": "boolean", "value": false}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b6",
+							"value": {"kind": "binary", "op": "==", "left": {"kind": "datapoint", "name": "x.enum"}, "right": {"kind": "literal", "type": "integer", "value": 3}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b7",
+							"value": {"kind": "binary", "op": "<", "left": {"kind": "literal", "type": "string", "value": "Zebra"}, "right": {"kind": "literal", "type": "string", "value": "apple"}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b8",
+							"value": {"kind": "binary", "op": "==", "left": {"kind": "literal", "type": "color", "value": {"red": 255, "green": 0, "blue": 0}}, "right": {"kind": "call", "function": "rgb", "args": [{"kind": "literal", "type": "integer", "value": 255}, {"kind": "literal", "type": "integer", "value": 0}, {"kind": "literal", "type": "integer", "value": 0}]}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b9",
+							"value": {"kind": "binary", "op": "or", "left": {"kind": "literal", "type": "boolean", "value": false}, "right": {"kind": "binary", "op": ">", "left": {"kind": "literal", "type": "integer", "value": 1}, "right": {"kind": "literal", "type": "integer", "value": 2}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b10",
+							"value": {"kind": "unary", "op": "not", "operand": {"kind": "binary", "op": "==", "left": {"kind": "binary", "op": "<", "left": {"kind": "literal", "type": "integer", "value": 1}, "right": {"kind": "literal", "type": "integer", "value": 2}}, "right": {"kind": "literal", "type": "boolean", "value": false}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b11",
+							"value": {"kind": "binary", "op": "and", "left": {"kind": "binary", "op": "==", "left": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 12, "minute": 0, "second": 0}}, "right": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 12, "minute": 0, "second": 0}}}, "right": {"kind": "binary", "op": ">", "left": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 23, "minute": 59, "second": 0}}, "right": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 0, "minute": 1, "second": 0}}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "cmp.b12",
+							"value": {"kind": "binary", "op": "and", "left": {"kind": "binary", "op": "<", "left": {"kind": "literal", "type": "date", "value": {"year": 2026, "month": 10, "day": 19}}, "right": {"kind": "literal", "type": "date", "value": {"year": 2026, "month": 10, "day": 20}}}, "right": {"kind": "binary", "op": ">", "left": {"kind": "literal", "type": "dateTime", "value": {"year": 2026, "month": 10, "day": 19, "hour": 23, "minute": 0, "second": 0}}, "right": {"kind": "literal", "type": "dateTime", "value": {"year": 2026, "month": 10, "day": 19, "hour": 22, "minute": 59, "second": 59}}}}
+						}
+					]
+				}
+			]
+		}
+	],
+	"end": 1000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b1", "value": true},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b2", "value": false},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b3", "value": true},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b4", "value": true},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b5", "value": true},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b6", "value": true},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b7", "value": true},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b8", "value": true},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b9", "value": false},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b10", "value": true},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b11", "value": true},
+			{"at": 0, "rule": "cmp", "datapoint": "cmp.b12", "value": true}
+		],
+		"logs": []
+	}
+}

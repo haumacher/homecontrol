@@ -1,0 +1,90 @@
+{
+	"title": "No value in conditions: not satisfied, neither branch, logged once per condition until it had a value; three-valued and/or",
+	"note": "Review: a condition without value runs neither actions nor elseActions (open question 1).",
+	"datapoints": [
+		{"name": "room.temp", "type": "real"},
+		{"name": "room.window", "type": "boolean"},
+		{"name": "heat.on", "type": "boolean"}
+	],
+	"schedules": ["tick"],
+	"initial": {"room.window": false},
+	"rules": [
+		{
+			"id": "heat",
+			"name": "Heating",
+			"reactions": [
+				{
+					"triggers": [
+						{"kind": "datapoint", "datapoint": "room.temp", "on": "update"},
+						{"kind": "schedule", "schedule": "tick"}
+					],
+					"condition": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "room.temp"}, "right": {"kind": "literal", "type": "real", "value": 20.0}},
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "heat.on",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						}
+					],
+					"elseActions": [
+						{
+							"kind": "write",
+							"datapoint": "heat.on",
+							"value": {"kind": "literal", "type": "boolean", "value": false}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "and3",
+			"name": "And",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "tick"}],
+					"condition": {"kind": "binary", "op": "and", "left": {"kind": "datapoint", "name": "room.window"}, "right": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "room.temp"}, "right": {"kind": "literal", "type": "real", "value": 20.0}}},
+					"actions": [{"kind": "log", "level": "info", "message": ["and true"]}],
+					"elseActions": [{"kind": "log", "level": "info", "message": ["and false"]}]
+				}
+			]
+		},
+		{
+			"id": "or3",
+			"name": "Or",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "tick"}],
+					"condition": {"kind": "binary", "op": "or", "left": {"kind": "datapoint", "name": "room.window"}, "right": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "room.temp"}, "right": {"kind": "literal", "type": "real", "value": 20.0}}},
+					"actions": [{"kind": "log", "level": "info", "message": ["or true"]}],
+					"elseActions": [{"kind": "log", "level": "info", "message": ["or false"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "schedule": "tick"},
+		{"at": 2000, "report": {"datapoint": "room.temp", "value": 18.0}},
+		{"at": 3000, "schedule": "tick"},
+		{"at": 4000, "stale": "room.temp"},
+		{"at": 5000, "schedule": "tick"},
+		{"at": 6000, "report": {"datapoint": "room.temp", "value": 22.0}}
+	],
+	"end": 7000,
+	"expected": {
+		"commands": [
+			{"at": 2000, "rule": "heat", "datapoint": "heat.on", "value": true},
+			{"at": 3000, "rule": "heat", "datapoint": "heat.on", "value": true},
+			{"at": 6000, "rule": "heat", "datapoint": "heat.on", "value": false}
+		],
+		"logs": [
+			{"at": 1000, "rule": "heat", "code": "conditionNoValue"},
+			{"at": 1000, "rule": "and3", "code": "log", "level": "info", "message": "and false"},
+			{"at": 1000, "rule": "or3", "code": "conditionNoValue"},
+			{"at": 3000, "rule": "and3", "code": "log", "level": "info", "message": "and false"},
+			{"at": 3000, "rule": "or3", "code": "log", "level": "info", "message": "or true"},
+			{"at": 4000, "rule": "heat", "code": "conditionNoValue"},
+			{"at": 5000, "rule": "and3", "code": "log", "level": "info", "message": "and false"},
+			{"at": 5000, "rule": "or3", "code": "conditionNoValue"}
+		]
+	}
+}
