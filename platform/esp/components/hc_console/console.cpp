@@ -232,6 +232,45 @@ int cmd_settings(ConsoleContext& c, int argc, char** argv) {
 	return 0;
 }
 
+int cmd_update(ConsoleContext& c, int argc, char** argv) {
+	const char* kUsage = "update status | update check | update now [<url>] | update url set <url> | update url clear";
+	if (argc < 2) {
+		return usage(kUsage);
+	}
+	const char* error = nullptr;
+	if (std::strcmp(argv[1], "status") == 0 && argc == 2) {
+		c.ota.print_status();
+		return 0;
+	}
+	if ((std::strcmp(argv[1], "check") == 0 && argc == 2) || (std::strcmp(argv[1], "now") == 0 && argc <= 3)) {
+		bool force = argv[1][0] == 'n';
+		if (!c.ota.check(force, argc == 3 ? argv[2] : nullptr, &error)) {
+			std::printf("error: %s\n", error);
+			return 1;
+		}
+		std::printf("%s; the result follows in the log\n",
+			force ? "fetching the manifest, installing its image whatever its version" : "checking for an update");
+		return 0;
+	}
+	if (std::strcmp(argv[1], "url") == 0 && argc == 4 && std::strcmp(argv[2], "set") == 0) {
+		if (!c.ota.set_url(argv[3], &error)) {
+			std::printf("error: %s\n", error);
+			return 1;
+		}
+		std::printf("update source %s (manifest at <url>/manifest.json, checked daily)\n", argv[3]);
+		return 0;
+	}
+	if (std::strcmp(argv[1], "url") == 0 && argc == 3 && std::strcmp(argv[2], "clear") == 0) {
+		if (!c.ota.set_url(nullptr, &error)) {
+			std::printf("error: cannot erase update.url (%s)\n", error);
+			return 1;
+		}
+		std::printf("update source cleared: periodic check disabled\n");
+		return 0;
+	}
+	return usage(kUsage);
+}
+
 int cmd_restart(ConsoleContext&, int, char**) {
 	ESP_LOGW(kTag, "restart requested on the console");
 	std::printf("restarting\n");
@@ -259,6 +298,10 @@ const Command kCommands[] = {
 	{"tz", "set <posix-tz>", "Time zone as a POSIX TZ string (default CET-1CEST,M3.5.0,M10.5.0/3)", &cmd_tz},
 	{"ntp", "set <server>", "SNTP server (default pool.ntp.org)", &cmd_ntp},
 	{"settings", "list", "All stored settings (wifi.psk masked)", &cmd_settings},
+	{"update", "status | check | now [<url>] | url set <url> | url clear",
+		"Firmware update (doc/ota.md): state, check the update source now, install from a source whatever the "
+		"version (development), set or clear the update source (update.url)",
+		&cmd_update},
 	{"restart", nullptr, "Restart the controller", &cmd_restart},
 };
 

@@ -7,8 +7,8 @@
 - WiFi 6 (2.4 GHz only), Bluetooth 5 LE, IEEE 802.15.4 (Zigbee 3.0 / Thread). No Ethernet MAC: a
   wired option later means an SPI MAC+PHY such as the W5500 (ESP-IDF supports it as `esp_eth`).
 - Modules: ESP32-C6-WROOM-1 with 4, 8 or 16 MB flash (N4/N8/N16). The OTA partition layout
-  (issue "OTA with asymmetric partitions") depends on the flash size; generate the partition table
-  per size, do not hard-code one.
+  depends on the flash size: `platform/esp/tools/gen_partitions.py` generates one table per size,
+  a build selects it with `HC_FLASH_SIZE` (see "Partition table" below and `doc/ota.md`).
 - USB Serial/JTAG built in: the dev board shows up as `Espressif USB JTAG/serial debug unit`
   (`303a:1001`), one `/dev/ttyACMn` per board.
 
@@ -55,9 +55,9 @@ console to the USB Serial/JTAG port (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`): bo
 logs appear on `/dev/ttyACMn`. A changed `sdkconfig.defaults` is **not** applied to an existing
 `build-<target>/sdkconfig`; delete that file (or run `set-target` again) to regenerate it.
 
-The 4 MB flash of this board is the small end of the module range: the OTA partition layout
-(issue #3) must have a 4 MB variant, and the application partition will be tight once Zigbee and
-the web UI are in. A production board should carry 8 or 16 MB (issue #22).
+The 4 MB flash of this board is the small end of the module range: the OTA layout has a 4 MB
+variant, and the application partition (2752 KB) will get tight once Zigbee and the web UI are in.
+A production board should carry 8 or 16 MB (issue #22).
 
 **Button and LED.** The firmware uses the devkit's BOOT button (GPIO9 on the C6, a strapping pin
 read only after boot) as the WPS re-pairing button: held for 3 s it starts WPS
@@ -66,10 +66,29 @@ WS2812 RGB pixel on GPIO8, driven over RMT with the `led_strip` component; other
 "plain GPIO" (with an active-low flag) or "none" in menuconfig under *HomeControl status LED*
 (the S3 build defaults to none). The blink patterns are in `doc/network.md`.
 
-**Partition table.** With WiFi, mDNS, WPS and the console the application is about 1 MB, more than
-the default single-app table's 1 MB partition allows with any margin, so `sdkconfig.defaults`
-selects the single-app *large* table (1.5 MB application, NVS unchanged at 0x9000) until the OTA
-layout of issue #3 replaces it.
+**Partition table.** The asymmetric OTA layout of `doc/ota.md`: a small updater (factory) and one
+large application partition (ota_0), generated per flash size by `platform/esp/tools/gen_partitions.py`
+into `platform/esp/partitions-<size>.csv`. NVS stays at 0x9000 (24 KB) as in the single-app table
+before it, so stored settings survive the switch.
+
+| Partition | 4 MB (this board) | 8 MB | 16 MB |
+|---|---|---|---|
+| `nvs` | 0x9000, 24 KB | same | same |
+| `phy_init` | 0xF000, 4 KB | same | same |
+| `updater` (factory) | 0x10000, 960 KB | same | same |
+| `app` (ota_0) | 0x100000, 2752 KB | 4096 KB | 6144 KB |
+| `otadata` | 0x3B0000, 8 KB | 0x500000 | 0x700000 |
+| `storage` (LittleFS, issue #5) | 0x3B2000, 312 KB | 3064 KB | 9208 KB |
+
+Measured on 2026-10-17 (esp32c6): the updater 794,592 bytes (19 % of its partition free), the
+application 1,239,776 bytes (56 % free). The build chooses the table with the CMake variable
+`HC_FLASH_SIZE` (4MB default; `-D HC_FLASH_SIZE=8MB` at the first configure of a build directory);
+a build directory whose `sdkconfig` predates the OTA layout refuses to configure until its
+`sdkconfig` is deleted. `write_flash @flash_args` in `platform/esp/build-esp32c6` writes the whole
+layout - bootloader, table, the updater from `platform/esp/updater/build-esp32c6` (build it first),
+the application at 0x100000 and an otadata image that boots it - and `@app-flash_args` only the
+application. Flashing the application at 0x10000 (the old single-app offset) overwrites the updater;
+such an application logs that it does not run from ota_0 and refuses updates.
 
 ## Flash clock: 40 MHz on this board
 

@@ -1,5 +1,5 @@
 {
-  "_note": "ESP Web Tools manifest for the HomeControl firmware (doc/network.md, 'Improv / web flasher'). The part paths are relative to this file. For local testing scripts/flasher-local.sh copies a build into firmware/esp32c6/ (not versioned). For a release the binaries are the GitHub release assets, https://github.com/haumacher/homecontrol/releases/download/<tag>/<asset> (pattern to be filled when the first release is cut); release downloads may lack CORS headers, in which case the release workflow copies the assets next to this manifest (GitHub Pages) instead. The layout is the single-app table until the OTA layout of issue #3 replaces it.",
+  "_note": "ESP Web Tools manifest for the HomeControl firmware (doc/network.md 'Improv / web flasher', doc/ota.md). The part paths are relative to this file. The offsets are the 4 MB OTA layout (platform/esp/partitions-4MB.csv), which also runs on 8 and 16 MB modules: bootloader 0x0, partition table 0x8000, updater (factory) 0x10000, application (ota_0) 0x100000, and an otadata image that selects ota_0 at 0x3b0000, so the first boot starts the application. scripts/flasher-local.sh copies a build into firmware/esp32c6/ (not versioned) and checks these offsets against the build's flasher_args.json. For a release the binaries are the GitHub release assets, https://github.com/haumacher/homecontrol/releases/download/<tag>/<asset> (pattern to be filled when the first release is cut); release downloads may lack CORS headers, in which case the release workflow copies the assets next to this manifest (GitHub Pages) instead.",
   "name": "HomeControl",
   "version": "0.1.0-dev",
   "new_install_prompt_erase": true,
@@ -10,7 +10,9 @@
       "parts": [
         { "path": "firmware/esp32c6/bootloader.bin", "offset": 0 },
         { "path": "firmware/esp32c6/partition-table.bin", "offset": 32768 },
-        { "path": "firmware/esp32c6/homecontrol.bin", "offset": 65536 }
+        { "path": "firmware/esp32c6/hc_updater.bin", "offset": 65536 },
+        { "path": "firmware/esp32c6/homecontrol.bin", "offset": 1048576 },
+        { "path": "firmware/esp32c6/ota_data_ota0.bin", "offset": 3866624 }
       ]
     }
   ]

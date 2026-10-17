@@ -5,6 +5,8 @@
 # ESP-IDF
 /platform/esp/build/
 /platform/esp/build-*/
+/platform/esp/updater/build/
+/platform/esp/updater/build-*/
 /platform/esp/sdkconfig
 /platform/esp/sdkconfig.old
 /platform/esp/managed_components/

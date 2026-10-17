@@ -1,7 +1,9 @@
 # Copyright (c) 2026 Bernhard Haumacher
 #
 # Settings common to all targets. The generated sdkconfig is not versioned; every setting the
-# project depends on lives here.
+# project depends on lives here. The OTA updater (updater/) builds with these defaults too, under its
+# own updater/sdkconfig.defaults. The flash size and the partition table come from the fragment
+# hc_project.cmake writes for HC_FLASH_SIZE (default 4MB: the development C6, doc/hardware.md).
 
 # The core is built without exceptions and RTTI (these are the IDF defaults, stated explicitly).
 # CONFIG_COMPILER_CXX_EXCEPTIONS is not set
@@ -12,16 +14,15 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # app_main only boots the controller; the event loop runs in its own task.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
 
-# The development C6 module has 4 MB flash (doc/hardware.md); assume no more.
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
-
 # The development boards have no UART-to-USB bridge: the console (bootloader and app logs, the
 # serial console of issue #4) is the USB Serial/JTAG port, /dev/ttyACMn on the host.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
-# The firmware with WiFi, mDNS, the console and WPS does not fit the default 1 MB app partition of
-# the single-app table; until the OTA layout of issue #3 replaces it, use the 1.5 MB variant.
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# OTA with asymmetric partitions (doc/ota.md): the partition table is partitions-<size>.csv
+# (selected by hc_project.cmake). A new application image must confirm itself
+# (esp_ota_mark_app_valid_cancel_rollback) during its first boot; if it does not, the bootloader
+# falls back to the updater (the factory partition) on the next boot.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # The C6 on the desk (in-package Giga Device flash, JEDEC c4 6016) misreads at the default 80 MHz:
 # the bootloader rejects a byte-identical partition table and the app dies with illegal
@@ -32,3 +33,9 @@ CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
 # development C6 on its USB supply browned out every 10–80 s while WPS was probing; at 11 dBm (and
 # at 8.5 dBm) it ran without a reset. Raise it for a board with a proper supply; see doc/hardware.md.
 CONFIG_HC_WIFI_MAX_TX_POWER=44
+
+# HTTPS for the update check and the download (doc/ota.md): servers are verified against the IDF
+# certificate bundle; its common subset (the CAs of most public servers) saves about 45 KB over the
+# full bundle in each of the two apps.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y

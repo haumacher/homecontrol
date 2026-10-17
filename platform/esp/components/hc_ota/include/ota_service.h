@@ -1,0 +1,92 @@
+/*
+ * Copyright (c) 2026 Bernhard Haumacher
+ */
+#ifndef HC_ESP_OTA_SERVICE_H
+#define HC_ESP_OTA_SERVICE_H
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+
+#include "hc/controller.h"
+#include "hc/update_check.h"
+#include "loop_queue.h"
+
+namespace hc {
+namespace esp {
+
+/// The application's part of the OTA update with asymmetric partitions (doc/ota.md):
+///
+/// - Confirms a new image (esp_ota_mark_app_valid_cancel_rollback) once the network is up, or
+///   kConfirmAfterMs after start without it; until then the bootloader would fall back to the
+///   updater at the next reset. After the confirmation it reports and erases a leftover update
+///   instruction (the update completed, or the updater gave up and booted this image).
+/// - Checks the update source (setting update.url) kFirstCheckMs after start and every
+///   kCheckPeriodMs, and on request (console `update check`, `update now`): fetches
+///   `<update.url>/manifest.json` in a short-lived task, decides with hc::check_update(), and for an
+///   applicable update stores the instruction for the updater, makes the updater (the factory
+///   partition) the boot partition and restarts after kRestartGraceMs.
+///
+/// Everything except the HTTP fetch runs on the event loop.
+class OtaService : public ConnectivityListener {
+public:
+	static constexpr uint32_t kConfirmAfterMs = 60000;
+	static constexpr uint32_t kFirstCheckMs = 15u * 60u * 1000u;
+	static constexpr uint32_t kCheckPeriodMs = 24u * 60u * 60u * 1000u;
+	static constexpr uint32_t kRestartGraceMs = 2000;
+
+	explicit OtaService(LoopQueue& queue);
+
+	/// Registers with the controller's connectivity and loop, logs the partition the application
+	/// runs from. Call on the event loop before Controller::start().
+	bool init(Controller& controller);
+
+	void connectivity_changed(const Connectivity& connectivity, LinkState previous) override;
+
+	/// Starts a check against `base` (nullptr: the setting update.url). With `force` the
+	/// manifest's image is installed even if it is not newer. Returns false with the reason if the
+	/// check cannot start (no URL, network down, a check running, not running from ota_0); the
+	/// outcome is logged.
+	bool check(bool force, const char* base, const char** error);
+
+	/// Validates and stores update.url (nullptr or "" erases it: checks disabled).
+	bool set_url(const char* url, const char** error);
+
+	/// Prints the update state to stdout (console `update status`).
+	void print_status() const;
+
+private:
+	static void fetch_task(void* context);
+	static void handle_fetched(void* context, const LoopMessage& message);
+	void periodic_check();
+	void confirm();
+	void confirm_timeout();
+	void finish_check();
+	void begin_update(const UpdateManifest& manifest, const char* image_url);
+	void restart_into_updater();
+	void set_last(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+
+	LoopQueue& queue_;
+	Controller* controller_ = nullptr;
+	bool from_ota0_ = false;
+	bool confirmed_ = false;
+	bool restart_pending_ = false;
+
+	/// The check in flight; the fetch task owns the buffers while busy_ is set.
+	std::atomic<bool> busy_{false};
+	bool force_ = false;
+	char base_[Settings::kMaxStringLength + 1] = {};
+	char manifest_url_[Settings::kMaxStringLength + 16] = {};
+	char response_[UpdateManifest::kMaxLength + 1] = {};
+	size_t response_length_ = 0;
+	char fetch_error_[96] = {};
+
+	char last_[160] = "none since start";
+	uint64_t last_at_ms_ = 0;
+	uint64_t next_check_ms_ = 0;
+};
+
+} // namespace esp
+} // namespace hc
+
+#endif // HC_ESP_OTA_SERVICE_H

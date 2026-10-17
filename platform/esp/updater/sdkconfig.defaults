@@ -1,0 +1,26 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# The updater's own settings, on top of ../sdkconfig.defaults (flash clock, console, transmit power,
+# rollback) and the flash size fragment (see CMakeLists.txt). Keep it small: its size sets the
+# partition layout (doc/ota.md).
+
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# The whole update runs in app_main: TLS handshake and the HTTP client need the stack.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Station only.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+
+# Size: the updater's size determines the partition layout (doc/ota.md has the measurements).
+# HTTPS stays (the certificate bundle's common subset comes from ../sdkconfig.defaults), with a
+# client-only TLS stack.
+CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
+# The application joins WPA2/WPA3 personal networks; the updater needs nothing more.
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
+# IPv4 only, like the application's address handling.
+CONFIG_LWIP_IPV6=n
+# printf without 64-bit and floating-point conversions: the updater formats none.
+CONFIG_NEWLIB_NANO_FORMAT=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y

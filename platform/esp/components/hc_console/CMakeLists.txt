@@ -7,7 +7,7 @@
 idf_component_register(
 	SRCS "console.cpp"
 	INCLUDE_DIRS "include"
-	REQUIRES hc_core hc_platform hc_net
+	REQUIRES hc_core hc_platform hc_net hc_ota
 	PRIV_REQUIRES console esp_system log freertos)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

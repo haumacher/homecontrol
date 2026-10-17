@@ -49,6 +49,8 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/status_led_test.cpp"
 	"${HC_REPO_DIR}/core/test/improv_protocol_test.cpp"
 	"${HC_REPO_DIR}/core/test/improv_test.cpp"
+	"${HC_REPO_DIR}/core/test/update_check_test.cpp"
+	"${HC_REPO_DIR}/core/test/update_check_probe_test.cpp"
 	test/file_settings_test.cpp
 	test/posix_platform_test.cpp
 )

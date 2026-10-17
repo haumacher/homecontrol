@@ -71,7 +71,8 @@ line editor echoes), so type it only on the local USB console.
 credentials over the serial port it was just flashed through. The page is `web/flasher/index.html`
 with [ESP Web Tools](https://esphome.github.io/esp-web-tools/) (Chrome or Edge on a desktop; Web
 Serial needs HTTPS or `localhost`); `web/flasher/manifest.json` describes the esp32c6 build
-(bootloader at 0x0, partition table at 0x8000, application at 0x10000). "Connect, install, set up
+(bootloader, partition table, the OTA updater, the application and the otadata that selects it; offsets
+in `doc/ota.md`). "Connect, install, set up
 WiFi" is one browser session: after the install ESP Web Tools resets the board, asks it over Improv
 for its state and device info, offers the networks it scanned, and sends the chosen SSID and key.
 The device stores them exactly as WPS and `wifi set` do (`store_wifi_credentials()`), restarts the
@@ -113,15 +114,15 @@ between them (ESP Web Tools skips the noise).
 **Testing it locally** (Chrome on the desk machine, the C6 connected):
 
 ```bash
-cd platform/esp && idf.py -B build-esp32c6 build && cd ../..
-scripts/flasher-local.sh                  # copies the three binaries to web/flasher/firmware/esp32c6/
+cd platform/esp && idf.py -B build-esp32c6 build && (cd updater && idf.py -B build-esp32c6 build) && cd ../..
+scripts/flasher-local.sh                  # copies the five parts to web/flasher/firmware/esp32c6/
 cd web/flasher && python3 -m http.server 8000
 ```
 
 Open `http://localhost:8000/`, click *Connect*, choose the `USB JTAG/serial debug unit` of the C6
 (never the S3). The copied binaries are not versioned (`.gitignore`). For a release the binaries
 come from the GitHub release assets (the URL pattern is noted in the manifest, to be filled with the
-first release; the OTA layout of issue #3 will change the parts).
+first release). The partition layout is the asymmetric OTA layout of `doc/ota.md`.
 
 ## The connection workflow
 

@@ -14,7 +14,7 @@ namespace {
 
 constexpr const char* kTag = "hc.net";
 
-/// "4 s" for whole seconds, "1500 ms" otherwise.
+/// "4 s" for whole seconds, "1500 ms" otherwise. The buffer holds any 64-bit count: 32 bytes.
 void format_delay(char* buffer, size_t size, uint64_t ms) {
 	if (ms % 1000 == 0) {
 		std::snprintf(buffer, size, "%llu s", static_cast<unsigned long long>(ms / 1000));
@@ -277,7 +277,7 @@ void Connectivity::pairing_failed(const char* reason) {
 	switch (mode_) {
 	case NetworkMode::unprovisioned:
 	case NetworkMode::failsafe_pairing: {
-		char delay[16];
+		char delay[32];
 		format_delay(delay, sizeof(delay), kPairingRestartMs);
 		Log::warn(kTag, "pairing failed: %s; listening again in %s", reason, delay);
 		schedule(Action::start_pairing, kPairingRestartMs);
@@ -381,7 +381,7 @@ void Connectivity::fail(const char* reason) {
 }
 
 void Connectivity::enter_failsafe() {
-	char phase[16];
+	char phase[32];
 	format_delay(phase, sizeof(phase), kFailsafePhaseMs);
 	Log::error(kTag,
 		"stored credentials failed %u times in a row: entering the failsafe (alternating %s of pairing "
@@ -410,7 +410,7 @@ void Connectivity::exit_failsafe() {
 
 void Connectivity::phase_due() {
 	phase_timer_ = TimerHandle();
-	char phase[16];
+	char phase[32];
 	format_delay(phase, sizeof(phase), kFailsafePhaseMs);
 	phase_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kFailsafePhaseMs,
 		Callback::member<Connectivity, &Connectivity::phase_due>(this));
@@ -479,7 +479,7 @@ void Connectivity::action_due() {
 				network_mode_name(mode_));
 		} else {
 			uint32_t delay = backoff_.next();
-			char text[16];
+			char text[32];
 			format_delay(text, sizeof(text), delay);
 			Log::warn(kTag, "pairing could not start; trying again in %s", text);
 			schedule(Action::start_pairing, delay);
@@ -598,7 +598,7 @@ void Connectivity::set_state(LinkState state, const char* reason) {
 		Log::info(kTag, "network connecting (%s)", reason_);
 		break;
 	case LinkState::down: {
-		char delay[16] = "";
+		char delay[32] = "";
 		if (action_at_ != EventLoop::kNever) {
 			uint64_t now = clock_.monotonic_ms();
 			format_delay(delay, sizeof(delay), action_at_ > now ? action_at_ - now : 0);

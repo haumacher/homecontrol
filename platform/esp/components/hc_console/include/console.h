@@ -7,6 +7,7 @@
 #include "hc/controller.h"
 #include "loop_queue.h"
 #include "net_services.h"
+#include "ota_service.h"
 #include "wifi_driver.h"
 
 namespace hc {
@@ -18,6 +19,7 @@ struct ConsoleContext {
 	LoopQueue& queue;
 	WifiDriver& wifi;
 	NetServices& services;
+	OtaService& ota;
 	/// The device the REPL reads its input from (the serial port shared with Improv,
 	/// SerialMux::kConsoleInput); its output goes to stdout.
 	const char* input_device;

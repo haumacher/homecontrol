@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# Development update server (doc/ota.md, "Development procedure"): serves the current application
+# build and a manifest.json generated from it over plain HTTP on the desk machine.
+#
+#   scripts/update-server.py                       # build platform/esp/build-esp32c6, port 8070
+#   scripts/update-server.py --port 8080 --build platform/esp/build-esp32s3
+#
+# Then on the device console:  update now http://<this machine>:8070   (install, whatever version)
+#                          or  update url set http://<this machine>:8070 ; update check
+#
+# The manifest's version is the one the image's app descriptor carries (hc::kVersion of the build),
+# so the updater's version check always agrees with it. `update check` installs only a newer
+# version: bump kVersion in core/include/hc/version.h for that test; `update now` installs anything.
+# The files are copied into <build>/ota-serve/ when the server starts; rebuild and restart the
+# server to publish a new build.
+
+import argparse
+import hashlib
+import http.server
+import json
+import os
+import shutil
+import socket
+import struct
+import sys
+
+REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+
+ESP_IMAGE_MAGIC = 0xE9
+APP_DESC_OFFSET = 24 + 8  # esp_image_header_t + esp_image_segment_header_t
+APP_DESC_MAGIC = 0xABCD5432
+
+
+def app_descriptor(data):
+	"""(project_name, version) from an ESP application image, or a refusal."""
+	if len(data) < APP_DESC_OFFSET + 256 or data[0] != ESP_IMAGE_MAGIC:
+		raise SystemExit('not an ESP application image')
+	magic, = struct.unpack_from('<I', data, APP_DESC_OFFSET)
+	if magic != APP_DESC_MAGIC:
+		raise SystemExit('the image has no app descriptor')
+	version = data[APP_DESC_OFFSET + 16:APP_DESC_OFFSET + 48].split(b'\0')[0].decode('ascii')
+	project = data[APP_DESC_OFFSET + 48:APP_DESC_OFFSET + 80].split(b'\0')[0].decode('ascii')
+	return project, version
+
+
+def local_address():
+	"""The address other hosts on the LAN reach this machine at (no packet is sent)."""
+	try:
+		with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+			s.connect(('192.0.2.1', 9))  # TEST-NET-1: only selects the outgoing interface
+			return s.getsockname()[0]
+	except OSError:
+		return '<this machine>'
+
+
+def main():
+	parser = argparse.ArgumentParser(description='Serve the application build and its manifest for an OTA update.')
+	parser.add_argument('--build', default=os.path.join(REPO, 'platform', 'esp', 'build-esp32c6'),
+						help='application build directory (default: platform/esp/build-esp32c6)')
+	parser.add_argument('--port', type=int, default=8070, help='HTTP port (default 8070)')
+	args = parser.parse_args()
+
+	image_path = os.path.join(args.build, 'homecontrol.bin')
+	if not os.path.isfile(image_path):
+		raise SystemExit('missing %s: build the application first (cd platform/esp && idf.py -B %s build)'
+						 % (image_path, os.path.basename(args.build)))
+	with open(image_path, 'rb') as f:
+		data = f.read()
+	project, version = app_descriptor(data)
+	if project != 'homecontrol':
+		raise SystemExit('%s is "%s", not the application' % (image_path, project))
+
+	serve = os.path.join(args.build, 'ota-serve')
+	os.makedirs(serve, exist_ok=True)
+	shutil.copyfile(image_path, os.path.join(serve, 'homecontrol.bin'))
+	manifest = {
+		'version': version,
+		'url': 'homecontrol.bin',
+		'sha256': hashlib.sha256(data).hexdigest(),
+		'size': len(data),
+	}
+	with open(os.path.join(serve, 'manifest.json'), 'w') as f:
+		json.dump(manifest, f, indent=2)
+		f.write('\n')
+
+	base = 'http://%s:%d' % (local_address(), args.port)
+	print('serving %s (%s, %d bytes, sha256 %s...) from %s' % (image_path, version, len(data),
+															   manifest['sha256'][:16], serve))
+	print('on the device console:')
+	print('  update now %s            install this build, whatever its version' % base)
+	print('  update url set %s        then: update check (installs only a newer version)' % base)
+	print('stop with Ctrl-C')
+	sys.stdout.flush()
+
+	handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(*a, directory=serve, **kw)
+	with http.server.ThreadingHTTPServer(('0.0.0.0', args.port), handler) as server:
+		try:
+			server.serve_forever()
+		except KeyboardInterrupt:
+			print('\nstopped')
+	return 0
+
+
+if __name__ == '__main__':
+	sys.exit(main())

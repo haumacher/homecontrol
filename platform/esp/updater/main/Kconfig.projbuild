@@ -1,0 +1,18 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# The updater does not build hc_net; the one network option it shares with the application is
+# declared here under the same name, and its value comes from ../sdkconfig.defaults.
+
+menu "HomeControl network"
+
+	config HC_WIFI_MAX_TX_POWER
+		int "Maximum WiFi transmit power (quarter dBm, 8..84)"
+		range 8 84
+		default 80
+		help
+			The same limit as the application's (components/hc_net/Kconfig): passed to
+			esp_wifi_set_max_tx_power() when the station starts. The project default (44, 11 dBm)
+			comes from platform/esp/sdkconfig.defaults; the development C6 browns out at full power
+			(doc/hardware.md).
+
+endmenu
