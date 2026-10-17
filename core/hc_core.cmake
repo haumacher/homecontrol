@@ -84,3 +84,10 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/rules/printer.cpp"
 	"${HC_CORE_DIR}/src/rules/engine.cpp"
 )
+# The Zigbee coordinator's portable half: device database, cluster mapping, adapter (issue #15, doc/zigbee.md).
+list(APPEND HC_CORE_SOURCES
+	"${HC_CORE_DIR}/src/zigbee/zcl.cpp"
+	"${HC_CORE_DIR}/src/zigbee/device_database.cpp"
+	"${HC_CORE_DIR}/src/zigbee/cluster_mapping.cpp"
+	"${HC_CORE_DIR}/src/zigbee/adapter.cpp"
+)

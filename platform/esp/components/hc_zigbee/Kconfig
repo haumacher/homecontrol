@@ -1,0 +1,56 @@
+# Copyright (c) 2026 Bernhard Haumacher
+
+menu "HomeControl Zigbee"
+
+	config HC_ZIGBEE_ENABLED
+		bool "Zigbee coordinator"
+		depends on SOC_IEEE802154_SUPPORTED && (IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32H2)
+		default y
+		help
+			The controller forms a Zigbee network as its coordinator on the chip's 802.15.4 radio
+			(doc/zigbee.md). Needs the esp-zigbee-lib (main/idf_component.yml) and the partitions
+			zb_storage, zb_fct and zb_db. Other chips (the ESP32-S3 has no 802.15.4 radio; the SDK
+			is only fetched for the C6 and the H2) build hc_zigbee as a stub whose console command
+			says so.
+
+	config HC_ZIGBEE_CHANNEL_MASK
+		hex "Channels the network may be formed on (bit n = channel n)"
+		depends on HC_ZIGBEE_ENABLED
+		default 0x02108000
+		help
+			Used once, when the network is formed (the stack keeps the chosen channel in zb_storage).
+			The default allows channels 15, 20 and 25, which lie between the usual WiFi channels 1, 6
+			and 11 (802.15.4 channel 11 is 2405 MHz, every channel 5 MHz higher; a 20 MHz WiFi
+			channel covers four of them); the stack picks the quietest by an energy scan. Channel 26
+			is left out: some devices transmit with reduced power there.
+
+	config HC_ZIGBEE_PAN_ID
+		hex "PAN id (0: chosen by the stack)"
+		depends on HC_ZIGBEE_ENABLED
+		range 0x0000 0xfffe
+		default 0x0000
+		help
+			The 16-bit PAN id used when the network is formed; 0 lets the stack choose a free one.
+			Like the channel it is kept in zb_storage and only changes when the network is formed
+			again (erase zb_storage: every device must then be paired again).
+
+	config HC_ZIGBEE_MAX_CHILDREN
+		int "Devices that may join the coordinator directly"
+		depends on HC_ZIGBEE_ENABLED
+		range 1 64
+		default 16
+		help
+			End devices and routers attached to the coordinator itself; more devices join through
+			routers (mains-powered devices such as bulbs and plugs).
+
+	config HC_ZIGBEE_TX_POWER
+		int "802.15.4 transmit power (dBm)"
+		depends on HC_ZIGBEE_ENABLED
+		range -24 20
+		default 10
+		help
+			The development C6 browned out on its USB supply with WiFi at 20 dBm (doc/hardware.md);
+			10 dBm keeps the 802.15.4 radio in the same range as the WiFi limit of 11 dBm. Raise it
+			for a board with a proper supply.
+
+endmenu

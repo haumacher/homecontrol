@@ -8,3 +8,13 @@ dependencies:
   espressif/led_strip: "~3.0.0"
   # The LittleFS image with the web UI in the storage partition (doc/web.md).
   joltwallet/littlefs: "^1.14.0"
+  # The Zigbee coordinator (issue #15, doc/zigbee.md): Espressif's Zigbee SDK v1.6 (the ZBOSS stack,
+  # supports ESP-IDF v5.3), only on targets with an 802.15.4 radio; elsewhere hc_zigbee is a stub.
+  espressif/esp-zigbee-lib:
+    version: "~1.6.8"
+    rules:
+      - if: "target in [esp32c6, esp32h2]"
+  espressif/esp-zboss-lib:
+    version: "~1.6.4"
+    rules:
+      - if: "target in [esp32c6, esp32h2]"
