@@ -102,3 +102,5 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/zigbee/cluster_mapping.cpp"
 	"${HC_CORE_DIR}/src/zigbee/adapter.cpp"
 )
+# Diagnostics: the reset reason and the boot facts of the platform in the status (issue #4, doc/diagnostics.md).
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/diagnostics.cpp")

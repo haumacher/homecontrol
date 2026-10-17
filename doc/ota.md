@@ -32,7 +32,9 @@ settings survive the switch; app partitions start on 64 KB boundaries.
 | `updater` | app / factory | 0x10000, 960 KB | same | same |
 | `app` | app / ota_0 | 0x100000, **2752 KB** | 0x100000, 4096 KB | 0x100000, 6144 KB |
 | `otadata` | data / ota | 0x3B0000, 8 KB | 0x500000 | 0x700000 |
-| `storage` | data / littlefs | 0x3B2000, 268 KB (312 KB before the three Zigbee partitions) | 0x502000, 3064 KB | 0x702000, 9208 KB |
+| `storage` | data / littlefs | 0x3B2000, 204 KB (268 KB before the core dump partition, 312 KB before the Zigbee partitions) | 0x502000, 2956 KB | 0x702000, 9100 KB |
+| `coredump` | data / coredump | 0x3E5000, 64 KB (doc/diagnostics.md) | 0x7E5000 | 0xFE5000 |
+| `zb_storage`, `zb_fct`, `zb_db` | data / fat, fat, nvs | 0x3F5000, 16 + 4 + 24 KB (doc/zigbee.md) | 0x7F5000 | 0xFF5000 |
 
 Sizes measured on 2026-10-17 (esp32c6, ESP-IDF 5.3):
 
@@ -44,7 +46,8 @@ Sizes measured on 2026-10-17 (esp32c6, ESP-IDF 5.3):
 | application before this package (single-app table) | 1,034,576 B | | |
 
 The updater partition is the measured updater plus about 20 %, rounded up to 64 KB; the 4 MB
-application gets everything that leaves the storage at least 256 KB. TLS costs the updater only
+application has 2752 KB (originally everything that left the storage at least 256 KB; the storage
+gave the 64 KB of the core dump partition, so the application kept its size). TLS costs the updater only
 about 21 KB because the WiFi stack links mbedTLS anyway, so the updater speaks HTTPS. The
 application grew by about 200 KB with the HTTP client, TLS and the certificate bundle. Both builds
 check their binary against their own partition (factory resp. ota_0) and fail when it does not fit;

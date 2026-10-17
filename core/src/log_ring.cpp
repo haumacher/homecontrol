@@ -113,4 +113,22 @@ size_t LogRing::read(uint32_t after, LogLineVisitor& visitor) const {
 	return visited;
 }
 
+size_t LogRing::read_tail(size_t n, LogLineVisitor& visitor) const {
+	if (n == 0 || count_ == 0) {
+		return 0;
+	}
+	// Skip the oldest count_ - n entries, then read from there; seqs grow along the ring, so the
+	// seq before the first wanted entry selects exactly the tail.
+	size_t skip = count_ > n ? count_ - n : 0;
+	size_t at = head_;
+	uint32_t after = 0;
+	for (size_t i = 0; i < skip; ++i) {
+		Header header;
+		read_bytes(at, &header, sizeof(header));
+		after = header.seq;
+		at = (at + sizeof(header) + header.length) % kCapacity;
+	}
+	return read(after, visitor);
+}
+
 } // namespace hc

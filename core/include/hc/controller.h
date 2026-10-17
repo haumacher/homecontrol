@@ -15,6 +15,7 @@
 #include "hc/status_led.h"
 #include "hc/time_service.h"
 #include "hc/platform/clock.h"
+#include "hc/platform/diagnostics.h"
 #include "hc/platform/improv_port.h"
 #include "hc/platform/network_driver.h"
 #include "hc/platform/settings.h"
@@ -39,6 +40,9 @@ struct Platform {
 	ImprovPort* improv = nullptr;
 	/// The WiFi scan Improv lists networks with; nullptr if the platform has none.
 	WifiScanner* scanner = nullptr;
+	/// The reset reason and the platform's boot facts (doc/diagnostics.md); nullptr: none (the
+	/// reason is then reported as unknown).
+	const Diagnostics* diagnostics = nullptr;
 };
 
 /// What the status LED needs to know about the runtime image beyond the network (the image
@@ -60,7 +64,7 @@ protected:
 /// supplies its capabilities (Platform), calls start() once and then drives the loop with
 /// run_once() and next_deadline().
 ///
-/// At start it logs the version, applies the time zone setting, logs the wall clock state and
+/// At start it logs the version with the reset reason and the platform's boot facts (Diagnostics), applies the time zone setting, logs the wall clock state and
 /// starts connecting. Its TimeService watches the wall clock; the controller logs the local time
 /// once it is synchronized, and logs a heartbeat every kHeartbeatPeriodMs with the uptime, the network state and the heap.
 /// With a status light it drives the LED pattern (hc::StatusLed) every StatusLed::kTickMs from
@@ -127,6 +131,8 @@ public:
 	const TimeService& time() const { return time_; }
 	Settings& settings() { return settings_; }
 	const SystemInfo& system() const { return system_; }
+	/// The platform's diagnostics (nullptr if it has none); hc::write_boot_status() reports them.
+	const Diagnostics* diagnostics() const { return diagnostics_; }
 	TimeZone& time_zone_platform() { return time_zone_platform_; }
 	/// The lines logged since the controller was constructed (GET /api/log, doc/web.md).
 	const LogRing& log_ring() const { return log_ring_; }
@@ -140,6 +146,7 @@ private:
 	const Clock& clock_;
 	LogSink& sink_;
 	const SystemInfo& system_;
+	const Diagnostics* diagnostics_;
 	Settings& settings_;
 	TimeZone& time_zone_platform_;
 	StatusLight* status_light_;
