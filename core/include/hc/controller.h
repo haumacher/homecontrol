@@ -4,32 +4,62 @@
 #ifndef HC_CONTROLLER_H
 #define HC_CONTROLLER_H
 
+#include <cstddef>
 #include <cstdint>
 
+#include "hc/connectivity.h"
 #include "hc/event_loop.h"
 #include "hc/log.h"
+#include "hc/status_led.h"
 #include "hc/platform/clock.h"
+#include "hc/platform/network_driver.h"
+#include "hc/platform/settings.h"
+#include "hc/platform/status_light.h"
 #include "hc/platform/system_info.h"
+#include "hc/platform/time_zone.h"
 
 namespace hc {
 
-/// The object a platform boots. It owns the event loop; the platform supplies the clock, the log
-/// sink and the system diagnostics, calls start() once and then drives the loop with run_once()
-/// and next_deadline().
+/// Everything a platform hands to the Controller. The objects must outlive it.
+struct Platform {
+	const Clock& clock;
+	LogSink& log;
+	const SystemInfo& system;
+	Settings& settings;
+	TimeZone& time_zone;
+	NetworkDriver& network;
+	/// The status LED; nullptr if the board has none.
+	StatusLight* status_light = nullptr;
+};
+
+/// The object a platform boots. It owns the event loop and the network Connectivity; the platform
+/// supplies its capabilities (Platform), calls start() once and then drives the loop with
+/// run_once() and next_deadline().
 ///
-/// For now it only logs the version at start and a heartbeat every kHeartbeatPeriodMs.
+/// At start it logs the version, applies the time zone setting, logs the wall clock state and
+/// starts connecting. It watches the wall clock and logs the local time once it is synchronized,
+/// and logs a heartbeat every kHeartbeatPeriodMs with the uptime, the network state and the heap.
+/// With a status light it drives the LED pattern (hc::StatusLed) every StatusLed::kTickMs from
+/// led_status().
 class Controller {
 public:
 	static constexpr uint32_t kHeartbeatPeriodMs = 10000;
 
-	/// Installs `sink` as the log sink (for the lifetime of the controller).
-	Controller(const Clock& clock, LogSink& sink, const SystemInfo& system);
+	/// How often an unsynchronized wall clock is checked for synchronization.
+	static constexpr uint32_t kClockWatchPeriodMs = 1000;
+
+	/// Longest time zone string including the NUL.
+	static constexpr size_t kMaxTimeZone = Settings::kMaxStringLength + 1;
+
+	/// Installs the platform's log sink (for the lifetime of the controller).
+	explicit Controller(const Platform& platform);
 	~Controller();
 
 	Controller(const Controller&) = delete;
 	Controller& operator=(const Controller&) = delete;
 
-	/// Logs the version and schedules the heartbeat. A second call is refused (logged).
+	/// Logs the version, applies the time zone, schedules the heartbeat and the clock watch, and
+	/// starts the network. A second call is refused (logged).
 	void start();
 
 	bool started() const { return started_; }
@@ -43,16 +73,46 @@ public:
 	/// Milliseconds since start() (0 before).
 	uint64_t uptime_ms() const;
 
+	/// Validates, stores and applies a POSIX TZ string. On refusal returns false, logs and points
+	/// `error` (if given) to the reason.
+	bool set_time_zone(const char* tz, const char** error = nullptr);
+
+	/// The POSIX TZ string in effect.
+	const char* time_zone() const { return time_zone_; }
+
+	/// Writes the wall time as local time ("2026-10-17 14:03:12 CEST (UTC+02:00)") into `buffer`;
+	/// returns whether the wall clock is synchronized.
+	bool format_wall_time(char* buffer, size_t size) const;
+
+	/// What the status LED shows now: pairing while pairing is active, connecting without a link,
+	/// setup while up (no runtime image can be loaded yet, issue #8).
+	LedStatus led_status() const;
+
 	EventLoop& loop() { return loop_; }
+	Connectivity& connectivity() { return connectivity_; }
+	const Connectivity& connectivity() const { return connectivity_; }
 	const Clock& clock() const { return clock_; }
+	Settings& settings() { return settings_; }
+	const SystemInfo& system() const { return system_; }
 
 private:
 	void heartbeat();
+	void watch_clock();
+	void log_clock_synchronized();
+	void led_tick();
 
 	const Clock& clock_;
 	LogSink& sink_;
 	const SystemInfo& system_;
+	Settings& settings_;
+	TimeZone& time_zone_platform_;
+	StatusLight* status_light_;
+	StatusLed status_led_;
+	bool light_on_ = false;
 	EventLoop loop_;
+	Connectivity connectivity_;
+	TimerHandle clock_watch_;
+	char time_zone_[kMaxTimeZone] = {};
 	uint64_t start_ms_ = 0;
 	bool started_ = false;
 };

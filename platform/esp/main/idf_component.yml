@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# Managed components (IDF component manager). The resolved versions are pinned in
+# platform/esp/dependencies.lock.<target>, which are versioned.
+dependencies:
+  idf: ">=5.3"
+  espressif/mdns: "^1.4.0"
+  espressif/led_strip: "~3.0.0"

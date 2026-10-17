@@ -10,4 +10,8 @@ cmake_minimum_required(VERSION 3.16)
 set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# The managed components (main/idf_component.yml) are pinned per target: the component manager
+# records the target in its lock file and would rewrite a shared one on every target switch.
+idf_build_set_property(DEPENDENCIES_LOCK "${CMAKE_CURRENT_LIST_DIR}/dependencies.lock.${IDF_TARGET}")
 project(homecontrol)

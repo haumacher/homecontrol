@@ -5,12 +5,23 @@
 #define HC_TEST_SUPPORT_H
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <functional>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "hc/controller.h"
 #include "hc/log.h"
 #include "hc/platform/clock.h"
+#include "hc/platform/network_driver.h"
+#include "hc/platform/settings.h"
+#include "hc/platform/status_light.h"
 #include "hc/platform/system_info.h"
+#include "hc/platform/time_zone.h"
+#include "hc/tz.h"
 
 namespace hc_test {
 
@@ -77,6 +88,229 @@ public:
 private:
 	hc::LogSink* previous_sink_;
 	hc::LogLevel previous_level_;
+};
+
+/// Settings in memory, with the validation rules every platform implementation applies.
+class FakeSettings : public hc::Settings {
+public:
+	struct Entry {
+		hc::SettingType type;
+		std::string text;
+		int32_t number;
+	};
+
+	hc::SettingsStatus get_string(const char* key, char* buffer, size_t size) const override {
+		if (size > 0) {
+			buffer[0] = '\0';
+		}
+		const Entry* entry = nullptr;
+		hc::SettingsStatus status = find(key, hc::SettingType::string, entry);
+		if (status != hc::SettingsStatus::ok) {
+			return status;
+		}
+		if (entry->text.size() + 1 > size) {
+			return hc::SettingsStatus::too_long;
+		}
+		std::memcpy(buffer, entry->text.c_str(), entry->text.size() + 1);
+		return hc::SettingsStatus::ok;
+	}
+
+	hc::SettingsStatus set_string(const char* key, const char* value) override {
+		hc::SettingsStatus status = check_key(key);
+		if (status == hc::SettingsStatus::ok) {
+			status = check_string(value);
+		}
+		if (status != hc::SettingsStatus::ok) {
+			return status;
+		}
+		if (fail_writes) {
+			return hc::SettingsStatus::storage_error;
+		}
+		entries[key] = Entry{hc::SettingType::string, value, 0};
+		return hc::SettingsStatus::ok;
+	}
+
+	hc::SettingsStatus get_int(const char* key, int32_t& value) const override {
+		const Entry* entry = nullptr;
+		hc::SettingsStatus status = find(key, hc::SettingType::integer, entry);
+		if (status == hc::SettingsStatus::ok) {
+			value = entry->number;
+		}
+		return status;
+	}
+
+	hc::SettingsStatus set_int(const char* key, int32_t value) override {
+		return set_number(key, hc::SettingType::integer, value);
+	}
+
+	hc::SettingsStatus get_bool(const char* key, bool& value) const override {
+		const Entry* entry = nullptr;
+		hc::SettingsStatus status = find(key, hc::SettingType::boolean, entry);
+		if (status == hc::SettingsStatus::ok) {
+			value = entry->number != 0;
+		}
+		return status;
+	}
+
+	hc::SettingsStatus set_bool(const char* key, bool value) override {
+		return set_number(key, hc::SettingType::boolean, value ? 1 : 0);
+	}
+
+	hc::SettingsStatus erase(const char* key) override {
+		hc::SettingsStatus status = check_key(key);
+		if (status != hc::SettingsStatus::ok) {
+			return status;
+		}
+		return entries.erase(key) > 0 ? hc::SettingsStatus::ok : hc::SettingsStatus::not_found;
+	}
+
+	void visit(hc::SettingsVisitor& visitor) const override {
+		for (const auto& entry : entries) {
+			visitor.entry(entry.first.c_str(), entry.second.type);
+		}
+	}
+
+	std::map<std::string, Entry> entries;
+	bool fail_writes = false;
+
+private:
+	hc::SettingsStatus find(const char* key, hc::SettingType type, const Entry*& out) const {
+		hc::SettingsStatus status = check_key(key);
+		if (status != hc::SettingsStatus::ok) {
+			return status;
+		}
+		auto it = entries.find(key);
+		if (it == entries.end()) {
+			return hc::SettingsStatus::not_found;
+		}
+		if (it->second.type != type) {
+			return hc::SettingsStatus::wrong_type;
+		}
+		out = &it->second;
+		return hc::SettingsStatus::ok;
+	}
+
+	hc::SettingsStatus set_number(const char* key, hc::SettingType type, int32_t value) {
+		hc::SettingsStatus status = check_key(key);
+		if (status != hc::SettingsStatus::ok) {
+			return status;
+		}
+		if (fail_writes) {
+			return hc::SettingsStatus::storage_error;
+		}
+		entries[key] = Entry{type, std::string(), value};
+		return hc::SettingsStatus::ok;
+	}
+};
+
+/// A time zone with a fixed offset, whatever TZ string is applied (the string is recorded).
+class FakeTimeZone : public hc::TimeZone {
+public:
+	void apply(const char* posix_tz) override { applied.push_back(posix_tz); }
+
+	bool to_local(int64_t utc_seconds, hc::LocalTime& out) const override {
+		int64_t local = utc_seconds + offset_s;
+		int64_t days = local >= 0 ? local / 86400 : (local - 86399) / 86400;
+		int64_t rest = local - days * 86400;
+		// Inverse of hc::days_from_civil (Howard Hinnant's civil_from_days).
+		int64_t z = days + 719468;
+		int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+		int64_t doe = z - era * 146097;
+		int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+		int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+		int64_t mp = (5 * doy + 2) / 153;
+		int64_t day = doy - (153 * mp + 2) / 5 + 1;
+		int64_t month = mp < 10 ? mp + 3 : mp - 9;
+		int64_t year = yoe + era * 400 + (month <= 2 ? 1 : 0);
+		out.year = static_cast<int32_t>(year);
+		out.month = static_cast<uint8_t>(month);
+		out.day = static_cast<uint8_t>(day);
+		out.hour = static_cast<uint8_t>(rest / 3600);
+		out.minute = static_cast<uint8_t>(rest % 3600 / 60);
+		out.second = static_cast<uint8_t>(rest % 60);
+		out.dst = dst;
+		std::snprintf(out.zone, sizeof(out.zone), "%s", zone.c_str());
+		return true;
+	}
+
+	std::vector<std::string> applied;
+	int32_t offset_s = 7200;
+	bool dst = true;
+	std::string zone = "CEST";
+};
+
+/// Records the driver calls with the time they happened; results are configurable. `calls` holds
+/// "connect@<ms>", "disconnect@<ms>", "pair@<ms>", "unpair@<ms>" in order.
+class FakeNetworkDriver : public hc::NetworkDriver {
+public:
+	explicit FakeNetworkDriver(const FakeClock& clock) : clock_(clock) {}
+
+	bool provisioned() const override { return has_credentials; }
+
+	hc::ConnectResult connect() override {
+		connects.push_back(clock_.now_ms);
+		record("connect");
+		if (on_connect) {
+			on_connect();
+		}
+		return result;
+	}
+
+	void disconnect() override {
+		++disconnects;
+		record("disconnect");
+	}
+
+	bool start_pairing() override {
+		pairings.push_back(clock_.now_ms);
+		record("pair");
+		return pairing_starts;
+	}
+
+	void stop_pairing() override {
+		++pairing_stops;
+		record("unpair");
+	}
+
+	void record(const char* what) { calls.push_back(std::string(what) + "@" + std::to_string(clock_.now_ms)); }
+
+	bool has_credentials = true;
+	hc::ConnectResult result = hc::ConnectResult::started;
+	bool pairing_starts = true;
+	std::vector<uint64_t> connects;
+	std::vector<uint64_t> pairings;
+	std::vector<std::string> calls;
+	int disconnects = 0;
+	int pairing_stops = 0;
+	std::function<void()> on_connect;
+
+private:
+	const FakeClock& clock_;
+};
+
+/// Records the levels the controller sets, with the time.
+class FakeStatusLight : public hc::StatusLight {
+public:
+	explicit FakeStatusLight(const FakeClock& clock) : clock_(clock) {}
+
+	void set(bool on) override { changes.emplace_back(clock_.now_ms, on); }
+
+	std::vector<std::pair<uint64_t, bool>> changes;
+
+private:
+	const FakeClock& clock_;
+};
+
+/// All fakes a Controller needs, wired into an hc::Platform.
+struct FakePlatform {
+	FakeClock clock;
+	CapturingSink sink;
+	FakeSystemInfo system;
+	FakeSettings settings;
+	FakeTimeZone time_zone;
+	FakeNetworkDriver network{clock};
+
+	hc::Platform platform() { return hc::Platform{clock, sink, system, settings, time_zone, network}; }
 };
 
 } // namespace hc_test

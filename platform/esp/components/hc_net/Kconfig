@@ -1,0 +1,17 @@
+# Copyright (c) 2026 Bernhard Haumacher
+
+menu "HomeControl network"
+
+	config HC_WPS_BUTTON_GPIO
+		int "GPIO of the WPS button (active low; -1: no button)"
+		range -1 48
+		default 9 if IDF_TARGET_ESP32C6
+		default 0 if IDF_TARGET_ESP32S3
+		default -1
+		help
+			Holding this button for about 3 s starts WPS push-button provisioning. The default is
+			the BOOT button of the Espressif devkits (GPIO9 on the ESP32-C6, GPIO0 on the
+			ESP32-S3), a strapping pin that is read only after boot. The pin is configured as an
+			input with the internal pull-up; pressed means low.
+
+endmenu

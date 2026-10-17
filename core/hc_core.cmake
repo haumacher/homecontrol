@@ -9,9 +9,16 @@
 set(HC_CORE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 set(HC_CORE_INCLUDE_DIR "${HC_CORE_DIR}/include")
 set(HC_CORE_SOURCES
+	"${HC_CORE_DIR}/src/backoff.cpp"
+	"${HC_CORE_DIR}/src/connectivity.cpp"
 	"${HC_CORE_DIR}/src/controller.cpp"
 	"${HC_CORE_DIR}/src/event_loop.cpp"
+	"${HC_CORE_DIR}/src/hold_button.cpp"
 	"${HC_CORE_DIR}/src/log.cpp"
+	"${HC_CORE_DIR}/src/network_settings.cpp"
+	"${HC_CORE_DIR}/src/settings.cpp"
+	"${HC_CORE_DIR}/src/status_led.cpp"
+	"${HC_CORE_DIR}/src/tz.cpp"
 	"${HC_CORE_DIR}/src/version.cpp"
 )
 

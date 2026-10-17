@@ -1,0 +1,32 @@
+# Copyright (c) 2026 Bernhard Haumacher
+
+menu "HomeControl status LED"
+
+	choice HC_STATUS_LED_KIND
+		prompt "Status LED"
+		default HC_STATUS_LED_WS2812 if IDF_TARGET_ESP32C6
+		default HC_STATUS_LED_NONE
+		help
+			The LED that shows the controller's state (doc/network.md has the blink patterns).
+			The ESP32-C6-DevKitC-1 and -DevKitM-1 carry a WS2812 RGB LED on GPIO8.
+
+		config HC_STATUS_LED_NONE
+			bool "none"
+		config HC_STATUS_LED_GPIO
+			bool "plain LED on a GPIO"
+		config HC_STATUS_LED_WS2812
+			bool "WS2812 RGB LED (one pixel, driven over RMT)"
+	endchoice
+
+	config HC_STATUS_LED_GPIO_NUM
+		int "Status LED GPIO"
+		depends on !HC_STATUS_LED_NONE
+		range 0 48
+		default 8
+
+	config HC_STATUS_LED_ACTIVE_LOW
+		bool "Plain LED is lit when the GPIO is low"
+		depends on HC_STATUS_LED_GPIO
+		default n
+
+endmenu

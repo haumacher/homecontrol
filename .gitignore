@@ -8,7 +8,6 @@
 /platform/esp/sdkconfig
 /platform/esp/sdkconfig.old
 /platform/esp/managed_components/
-/platform/esp/dependencies.lock
 # Tooling
 /.playwright-mcp/
 /recording.json
@@ -17,3 +16,5 @@
 __pycache__/
 .vscode/
 .idea/
+# Host settings file (may hold a WiFi key)
+homecontrol.settings

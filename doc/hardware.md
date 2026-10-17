@@ -51,6 +51,18 @@ The 4 MB flash of this board is the small end of the module range: the OTA parti
 (issue #3) must have a 4 MB variant, and the application partition will be tight once Zigbee and
 the web UI are in. A production board should carry 8 or 16 MB (issue #22).
 
+**Button and LED.** The firmware uses the devkit's BOOT button (GPIO9 on the C6, a strapping pin
+read only after boot) as the WPS re-pairing button: held for 3 s it starts WPS
+(`CONFIG_HC_WPS_BUTTON_GPIO`, -1 disables it). The ESP32-C6-DevKitC-1/DevKitM-1 status LED is a
+WS2812 RGB pixel on GPIO8, driven over RMT with the `led_strip` component; other boards choose
+"plain GPIO" (with an active-low flag) or "none" in menuconfig under *HomeControl status LED*
+(the S3 build defaults to none). The blink patterns are in `doc/network.md`.
+
+**Partition table.** With WiFi, mDNS, WPS and the console the application is about 1 MB, more than
+the default single-app table's 1 MB partition allows with any margin, so `sdkconfig.defaults`
+selects the single-app *large* table (1.5 MB application, NVS unchanged at 0x9000) until the OTA
+layout of issue #3 replaces it.
+
 ## KNX
 
 The controller reaches the bus over KNXnet/IP. Two installations are reachable from the

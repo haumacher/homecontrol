@@ -18,3 +18,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 # The development boards have no UART-to-USB bridge: the console (bootloader and app logs, the
 # serial console of issue #4) is the USB Serial/JTAG port, /dev/ttyACMn on the host.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# The firmware with WiFi, mDNS, the console and WPS does not fit the default 1 MB app partition of
+# the single-app table; until the OTA layout of issue #3 replaces it, use the 1.5 MB variant.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

@@ -22,14 +22,15 @@ add_compile_options(-Wall -Wextra -Werror -fno-exceptions -fno-rtti)
 
 add_subdirectory("${HC_REPO_DIR}/core" core)
 
-add_library(hc_posix STATIC src/platform.cpp)
+add_library(hc_posix STATIC src/platform.cpp src/file_settings.cpp)
 target_include_directories(hc_posix PUBLIC include)
 target_link_libraries(hc_posix PUBLIC hc_core)
 
 add_executable(homecontrol src/main.cpp)
 target_link_libraries(homecontrol PRIVATE hc_posix)
 
-# Unit tests: doctest, vendored. One CTest entry per test case (discovered after each build), so
+# Unit tests: doctest, vendored. The core's tests (core/test) and the POSIX platform's
+# (platform/posix/test) share one runner. One CTest entry per test case (discovered after each build), so
 # `ctest -R <TestName>` selects single cases.
 enable_testing()
 add_executable(hc_tests
@@ -38,9 +39,19 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/event_loop_test.cpp"
 	"${HC_REPO_DIR}/core/test/controller_test.cpp"
 	"${HC_REPO_DIR}/core/test/event_loop_probe_test.cpp"
+	"${HC_REPO_DIR}/core/test/network_probe_test.cpp"
+	"${HC_REPO_DIR}/core/test/backoff_test.cpp"
+	"${HC_REPO_DIR}/core/test/connectivity_test.cpp"
+	"${HC_REPO_DIR}/core/test/settings_test.cpp"
+	"${HC_REPO_DIR}/core/test/tz_test.cpp"
+	"${HC_REPO_DIR}/core/test/hold_button_test.cpp"
+	"${HC_REPO_DIR}/core/test/status_led_test.cpp"
+	test/file_settings_test.cpp
+	test/posix_platform_test.cpp
 )
 target_include_directories(hc_tests SYSTEM PRIVATE "${HC_REPO_DIR}/third_party/doctest")
-target_link_libraries(hc_tests PRIVATE hc_core)
+target_include_directories(hc_tests PRIVATE "${HC_REPO_DIR}/core/test")
+target_link_libraries(hc_tests PRIVATE hc_posix)
 # doctest uses exceptions only when they are enabled; tell it explicitly.
 target_compile_definitions(hc_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
 

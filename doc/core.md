@@ -3,22 +3,29 @@
 The portable core (`core/`, namespace `hc`) is plain C++17 without exceptions, RTTI, iostreams or
 any platform include. What it needs from the outside is an interface under
 `core/include/hc/platform/`: `Clock` (monotonic milliseconds, wall time with a "synchronized"
-flag) and `SystemInfo` (free heap figures); the log sink is `hc::LogSink` in `hc/log.h`. The
-platforms implement them: `hc::posix` in `platform/posix/`, `hc::esp` in `platform/esp/main/`.
+flag), `SystemInfo` (free heap figures), `Settings` (small persistent named values), `TimeZone`
+(applies a POSIX TZ string, converts to local time), `NetworkDriver` (connect, disconnect, pair)
+and `StatusLight` (the status LED); the log sink is `hc::LogSink` in `hc/log.h`. The platforms
+implement them: `hc::posix` in `platform/posix/`, `hc::esp` in `platform/esp/components/hc_platform`
+and `hc_net`. The platforms hand them to the controller bundled in an `hc::Platform`.
 
 ## Controller
 
-`hc::Controller` is what a platform boots. Its constructor takes the clock, the log sink (which it
-installs for `hc::Log`) and the system info; `start()` logs the version, the build id, the wall
-clock state and the free heap, and schedules a heartbeat every 10 s (uptime and free heap). The
-controller owns the `hc::EventLoop`; later packages hang their work onto it.
+`hc::Controller` is what a platform boots. Its constructor takes the `hc::Platform` (and installs
+its log sink for `hc::Log`); `start()` logs the version and the build id, applies the time zone
+setting, logs the wall clock state and the free heap, schedules a heartbeat every 10 s (uptime,
+network state, free heap), watches the wall clock every second until it is synchronized and then
+logs the local time once, drives the status LED every 50 ms (if the board has one) and starts the
+network. The controller owns the `hc::EventLoop` and the `hc::Connectivity` (the network workflow,
+`doc/network.md`); later packages hang their work onto them.
 
 ## Event loop model
 
 - **Single-threaded.** Every `EventLoop` method is called on the loop's thread; handlers may
-  schedule, cancel and post, but must not call `run_once`. Posting from another thread (an ISR,
-  a network task) is not supported yet; the first adapter that needs it adds a platform-provided
-  thread-safe queue with a wakeup.
+  schedule, cancel and post, but must not call `run_once`. Work from other threads reaches the
+  loop through the platform: the ESP build's `hc::esp::LoopQueue` (a FreeRTOS queue the loop task
+  sleeps on) carries the IDF's WiFi/IP events and the console's commands onto the loop thread,
+  where they call into the core. The core itself stays single-threaded.
 - **Timers** live on the monotonic time base (`Clock::monotonic_ms`). `schedule_at(deadline)` is a
   one-shot; `schedule_periodic(first, period)` repeats at `first + k * period` without drift. If
   the loop falls behind by more than a period, the missed periods are skipped (warning logged) and
@@ -73,8 +80,9 @@ for (;;) {
 ```
 
 POSIX sleeps with `nanosleep` (interrupted by SIGINT/SIGTERM, which stop the loop); the ESP build
-runs the loop in the FreeRTOS task `hc_loop` (6 KB stack, priority 5) and sleeps with
-`vTaskDelay`, rounding up to the tick (10 ms at the default 100 Hz). The 1 s cap is a safety net
+runs the loop in the FreeRTOS task `hc_loop` (8 KB stack, priority 5) and sleeps in
+`LoopQueue::dispatch()`, a `xQueueReceive` with the timeout rounded up to the tick (10 ms at the
+default 100 Hz), so a message from another task wakes it at once. The 1 s cap is a safety net
 for a missed wakeup, not part of the timing contract.
 
 ## Tests

@@ -168,20 +168,20 @@ TEST_CASE("EventLoopProbe.HandlerReschedulingAtTheSameDeadlineDefersToNextRun") 
 
 TEST_CASE("ControllerProbe.HeartbeatSurvivesClockJumpWithOneBeatAndRightUptime") {
 	ScopedCapture capture;
-	hc_test::FakeClock clock;
-	hc_test::FakeSystemInfo system;
-	hc_test::CapturingSink sink;
-	hc::Controller controller(clock, sink, system);
+	hc_test::FakePlatform p;
+	p.clock.synchronized = true; // no clock watch: only the heartbeat and the connect timeout run
+	hc::Controller controller(p.platform());
 	controller.start();
+	controller.connectivity().link_up("192.0.2.10"); // no connect timeout either
 	controller.run_once();
-	clock.advance(25000);
+	p.clock.advance(25000);
 	controller.run_once();
-	CHECK(sink.count("heartbeat") == 1);
-	CHECK(sink.contains("heartbeat: uptime 25 s"));
+	CHECK(p.sink.count("heartbeat") == 1);
+	CHECK(p.sink.contains("heartbeat: uptime 25 s"));
 	CHECK(controller.uptime_ms() == 25000);
-	CHECK(sink.count("W hc.loop") == 1); // the missed period is visible, not silent
-	CHECK(controller.next_deadline() == clock.now_ms + 5000); // back on the 10 s grid
-	clock.advance(5000);
+	CHECK(p.sink.count("W hc.loop") == 1); // the missed period is visible, not silent
+	CHECK(controller.next_deadline() == p.clock.now_ms + 5000); // back on the 10 s grid
+	p.clock.advance(5000);
 	controller.run_once();
-	CHECK(sink.count("heartbeat") == 2);
+	CHECK(p.sink.count("heartbeat") == 2);
 }
