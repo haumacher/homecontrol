@@ -5,16 +5,24 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
 
 #include "esp_console.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_partition.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "hc/diagnostics.h"
+#include "hc/log_ring.h"
 #include "hc/network_settings.h"
 #include "linenoise/linenoise.h"
+#include "nvs_flash.h"
 
 namespace hc {
 namespace esp {
@@ -36,6 +44,43 @@ int usage(const char* text) {
 	return 1;
 }
 
+/// The reset reason and the platform's boot facts, one line.
+void print_boot(ConsoleContext& c) {
+	const Diagnostics* diagnostics = c.controller.diagnostics();
+	if (diagnostics == nullptr) {
+		std::printf("boot      reset reason unknown (no diagnostics)\n");
+		return;
+	}
+	char facts[160];
+	format_boot_facts(*diagnostics, facts, sizeof(facts));
+	std::printf("boot      %s%s%s\n", reset_reason_name(diagnostics->reset_reason()), facts[0] != '\0' ? "; " : "", facts);
+}
+
+/// Name, priority and stack high-water mark (bytes never used) of every task.
+void print_tasks() {
+#if configUSE_TRACE_FACILITY
+	// On the heap for the command only (a console command is not a steady-state path).
+	constexpr UBaseType_t kMaxTasks = 40;
+	std::unique_ptr<TaskStatus_t[]> tasks(new (std::nothrow) TaskStatus_t[kMaxTasks]);
+	if (!tasks) {
+		std::printf("tasks     not listed: no heap for %u task records\n", static_cast<unsigned>(kMaxTasks));
+		return;
+	}
+	UBaseType_t count = uxTaskGetSystemState(tasks.get(), kMaxTasks, nullptr);
+	if (count == 0) {
+		std::printf("tasks     more than %u, not listed\n", static_cast<unsigned>(kMaxTasks));
+		return;
+	}
+	std::printf("tasks     %u (name, priority, stack never used)\n", static_cast<unsigned>(count));
+	for (UBaseType_t i = 0; i < count; ++i) {
+		std::printf("  %-16s %2u %6u B\n", tasks[i].pcTaskName, static_cast<unsigned>(tasks[i].uxCurrentPriority),
+			static_cast<unsigned>(tasks[i].usStackHighWaterMark));
+	}
+#else
+	std::printf("tasks     not listed: the build lacks CONFIG_FREERTOS_USE_TRACE_FACILITY\n");
+#endif
+}
+
 int cmd_status(ConsoleContext& c, int, char**) {
 	Controller& ctl = c.controller;
 	const Connectivity& net = ctl.connectivity();
@@ -52,8 +97,11 @@ int cmd_status(ConsoleContext& c, int, char**) {
 	if (net.pairing_active()) {
 		std::printf("wifi      WPS active\n");
 	}
-	std::printf("heap      %u B free (min %u B)\n", static_cast<unsigned>(memory.free_bytes),
-		static_cast<unsigned>(memory.min_free_bytes));
+	std::printf("heap      %u B free (min %u B, largest block %u B)\n", static_cast<unsigned>(memory.free_bytes),
+		static_cast<unsigned>(memory.min_free_bytes),
+		static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT)));
+	print_boot(c);
+	print_tasks();
 	const Improv& improv = ctl.improv();
 	if (improv.active()) {
 		uint64_t now = ctl.clock().monotonic_ms();
@@ -279,30 +327,268 @@ int cmd_restart(ConsoleContext&, int, char**) {
 	return 0;
 }
 
+int cmd_uptime(ConsoleContext& c, int, char**) {
+	uint64_t seconds = c.controller.uptime_ms() / 1000;
+	const Diagnostics* diagnostics = c.controller.diagnostics();
+	std::printf("up %llu d %02u:%02u:%02u (%llu s)", static_cast<unsigned long long>(seconds / 86400),
+		static_cast<unsigned>(seconds / 3600 % 24), static_cast<unsigned>(seconds / 60 % 60),
+		static_cast<unsigned>(seconds % 60), static_cast<unsigned long long>(seconds));
+	if (c.diagnostics != nullptr && c.diagnostics->boot_count() != 0) {
+		std::printf(", boot %u", static_cast<unsigned>(c.diagnostics->boot_count()));
+	}
+	std::printf(", reset reason: %s\n",
+		reset_reason_name(diagnostics != nullptr ? diagnostics->reset_reason() : ResetReason::unknown));
+	return 0;
+}
+
+esp_log_level_t esp_level(LogLevel level) {
+	switch (level) {
+	case LogLevel::error: return ESP_LOG_ERROR;
+	case LogLevel::warn: return ESP_LOG_WARN;
+	case LogLevel::info: return ESP_LOG_INFO;
+	case LogLevel::debug: return ESP_LOG_DEBUG;
+	}
+	return ESP_LOG_INFO;
+}
+
+/// Prints the ring's lines like the monitor does: "<seq> <ms> <L> <tag>: <message>".
+struct TailPrinter : LogLineVisitor {
+	bool line(const LogLine& line) override {
+		std::printf("%5u %9llu %s %s: %s\n", static_cast<unsigned>(line.seq), static_cast<unsigned long long>(line.ms),
+			log_level_letter(line.level), line.tag, line.message);
+		return true;
+	}
+};
+
+int cmd_log(ConsoleContext& c, int argc, char** argv) {
+	const char* kUsage = "log level [<tag|*> <error|warn|info|debug>] | log tail [<n>]";
+	if (argc >= 2 && std::strcmp(argv[1], "level") == 0 && argc == 2) {
+		std::printf("*               %s (the core's threshold for tags without their own)\n", log_level_name(Log::level()));
+		for (size_t i = 0; i < Log::tag_level_count(); ++i) {
+			const char* tag = nullptr;
+			LogLevel level = LogLevel::info;
+			if (Log::tag_level_at(i, tag, level)) {
+				std::printf("%-15s %s\n", tag, log_level_name(level));
+			}
+		}
+		return 0;
+	}
+	if (argc == 4 && std::strcmp(argv[1], "level") == 0) {
+		LogLevel level = LogLevel::info;
+		if (!log_level_parse(argv[3], level)) {
+			std::printf("error: unknown level \"%s\" (error, warn, info, debug)\n", argv[3]);
+			return 1;
+		}
+		const char* tag = argv[2];
+		bool core_tag = std::strcmp(tag, "*") == 0 || std::strncmp(tag, "hc.", 3) == 0;
+		if (core_tag) {
+			const char* error = nullptr;
+			if (!Log::set_tag_level(tag, level, &error)) {
+				std::printf("error: %s\n", error);
+				return 1;
+			}
+		}
+		esp_log_level_set(tag, esp_level(level));
+		ESP_LOGI(kTag, "log level of %s set to %s on the console", tag, log_level_name(level));
+		std::printf("%s: %s%s\n", tag, log_level_name(level),
+			level == LogLevel::debug && !core_tag
+				? " (IDF components print debug lines only in a build with CONFIG_LOG_MAXIMUM_LEVEL_DEBUG)"
+				: "");
+		return 0;
+	}
+	if (argc >= 2 && argc <= 3 && std::strcmp(argv[1], "tail") == 0) {
+		unsigned long n = 20;
+		if (argc == 3) {
+			char* end = nullptr;
+			n = std::strtoul(argv[2], &end, 10);
+			if (*end != '\0' || n == 0) {
+				return usage(kUsage);
+			}
+		}
+		// A consistent copy (a writer on another task may hold the ring for a moment), on the heap for
+		// the command only.
+		std::unique_ptr<LogRing> ring(new (std::nothrow) LogRing);
+		if (!ring) {
+			std::printf("error: no heap for a copy of the log ring (%u B)\n", static_cast<unsigned>(sizeof(LogRing)));
+			return 1;
+		}
+		LogRing& copy = *ring;
+		bool copied = false;
+		for (int attempt = 0; attempt < 10 && !copied; ++attempt) {
+			copied = c.controller.log_ring().copy_to(copy);
+			if (!copied) {
+				vTaskDelay(1);
+			}
+		}
+		if (!copied) {
+			std::printf("error: the log ring stayed busy; try again\n");
+			return 1;
+		}
+		TailPrinter printer;
+		size_t shown = copy.read_tail(n, printer);
+		std::printf("%u of %u line(s) held (%u dropped while busy); the ring keeps the last %u bytes\n",
+			static_cast<unsigned>(shown), static_cast<unsigned>(copy.count()), static_cast<unsigned>(copy.dropped()),
+			static_cast<unsigned>(LogRing::kCapacity));
+		return 0;
+	}
+	return usage(kUsage);
+}
+
+int cmd_coredump(ConsoleContext& c, int argc, char** argv) {
+	const char* kUsage = "coredump status | coredump clear";
+	if (c.diagnostics == nullptr) {
+		std::printf("error: no diagnostics in this build\n");
+		return 1;
+	}
+	if (argc == 2 && std::strcmp(argv[1], "status") == 0) {
+		c.diagnostics->print_coredump_status();
+		return 0;
+	}
+	if (argc == 2 && std::strcmp(argv[1], "clear") == 0) {
+		if (!c.diagnostics->coredump_present()) {
+			std::printf("no core dump stored; nothing to clear\n");
+			return 0;
+		}
+		if (!c.diagnostics->coredump_clear()) {
+			std::printf("error: the core dump could not be erased (see the log line above)\n");
+			return 1;
+		}
+		std::printf("core dump erased\n");
+		return 0;
+	}
+	return usage(kUsage);
+}
+
+int cmd_crash(ConsoleContext&, int argc, char** argv) {
+	if (argc == 2 && std::strcmp(argv[1], "yes") == 0) {
+		ESP_LOGW(kTag, "crash requested on the console: storing to address 0 (panic, core dump, restart)");
+		std::fflush(stdout);
+		vTaskDelay(pdMS_TO_TICKS(100)); // let the log line out
+		volatile uint32_t* volatile address = nullptr; // volatile: the compiler cannot see it is null
+		*address = 0xdead;
+		return 0;
+	}
+	if (argc == 3 && std::strcmp(argv[1], "stall") == 0 && std::strcmp(argv[2], "yes") == 0) {
+		ESP_LOGW(kTag, "stall requested on the console: the event loop spins until the task watchdog resets");
+		std::fflush(stdout);
+		vTaskDelay(pdMS_TO_TICKS(100));
+		for (;;) {
+			// A stuck loop, without feeding the watchdog or yielding.
+		}
+	}
+	return usage("crash yes | crash stall yes   (tests the core dump resp. the task watchdog: the device restarts)");
+}
+
+/// Collects up to kBatch blob names (the visitor must not remove while visiting).
+struct BlobNames : BlobVisitor {
+	static constexpr size_t kBatch = 16;
+	void blob(const char* name, size_t) override {
+		if (count < kBatch) {
+			std::snprintf(names[count++], sizeof(names[0]), "%s", name);
+		}
+	}
+	char names[kBatch][BlobStore::kMaxNameLength + 1] = {};
+	size_t count = 0;
+};
+
+/// Erases one data partition by label; absent partitions are skipped.
+void erase_partition(const char* label) {
+	const esp_partition_t* partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, label);
+	if (partition == nullptr) {
+		return;
+	}
+	esp_err_t err = esp_partition_erase_range(partition, 0, partition->size);
+	std::printf("%-10s %s\n", label, err == ESP_OK ? "erased" : esp_err_to_name(err));
+}
+
+int cmd_factory(ConsoleContext& c, int argc, char** argv) {
+	if (argc != 3 || std::strcmp(argv[1], "reset") != 0 || std::strcmp(argv[2], "yes") != 0) {
+		return usage("factory reset yes   (erases the settings with the WiFi credentials, the stored runtime image and "
+			"its state, the Zigbee network; then restarts)");
+	}
+	ESP_LOGW(kTag, "factory reset requested on the console");
+	if (c.blobs != nullptr) {
+		unsigned removed = 0;
+		unsigned failed = 0;
+		for (;;) {
+			BlobNames batch;
+			c.blobs->visit(batch);
+			if (batch.count == 0) {
+				break;
+			}
+			unsigned before = removed;
+			for (size_t i = 0; i < batch.count; ++i) {
+				if (c.blobs->remove(batch.names[i]) == BlobStatus::ok) {
+					++removed;
+				} else {
+					++failed;
+				}
+			}
+			if (removed == before) {
+				break; // nothing removable left
+			}
+		}
+		std::printf("state      %u blob(s) removed%s\n", removed, failed != 0 ? ", some could not be removed" : "");
+	} else {
+		std::printf("state      kept: no blob store in this build\n");
+	}
+	erase_partition("zb_storage"); // the Zigbee stack's NVRAM: raw
+	if (esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, "zb_db") != nullptr) {
+		esp_err_t zb = nvs_flash_erase_partition("zb_db"); // an NVS partition: closed before the erase
+		std::printf("zb_db      %s\n", zb == ESP_OK ? "erased" : esp_err_to_name(zb));
+	}
+	esp_err_t err = nvs_flash_erase(); // closes the open handles first (settings, boot record)
+	std::printf("nvs        %s\n", err == ESP_OK ? "erased" : esp_err_to_name(err));
+	std::printf("restarting\n");
+	std::fflush(stdout);
+	vTaskDelay(pdMS_TO_TICKS(100));
+	esp_restart();
+	return 0;
+}
+
 // ---- The command table: the one place where commands are registered --------------------------
 
 struct Command {
+	const char* group;
 	const char* name;
 	const char* hint;
 	const char* help;
 	int (*run)(ConsoleContext& context, int argc, char** argv);
 };
 
+/// In the order `help` lists them; commands of a group stand together.
 const Command kCommands[] = {
-	{"status", nullptr, "Uptime, network state and address, local time and whether it is synchronized, free heap",
+	{"system", "status", nullptr,
+		"Uptime, boot record, network state and address, local time and whether it is synchronized, heap, "
+		"tasks with their stack reserve",
 		&cmd_status},
-	{"wifi", "wps | set <ssid> [<psk>] | clear | status",
+	{"system", "uptime", nullptr, "Uptime, boot count and reset reason in one line", &cmd_uptime},
+	{"system", "settings", "list", "All stored settings (wifi.psk masked)", &cmd_settings},
+	{"system", "restart", nullptr, "Restart the controller", &cmd_restart},
+	{"system", "factory", "reset yes",
+		"Erase the settings (WiFi credentials included), the stored runtime image and its state, and the Zigbee "
+		"network, then restart",
+		&cmd_factory},
+	{"network", "wifi", "wps | set <ssid> [<psk>] | clear | status",
 		"WiFi: WPS push-button provisioning, credentials by hand (stored in NVS; the key is never shown; quote "
 		"an SSID with spaces), link state",
 		&cmd_wifi},
-	{"tz", "set <posix-tz>", "Time zone as a POSIX TZ string (default CET-1CEST,M3.5.0,M10.5.0/3)", &cmd_tz},
-	{"ntp", "set <server>", "SNTP server (default pool.ntp.org)", &cmd_ntp},
-	{"settings", "list", "All stored settings (wifi.psk masked)", &cmd_settings},
-	{"update", "status | check | now [<url>] | url set <url> | url clear",
+	{"network", "ntp", "set <server>", "SNTP server (default pool.ntp.org)", &cmd_ntp},
+	{"time", "tz", "set <posix-tz>", "Time zone as a POSIX TZ string (default CET-1CEST,M3.5.0,M10.5.0/3)", &cmd_tz},
+	{"update", "update", "status | check | now [<url>] | url set <url> | url clear",
 		"Firmware update (doc/ota.md): state, check the update source now, install from a source whatever the "
 		"version (development), set or clear the update source (update.url)",
 		&cmd_update},
-	{"restart", nullptr, "Restart the controller", &cmd_restart},
+	{"diagnostics", "log", "level [<tag|*> <level>] | tail [<n>]",
+		"Log levels per tag at run time (* sets all and drops the per-tag levels; hc.* tags also filter the "
+		"log ring), the last n lines of the log ring (default 20)",
+		&cmd_log},
+	{"diagnostics", "coredump", "status | clear",
+		"The core dump of the last crash (doc/diagnostics.md): summary, erase; download it with GET /api/coredump",
+		&cmd_coredump},
+	{"diagnostics", "crash", "yes | stall yes",
+		"Test the crash pipeline: a panic (core dump, restart) or a stuck event loop (task watchdog reset)",
+		&cmd_crash},
 };
 
 // ---- Running a command on the event loop -----------------------------------------------------
@@ -412,46 +698,53 @@ int dispatch_extension(void* context, int argc, char** argv) {
 	return submit(nullptr, static_cast<const ConsoleCommand*>(context), argc, argv);
 }
 
-/// The REPL (the IDF's esp_console_repl_task, reading the shared port's console device).
-void repl_task(void*) {
-	// stdin is per task: only the REPL reads the console device.
-	stdin = std::fopen(g_context->input_device, "r");
-	if (stdin == nullptr) {
-		ESP_LOGE(kTag, "console not started: cannot open %s", g_context->input_device);
-		vTaskDelete(nullptr);
-		return;
-	}
-	setvbuf(stdin, nullptr, _IONBF, 0);
-	const char* prompt = LOG_COLOR_I "hc> " LOG_RESET_COLOR;
-	// Does the terminal answer escape sequences? Otherwise no line editing (and no colors).
-	if (linenoiseProbe() != 0) {
-		linenoiseSetDumbMode(1);
-		prompt = "hc> ";
-	}
-	ESP_LOGI(kTag, "console ready on USB Serial/JTAG: type 'help'");
-	for (;;) {
-		char* line = linenoise(prompt);
-		if (line == nullptr) {
-			continue; // empty line
-		}
-		linenoiseHistoryAdd(line);
-		int result = 0;
-		esp_err_t err = esp_console_run(line, &result);
-		if (err == ESP_ERR_NOT_FOUND) {
-			std::printf("Unrecognized command\n");
-		} else if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) { // INVALID_ARG: empty command
-			std::printf("Internal error: %s\n", esp_err_to_name(err));
-		}
-		linenoiseFree(line);
-	}
+/// Prints one command: name and arguments, then its help indented.
+void print_command(const char* name, const char* hint, const char* help) {
+	std::printf("  %s%s%s\n      %s\n", name, hint != nullptr ? " " : "", hint != nullptr ? hint : "", help);
 }
 
-} // namespace
+/// `help [<command>]`: the commands grouped by component (runs in the REPL task, reads only
+/// constant tables).
+int cmd_help(int argc, char** argv) {
+	const char* only = argc >= 2 ? argv[1] : nullptr;
+	bool found = false;
+	const char* group = nullptr;
+	for (const Command& command : kCommands) {
+		if (only != nullptr && std::strcmp(only, command.name) != 0) {
+			continue;
+		}
+		if (only == nullptr && (group == nullptr || std::strcmp(group, command.group) != 0)) {
+			group = command.group;
+			std::printf("%s\n", group);
+		}
+		print_command(command.name, command.hint, command.help);
+		found = true;
+	}
+	bool heading = false;
+	for (size_t i = 0; i < g_context->extension_count; ++i) {
+		const ConsoleCommand& command = g_context->extensions[i];
+		if (only != nullptr && std::strcmp(only, command.name) != 0) {
+			continue;
+		}
+		if (only == nullptr && !heading) {
+			std::printf("components\n");
+			heading = true;
+		}
+		print_command(command.name, command.hint, command.help);
+		found = true;
+	}
+	if (!found) {
+		std::printf("no command \"%s\"; 'help' lists them all\n", only);
+		return 1;
+	}
+	if (only == nullptr) {
+		std::printf("'help <command>' shows one; commands run on the event loop (doc/diagnostics.md)\n");
+	}
+	return 0;
+}
 
-bool console_start(ConsoleContext& context) {
-	g_context = &context;
-	g_done = xSemaphoreCreateBinaryStatic(&g_done_storage);
-
+/// The registry and the line editor (the REPL task, before its first prompt).
+bool console_init() {
 	esp_console_config_t console_config = ESP_CONSOLE_CONFIG_DEFAULT();
 	console_config.max_cmdline_length = kMaxLine;
 #if CONFIG_LOG_COLORS
@@ -461,7 +754,12 @@ bool console_start(ConsoleContext& context) {
 #endif
 	esp_err_t err = esp_console_init(&console_config);
 	if (err == ESP_OK) {
-		err = esp_console_register_help_command();
+		esp_console_cmd_t descriptor = {};
+		descriptor.command = "help";
+		descriptor.help = "The commands, grouped by component; 'help <command>' shows one";
+		descriptor.hint = "[<command>]";
+		descriptor.func = &cmd_help;
+		err = esp_console_cmd_register(&descriptor);
 	}
 	for (const Command& command : kCommands) {
 		if (err != ESP_OK) {
@@ -475,8 +773,8 @@ bool console_start(ConsoleContext& context) {
 		descriptor.context = const_cast<Command*>(&command);
 		err = esp_console_cmd_register(&descriptor);
 	}
-	for (size_t i = 0; i < context.extension_count && err == ESP_OK; ++i) {
-		const ConsoleCommand& command = context.extensions[i];
+	for (size_t i = 0; i < g_context->extension_count && err == ESP_OK; ++i) {
+		const ConsoleCommand& command = g_context->extensions[i];
 		esp_console_cmd_t descriptor = {};
 		descriptor.command = command.name;
 		descriptor.help = command.help;
@@ -494,6 +792,54 @@ bool console_start(ConsoleContext& context) {
 	linenoiseSetHintsCallback(reinterpret_cast<linenoiseHintsCallback*>(&esp_console_get_hint));
 	linenoiseHistorySetMaxLen(kHistory);
 	linenoiseSetMaxLineLen(kMaxLine);
+	return true;
+}
+
+/// The REPL (the IDF's esp_console_repl_task, reading the shared port's console device). Sets the
+/// console up first, so none of that runs on the event loop.
+void repl_task(void*) {
+	if (!console_init()) {
+		vTaskDelete(nullptr);
+		return;
+	}
+	// stdin is per task: only the REPL reads the console device.
+	stdin = std::fopen(g_context->input_device, "r");
+	if (stdin == nullptr) {
+		ESP_LOGE(kTag, "console not started: cannot open %s", g_context->input_device);
+		vTaskDelete(nullptr);
+		return;
+	}
+	setvbuf(stdin, nullptr, _IONBF, 0);
+	const char* prompt = LOG_COLOR_I "hc> " LOG_RESET_COLOR;
+	// Does the terminal answer escape sequences? Otherwise no line editing (and no colors). Waits up
+	// to 500 ms for the answer - here, not on the event loop.
+	if (linenoiseProbe() != 0) {
+		linenoiseSetDumbMode(1);
+		prompt = "hc> ";
+	}
+	ESP_LOGI(kTag, "console ready on USB Serial/JTAG: type 'help'");
+	for (;;) {
+		char* line = linenoise(prompt);
+		if (line == nullptr) {
+			continue; // empty line
+		}
+		linenoiseHistoryAdd(line);
+		int result = 0;
+		esp_err_t err = esp_console_run(line, &result);
+		if (err == ESP_ERR_NOT_FOUND) {
+			std::printf("Unrecognized command ('help' lists them)\n");
+		} else if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) { // INVALID_ARG: empty command
+			std::printf("Internal error: %s\n", esp_err_to_name(err));
+		}
+		linenoiseFree(line);
+	}
+}
+
+} // namespace
+
+bool console_start(ConsoleContext& context) {
+	g_context = &context;
+	g_done = xSemaphoreCreateBinaryStatic(&g_done_storage);
 	if (xTaskCreate(&repl_task, "hc_console", kReplStack, nullptr, kReplPriority, nullptr) != pdPASS) {
 		ESP_LOGE(kTag, "console not started: cannot create its task (stack %u B)", static_cast<unsigned>(kReplStack));
 		return false;

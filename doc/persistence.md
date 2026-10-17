@@ -80,7 +80,7 @@ names and oversize writes are refused (logged) before the store is touched.
 
 ### The storage partition
 
-`hc_storage` owns the one mount of the LittleFS partition `storage` (268 KB (312 KB before the three Zigbee partitions) on the 4 MB board,
+`hc_storage` owns the one mount of the LittleFS partition `storage` (204 KB on the 4 MB board: 312 KB before the three Zigbee partitions, 268 KB before the core dump partition;
 `doc/ota.md`) at `/storage`: `storage_mount()` mounts it read-write on the first call and returns
 the first result on every later one; the web server (for the UI) and the blob store both call it,
 in either order. It never formats: a partition without a file system (no `storage.bin` flashed) or
@@ -307,10 +307,11 @@ all the time. Assumptions:
 
 - **Endurance**: 100,000 erase cycles per 4 KB sector (the SPI NOR flash of the ESP32-C6 modules).
 - **Life**: 10 years, 87,600 hours.
-- **Wear leveling**: the 268 KB (312 KB before the three Zigbee partitions) `storage` partition of the 4 MB board has 78 blocks; the web UI's
-  files (issue #14 limits them to about 50 KB gzipped) and LittleFS's own blocks leave about 60
-  free. LittleFS allocates new data blocks across the free blocks and relocates metadata pairs
-  after a number of erases (`block_cycles`), so the wear spreads; assumed: over **48 blocks**.
+- **Wear leveling**: the 204 KB `storage` partition of the 4 MB board (268 KB before the core dump
+  partition of issue #4) has 51 blocks; the web UI's files (issue #14 limits them to about 50 KB
+  gzipped) and LittleFS's own blocks leave about 35 free. LittleFS allocates new data blocks across the free blocks and relocates metadata pairs
+  after a number of erases (`block_cycles`), so the wear spreads; assumed: over **35 blocks** (48
+  before the core dump partition took 64 KB of the storage).
 - **A value record write** (at most 113 bytes) is an inline file in the directory's metadata log;
   write plus rename append about 256 bytes, so a 4 KB metadata block takes about 16 writes before
   it is compacted (one erase). Assumed with a margin of two: **one erase per 8 writes**.
@@ -325,8 +326,9 @@ At the limits:
 | History: 64 KB of samples (e.g. five 24 h rings) | 16 + 5 | 21 |
 | **Total** | | **28.5** |
 
-28.5 erases per hour × 87,600 hours = 2.5 million erases over 48 blocks = about **52,000 cycles
-per block, half the endurance** after ten years of continuous worst case. A real house writes far
+28.5 erases per hour × 87,600 hours = 2.5 million erases over 35 blocks = about **71,000 cycles
+per block, 71 % of the endurance** (52,000 over the 48 blocks before the core dump partition) after
+ten years of continuous worst case. A real house writes far
 less: setpoints and states change a few times a day, and the history budget of a typical image is
 a fraction of the cap.
 

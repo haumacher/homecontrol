@@ -55,7 +55,7 @@ can be associated with one access point only). If nobody answers within the WPS 
 | `wifi wps` | starts WPS pairing (refused while pairing is active) |
 | `wifi clear` | erases the credentials, disconnects; the device then listens for WPS |
 | `wifi status` | SSID, link state and address, workflow mode, last reason, RSSI, failures, next step, mDNS name, NTP server |
-| `status` | uptime, network, LED state, local time and whether it is synchronized, free heap, whether Improv is still offered |
+| `status` | uptime, network, LED state, local time and whether it is synchronized, heap, the boot record, the tasks' stack reserve, whether Improv is still offered (the diagnostics commands: `doc/diagnostics.md`) |
 | `tz set <posix-tz>` | stores and applies the time zone |
 | `ntp set <server>` | stores the SNTP server, restarts SNTP if it runs |
 | `settings list` | all stored settings, `wifi.psk` masked |

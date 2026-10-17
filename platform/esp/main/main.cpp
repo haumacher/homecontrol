@@ -36,6 +36,9 @@
 #include "hc/image/memory_blob_store.h"
 #include "image_console.h"
 // ---- end runtime image ----
+// ---- diagnostics (issue #4) ----
+#include "esp_diagnostics.h"
+// ---- end diagnostics ----
 
 namespace {
 
@@ -70,11 +73,14 @@ hc::DatapointModel g_model(g_clock);
 // values, history rings) live on the LittleFS partition under /storage/state ----
 hc::esp::LittleFsBlobStore g_blobs;
 // ---- end runtime image ----
+// ---- diagnostics (issue #4): reset reason, boot record, core dump, task watchdog (doc/diagnostics.md) ----
+hc::esp::EspDiagnostics g_diag;
+// ---- end diagnostics ----
 
 hc::Controller& controller() {
 	// Constructed on first use, from app_main, after the IDF is up.
 	static hc::Controller instance(hc::Platform{g_clock, g_sink, g_system, g_settings, g_time_zone, g_wifi,
-		g_light_ready ? &g_light : nullptr, &g_serial, &g_wifi});
+		g_light_ready ? &g_light : nullptr, &g_serial, &g_wifi, &g_diag});
 	return instance;
 }
 
@@ -130,6 +136,11 @@ void loop_task(void*) {
 	g_ota.init(ctl);
 	bool serial_ready = g_serial.init();
 	ctl.start(); // opens the Improv window
+	// ---- diagnostics ----
+	uint64_t started_ms = g_clock.monotonic_ms();
+	g_diag.report();
+	g_diag.start(ctl.loop(), g_clock);
+	// ---- end diagnostics ----
 	knx().init();
 	zigbee().init();
 	// ---- runtime image ----
@@ -164,11 +175,18 @@ void loop_task(void*) {
 			*external().console_command(),
 		};
 		static hc::esp::ConsoleContext console{ctl, g_queue, g_wifi, g_services, g_ota,
-			hc::esp::SerialMux::kConsoleInput, extensions, sizeof(extensions) / sizeof(extensions[0])};
+			hc::esp::SerialMux::kConsoleInput, extensions, sizeof(extensions) / sizeof(extensions[0]), &g_diag, &g_blobs};
 		hc::esp::console_start(console);
 	}
 
+	// ---- diagnostics: the loop under the task watchdog, fed every turn (a turn sleeps at most
+	// kMaxSleepMs); the time the start-up above held the loop's timers back ----
+	hc::Log::info(kTag, "event loop running %llu ms after the controller started",
+		static_cast<unsigned long long>(g_clock.monotonic_ms() - started_ms));
+	g_diag.watch_loop();
+	// ---- end diagnostics ----
 	for (;;) {
+		g_diag.feed(); // diagnostics
 		ctl.run_once();
 		uint64_t now = g_clock.monotonic_ms();
 		uint64_t deadline = ctl.next_deadline();
@@ -207,6 +225,7 @@ void init_nvs() {
 
 extern "C" void app_main(void) {
 	init_nvs();
+	g_diag.init(); // diagnostics: the reset reason and the boot record, before the controller logs
 	if (!g_queue.init()) {
 		ESP_LOGE(kTag, "controller not running: no event-loop queue");
 		return;

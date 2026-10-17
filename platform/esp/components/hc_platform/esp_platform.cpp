@@ -23,18 +23,21 @@ WallTime EspClock::wall_time() const {
 }
 
 void EspLogSink::write(LogLevel level, const char* tag, const char* message) {
+	// hc::Log has already filtered by its level for the tag (the console's `log level` sets both);
+	// ESP_LOG_LEVEL rather than ESP_LOGD, which the build compiles out above
+	// CONFIG_LOG_MAXIMUM_LEVEL, so a tag raised to debug at run time is printed.
 	switch (level) {
 	case LogLevel::error:
-		ESP_LOGE(tag, "%s", message);
+		ESP_LOG_LEVEL(ESP_LOG_ERROR, tag, "%s", message);
 		break;
 	case LogLevel::warn:
-		ESP_LOGW(tag, "%s", message);
+		ESP_LOG_LEVEL(ESP_LOG_WARN, tag, "%s", message);
 		break;
 	case LogLevel::info:
-		ESP_LOGI(tag, "%s", message);
+		ESP_LOG_LEVEL(ESP_LOG_INFO, tag, "%s", message);
 		break;
 	case LogLevel::debug:
-		ESP_LOGD(tag, "%s", message);
+		ESP_LOG_LEVEL(ESP_LOG_DEBUG, tag, "%s", message);
 		break;
 	}
 }

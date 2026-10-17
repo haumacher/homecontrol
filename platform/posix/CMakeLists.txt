@@ -147,3 +147,10 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/zigbee_adapter_test.cpp"
 	"${HC_REPO_DIR}/core/test/zigbee_probe_test.cpp"
 )
+# Diagnostics (issue #4, doc/diagnostics.md): the reset reason, the boot facts, log levels per tag, the ring's tail;
+# the POSIX diagnostics (PID, start time, the signal that stopped the previous run).
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/diagnostics_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/diagnostics_probe_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/coredump_api_test.cpp")
+target_sources(hc_posix PRIVATE src/posix_diagnostics.cpp)
+target_sources(hc_tests PRIVATE test/posix_diagnostics_test.cpp)

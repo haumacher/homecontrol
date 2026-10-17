@@ -61,6 +61,10 @@ public:
 	/// Not thread-safe: use it on a copy (or on the thread that alone appends).
 	size_t read(uint32_t after, LogLineVisitor& visitor) const;
 
+	/// Calls `visitor` for the newest `n` lines (all if fewer are held), oldest first: the console's
+	/// `log tail [n]`. Returns the number visited. Not thread-safe, like read().
+	size_t read_tail(size_t n, LogLineVisitor& visitor) const;
+
 	/// The seq of the newest line (0 if none yet).
 	uint32_t last_seq() const { return next_seq_ - 1; }
 

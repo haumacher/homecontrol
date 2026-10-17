@@ -78,7 +78,16 @@ before it, so stored settings survive the switch.
 | `updater` (factory) | 0x10000, 960 KB | same | same |
 | `app` (ota_0) | 0x100000, 2752 KB | 4096 KB | 6144 KB |
 | `otadata` | 0x3B0000, 8 KB | 0x500000 | 0x700000 |
-| `storage` (LittleFS, issue #5) | 0x3B2000, 268 KB (312 KB before the three Zigbee partitions) | 3064 KB | 9208 KB |
+| `storage` (LittleFS, issue #5) | 0x3B2000, 204 KB (268 KB before the core dump partition, 312 KB before the Zigbee partitions) | 2956 KB | 9100 KB |
+| `coredump` (issue #4) | 0x3E5000, 64 KB | 0x7E5000 | 0xFE5000 |
+| `zb_storage`, `zb_fct`, `zb_db` (issue #15) | 0x3F5000, 16 + 4 + 24 KB | 0x7F5000 | 0xFF5000 |
+
+The `coredump` partition (doc/diagnostics.md) took its 64 KB from the end of `storage`, whose offset
+stays; the 4 MB application keeps its 2752 KB (the C6 application measured 2,101,296 bytes on
+2026-10-18, 75 %). A board flashed with an older table needs the full `write_flash @flash_args` once:
+an OTA update does not change the partition table (the application then logs that it has no coredump
+partition), and the LittleFS image of the old, larger `storage` partition does not mount on the
+smaller one (the web server answers 503 until `storage.bin` is flashed).
 
 Measured on 2026-10-17 (esp32c6): the updater 794,592 bytes (19 % of its partition free), the
 application 1,239,776 bytes (56 % free). The build chooses the table with the CMake variable
@@ -114,8 +123,9 @@ panic and no watchdog. The USB topology on the desk puts both ESP boards, an LTE
 one root hub. With the transmit power limited to 11 dBm (`CONFIG_HC_WIFI_MAX_TX_POWER=44`, the
 project default in `sdkconfig.defaults`; 8.5 dBm behaved the same) the board ran without a single
 brownout. A board with a proper supply can raise the limit through menuconfig (*HomeControl
-network*); the value is in quarter dBm, 80 is the maximum. The brownout reset reason should be
-visible at boot once the diagnostics of issue #4 are in; until then the monitor shows it.
+network*); the value is in quarter dBm, 80 is the maximum. A brownout reset is visible at boot: the
+controller's first line ends in `reset reason: brownout` (a warning), and the boot record counts
+them (`brownouts` in `status` and `/api/status`; doc/diagnostics.md).
 
 ## KNX
 

@@ -37,6 +37,7 @@
 #include "hc/knx/telegram_log.h"
 #include "hc/knx/tunnel.h"
 #include "hc/log.h"
+#include "hc/posix/diagnostics.h"
 #include "hc/posix/file_settings.h"
 #include "hc/posix/platform.h"
 #include "hc/posix/udp_socket.h"
@@ -62,8 +63,8 @@ constexpr uint64_t kMaxSleepMs = 1000;
 
 volatile std::sig_atomic_t g_stop = 0;
 
-void on_signal(int) {
-	g_stop = 1;
+void on_signal(int signal) {
+	g_stop = signal;
 }
 
 /// Reads the file `path` into `out`; false (logged) if it cannot be read or exceeds the image limit.
@@ -207,7 +208,13 @@ int main(int argc, char** argv) {
 	hc::posix::FileSettings settings(settings_path);
 	settings.load();
 
-	hc::Controller controller(hc::Platform{clock, sink, system, settings, time_zone, network});
+	// The run marker beside the settings: how the previous run ended, this run's PID and start time
+	// (doc/diagnostics.md).
+	hc::posix::PosixDiagnostics diagnostics(hc::posix::PosixDiagnostics::marker_for_settings(settings_path));
+	diagnostics.start();
+
+	hc::Controller controller(hc::Platform{clock, sink, system, settings, time_zone, network,
+		nullptr, nullptr, nullptr, &diagnostics});
 	network.bind(controller.loop(), controller.connectivity());
 	hc::DatapointModel model(clock);
 	hc::DemoTechnology demo_technology(model, controller.loop(), clock);
@@ -289,7 +296,8 @@ int main(int argc, char** argv) {
 	}
 	image.flush(); // pending value and history writes (into RAM, for symmetry with the device)
 	tunnel.stop(); // DISCONNECT_REQUEST, so the gateway frees the tunnel at once
-	hc::Log::info(kTag, "stopping on signal after %llu s",
+	hc::Log::info(kTag, "stopping on %s after %llu s", hc::posix::PosixDiagnostics::signal_name(g_stop).c_str(),
 		static_cast<unsigned long long>(controller.uptime_ms() / 1000));
+	diagnostics.stopped(g_stop);
 	return 0;
 }

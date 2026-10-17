@@ -5,6 +5,7 @@
 
 #include <cstdio>
 
+#include "hc/diagnostics.h"
 #include "hc/network_settings.h"
 #include "hc/tz.h"
 #include "hc/version.h"
@@ -24,6 +25,7 @@ Controller::Controller(const Platform& platform)
 	: clock_(platform.clock),
 	  sink_(platform.log),
 	  system_(platform.system),
+	  diagnostics_(platform.diagnostics),
 	  settings_(platform.settings),
 	  time_zone_platform_(platform.time_zone),
 	  status_light_(platform.status_light),
@@ -53,7 +55,15 @@ void Controller::start() {
 	started_ = true;
 	start_ms_ = clock_.monotonic_ms();
 
-	Log::info(kTag, "HomeControl %s (build %s) starting", kVersion, build_id());
+	ResetReason reason = diagnostics_ != nullptr ? diagnostics_->reset_reason() : ResetReason::unknown;
+	Log::write(reset_reason_is_crash(reason) || reason == ResetReason::brownout ? LogLevel::warn : LogLevel::info, kTag,
+		"HomeControl %s (build %s) starting, reset reason: %s", kVersion, build_id(), reset_reason_name(reason));
+	if (diagnostics_ != nullptr) {
+		char facts[160];
+		if (format_boot_facts(*diagnostics_, facts, sizeof(facts)) > 0) {
+			Log::info(kTag, "boot: %s", facts);
+		}
+	}
 
 	read_string_setting(settings_, setting::kTimeZone, setting::kDefaultTimeZone, time_zone_, sizeof(time_zone_),
 		kTag, &posix_tz_valid);
