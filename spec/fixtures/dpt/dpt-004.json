@@ -1,0 +1,16 @@
+{
+	"main": 4,
+	"title": "Character (A8)",
+	"entries": [
+		{"dpt": "4.001", "bytes": "41", "value": "A"},
+		{"dpt": "4.001", "bytes": "7E", "value": "~"},
+		{"dpt": "4.001", "bytes": "00", "value": "", "comment": "the NUL character is the empty string"},
+		{"dpt": "4.002", "bytes": "E4", "value": "ä", "comment": "ISO 8859-1"},
+		{"dpt": "4.002", "bytes": "FF", "value": "ÿ"},
+		{"dpt": "4.001", "bytes": "E4", "error": "invalid", "comment": "4.001 is ASCII"},
+		{"dpt": "4.001", "bytes": "41 42", "error": "wrong_length"},
+		{"dpt": "4.001", "value": "ä", "error": "out_of_range", "comment": "not ASCII"},
+		{"dpt": "4.001", "value": "AB", "error": "out_of_range", "comment": "one character only"},
+		{"dpt": "4.002", "value": "€", "error": "out_of_range", "comment": "the euro sign is not in ISO 8859-1"}
+	]
+}

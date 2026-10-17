@@ -12,6 +12,8 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/backoff.cpp"
 	"${HC_CORE_DIR}/src/connectivity.cpp"
 	"${HC_CORE_DIR}/src/controller.cpp"
+	"${HC_CORE_DIR}/src/datapoint.cpp"
+	"${HC_CORE_DIR}/src/dpt.cpp"
 	"${HC_CORE_DIR}/src/event_loop.cpp"
 	"${HC_CORE_DIR}/src/hold_button.cpp"
 	"${HC_CORE_DIR}/src/improv.cpp"

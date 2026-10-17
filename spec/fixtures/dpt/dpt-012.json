@@ -1,0 +1,13 @@
+{
+	"main": 12,
+	"title": "32-bit unsigned (U32)",
+	"entries": [
+		{"dpt": "12.001", "bytes": "00 00 00 00", "value": 0},
+		{"dpt": "12.001", "bytes": "FF FF FF FF", "value": 4294967295},
+		{"dpt": "12.001", "bytes": "12 34 56 78", "value": 305419896},
+		{"dpt": "12.100", "bytes": "00 00 0E 10", "value": 3600, "comment": "seconds"},
+		{"dpt": "12.001", "value": -1, "error": "out_of_range"},
+		{"dpt": "12.001", "value": 4294967296, "error": "out_of_range"},
+		{"dpt": "12.001", "bytes": "00 00 00", "error": "wrong_length"}
+	]
+}

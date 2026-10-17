@@ -1,0 +1,28 @@
+{
+	"main": 9,
+	"title": "2-octet float (F16): (0.01 * M) * 2^E",
+	"entries": [
+		{"dpt": "9.001", "bytes": "0C 1A", "value": 21.0},
+		{"dpt": "9.001", "bytes": "0C 33", "value": 21.5},
+		{"dpt": "9.001", "bytes": "85 DA", "value": -5.5},
+		{"dpt": "9.001", "bytes": "00 00", "value": 0.0},
+		{"dpt": "9.001", "bytes": "00 01", "value": 0.01, "comment": "smallest positive value"},
+		{"dpt": "9.001", "bytes": "87 FF", "value": -0.01, "comment": "largest negative value"},
+		{"dpt": "9.001", "bytes": "07 FF", "value": 20.47, "comment": "largest mantissa with exponent 0"},
+		{"dpt": "9.002", "bytes": "80 00", "value": -20.48, "comment": "smallest mantissa with exponent 0"},
+		{"dpt": "9.001", "bytes": "7F FE", "value": 670433.28, "comment": "largest value"},
+		{"dpt": "9.002", "bytes": "F8 00", "value": -671088.64, "comment": "smallest value"},
+		{"dpt": "9", "bytes": "0C 1A", "value": 21.0, "comment": "main type only"},
+		{"dpt": "9.001", "bytes": "0C 36", "value": 21.55, "direction": "encode", "comment": "1077.5 rounds up to the mantissa 1078 (21.56)"},
+		{"dpt": "9.001", "bytes": "A1 56", "value": -273, "direction": "encode", "comment": "the lower limit of 9.001; decodes as -272.96"},
+		{"dpt": "9.004", "bytes": "36 1B", "value": 1000, "direction": "encode", "comment": "1000 lx; decodes as 1000.32"},
+		{"dpt": "9.002", "bytes": "00 00", "value": -0.004, "direction": "encode", "comment": "rounds to the mantissa 0: the sign bit stays clear"},
+		{"dpt": "9.001", "bytes": "7F FF", "error": "invalid", "comment": "0x7FFF is the invalid value"},
+		{"dpt": "9.002", "bytes": "7F FF", "error": "invalid", "comment": "0x7FFF is the invalid value"},
+		{"dpt": "9.002", "value": 670433.29, "error": "out_of_range", "comment": "above the largest value"},
+		{"dpt": "9.002", "value": -671088.65, "error": "out_of_range", "comment": "below the smallest value"},
+		{"dpt": "9.001", "value": -273.01, "error": "out_of_range", "comment": "below absolute zero"},
+		{"dpt": "9.004", "value": -1, "error": "out_of_range", "comment": "lux cannot be negative"},
+		{"dpt": "9.001", "bytes": "0C", "error": "wrong_length"}
+	]
+}

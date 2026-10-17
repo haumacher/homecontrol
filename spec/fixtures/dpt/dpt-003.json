@@ -1,0 +1,16 @@
+{
+	"main": 3,
+	"title": "3-bit controlled (B1U3: direction, step code), embedded in the APCI octet",
+	"entries": [
+		{"dpt": "3.007", "bytes": "09", "value": {"control": true, "value": 1}, "comment": "dimming: increase by 100 %"},
+		{"dpt": "3.007", "bytes": "07", "value": {"control": false, "value": 7}, "comment": "dimming: decrease by 1.56 %"},
+		{"dpt": "3.007", "bytes": "00", "value": {"control": false, "value": 0}, "comment": "stop (step code 0) as the reference sends it"},
+		{"dpt": "3.007", "bytes": "08", "value": {"control": true, "value": 0}, "comment": "stop with the control bit set"},
+		{"dpt": "3.007", "bytes": "0C", "value": {"control": true, "value": 4}, "comment": "increase by 12.5 %"},
+		{"dpt": "3.008", "bytes": "01", "value": {"control": false, "value": 1}, "comment": "blinds: up (control bit 0)"},
+		{"dpt": "3.008", "bytes": "09", "value": {"control": true, "value": 1}, "comment": "blinds: down (control bit 1)"},
+		{"dpt": "3.007", "bytes": "3F", "value": {"control": true, "value": 7}, "direction": "decode", "comment": "bits 4 and 5 are ignored"},
+		{"dpt": "3.007", "value": {"control": true, "value": 8}, "error": "out_of_range", "comment": "step codes are 0..7"},
+		{"dpt": "3.007", "bytes": "00 00", "error": "wrong_length"}
+	]
+}

@@ -1,0 +1,18 @@
+{
+	"main": 20,
+	"title": "8-bit enumeration (N8)",
+	"entries": [
+		{"dpt": "20.102", "bytes": "00", "value": 0, "comment": "HVAC mode: auto"},
+		{"dpt": "20.102", "bytes": "01", "value": 1, "comment": "comfort"},
+		{"dpt": "20.102", "bytes": "03", "value": 3, "comment": "economy"},
+		{"dpt": "20.102", "bytes": "04", "value": 4, "comment": "building protection"},
+		{"dpt": "20.102", "bytes": "05", "error": "invalid", "comment": "no HVAC mode"},
+		{"dpt": "20.102", "value": 9, "error": "out_of_range", "comment": "no HVAC mode"},
+		{"dpt": "20.105", "bytes": "00", "value": 0, "comment": "HVAC control mode: auto"},
+		{"dpt": "20.105", "bytes": "11", "value": 17, "comment": "emergency steam mode"},
+		{"dpt": "20.105", "bytes": "14", "value": 20, "comment": "NoDem"},
+		{"dpt": "20.105", "bytes": "12", "error": "invalid", "comment": "18 is reserved"},
+		{"dpt": "20.105", "value": 19, "error": "out_of_range", "comment": "19 is reserved"},
+		{"dpt": "20.102", "bytes": "01 00", "error": "wrong_length"}
+	]
+}

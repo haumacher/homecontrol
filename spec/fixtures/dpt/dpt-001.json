@@ -1,0 +1,14 @@
+{
+	"main": 1,
+	"title": "Boolean (B1), embedded in the APCI octet",
+	"entries": [
+		{"dpt": "1.001", "bytes": "00", "value": false, "comment": "off"},
+		{"dpt": "1.001", "bytes": "01", "value": true, "comment": "on"},
+		{"dpt": "1.008", "bytes": "01", "value": true, "comment": "down"},
+		{"dpt": "1", "bytes": "00", "value": false, "comment": "main type only"},
+		{"dpt": "1.001", "bytes": "3F", "value": true, "direction": "decode", "comment": "only bit 0 counts; the other APCI data bits are ignored"},
+		{"dpt": "1.001", "bytes": "02", "value": false, "direction": "decode", "comment": "only bit 0 counts"},
+		{"dpt": "1.001", "bytes": "", "error": "wrong_length"},
+		{"dpt": "1.001", "bytes": "00 00", "error": "wrong_length"}
+	]
+}

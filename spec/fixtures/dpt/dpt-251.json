@@ -1,0 +1,12 @@
+{
+	"main": 251,
+	"title": "RGBW (U8U8U8U8 r8 r4B4): levels with a validity bit per channel",
+	"entries": [
+		{"dpt": "251.600", "bytes": "FF 80 00 40 00 0F", "value": {"red": 255, "green": 128, "blue": 0, "white": 64}, "comment": "all channels valid"},
+		{"dpt": "251.600", "bytes": "FF 00 00 00 00 08", "value": {"red": 255, "green": 0, "blue": 0, "white": 0, "valid": ["red"]}, "comment": "only red valid"},
+		{"dpt": "251.600", "bytes": "00 00 00 C8 00 01", "value": {"red": 0, "green": 0, "blue": 0, "white": 200, "valid": ["white"]}},
+		{"dpt": "251.600", "bytes": "FF 80 00 40 AA FF", "value": {"red": 255, "green": 128, "blue": 0, "white": 64}, "direction": "decode", "comment": "reserved bits are ignored"},
+		{"dpt": "251.600", "value": {"red": 0, "green": 0, "blue": 0, "white": 256}, "error": "out_of_range"},
+		{"dpt": "251.600", "bytes": "FF 80 00 40 00", "error": "wrong_length"}
+	]
+}

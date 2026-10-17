@@ -1,0 +1,13 @@
+{
+	"main": 13,
+	"title": "32-bit signed (V32)",
+	"entries": [
+		{"dpt": "13.001", "bytes": "7F FF FF FF", "value": 2147483647},
+		{"dpt": "13.001", "bytes": "80 00 00 00", "value": -2147483648},
+		{"dpt": "13.001", "bytes": "FF FF FF FF", "value": -1},
+		{"dpt": "13.010", "bytes": "00 00 03 E8", "value": 1000, "comment": "Wh"},
+		{"dpt": "13.001", "value": 2147483648, "error": "out_of_range"},
+		{"dpt": "13.001", "value": -2147483649, "error": "out_of_range"},
+		{"dpt": "13.001", "bytes": "00 00 00 00 00", "error": "wrong_length"}
+	]
+}

@@ -1,0 +1,24 @@
+{
+	"main": 19,
+	"title": "Date with time (8 octets)",
+	"entries": [
+		{"dpt": "19.001", "bytes": "7E 0A 11 CD 2D 1E 20 00", "value": {"year": 2026, "month": 10, "day": 17, "dayOfWeek": 6, "hour": 13, "minute": 45, "second": 30, "noWorkingDay": true}, "comment": "Saturday 2026-10-17 13:45:30"},
+		{"dpt": "19.001", "bytes": "7E 0A 11 CD 2D 1E 80 00", "value": {"year": 2026, "month": 10, "day": 17, "dayOfWeek": 6, "hour": 13, "minute": 45, "second": 30, "fault": true}, "comment": "the fault flag: the value is still decoded"},
+		{"dpt": "19.001", "bytes": "7E 0A 11 CD 2D 1E 41 C0", "value": {"year": 2026, "month": 10, "day": 17, "dayOfWeek": 6, "hour": 13, "minute": 45, "second": 30, "workingDay": true, "summerTime": true, "clockQuality": true, "syncReliable": true}},
+		{"dpt": "19.001", "bytes": "00 00 00 00 00 00 1E 00", "value": {"year": 1900, "month": 0, "day": 0, "dayOfWeek": 0, "hour": 0, "minute": 0, "second": 0, "noYear": true, "noDate": true, "noDayOfWeek": true, "noTime": true}, "comment": "nothing valid: absent fields are not checked"},
+		{"dpt": "19.001", "bytes": "7E 0D 11 0D 2D 1E 28 00", "value": {"year": 2026, "month": 13, "day": 17, "dayOfWeek": 0, "hour": 13, "minute": 45, "second": 30, "noWorkingDay": true, "noDate": true}, "comment": "month 13 under the no-date flag"},
+		{"dpt": "19.001", "bytes": "7E 0A 11 18 00 00 20 00", "value": {"year": 2026, "month": 10, "day": 17, "dayOfWeek": 0, "hour": 24, "minute": 0, "second": 0, "noWorkingDay": true}, "comment": "24:00:00 is the end of the day"},
+		{"dpt": "19.001", "bytes": "00 01 01 00 00 00 20 00", "value": {"year": 1900, "month": 1, "day": 1, "dayOfWeek": 0, "hour": 0, "minute": 0, "second": 0, "noWorkingDay": true}, "comment": "first year"},
+		{"dpt": "19.001", "bytes": "FF 0C 1F 17 3B 3B 20 00", "value": {"year": 2155, "month": 12, "day": 31, "dayOfWeek": 0, "hour": 23, "minute": 59, "second": 59, "noWorkingDay": true}, "comment": "last year"},
+		{"dpt": "19.001", "bytes": "7E FA F1 CD ED DE 20 3F", "value": {"year": 2026, "month": 10, "day": 17, "dayOfWeek": 6, "hour": 13, "minute": 45, "second": 30, "noWorkingDay": true}, "direction": "decode", "comment": "reserved bits are ignored"},
+		{"dpt": "19.001", "bytes": "7E 0A 11 18 00 01 20 00", "error": "invalid", "comment": "24:00:01"},
+		{"dpt": "19.001", "bytes": "7E 0D 11 0D 2D 1E 20 00", "error": "invalid", "comment": "month 13"},
+		{"dpt": "19.001", "bytes": "7E 0A 00 0D 2D 1E 20 00", "error": "invalid", "comment": "day 0"},
+		{"dpt": "19.001", "bytes": "7E 0A 11 0D 3C 1E 20 00", "error": "invalid", "comment": "minute 60"},
+		{"dpt": "19.001", "bytes": "7E 0A 11 CD 2D 1E 20", "error": "wrong_length"},
+		{"dpt": "19.001", "value": {"year": 2156, "month": 1, "day": 1, "dayOfWeek": 0, "hour": 0, "minute": 0, "second": 0}, "error": "out_of_range"},
+		{"dpt": "19.001", "value": {"year": 1899, "month": 12, "day": 31, "dayOfWeek": 0, "hour": 0, "minute": 0, "second": 0}, "error": "out_of_range"},
+		{"dpt": "19.001", "value": {"year": 2026, "month": 10, "day": 17, "dayOfWeek": 0, "hour": 25, "minute": 0, "second": 0}, "error": "out_of_range"},
+		{"dpt": "19.001", "value": {"year": 2026, "month": 10, "day": 17, "dayOfWeek": 0, "hour": 24, "minute": 0, "second": 1}, "error": "out_of_range"}
+	]
+}

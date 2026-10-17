@@ -1,0 +1,13 @@
+{
+	"main": 2,
+	"title": "1-bit controlled (B2: control, value), embedded in the APCI octet",
+	"entries": [
+		{"dpt": "2.001", "bytes": "00", "value": {"control": false, "value": 0}, "comment": "no control, off"},
+		{"dpt": "2.001", "bytes": "01", "value": {"control": false, "value": 1}, "comment": "no control, on"},
+		{"dpt": "2.001", "bytes": "02", "value": {"control": true, "value": 0}, "comment": "control, off"},
+		{"dpt": "2.002", "bytes": "03", "value": {"control": true, "value": 1}, "comment": "control, true"},
+		{"dpt": "2.001", "bytes": "3D", "value": {"control": false, "value": 1}, "direction": "decode", "comment": "bits 2..5 are ignored"},
+		{"dpt": "2.001", "value": {"control": false, "value": 2}, "error": "out_of_range", "comment": "the value is one bit"},
+		{"dpt": "2.001", "bytes": "", "error": "wrong_length"}
+	]
+}

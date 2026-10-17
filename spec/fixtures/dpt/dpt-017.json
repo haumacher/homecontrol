@@ -1,0 +1,12 @@
+{
+	"main": 17,
+	"title": "Scene number (r2U6)",
+	"entries": [
+		{"dpt": "17.001", "bytes": "00", "value": 0, "comment": "scene 1"},
+		{"dpt": "17.001", "bytes": "05", "value": 5},
+		{"dpt": "17.001", "bytes": "3F", "value": 63, "comment": "scene 64"},
+		{"dpt": "17.001", "bytes": "C5", "value": 5, "direction": "decode", "comment": "reserved bits are ignored"},
+		{"dpt": "17.001", "value": 64, "error": "out_of_range"},
+		{"dpt": "17.001", "bytes": "", "error": "wrong_length"}
+	]
+}
