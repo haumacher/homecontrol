@@ -55,6 +55,10 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/dpt_test.cpp"
 	"${HC_REPO_DIR}/core/test/dpt_corpus_test.cpp"
 	"${HC_REPO_DIR}/core/test/datapoint_probe_test.cpp"
+	"${HC_REPO_DIR}/core/test/astro_test.cpp"
+	"${HC_REPO_DIR}/core/test/time_service_test.cpp"
+	"${HC_REPO_DIR}/core/test/scheduler_test.cpp"
+	"${HC_REPO_DIR}/core/test/scheduler_probe_test.cpp"
 	test/file_settings_test.cpp
 	test/posix_platform_test.cpp
 )

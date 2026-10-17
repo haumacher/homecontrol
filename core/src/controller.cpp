@@ -28,8 +28,10 @@ Controller::Controller(const Platform& platform)
 	  time_zone_platform_(platform.time_zone),
 	  status_light_(platform.status_light),
 	  connectivity_(loop_, platform.clock, platform.network),
-	  improv_(loop_, platform.clock, platform.settings, connectivity_, platform.improv, platform.scanner) {
+	  improv_(loop_, platform.clock, platform.settings, connectivity_, platform.improv, platform.scanner),
+	  time_(loop_, platform.clock, platform.time_zone, platform.settings) {
 	Log::set_sink(&sink_);
+	time_.add_listener(*this, TimeEvents::kSynchronized);
 }
 
 Controller::~Controller() {
@@ -54,13 +56,11 @@ void Controller::start() {
 	Log::info(kTag, "time zone %s", time_zone_);
 
 	WallTime wall = clock_.wall_time();
-	if (wall.synchronized) {
-		log_clock_synchronized();
-	} else {
+	if (!wall.synchronized) {
 		Log::info(kTag, "wall clock not synchronized (reads %lld s)", static_cast<long long>(wall.seconds));
-		clock_watch_ = loop_.schedule_periodic(start_ms_ + kClockWatchPeriodMs, kClockWatchPeriodMs,
-			Callback::member<Controller, &Controller::watch_clock>(this));
 	}
+	// Watches the clock; tells time_changed() when it is (or becomes) synchronized.
+	time_.start();
 
 	MemoryInfo memory = system_.memory();
 	Log::info(kTag, "free heap %u B (min %u B)", static_cast<unsigned>(memory.free_bytes),
@@ -124,6 +124,7 @@ bool Controller::set_time_zone(const char* tz, const char** error) {
 	}
 	std::snprintf(time_zone_, sizeof(time_zone_), "%s", tz);
 	time_zone_platform_.apply(time_zone_);
+	time_.refresh(); // the listeners learn about a changed UTC offset or date at once
 	char now[kTimeText];
 	bool synchronized = format_wall_time(now, sizeof(now));
 	Log::info(kTag, "time zone set to %s, local time %s%s", time_zone_, now,
@@ -153,13 +154,10 @@ void Controller::heartbeat() {
 		static_cast<unsigned>(memory.min_free_bytes));
 }
 
-void Controller::watch_clock() {
-	if (!clock_.wall_time().synchronized) {
-		return;
+void Controller::time_changed(uint8_t events) {
+	if ((events & TimeEvents::kSynchronized) != 0) {
+		log_clock_synchronized();
 	}
-	loop_.cancel(clock_watch_);
-	clock_watch_ = TimerHandle();
-	log_clock_synchronized();
 }
 
 void Controller::log_clock_synchronized() {
