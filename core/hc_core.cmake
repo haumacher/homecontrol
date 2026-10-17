@@ -42,3 +42,12 @@ if(GIT_FOUND)
 		set(HC_CORE_BUILD_ID "${_hc_git_describe}")
 	endif()
 endif()
+
+# The rule interpreter (doc/rules.md).
+list(APPEND HC_CORE_SOURCES
+	"${HC_CORE_DIR}/src/rules/value.cpp"
+	"${HC_CORE_DIR}/src/rules/loader.cpp"
+	"${HC_CORE_DIR}/src/rules/parameter_store.cpp"
+	"${HC_CORE_DIR}/src/rules/printer.cpp"
+	"${HC_CORE_DIR}/src/rules/engine.cpp"
+)

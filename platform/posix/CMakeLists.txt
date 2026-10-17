@@ -68,3 +68,10 @@ target_compile_definitions(hc_tests PRIVATE HC_SPEC_DIR="${HC_REPO_DIR}/spec")
 
 include("${HC_REPO_DIR}/third_party/doctest/cmake/doctest.cmake")
 doctest_discover_tests(hc_tests)
+
+# The rule interpreter's tests (the corpus spec/fixtures/rules is read at run time).
+target_sources(hc_tests PRIVATE
+	"${HC_REPO_DIR}/core/test/rules_corpus_test.cpp"
+	"${HC_REPO_DIR}/core/test/rules_unit_test.cpp"
+	"${HC_REPO_DIR}/core/test/rules_probe_test.cpp"
+)
