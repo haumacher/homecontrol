@@ -58,3 +58,9 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/knx/telegram_log.cpp"
 	"${HC_CORE_DIR}/src/knx/tunnel.cpp"
 )
+
+# State persistence and short-term history (issue #21, doc/persistence.md).
+list(APPEND HC_CORE_SOURCES
+	"${HC_CORE_DIR}/src/value_store.cpp"
+	"${HC_CORE_DIR}/src/history.cpp"
+)

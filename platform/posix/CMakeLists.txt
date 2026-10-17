@@ -86,3 +86,10 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/knx_probe_test.cpp"
 	test/posix_udp_test.cpp
 )
+
+# State persistence and short-term history (issue #21).
+target_sources(hc_tests PRIVATE
+	"${HC_REPO_DIR}/core/test/value_store_test.cpp"
+	"${HC_REPO_DIR}/core/test/history_test.cpp"
+	"${HC_REPO_DIR}/core/test/restore_probe_test.cpp"
+)

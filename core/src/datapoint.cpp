@@ -505,6 +505,29 @@ DatapointStatus DatapointModel::report_stale(Technology& technology, uint16_t id
 	return DatapointStatus::ok;
 }
 
+DatapointStatus DatapointModel::restore(uint16_t id, const Value& value) {
+	if (refuse_busy("restore")) {
+		return DatapointStatus::busy;
+	}
+	Datapoint* dp = lookup(id, "restore");
+	if (dp == nullptr) {
+		return DatapointStatus::unknown_id;
+	}
+	if (dp->quality_ != Quality::unknown) {
+		Log::error(kTag, "refusing restore of '%s': it has a %s value already", dp->name_, quality_name(dp->quality_));
+		return DatapointStatus::busy;
+	}
+	std::optional<Value> converted = value.convert(dp->type_);
+	if (!converted) {
+		Log::error(kTag, "refusing restore of '%s': a %s value for a %s datapoint", dp->name_,
+			value_type_name(value.type()), value_type_name(dp->type_));
+		return DatapointStatus::wrong_type;
+	}
+	dp->value_ = *converted;
+	dp->quality_ = Quality::stale;
+	return DatapointStatus::ok;
+}
+
 DatapointStatus DatapointModel::command(uint16_t id, const Value& value) {
 	if (refuse_busy("command")) {
 		return DatapointStatus::busy;
