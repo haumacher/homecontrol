@@ -168,6 +168,11 @@ delivery (this list grows; add every trap you fall into):
 - **The Playwright MCP writes into the repository root** (`.playwright-mcp/`, `recording.json`),
   not the scratchpad; both are in `.gitignore` — never `git add -A` while a browser session is
   open in another agent.
+- **A failed CMake configure leaves the previous test binary in place, and `ctest` then passes
+  against it.** After resolving a merge in `core/hc_core.cmake` or `platform/posix/CMakeLists.txt`
+  (both sides append to the same `list(APPEND …)`/`target_sources(…)` block, and a keep-both
+  resolution can swallow a closing parenthesis), read the build output for `FAILED: build.ninja`
+  before believing a green `ctest`, and compare the test count with what the branches should add.
 - **A merge is not gated by the commits it merges.** Run the full gate on the merged tree before
   pushing, even when every branch was green on its own.
 
