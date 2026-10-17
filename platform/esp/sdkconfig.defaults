@@ -27,3 +27,8 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 # the bootloader rejects a byte-identical partition table and the app dies with illegal
 # instructions. 40 MHz is reliable; see doc/hardware.md.
 CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+
+# Transmit power limit (quarter dBm): 44 = 11 dBm. At the driver's maximum (80 = 20 dBm) the
+# development C6 on its USB supply browned out every 10–80 s while WPS was probing; at 11 dBm (and
+# at 8.5 dBm) it ran without a reset. Raise it for a board with a proper supply; see doc/hardware.md.
+CONFIG_HC_WIFI_MAX_TX_POWER=44

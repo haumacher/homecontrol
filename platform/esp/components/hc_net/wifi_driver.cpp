@@ -10,6 +10,7 @@
 #include "esp_mac.h"
 #include "esp_wifi.h"
 #include "esp_wps.h"
+#include "sdkconfig.h"
 #include "hc/network_settings.h"
 
 namespace hc {
@@ -211,6 +212,16 @@ void WifiDriver::disable_power_save() {
 	esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
 	if (err != ESP_OK) {
 		ESP_LOGW(kTag, "cannot disable WiFi power save: %s", esp_err_to_name(err));
+	}
+	// The transmit power limit (quarter dBm) is a board decision: a weak supply browns out at the
+	// driver's maximum of 20 dBm.
+	err = esp_wifi_set_max_tx_power(CONFIG_HC_WIFI_MAX_TX_POWER);
+	if (err != ESP_OK) {
+		ESP_LOGW(kTag, "cannot set the WiFi transmit power limit: %s", esp_err_to_name(err));
+	} else {
+		int8_t power = 0;
+		esp_wifi_get_max_tx_power(&power);
+		ESP_LOGI(kTag, "WiFi transmit power limit %d.%02d dBm", power / 4, (power % 4) * 25);
 	}
 }
 

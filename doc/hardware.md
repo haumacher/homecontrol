@@ -78,6 +78,18 @@ Diagnosis recipe when a board misbehaves right after a verified flash: `esptool.
 <offset> <length> <file>` and `cmp` against the build output. Identical content plus boot errors
 means the read side, not the write side.
 
+## Supply and transmit power
+
+The development C6 browns out on its USB supply when WiFi transmits at the driver's maximum of
+20 dBm: with the network firmware in WPS mode (continuous probing) the chip logged
+`BOD: Brownout detector was triggered` and reset every 10–80 s, 91 times in ten minutes, with no
+panic and no watchdog. The USB topology on the desk puts both ESP boards, an LTE modem and a hub on
+one root hub. With the transmit power limited to 11 dBm (`CONFIG_HC_WIFI_MAX_TX_POWER=44`, the
+project default in `sdkconfig.defaults`; 8.5 dBm behaved the same) the board ran without a single
+brownout. A board with a proper supply can raise the limit through menuconfig (*HomeControl
+network*); the value is in quarter dBm, 80 is the maximum. The brownout reset reason should be
+visible at boot once the diagnostics of issue #4 are in; until then the monitor shows it.
+
 ## KNX
 
 The controller reaches the bus over KNXnet/IP. Two installations are reachable from the

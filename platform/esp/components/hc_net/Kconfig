@@ -14,4 +14,15 @@ menu "HomeControl network"
 			ESP32-S3), a strapping pin that is read only after boot. The pin is configured as an
 			input with the internal pull-up; pressed means low.
 
+	config HC_WIFI_MAX_TX_POWER
+		int "Maximum WiFi transmit power (quarter dBm, 8..84)"
+		range 8 84
+		default 80
+		help
+			Passed to esp_wifi_set_max_tx_power() when the station starts: 80 is 20 dBm, the
+			driver's maximum; 44 is 11 dBm. A lower value saves supply current during
+			transmit bursts: a board on a weak USB supply browns out at full power (the
+			development C6 did, doc/hardware.md). Range check and lower values as the chip
+			supports them; the driver rounds to the next supported step.
+
 endmenu

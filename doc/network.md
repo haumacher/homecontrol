@@ -115,6 +115,14 @@ the light; the board's LED is chosen in menuconfig under *HomeControl status LED
 on GPIO8 (default on the ESP32-C6 devkits, dim cyan), a plain GPIO LED (optionally active low), or
 none (default for the S3 build).
 
+## Transmit power
+
+`CONFIG_HC_WIFI_MAX_TX_POWER` (menuconfig *HomeControl network*, quarter dBm, 8..84) limits the
+station's transmit power when it starts; the limit is logged (`WiFi transmit power limit …`). The
+project default is 11 dBm (44) because the development board browns out at the driver's maximum
+of 20 dBm on its USB supply (`doc/hardware.md`). Lower power means shorter range: raise it for a
+board with a proper supply.
+
 ## mDNS
 
 When the network first comes up the controller announces itself:
