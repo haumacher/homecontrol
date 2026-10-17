@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2026 Bernhard Haumacher -->
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="color-scheme" content="dark light">
+	<meta name="theme-color" content="#111318">
+	<title data-i18n="app.title">HomeControl</title>
+	<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+	<link rel="stylesheet" href="/style.css">
+	<script type="module" src="/app.js"></script>
+</head>
+<body>
+	<div class="app" id="app">
+		<aside class="sidebar" id="sidebar" aria-label="Navigation">
+			<div class="sidebar-head">
+				<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 11h3v9h5v-6h4v6h5v-9h3z"/></svg>
+				<span class="brand" data-i18n="app.title">HomeControl</span>
+			</div>
+			<nav class="nav" id="nav">
+				<a href="/" data-route="/" class="nav-item">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></svg>
+					<span data-i18n="nav.overview">Overview</span>
+				</a>
+				<a href="/log" data-route="/log" class="nav-item">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v2H4zm0 4h16v2H4zm0 4h10v2H4zm0 4h16v2H4z"/></svg>
+					<span data-i18n="nav.log">Log</span>
+				</a>
+				<a href="/settings" data-route="/settings" class="nav-item">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.4 2.9a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.4 7.4 0 0 0 1.7 1L11 21h4l.4-2.9a7.4 7.4 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
+					<span data-i18n="nav.settings">Settings</span>
+				</a>
+			</nav>
+		</aside>
+		<div class="scrim" id="scrim" hidden></div>
+		<div class="main">
+			<header class="topbar">
+				<button class="icon-button menu-button" id="menu-button" type="button" data-i18n-label="nav.menu" aria-label="Menu">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+				</button>
+				<h1 class="title" id="title" data-i18n="app.title">HomeControl</h1>
+				<span class="live" id="live" hidden></span>
+			</header>
+			<main class="content" id="content" aria-live="polite">
+				<p class="muted" data-i18n="app.loading">Loading…</p>
+			</main>
+		</div>
+	</div>
+	<noscript><p class="noscript" data-i18n="app.noscript">HomeControl needs JavaScript.</p></noscript>
+</body>
+</html>

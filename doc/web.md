@@ -1,0 +1,210 @@
+# The web server and the device UI
+
+The controller serves its own UI and a JSON API (issue #5): onboarding, login, an overview of the
+datapoints with live values, the settings, the log. The model is Home Assistant's dashboard (a dark
+sidebar layout with tiles, phone first) without its bulk: no add-ons, no user management, no
+history database, no frameworks. The API contract is `spec/api.md`.
+
+## Pieces
+
+| Where | What |
+| --- | --- |
+| `core/` `WebApi` | the REST API: routing, authentication, CSRF check, JSON in and out |
+| `core/` `LiveFeed` | the WebSocket feed: clients, snapshots, batched updates, commands, status pushes |
+| `core/` `Auth` | password (PBKDF2), sessions, tokens, rate limiting |
+| `core/` `websocket` | the RFC 6455 codec (handshake key, frame decoder, close payload, UTF-8 check) |
+| `core/` `JsonWriter`, `json_parse`, `value_json` | JSON without allocation; datapoint values in JSON |
+| `core/` `LogRing` | the last ~4 KB of log lines for `GET /api/log` |
+| `core/` `DemoTechnology` | eight simulated datapoints for UI development (POSIX `--demo`, console `web demo`) |
+| `platform/esp/components/hc_web` | esp_http_server, the job hand-over to the loop, the WebSocket send pool, LittleFS, the `web` console command |
+| `platform/posix/` `WebServer` | cpp-httplib for HTTP, the core codec on a raw socket for the WebSocket |
+| `web/ui/dist/` | the UI: plain ES modules, one stylesheet, no build step |
+| `platform/esp/tools/gen_ui_image.py` | gzip and content hash for the LittleFS image |
+
+Everything that decides something is in the core and has host tests; the platforms carry bytes.
+Both servers call the core only on the event loop's thread: the ESP server copies each request into
+a static job slot and posts it through the `LoopQueue` (the httpd task waits up to 5 s, then answers
+503 `api.busy`); the POSIX server runs it through a `LoopExecutor` the main loop drains.
+
+## Decisions
+
+### Transport: plain HTTP
+
+The device speaks HTTP on port 80, no TLS. The session cookie and the password cross the LAN in
+clear; anyone on the same network who can sniff traffic (an open or shared WiFi, a compromised
+device) can take over a session. Accepted for now because the device lives in a home LAN behind the
+router, and because TLS on a device that has no public name has no good answer yet: a self-signed
+certificate makes every browser warn (training users to click through), and a certificate for a
+local name needs a public domain and a DNS-01 renewal path. TLS also costs about 40 KB of RAM per
+connection with mbedTLS. It stays issue #20's open decision. Remote access goes through a VPN to
+the home network, not by exposing the device.
+
+### One device password, set by onboarding
+
+A new device has no password. It serves the UI, and the UI shows only the onboarding page; the API
+refuses everything except the session query and onboarding with 403 `auth.onboarding_required`
+(a visible message in the UI, a JSON reason for scripts). The first person to open the page sets
+the password (8 to 64 characters) and is logged in. The window is real (someone else on the LAN
+could be first), and it is as short as the owner makes it; the alternative, a printed default
+password, would be the same for every device or need a per-device label. A forgotten password is
+reset on the serial console (`web password clear`), which needs physical access.
+
+There is a single password and no users: the controller has one owner. Rejected: user accounts
+(roles, management pages, all for a household that shares one panel).
+
+### Password storage: PBKDF2-HMAC-SHA256, 10 000 iterations
+
+The setting `web.pw` holds `pbkdf2-sha256$<iterations>$<salt hex>$<key hex>` with a 16-byte random
+salt and a 32-byte key. The format carries its iteration count, so a later build can raise it and
+still verify old records (a persisted format, frozen as such). The hash runs outside the event loop
+(two passes through `WebApi::handle()`: the first validates and asks for a hash, the platform
+computes it in its server thread, the second verifies), so a login never stalls the controller.
+
+The ESP build uses mbedTLS (`mbedtls_pkcs5_pbkdf2_hmac_ext`, SHA on the hardware accelerator), the
+POSIX build the core's software implementation. The cost on the host is 33 ms (Debug build). The
+cost on the C6 is logged on every login and onboarding (`PBKDF2-HMAC-SHA256, 10000 iterations: N
+ms`, tag `hc.web`); it was not measured on the board in this change (no board access) and is
+expected between 0.2 and 0.6 s (four SHA-256 blocks per iteration through the driver). 10 000
+iterations is below OWASP's 600 000 for PBKDF2-SHA256, which would take minutes on the C6; with
+the rate limiting below, an online attacker gets a few guesses per hour, and an offline attacker
+needs the flash contents first. Rejected: bcrypt/scrypt/Argon2 (memory-hard by design, which is
+what a 512 KB device cannot afford; no hardware help).
+
+### Sessions
+
+A login creates a session: a random 128-bit id (hardware RNG), sent as the cookie
+`hc_session=<32 hex>; Path=/; HttpOnly; SameSite=Strict` without an expiry (it ends with the
+browser session). The device keeps 8 session slots in RAM; a session ends after 24 h without a
+request, at logout, when the password is reset, and at every reboot (nothing is persisted, so a
+stolen cookie dies with the next restart). A ninth login replaces the least recently used session.
+Each slot has a generation counter, so a WebSocket bound to an ended session notices within a second
+and closes. Rejected: signed stateless tokens (JWT; they cannot be revoked without state, and the
+state is 8 slots anyway); persisting sessions in NVS (flash wear on every login, and a reboot as a
+cheap "log everybody out" is a feature).
+
+### Tokens for machines
+
+Scripts and other systems use bearer tokens: `Authorization: Bearer hct_<32 hex>`. They are created
+on the serial console with `web token create <name>`, which prints the token once; the device stores
+only its SHA-256 (`web.tok.N` = `<name>$<hash hex>`, 8 slots), so a flash dump does not reveal
+tokens. `web token list` shows the names, `web token revoke <name>` deletes one (its WebSocket
+connections close within a second). Creating tokens on the console instead of the UI keeps the
+browser out of the business of minting long-lived credentials; a UI page can follow if needed.
+
+### Rate limiting
+
+Failed logins are counted per source address (8 slots, the oldest is reused). The first 5 failures
+are free; each further one blocks the address for 30 s, doubling up to 15 min; a block refuses even
+the right password, and the API says how long (`retry_after_s`, `Retry-After`; the UI shows a
+countdown). A success clears the address. The counters are in RAM: a reboot clears them, which an
+attacker cannot trigger from the network.
+
+### Refusals and CSRF
+
+An unauthenticated request gets 401 with `{"error": "...", "code": "auth.required"}`, never a
+redirect: the UI decides to show the login page, scripts get a reason. State-changing requests with
+the cookie must carry `X-Requested-With: HomeControl`; `SameSite=Strict` already keeps the cookie
+off cross-site requests in current browsers, and the header covers older ones (a form cannot set
+it, a script cannot without a preflight the device never grants). The WebSocket checks that the
+`Origin` of the handshake names the `Host` it was sent to.
+
+### The API
+
+REST under `/api/` for everything that is a request (status, datapoints, commands, log, settings,
+authentication) and one WebSocket for what changes by itself (datapoint values, the status). The
+settings the UI may change are a whitelist: `tz`, `ntp.server`, `update.url`; `wifi.ssid` is shown
+read-only; secrets never appear. `knx.gateway` joins the whitelist with the KNX package (issue #7),
+which is not on this branch. Rejected: everything over the WebSocket (no curl, no caching
+semantics, no status codes); server-sent events (a second mechanism for commands would still be
+needed); MQTT (a broker dependency for a local UI).
+
+### Live values: one WebSocket, batched per loop turn
+
+`/ws` accepts at most 4 clients (the fifth gets an error message and close code 1013, and the UI
+says so). A client authenticates with the cookie of the handshake or with a token in its first
+message, then subscribes: the feed sends a snapshot of all datapoints in chunks of up to 1400 bytes
+(4 chunks per client and loop turn, so a large model does not hog the loop), then the updates. The
+`DatapointListener` callback only records the id of a changed datapoint (each once, up to 32 per
+turn) and posts one flush; the flush sends one `datapoints` message per client with the current
+values. A burst of updates (a KNX scene) becomes one message, and a datapoint that changes three
+times in a turn is sent once, with its latest value. The status goes out when one of its discrete
+fields changes and every 10 s as a heartbeat. When a send fails (the platform's buffers are full),
+the client is marked for a fresh snapshot instead of queuing without bound: memory stays fixed, and
+a slow client converges. The UI pings every 20 s and treats 45 s of silence as a dead connection.
+
+### The UI: static files from LittleFS, no framework
+
+`web/ui/dist/` is the UI as it is served: `index.html`, one stylesheet and ES modules (router,
+pages, the live connection, the text table), about 55 KB, 19 KB gzip-compressed. No framework and
+no bundler: browsers load ES modules natively, the code stays readable in the device's own files,
+and there is no node toolchain in the build. Rejected: Preact/Lit (another dependency and a build
+step for a handful of pages); server-rendered pages (state on the device, a reload per action);
+files compiled into the firmware (every UI change would be a firmware build and an OTA of 1.3 MB).
+
+The firmware build turns it into `storage.bin`: `gen_ui_image.py` writes each file gzip-compressed
+(level 9, no time stamps: the output depends on the content only) plus `VERSION`, the first 16 hex
+digits of a SHA-256 over all paths and contents; joltwallet/littlefs's
+`littlefs_create_partition_image` packs that into a LittleFS image of the storage partition
+(0x3b2000, 312 KB on the 4 MB layout), and `flash_args`, `flasher_args.json`, the web flasher's
+manifest (sixth part) and `scripts/flasher-local.sh` carry it. The image tool is littlefs-python,
+which the component installs into a venv in the build directory on the first build (needs pip
+access once). The device mounts the partition read-only at `/storage` (never formats it: a missing
+image is reported, not hidden behind an empty file system), serves `/ui/<path>.gz` with
+`Content-Encoding: gzip`, `ETag: "<VERSION>"` and `Cache-Control: no-cache` (the browser revalidates
+and gets 304 until the UI changes), routes `/api/*` and `/ws` first, and answers every
+extensionless path with `index.html` so that `/settings` can be reloaded. Without an image every
+page is a 503 that says to flash `storage.bin`; the API works regardless. One hash for all files is
+coarser than per-file ETags (a UI change refetches 19 KB), and simpler on the device.
+
+**Gap**: the OTA update replaces the application, not the storage partition. A firmware update
+that needs a newer UI must come with a UI image flashed over USB or the web flasher, until the
+update manifest grows a UI part (to do with the release workflow).
+
+### Pages
+
+Dark by default, light when the browser prefers it (`prefers-color-scheme`); a sidebar with
+Overview, Log and Settings that becomes a drawer below 760 px; a top bar with the device name and
+the live state. Overview: one tile per datapoint with its live value, tap-to-toggle for writable
+booleans, the refusal shown on the tile. Settings: the device status (network, time, memory, update,
+web) and the editable settings with their validation messages. Log: the ring's lines, polled every
+3 s. No external resources (fonts, icons and scripts are all local).
+
+### Texts
+
+Every user-visible string goes through one lookup, `t(key)` in `web/ui/dist/i18n.js`, over an
+inline English table (`nav.overview`, `auth.password.too_short`, ...); static HTML marks its texts
+with `data-i18n`. The API answers refusals with a stable `code` that is a key of the same table
+and the English reason alongside, which the UI shows only for codes it does not know. Language
+packs follow the phoneblock approach of issue #24: a `ui.lang` setting, English compiled in, JSON
+packs per language loaded lazily, and pack strings treated as untrusted (only ever set as
+`textContent`, never interpolated into HTML). The packs themselves are not part of this change.
+
+### POSIX: the same API, the WebSocket on its own port
+
+`homecontrol --http <port>` (default 8080, 0 = off) serves the API and `web/ui/dist` with
+cpp-httplib (vendored in `third_party/cpp-httplib`, MIT), and `--demo` loads the demo datapoints.
+cpp-httplib 0.61 has a WebSocket of its own, but its handler API does not let the core's feed own
+the connection, and the raw socket cannot be taken over from a request handler. The POSIX build
+therefore listens for the WebSocket on the HTTP port + 1 with a small server around the core's
+`websocket` codec (handshake, `FrameDecoder`, ping/pong, close), a thread per connection;
+`GET /api/auth/session` tells the UI the port (`ws_port`), and `GET /ws` on the HTTP port answers
+426 with the port. The codec has host tests, so the framing the POSIX build relies on is tested
+code, not glue.
+
+## ESP specifics
+
+- esp_http_server on port 80, 10 sockets with least-recently-used purging, a 6 KB task stack,
+  wildcard URI matching. `CONFIG_HTTPD_WS_SUPPORT`, request headers up to 1 KB
+  (`CONFIG_HTTPD_MAX_REQ_HDR_LEN`; browsers exceed the default 512 B), `CONFIG_LWIP_MAX_SOCKETS=16`.
+- The httpd task never touches the core: requests, WebSocket opens and messages go through a static
+  job slot to the event loop; closes and "writable again" are posted. Outgoing WebSocket messages are
+  copied into a pool of 8 buffers of 1400 bytes and sent by work queued to the httpd task
+  (`httpd_queue_work`); a send checks that the socket still belongs to the same connection (socket
+  number plus a generation), a failed send closes the connection. The loop never blocks on a socket.
+- The `web` console command: `web status`, `web token create|list|revoke`, `web password clear`,
+  `web demo` (the demo datapoints until the next restart).
+- Static RAM of this package on the C6 (`idf.py size`, .bss): +38 KB, of which the web server object
+  (API, feed, auth, the API's log copy) 7.7 KB, the send pool 11 KB, the response buffer 8 KB, the
+  job slot 3.3 KB, the file chunk 1.4 KB, the controller's log ring 4 KB. The heap the server takes
+  at run time (httpd task stack, sockets, lwIP buffers) is logged by the firmware: `free heap` lines
+  before and after the start and on every WebSocket connect and disconnect (tag `hc.web`).

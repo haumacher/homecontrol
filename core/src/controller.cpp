@@ -28,13 +28,18 @@ Controller::Controller(const Platform& platform)
 	  time_zone_platform_(platform.time_zone),
 	  status_light_(platform.status_light),
 	  connectivity_(loop_, platform.clock, platform.network),
-	  improv_(loop_, platform.clock, platform.settings, connectivity_, platform.improv, platform.scanner) {
+	  improv_(loop_, platform.clock, platform.settings, connectivity_, platform.improv, platform.scanner),
+	  log_ring_(&platform.clock) {
 	Log::set_sink(&sink_);
+	Log::set_ring(&log_ring_);
 }
 
 Controller::~Controller() {
 	if (Log::sink() == &sink_) {
 		Log::set_sink(nullptr);
+	}
+	if (Log::ring() == &log_ring_) {
+		Log::set_ring(nullptr);
 	}
 }
 

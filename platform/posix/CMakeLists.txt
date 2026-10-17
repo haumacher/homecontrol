@@ -15,7 +15,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 	set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
-set(HC_REPO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+get_filename_component(HC_REPO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." REALPATH)
 
 # The core's rules apply to everything built here: no exceptions, no RTTI, warnings are errors.
 add_compile_options(-Wall -Wextra -Werror -fno-exceptions -fno-rtti)
@@ -26,8 +26,18 @@ add_library(hc_posix STATIC src/platform.cpp src/file_settings.cpp)
 target_include_directories(hc_posix PUBLIC include)
 target_link_libraries(hc_posix PUBLIC hc_core)
 
+# The web server (doc/web.md): cpp-httplib (third_party/cpp-httplib, MIT, v0.61.0) for HTTP, the core's
+# WebSocket codec on its own port. A separate library, so the test runner does not link it.
+find_package(Threads REQUIRED)
+add_library(hc_posix_web STATIC src/web_server.cpp)
+target_link_libraries(hc_posix_web PUBLIC hc_posix Threads::Threads)
+target_include_directories(hc_posix_web SYSTEM PRIVATE "${HC_REPO_DIR}/third_party/cpp-httplib")
+target_compile_definitions(hc_posix_web PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
+
 add_executable(homecontrol src/main.cpp)
-target_link_libraries(homecontrol PRIVATE hc_posix)
+target_link_libraries(homecontrol PRIVATE hc_posix hc_posix_web)
+# The UI files served by default (homecontrol --www <dir> overrides).
+target_compile_definitions(homecontrol PRIVATE HC_WEB_UI_DIR="${HC_REPO_DIR}/web/ui/dist")
 
 # Unit tests: doctest, vendored. The core's tests (core/test) and the POSIX platform's
 # (platform/posix/test) share one runner. One CTest entry per test case (discovered after each build), so
@@ -55,6 +65,14 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/dpt_test.cpp"
 	"${HC_REPO_DIR}/core/test/dpt_corpus_test.cpp"
 	"${HC_REPO_DIR}/core/test/datapoint_probe_test.cpp"
+	"${HC_REPO_DIR}/core/test/sha_test.cpp"
+	"${HC_REPO_DIR}/core/test/json_test.cpp"
+	"${HC_REPO_DIR}/core/test/websocket_test.cpp"
+	"${HC_REPO_DIR}/core/test/log_ring_test.cpp"
+	"${HC_REPO_DIR}/core/test/auth_test.cpp"
+	"${HC_REPO_DIR}/core/test/web_api_test.cpp"
+	"${HC_REPO_DIR}/core/test/web_probe_test.cpp"
+	"${HC_REPO_DIR}/core/test/live_feed_test.cpp"
 	test/file_settings_test.cpp
 	test/posix_platform_test.cpp
 )

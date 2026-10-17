@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Bernhard Haumacher
 #
-# Copies the local esp32c6 build (application and OTA updater) into web/flasher/firmware/esp32c6/
+# Copies the local esp32c6 build (application, OTA updater and the web UI image) into web/flasher/firmware/esp32c6/
 # (not versioned), so that the web flasher can be tested from this checkout:
 #
 #   scripts/flasher-local.sh
@@ -21,7 +21,7 @@ TARGET="${REPO}/web/flasher/firmware/esp32c6"
 MANIFEST="${REPO}/web/flasher/manifest.json"
 
 for file in "${BUILD}/bootloader/bootloader.bin" "${BUILD}/partition_table/partition-table.bin" \
-	"${BUILD}/homecontrol.bin" "${BUILD}/ota_data_ota0.bin" "${BUILD}/flasher_args.json"; do
+	"${BUILD}/homecontrol.bin" "${BUILD}/ota_data_ota0.bin" "${BUILD}/storage.bin" "${BUILD}/flasher_args.json"; do
 	if [[ ! -f "${file}" ]]; then
 		echo "missing ${file}: build the esp32c6 application first" >&2
 		exit 1
@@ -54,6 +54,6 @@ PY
 
 mkdir -p "${TARGET}"
 cp "${BUILD}/bootloader/bootloader.bin" "${BUILD}/partition_table/partition-table.bin" \
-	"${BUILD}/homecontrol.bin" "${BUILD}/ota_data_ota0.bin" "${UPDATER}" "${TARGET}/"
-echo "copied the esp32c6 build (application and updater) to ${TARGET}"
+	"${BUILD}/homecontrol.bin" "${BUILD}/ota_data_ota0.bin" "${BUILD}/storage.bin" "${UPDATER}" "${TARGET}/"
+echo "copied the esp32c6 build (application, updater and web UI image) to ${TARGET}"
 ls -l "${TARGET}"

@@ -25,6 +25,16 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/tz.cpp"
 	"${HC_CORE_DIR}/src/version.cpp"
 	"${HC_CORE_DIR}/src/update_check.cpp"
+	# The web server base (issue #5, doc/web.md)
+	"${HC_CORE_DIR}/src/auth.cpp"
+	"${HC_CORE_DIR}/src/demo.cpp"
+	"${HC_CORE_DIR}/src/json.cpp"
+	"${HC_CORE_DIR}/src/live_feed.cpp"
+	"${HC_CORE_DIR}/src/log_ring.cpp"
+	"${HC_CORE_DIR}/src/sha.cpp"
+	"${HC_CORE_DIR}/src/value_json.cpp"
+	"${HC_CORE_DIR}/src/web_api.cpp"
+	"${HC_CORE_DIR}/src/websocket.cpp"
 )
 
 # The build id is taken at configure time; reconfigure to refresh it after a commit.

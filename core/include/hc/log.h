@@ -16,6 +16,8 @@
 
 namespace hc {
 
+class LogRing;
+
 /// Log severity, most severe first. A message is emitted if its level is at most the threshold.
 enum class LogLevel : uint8_t {
 	error = 0,
@@ -53,6 +55,10 @@ public:
 
 	static void set_sink(LogSink* sink);
 	static LogSink* sink();
+
+	/// Installs the ring every emitted line is mirrored into (nullptr: none). hc::LogRing.
+	static void set_ring(LogRing* ring);
+	static LogRing* ring();
 
 	static void set_level(LogLevel threshold);
 	static LogLevel level();

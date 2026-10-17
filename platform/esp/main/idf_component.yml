@@ -6,3 +6,5 @@ dependencies:
   idf: ">=5.3"
   espressif/mdns: "^1.4.0"
   espressif/led_strip: "~3.0.0"
+  # The LittleFS image with the web UI in the storage partition (doc/web.md).
+  joltwallet/littlefs: "^1.14.0"

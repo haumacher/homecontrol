@@ -320,6 +320,7 @@ constexpr UBaseType_t kReplPriority = 2;
 /// it finishes.
 struct PendingCommand {
 	const Command* command = nullptr;
+	const ConsoleCommand* extension = nullptr;
 	int argc = 0;
 	char* argv[kMaxArgs] = {};
 	char storage[kMaxLine] = {};
@@ -334,7 +335,9 @@ StaticSemaphore_t g_done_storage;
 SemaphoreHandle_t g_done = nullptr;
 
 void run_pending(void*, const LoopMessage&) {
-	g_pending.result = g_pending.command->run(*g_context, g_pending.argc, g_pending.argv);
+	g_pending.result = g_pending.command != nullptr
+		? g_pending.command->run(*g_context, g_pending.argc, g_pending.argv)
+		: g_pending.extension->run(g_pending.extension->context, g_pending.argc, g_pending.argv);
 	std::fflush(stdout);
 	g_pending.done.store(g_pending.sequence);
 	g_pending.busy.store(false);
@@ -349,12 +352,9 @@ void forget_history() {
 	linenoiseHistorySetMaxLen(32);
 }
 
-/// REPL task: copies the arguments, hands the command to the event loop and waits for it.
-int dispatch(void* context, int argc, char** argv) {
-	const Command* command = static_cast<const Command*>(context);
-	if (std::strcmp(command->name, "wifi") == 0 && argc >= 2 && std::strcmp(argv[1], "set") == 0) {
-		forget_history();
-	}
+/// REPL task: copies the arguments, hands the command (built-in or extension) to the event loop and
+/// waits for it.
+int submit(const Command* command, const ConsoleCommand* extension, int argc, char** argv) {
 	if (argc > kMaxArgs) {
 		std::printf("error: at most %d words per command\n", kMaxArgs);
 		return 1;
@@ -375,6 +375,7 @@ int dispatch(void* context, int argc, char** argv) {
 		used += length;
 	}
 	g_pending.command = command;
+	g_pending.extension = extension;
 	g_pending.argc = argc;
 	uint32_t sequence = ++g_pending.sequence;
 	g_pending.busy.store(true);
@@ -397,6 +398,18 @@ int dispatch(void* context, int argc, char** argv) {
 		}
 	}
 	return g_pending.result;
+}
+
+int dispatch(void* context, int argc, char** argv) {
+	const Command* command = static_cast<const Command*>(context);
+	if (std::strcmp(command->name, "wifi") == 0 && argc >= 2 && std::strcmp(argv[1], "set") == 0) {
+		forget_history();
+	}
+	return submit(command, nullptr, argc, argv);
+}
+
+int dispatch_extension(void* context, int argc, char** argv) {
+	return submit(nullptr, static_cast<const ConsoleCommand*>(context), argc, argv);
 }
 
 /// The REPL (the IDF's esp_console_repl_task, reading the shared port's console device).
@@ -460,6 +473,16 @@ bool console_start(ConsoleContext& context) {
 		descriptor.hint = command.hint;
 		descriptor.func_w_context = &dispatch;
 		descriptor.context = const_cast<Command*>(&command);
+		err = esp_console_cmd_register(&descriptor);
+	}
+	for (size_t i = 0; i < context.extension_count && err == ESP_OK; ++i) {
+		const ConsoleCommand& command = context.extensions[i];
+		esp_console_cmd_t descriptor = {};
+		descriptor.command = command.name;
+		descriptor.help = command.help;
+		descriptor.hint = command.hint;
+		descriptor.func_w_context = &dispatch_extension;
+		descriptor.context = const_cast<ConsoleCommand*>(&command);
 		err = esp_console_cmd_register(&descriptor);
 	}
 	if (err != ESP_OK) {

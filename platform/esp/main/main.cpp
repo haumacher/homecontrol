@@ -4,7 +4,7 @@
 // Boots the controller on the device: NVS, the platform objects, the event-loop task with the
 // network bring-up (WiFi with WPS pairing, mDNS, SNTP, the WPS button), the status LED, the USB
 // Serial/JTAG port shared by Improv Wi-Fi provisioning and the serial console, and the OTA update
-// (the confirmation of a new image, the update check; doc/ota.md).
+// (the confirmation of a new image, the update check; doc/ota.md), and the web server (doc/web.md).
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -22,6 +22,10 @@
 #include "serial_mux.h"
 #include "wifi_driver.h"
 #include "wps_button.h"
+// ---- web server (issue #5) ----
+#include "hc/datapoint.h"
+#include "web_server.h"
+// ---- end web server ----
 
 namespace {
 
@@ -47,6 +51,9 @@ hc::esp::WifiDriver g_wifi(g_settings, g_queue);
 hc::esp::NetServices g_services(g_settings, g_clock);
 hc::esp::SerialMux g_serial;
 hc::esp::OtaService g_ota(g_queue);
+// ---- web server (issue #5): the datapoint model the technologies fill, and the server ----
+hc::DatapointModel g_model(g_clock);
+// ---- end web server ----
 
 hc::Controller& controller() {
 	// Constructed on first use, from app_main, after the IDF is up.
@@ -68,9 +75,13 @@ void loop_task(void*) {
 
 	static hc::esp::WpsButton button(ctl.loop(), g_clock, ctl.connectivity());
 	button.start();
+	// ---- web server (issue #5) ----
+	static hc::esp::WebServer web(ctl, g_model, g_queue, g_services, g_ota, g_wifi.hostname());
+	web.start();
+	// ---- end web server ----
 	if (serial_ready) {
 		static hc::esp::ConsoleContext console{ctl, g_queue, g_wifi, g_services, g_ota,
-			hc::esp::SerialMux::kConsoleInput};
+			hc::esp::SerialMux::kConsoleInput, web.console_commands(), web.console_command_count()};
 		hc::esp::console_start(console);
 	}
 

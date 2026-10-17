@@ -26,7 +26,8 @@ bool is_hex(char c) {
 } // namespace
 
 bool setting_is_secret(const char* key) {
-	return key != nullptr && std::strcmp(key, setting::kWifiPsk) == 0;
+	// web.pw and web.tok.N hold password and token hashes (doc/web.md): never shown either.
+	return key != nullptr && (std::strcmp(key, setting::kWifiPsk) == 0 || std::strncmp(key, "web.", 4) == 0);
 }
 
 bool wifi_ssid_valid(const char* ssid, const char** error) {

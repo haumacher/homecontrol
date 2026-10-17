@@ -13,7 +13,7 @@ set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
 
 # Flash size, partition table and app version (shared with the updater).
 include("${CMAKE_CURRENT_LIST_DIR}/hc_project.cmake")
-set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults")
+set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults" "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults.app")
 hc_add_flash_defaults()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -91,6 +91,23 @@ function(hc_rewrite_flash_target target with_extras)
 	endif()
 	set_target_properties(${target} PROPERTIES IMAGES "${new_images}" FLASH_FILE "${files}" FLASH_ENTRY "${entries}")
 endfunction()
+
+# ---- The web UI image (doc/web.md) -----------------------------------------------------------
+#
+# web/ui/dist, gzip-compressed with its content hash (tools/gen_ui_image.py), becomes storage.bin, a
+# LittleFS image of the storage partition; `flash` writes it too (flash_args, flasher_args.json).
+# littlefs_create_partition_image comes with joltwallet/littlefs and installs littlefs-python into a
+# venv in the build directory on first use.
+
+get_filename_component(hc_ui_dist "${HC_ESP_DIR}/../../web/ui/dist" REALPATH)
+file(GLOB_RECURSE hc_ui_files CONFIGURE_DEPENDS "${hc_ui_dist}/*")
+set(hc_ui_stage "${CMAKE_BINARY_DIR}/ui_image")
+add_custom_command(OUTPUT "${hc_ui_stage}/ui/VERSION"
+	COMMAND ${hc_python} "${HC_ESP_DIR}/tools/gen_ui_image.py" "${hc_ui_dist}" "${hc_ui_stage}"
+	DEPENDS "${HC_ESP_DIR}/tools/gen_ui_image.py" ${hc_ui_files}
+	VERBATIM)
+add_custom_target(hc_ui_stage DEPENDS "${hc_ui_stage}/ui/VERSION")
+littlefs_create_partition_image(storage "${hc_ui_stage}" FLASH_IN_PROJECT DEPENDS hc_ui_stage)
 
 hc_rewrite_flash_target(flash TRUE)
 hc_rewrite_flash_target(app-flash FALSE)

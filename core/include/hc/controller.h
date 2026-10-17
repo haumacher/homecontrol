@@ -11,6 +11,7 @@
 #include "hc/event_loop.h"
 #include "hc/improv.h"
 #include "hc/log.h"
+#include "hc/log_ring.h"
 #include "hc/status_led.h"
 #include "hc/platform/clock.h"
 #include "hc/platform/improv_port.h"
@@ -59,7 +60,7 @@ public:
 	/// Longest time zone string including the NUL.
 	static constexpr size_t kMaxTimeZone = Settings::kMaxStringLength + 1;
 
-	/// Installs the platform's log sink (for the lifetime of the controller).
+	/// Installs the platform's log sink and its log ring (for the lifetime of the controller).
 	explicit Controller(const Platform& platform);
 	~Controller();
 
@@ -105,6 +106,9 @@ public:
 	const Clock& clock() const { return clock_; }
 	Settings& settings() { return settings_; }
 	const SystemInfo& system() const { return system_; }
+	TimeZone& time_zone_platform() { return time_zone_platform_; }
+	/// The lines logged since the controller was constructed (GET /api/log, doc/web.md).
+	const LogRing& log_ring() const { return log_ring_; }
 
 private:
 	void heartbeat();
@@ -124,6 +128,7 @@ private:
 	Connectivity connectivity_;
 	Improv improv_;
 	TimerHandle clock_watch_;
+	LogRing log_ring_;
 	char time_zone_[kMaxTimeZone] = {};
 	uint64_t start_ms_ = 0;
 	bool started_ = false;

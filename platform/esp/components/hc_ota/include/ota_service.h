@@ -55,6 +55,15 @@ public:
 	/// Prints the update state to stdout (console `update status`).
 	void print_status() const;
 
+	// The update state for the web API's status (doc/web.md); event loop only.
+	bool confirmed() const { return confirmed_; }
+	bool checking() const { return busy_.load(); }
+	/// The outcome of the last check ("none since start" before the first), and when (0: never).
+	const char* last_result() const { return last_; }
+	uint64_t last_result_ms() const { return last_at_ms_; }
+	/// When the next periodic check is due (monotonic ms; meaningful while update.url is set).
+	uint64_t next_check_ms() const { return next_check_ms_; }
+
 private:
 	static void fetch_task(void* context);
 	static void handle_fetched(void* context, const LoopMessage& message);

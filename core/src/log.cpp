@@ -3,6 +3,8 @@
  */
 #include "hc/log.h"
 
+#include "hc/log_ring.h"
+
 #include <cstdio>
 #include <cstring>
 
@@ -11,6 +13,7 @@ namespace hc {
 namespace {
 
 LogSink* g_sink = nullptr;
+LogRing* g_ring = nullptr;
 LogLevel g_level = LogLevel::info;
 
 } // namespace
@@ -35,6 +38,14 @@ void Log::set_sink(LogSink* sink) {
 
 LogSink* Log::sink() {
 	return g_sink;
+}
+
+void Log::set_ring(LogRing* ring) {
+	g_ring = ring;
+}
+
+LogRing* Log::ring() {
+	return g_ring;
 }
 
 void Log::set_level(LogLevel threshold) {
@@ -62,6 +73,9 @@ void Log::vwrite(LogLevel level, const char* tag, const char* fmt, va_list args)
 		std::memcpy(buffer + sizeof(buffer) - 4, "...", 4);
 	}
 	g_sink->write(level, tag, buffer);
+	if (g_ring != nullptr) {
+		g_ring->append(level, tag, buffer);
+	}
 }
 
 void Log::write(LogLevel level, const char* tag, const char* fmt, ...) {
