@@ -58,3 +58,6 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/knx/telegram_log.cpp"
 	"${HC_CORE_DIR}/src/knx/tunnel.cpp"
 )
+
+# The KNX time master (issue #9, doc/knx.md "Time master").
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/knx/time_master.cpp")

@@ -196,9 +196,11 @@ Nothing is allocated after `load()`.
 ## What the ESP side still has to do
 
 - **KNX time master** (issue #9: DPT 10/11/19 on configured group addresses, periodically and on
-  read requests): not in this package. It needs the KNX adapter of issue #7 and the group addresses
-  from the runtime image (#8); it will read `TimeSource::local_time()` and send nothing while the
-  clock is not synchronized.
+  read requests): implemented in the core as `hc::knx::TimeMaster` (doc/knx.md, "Time master"). It
+  listens for the time events (synchronized, lost, jumped, day and offset changes), sends nothing
+  while the clock is not synchronized and publishes through datapoints the KNX adapter transmits.
+  Still to do: the image loader (#8) feeds its configuration and wires it to the controller's time
+  service and the adapter on the device.
 - **Battery-backed RTC** (DS3231 over I2C, issue #9's option): not in this package; it would be a
   platform `Clock` source that reports synchronized after a power cut without network.
 - **Wiring**: the image loader (#8) constructs the scheduler with the controller's loop, time

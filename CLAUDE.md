@@ -16,7 +16,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   (`Connectivity`, `Backoff`), Improv Wi-Fi serial provisioning (`Improv`, `ImprovReader`), status
   LED patterns, settings keys and validators, the datapoint model (`DatapointModel`, `Technology`)
   and the KNX DPT codecs (`doc/datapoints.md`), KNXnet/IP tunnelling (`hc::knx`: `KnxTunnel`,
-  `KnxAdapter`, `TelegramLog` over the platform's `UdpSocket`, `doc/knx.md`), the time service,
+  `KnxAdapter`, `TelegramLog` over the platform's `UdpSocket`, the time master `TimeMaster`, `doc/knx.md`), the time service,
   astronomy and the scheduler (`doc/time.md`); later runtime image, rule interpreter. Plain C++17, no ESP-IDF or POSIX
   includes; everything the platform provides (clock, settings, time zone, network driver, status
   light, logging, the Improv serial port, the WiFi scan) is an interface in `core/include/hc/platform/`. Unit tests in `core/test/`.

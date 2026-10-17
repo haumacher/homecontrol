@@ -65,7 +65,33 @@ bool KnxAdapter::configure(const KnxMapping* mappings, size_t count, const char*
 		if (dp == nullptr) {
 			return refuse(i, "no datapoint with this id");
 		}
-		if (dp->technology() != nullptr && dp->technology() != this) {
+		if (m.transmit_only) {
+			if (dp->technology() == nullptr) {
+				return refuse(i, "a transmit-only datapoint needs its owner bound first");
+			}
+			if (dp->technology() == this) {
+				return refuse(i, "a transmit-only datapoint must be owned by another component, not the adapter");
+			}
+			if (dp->transmitter() != nullptr && dp->transmitter() != this) {
+				return refuse(i, "the datapoint has another transmitter");
+			}
+			if (!dp->transmits()) {
+				return refuse(i, "a transmit-only datapoint needs the transmit flag");
+			}
+			if (!m.has_send) {
+				return refuse(i, "a transmit-only datapoint needs a sending address");
+			}
+			if (m.listen_count > 0) {
+				return refuse(i, "a transmit-only datapoint listens to no address");
+			}
+			for (size_t j = 0; j < count; ++j) {
+				if (j != i && mappings[j].has_send && mappings[j].send == m.send) {
+					char text[64];
+					std::snprintf(text, sizeof(text), "mapping %u sends on the same address", static_cast<unsigned>(j));
+					return refuse(i, text);
+				}
+			}
+		} else if (dp->technology() != nullptr && dp->technology() != this) {
 			return refuse(i, "the datapoint belongs to another technology");
 		}
 		for (size_t j = 0; j < i; ++j) {
@@ -104,7 +130,8 @@ bool KnxAdapter::configure(const KnxMapping* mappings, size_t count, const char*
 	}
 	for (size_t i = 0; i < count; ++i) {
 		const KnxMapping& m = mappings[i];
-		entries[i] = Entry{m.datapoint, m.dpt, m.has_send, m.send, m.listen_count > 0 ? m.listen[0] : m.send};
+		entries[i] =
+			Entry{m.datapoint, m.dpt, m.has_send, m.send, m.listen_count > 0 ? m.listen[0] : m.send, m.transmit_only};
 	}
 	std::sort(entries, entries + count, [](const Entry& a, const Entry& b) { return a.datapoint < b.datapoint; });
 	size_t n = 0;
@@ -131,7 +158,11 @@ bool KnxAdapter::configure(const KnxMapping* mappings, size_t count, const char*
 		return a.address < b.address || (a.address == b.address && a.entry < b.entry);
 	});
 	for (size_t i = 0; i < count; ++i) {
-		model_.bind(entries[i].datapoint, *this);
+		if (entries[i].transmit_only) {
+			model_.set_transmitter(entries[i].datapoint, *this);
+		} else {
+			model_.bind(entries[i].datapoint, *this);
+		}
 	}
 	loop_.cancel(read_timer_);
 	read_timer_ = TimerHandle();
@@ -169,7 +200,7 @@ size_t KnxAdapter::reads_pending() const {
 	size_t result = 0;
 	for (size_t i = read_cursor_; i < count_; ++i) {
 		const Datapoint* dp = model_.get(entries_[i].datapoint);
-		if (dp != nullptr && dp->read_on_start()) {
+		if (dp != nullptr && dp->read_on_start() && !entries_[i].transmit_only) {
 			++result;
 		}
 	}
@@ -182,6 +213,16 @@ const KnxAdapter::Entry* KnxAdapter::entry_of(uint16_t datapoint) const {
 	const Entry* it =
 		std::lower_bound(begin, end, datapoint, [](const Entry& e, uint16_t id) { return e.datapoint < id; });
 	return it != end && it->datapoint == datapoint ? it : nullptr;
+}
+
+std::optional<uint16_t> KnxAdapter::sender_of(GroupAddress address) const {
+	for (size_t i = first_listen(address); i < listen_count_ && listens_[i].address == address; ++i) {
+		const Entry& entry = entries_[listens_[i].entry];
+		if (entry.has_send && entry.send == address) {
+			return entry.datapoint; // listens_ is sorted by entry, entries_ by datapoint id
+		}
+	}
+	return std::nullopt;
 }
 
 size_t KnxAdapter::first_listen(GroupAddress address) const {
@@ -240,7 +281,9 @@ void KnxAdapter::tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previ
 		read_cursor_ = count_;
 		pending_count_ = 0;
 		for (size_t i = 0; i < count_; ++i) {
-			model_.report_stale(*this, entries_[i].datapoint);
+			if (!entries_[i].transmit_only) {
+				model_.report_stale(*this, entries_[i].datapoint);
+			}
 		}
 	}
 }
@@ -248,7 +291,7 @@ void KnxAdapter::tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previ
 void KnxAdapter::schedule_read() {
 	while (read_cursor_ < count_) {
 		const Datapoint* dp = model_.get(entries_[read_cursor_].datapoint);
-		if (dp != nullptr && dp->read_on_start()) {
+		if (dp != nullptr && dp->read_on_start() && !entries_[read_cursor_].transmit_only) {
 			break;
 		}
 		++read_cursor_;
@@ -294,6 +337,14 @@ void KnxAdapter::deliver(const LData& frame, const GroupData& data, uint16_t exc
 	for (size_t i = first_listen(address); i < listen_count_ && listens_[i].address == address; ++i) {
 		const Entry& entry = entries_[listens_[i].entry];
 		if (entry.datapoint == except) {
+			continue;
+		}
+		if (entry.transmit_only) {
+			char text[GroupAddress::kMaxText];
+			char source[IndividualAddress::kMaxText];
+			const Datapoint* dp = model_.get(entry.datapoint);
+			Log::debug(kTag, "%s from %s: '%s' is transmit-only, not updated", address.format(text, sizeof(text)),
+				frame.source.format(source, sizeof(source)), dp != nullptr ? dp->name() : "?");
 			continue;
 		}
 		Value value;

@@ -86,3 +86,7 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/knx_probe_test.cpp"
 	test/posix_udp_test.cpp
 )
+
+# The KNX time master (issue #9, doc/knx.md "Time master").
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/knx_time_master_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/transmitter_probe_test.cpp")

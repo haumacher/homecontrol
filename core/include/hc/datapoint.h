@@ -255,6 +255,9 @@ public:
 	/// The technology that owns the datapoint; nullptr for a datapoint of the application alone (a
 	/// rule parameter, a virtual value).
 	Technology* technology() const { return technology_; }
+	/// The technology that transmits what the owner publishes (DatapointModel::set_transmitter());
+	/// nullptr when the owner transmits itself or nothing is transmitted.
+	Technology* transmitter() const { return transmitter_; }
 
 private:
 	friend class DatapointModel;
@@ -263,6 +266,7 @@ private:
 	uint64_t updated_ms_ = 0;
 	const char* name_ = "";
 	Technology* technology_ = nullptr;
+	Technology* transmitter_ = nullptr;
 	uint16_t id_ = 0;
 	ValueType type_ = ValueType::none;
 	uint8_t flags_ = 0;
@@ -281,9 +285,10 @@ enum class UpdateOrigin : uint8_t {
 	report,  ///< The technology reported a value.
 	command, ///< The application commanded a value.
 	stale,   ///< The technology reported the value stale (value unchanged).
+	publish, ///< The owner published a value of its own (sent through the transmitter, if any).
 };
 
-/// "report", "command", "stale".
+/// "report", "command", "stale", "publish".
 const char* update_origin_name(UpdateOrigin origin);
 
 /// One update a DatapointListener is told about.
@@ -316,7 +321,8 @@ enum class DatapointStatus : uint8_t {
 	unknown_id,      ///< No datapoint with this id in the model.
 	wrong_type,      ///< The value does not convert to the datapoint's type.
 	not_writable,    ///< Command to a datapoint without kWritable.
-	not_owner,       ///< Report from a technology that does not own the datapoint, or bound twice.
+	not_owner,       ///< Report or publish from a technology that does not own the datapoint, bound twice,
+	                 ///< or a transmitter refused (another one is set, no owner yet).
 	refused,         ///< The owning technology refused the command (it logged why).
 	busy,            ///< Called from a listener while listeners run.
 	invalid_model,   ///< Load refused: a spec is invalid (the log names it).
@@ -374,9 +380,26 @@ public:
 	/// Refused (not_owner) if another technology owns it already.
 	DatapointStatus bind(uint16_t id, Technology& technology);
 
+	/// Makes `transmitter` the technology that transmits what the owner publishes (publish()): a
+	/// datapoint owned by an application component (the KNX time master, later weather or virtual
+	/// values) and sent to a bus by a technology (the KNX adapter). At most one per datapoint.
+	/// Refused (not_owner, the reason in `error` and in the log) while the datapoint has no owner or
+	/// when another transmitter is set. The owner itself is accepted and changes nothing (an owner
+	/// that transmits does so in its own code). A load() or clear() drops it like the binding.
+	DatapointStatus set_transmitter(uint16_t id, Technology& transmitter, const char** error = nullptr);
+
 	/// The technology reports the value of a datapoint it owns. The value is converted to the
 	/// datapoint's type where exact (Value::convert).
 	DatapointStatus report(Technology& technology, uint16_t id, const Value& value);
+
+	/// The owner publishes a value of its own (what the time master broadcasts). Only the owner may
+	/// (not_owner); the value is converted like a report (wrong_type). If the datapoint transmits
+	/// (kTransmit) and has a transmitter, the transmitter's Technology::command() receives the
+	/// value first; when it refuses, publish() fails with `refused` and nothing is stored (the rule
+	/// of command()). Then the value is stored with quality good and announced with
+	/// UpdateOrigin::publish, so listeners can tell "we sent this" from "the bus said this". Does not
+	/// need kWritable: that flag is about the application's commands, which still go to the owner.
+	DatapointStatus publish(Technology& owner, uint16_t id, const Value& value);
 
 	/// The technology lost contact: the value stays, the quality becomes stale (listeners are told
 	/// if the quality was good).

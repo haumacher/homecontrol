@@ -14,6 +14,7 @@ move UDP datagrams.
 | The tunnel's state machine | `core/include/hc/knx/tunnel.h` |
 | The adapter (group addresses to datapoints) | `core/include/hc/knx/adapter.h` |
 | The telegram log | `core/include/hc/knx/telegram_log.h` |
+| The time master (DPT 10, 11, 19 broadcasts) | `core/include/hc/knx/time_master.h` |
 | Group values: encode/decode with a DPT, the text forms of the console | `core/include/hc/knx/group_value.h` |
 | The settings `knx.gateway`, `knx.nat` | `core/include/hc/knx/knx_settings.h` |
 | The UDP socket interface | `core/include/hc/platform/udp_socket.h` |
@@ -137,6 +138,7 @@ per datapoint:
 | `dpt` | The KNX datapoint type its telegrams carry (`hc::Dpt`). |
 | `has_send`, `send` | The sending group address (optional): where commands go and which reads it answers. |
 | `listen`, `listen_count` | Further group addresses whose writes and responses update it (up to 8); the sending address listens without being repeated. |
+| `transmit_only` | The datapoint belongs to another component (the time master); the adapter is only its transmitter (below). |
 
 The flags come from the datapoint: `kTransmit` sends a command as A_GroupValue_Write to the sending
 address; `kReadable` answers an A_GroupValue_Read of the sending address with an A_GroupValue_Response
@@ -150,7 +152,21 @@ one address; a transmitting or readable datapoint has a sending address. A refus
 previous mapping and logs which mapping failed. It binds the datapoints to the adapter and allocates
 two tables (by datapoint id, by group address); nothing is allocated afterwards. A model load
 unbinds every datapoint: configure again after it. The mapping is programmatic now; the runtime
-image loader (issue #8) will feed it from E-Home's export.
+image loader (issue #8) will feed it from E-Home's export. `configure()` replaces the whole mapping,
+so its caller merges the mappings of every source into one list: the image's group objects and the
+time master's `mappings()`. `sender_of(address)` names the datapoint that sends on an address, so a
+component can refuse an address that is taken.
+
+**Transmit-only mappings.** A datapoint owned by an application component and sent to the bus by
+the adapter (`DatapointModel::set_transmitter()`, doc/datapoints.md): `configure()` makes the adapter
+its transmitter instead of binding it. The owner publishes (`DatapointModel::publish()`), the model
+hands the value to the adapter's `command()`, which sends the group write to the sending address
+(refused while the tunnel is down: the publish fails and the value stays). A group read of the
+sending address is answered from the model's value while its quality is good. Received telegrams on
+the address never update it (logged at debug level; other datapoints listening there do update),
+the adapter never marks it stale (the owner does) and never reads it on start. Additional checks: the
+datapoint has an owner other than the adapter and no other transmitter, the `kTransmit` flag, a
+sending address that no other mapping sends on, and no listening addresses.
 
 Behavior:
 
@@ -166,9 +182,73 @@ Behavior:
   listening on that address take the value as well — the bus devices do the same; the gateway does
   not echo our own telegram as an indication. The sender is not reported again.
 - **Tunnel down**: every mapped datapoint becomes `stale` (`report_stale()`; an unknown one stays
-  unknown). **Tunnel up**: the read-on-start datapoints are read, one every 100 ms
+  unknown), except the transmit-only ones, whose owner decides. **Tunnel up**: the read-on-start datapoints are read, one every 100 ms
   (`kReadSpacingMs`), so a hundred reads take ten seconds instead of flooding the gateway; the tunnel
   queue additionally paces them to the bus.
+
+## Time master
+
+`hc::knx::TimeMaster` (issue #9) broadcasts the controller's local time so KNX devices
+(thermostats, displays) stay in sync.
+
+**Configuration** (`TimeMasterConfig`, programmatic now; the runtime image of #8 feeds it):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `time` | off | DPT 10.001 (time of day with the day of the week): `enabled`, the group address, the datapoint (default `knx.time`) |
+| `date` | off | DPT 11.001 (date); datapoint default `knx.date` |
+| `date_time` | off | DPT 19.001 (date and time with the flags); datapoint default `knx.datetime` |
+| `interval_s` | 600 | 60..86400 seconds between broadcasts |
+| `at_midnight` | true | also broadcast at local midnight |
+| `on_synchronized` | true | also broadcast as soon as the clock is synchronized (and right after `configure()` when it already is) |
+
+**Datapoints.** Each configured address has a datapoint of the image (the DPT's value type and the
+`T` flag; `R` to answer reads). The time master owns it (it is a `Technology` that refuses every
+command, logged) and publishes each broadcast to it; the adapter is its transmitter through a
+transmit-only mapping. So the UI shows what was last sent (origin `publish`), a GroupValueRead of
+the address is answered by the adapter from that value, and there is one way to the bus.
+`configure()` checks everything before it changes anything: the interval range, each datapoint
+(exists, value type, `T` flag, not owned by another technology, no transmitter but the adapter), no
+address twice, no address another datapoint of the adapter sends on (`sender_of()`). A refusal keeps
+the previous configuration and is logged (`refusing the time master configuration: 10.001 on 1/0/1:
+the address is the sending address of 'light'`). An empty configuration switches it off.
+
+**Wiring** (the image loader of #8): load the model; configure the adapter with the image's
+mappings; `configure()` the time master; configure the adapter again with the image's mappings plus
+`mappings()`; `time().add_listener(master, TimeMaster::kTimeEvents)`. The first broadcast after a
+`configure()` follows on the next loop run, after the adapter has the merged mapping.
+
+**When it sends.** Nothing while the clock is not synchronized. Then:
+
+- on synchronization (`on_synchronized`) and after a `configure()` with a synchronized clock;
+- at every interval tick, aligned to the local wall clock: when the local time counted in seconds
+  since the epoch is a multiple of the interval, so every 10 minutes at :00, :10, ... and an hourly
+  interval on the hour (also across DST, for intervals dividing an hour); the time sent is that
+  instant, `12:10:00`. The tick timer waits at most 10 minutes (`kMaxTimerMs`) and re-reads the wall
+  clock; a tick is up to a second late, never early;
+- at local midnight (`at_midnight`), unless a tick already sent on the new date;
+- after a clock jump (`kClockJumped`: the devices are off by more than a minute), re-aligning the
+  grid;
+- after a UTC offset change (a DST transition, a new zone) that no broadcast has shown yet: the local
+  time sent is the new one (`03:00:00` with summer time on the spring-forward night).
+
+Each broadcast publishes the configured datapoints in the order time, date, date-time; the adapter
+queues the writes and the tunnel paces them. A publish refused while the tunnel is down is logged by
+the adapter and the model; the datapoint keeps the last sent value.
+
+**Values.** DPT 10: the day of the week (1 Monday .. 7 Sunday) from the local date, hour, minute,
+second. DPT 11: the local date. DPT 19: the same fields plus the flags: summer time (SUTI) from the
+zone's DST flag; working day unknown (NWD set, WD clear); fault clear; CLQ set (only synchronized
+time is sent, so the clock has an external sync signal); SRC (reliable synchronization source) set,
+because the only synchronized sources are SNTP on the device and the host's clock on Linux (a
+battery RTC as source would clear it). Wednesday 2026-10-14 12:10:00 CEST is `7E 0A 0E 6C 0A 00 21
+C0`; in winter the seventh octet is `20`.
+
+**Synchronization lost** (`kSynchronizationLost`): the broadcasts stop (logged as a warning) and the
+datapoints turn stale, so reads are no longer answered. A new synchronization broadcasts at once.
+
+The time master lives in its object (about 100 bytes, two event-loop timers, one of the time
+service's four listener slots); nothing is allocated.
 
 ## The telegram log
 
@@ -251,6 +331,9 @@ read not answered within 5 s, 2 a usage error or a refused argument, 3 no tunnel
 broke). Use it only against the test system (CLAUDE.md, "KNX during development").
 
 ## Follow-ups
+
+- The time master could broadcast when the tunnel comes back up (it does not watch the tunnel; the
+  next tick sends within the interval).
 
 - Routing (KNXnet/IP multicast) as a second transport beside the tunnel.
 - Gateway search (SEARCH_REQUEST on 224.0.23.12:3671; the response decoding exists), offered to the
