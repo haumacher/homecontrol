@@ -75,4 +75,11 @@ list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/knx/time_master.cpp")
 list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/value_store.cpp"
 	"${HC_CORE_DIR}/src/history.cpp"
+# The rule interpreter (doc/rules.md).
+list(APPEND HC_CORE_SOURCES
+	"${HC_CORE_DIR}/src/rules/value.cpp"
+	"${HC_CORE_DIR}/src/rules/loader.cpp"
+	"${HC_CORE_DIR}/src/rules/parameter_store.cpp"
+	"${HC_CORE_DIR}/src/rules/printer.cpp"
+	"${HC_CORE_DIR}/src/rules/engine.cpp"
 )
