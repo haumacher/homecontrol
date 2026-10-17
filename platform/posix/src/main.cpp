@@ -6,7 +6,8 @@
 //   homecontrol [--settings <file>] [--image <file>]
 //
 // Runs the controller until SIGINT or SIGTERM. The settings (time zone, ...) live in a text file,
-// by default homecontrol.settings in the working directory (format in doc/network.md).
+// by default homecontrol.settings in the working directory (format in doc/network.md). With the
+// setting knx.gateway it keeps a KNXnet/IP tunnel to that gateway (doc/knx.md).
 
 #include <cerrno>
 #include <csignal>
@@ -15,9 +16,15 @@
 #include <ctime>
 
 #include "hc/controller.h"
+#include "hc/datapoint.h"
+#include "hc/knx/adapter.h"
+#include "hc/knx/knx_settings.h"
+#include "hc/knx/telegram_log.h"
+#include "hc/knx/tunnel.h"
 #include "hc/log.h"
 #include "hc/posix/file_settings.h"
 #include "hc/posix/platform.h"
+#include "hc/posix/udp_socket.h"
 
 namespace {
 
@@ -36,14 +43,6 @@ void on_signal(int) {
 
 void print_usage(const char* program) {
 	std::fprintf(stderr, "usage: %s [--settings <file>] [--image <file>]\n", program);
-}
-
-void sleep_ms(uint64_t ms) {
-	timespec duration;
-	duration.tv_sec = static_cast<time_t>(ms / 1000);
-	duration.tv_nsec = static_cast<long>((ms % 1000) * 1000000);
-	// A signal interrupts the sleep (EINTR); the loop then checks g_stop.
-	nanosleep(&duration, nullptr);
 }
 
 } // namespace
@@ -92,6 +91,24 @@ int main(int argc, char** argv) {
 	hc::Controller controller(hc::Platform{clock, sink, system, settings, time_zone, network});
 	network.bind(controller.loop(), controller.connectivity());
 
+	// KNX: the tunnel runs when knx.gateway is set. The datapoint model stays empty until runtime
+	// images exist (issue #8); the telegram log still records what the bus says.
+	hc::knx::GatewayAddress gateway;
+	bool nat = false;
+	hc::knx::read_gateway_settings(settings, gateway, nat);
+	hc::posix::PosixUdpSocket knx_socket(controller.loop());
+	hc::DatapointModel model(clock);
+	hc::knx::TelegramLog telegrams(clock);
+	hc::knx::KnxTunnel tunnel(controller.loop(), clock, controller.connectivity(), knx_socket);
+	hc::knx::KnxAdapter adapter(controller.loop(), clock, model, tunnel, &telegrams);
+	bool knx = !gateway.empty();
+	if (knx) {
+		adapter.start();
+		tunnel.set_gateway(&gateway, nat);
+	} else {
+		hc::Log::info(kTag, "no KNX gateway (setting %s): the KNX tunnel is off", hc::knx::setting::kGateway);
+	}
+
 	struct sigaction action;
 	std::memset(&action, 0, sizeof(action));
 	action.sa_handler = on_signal;
@@ -100,6 +117,9 @@ int main(int argc, char** argv) {
 	sigaction(SIGTERM, &action, nullptr);
 
 	controller.start();
+	if (knx) {
+		tunnel.start();
+	}
 	hc::Log::info(kTag, "mDNS is not implemented on POSIX: _homecontrol._tcp is not announced (the host's wall clock "
 		"needs no SNTP either; ntp.server is not used here)");
 	while (!g_stop) {
@@ -110,8 +130,11 @@ int main(int argc, char** argv) {
 			continue;
 		}
 		uint64_t wait = deadline - now;
-		sleep_ms(wait < kMaxSleepMs ? wait : kMaxSleepMs);
+		// Sleeps (a signal interrupts it, the loop then checks g_stop); wakes early for a datagram of
+		// the KNX tunnel.
+		knx_socket.wait(wait < kMaxSleepMs ? wait : kMaxSleepMs);
 	}
+	tunnel.stop(); // DISCONNECT_REQUEST, so the gateway frees the tunnel at once
 	hc::Log::info(kTag, "stopping on signal after %llu s",
 		static_cast<unsigned long long>(controller.uptime_ms() / 1000));
 	return 0;
