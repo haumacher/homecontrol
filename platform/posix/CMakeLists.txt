@@ -140,3 +140,10 @@ if(OPENSSL_FOUND)
 else()
 	message(STATUS "External values: OpenSSL development files not found: the POSIX fetcher speaks HTTP only")
 endif()
+# The Zigbee coordinator's core (issue #15, doc/zigbee.md): database, mapping, adapter under the fake clock.
+target_sources(hc_tests PRIVATE
+	"${HC_REPO_DIR}/core/test/zigbee_database_test.cpp"
+	"${HC_REPO_DIR}/core/test/zigbee_mapping_test.cpp"
+	"${HC_REPO_DIR}/core/test/zigbee_adapter_test.cpp"
+	"${HC_REPO_DIR}/core/test/zigbee_probe_test.cpp"
+)

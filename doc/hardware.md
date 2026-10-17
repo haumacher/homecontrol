@@ -78,7 +78,7 @@ before it, so stored settings survive the switch.
 | `updater` (factory) | 0x10000, 960 KB | same | same |
 | `app` (ota_0) | 0x100000, 2752 KB | 4096 KB | 6144 KB |
 | `otadata` | 0x3B0000, 8 KB | 0x500000 | 0x700000 |
-| `storage` (LittleFS, issue #5) | 0x3B2000, 312 KB | 3064 KB | 9208 KB |
+| `storage` (LittleFS, issue #5) | 0x3B2000, 268 KB (312 KB before the three Zigbee partitions) | 3064 KB | 9208 KB |
 
 Measured on 2026-10-17 (esp32c6): the updater 794,592 bytes (19 % of its partition free), the
 application 1,239,776 bytes (56 % free). The build chooses the table with the CMake variable

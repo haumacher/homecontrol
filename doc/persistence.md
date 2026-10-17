@@ -80,7 +80,7 @@ names and oversize writes are refused (logged) before the store is touched.
 
 ### The storage partition
 
-`hc_storage` owns the one mount of the LittleFS partition `storage` (312 KB on the 4 MB board,
+`hc_storage` owns the one mount of the LittleFS partition `storage` (268 KB (312 KB before the three Zigbee partitions) on the 4 MB board,
 `doc/ota.md`) at `/storage`: `storage_mount()` mounts it read-write on the first call and returns
 the first result on every later one; the web server (for the UI) and the blob store both call it,
 in either order. It never formats: a partition without a file system (no `storage.bin` flashed) or
@@ -307,7 +307,7 @@ all the time. Assumptions:
 
 - **Endurance**: 100,000 erase cycles per 4 KB sector (the SPI NOR flash of the ESP32-C6 modules).
 - **Life**: 10 years, 87,600 hours.
-- **Wear leveling**: the 312 KB `storage` partition of the 4 MB board has 78 blocks; the web UI's
+- **Wear leveling**: the 268 KB (312 KB before the three Zigbee partitions) `storage` partition of the 4 MB board has 78 blocks; the web UI's
   files (issue #14 limits them to about 50 KB gzipped) and LittleFS's own blocks leave about 60
   free. LittleFS allocates new data blocks across the free blocks and relocates metadata pairs
   after a number of erases (`block_cycles`), so the wear spreads; assumed: over **48 blocks**.

@@ -145,7 +145,7 @@ The firmware build turns it into `storage.bin`: `gen_ui_image.py` writes each fi
 (level 9, no time stamps: the output depends on the content only) plus `VERSION`, the first 16 hex
 digits of a SHA-256 over all paths and contents; joltwallet/littlefs's
 `littlefs_create_partition_image` packs that into a LittleFS image of the storage partition
-(0x3b2000, 312 KB on the 4 MB layout), and `flash_args`, `flasher_args.json`, the web flasher's
+(0x3b2000, 268 KB (312 KB before the three Zigbee partitions) on the 4 MB layout), and `flash_args`, `flasher_args.json`, the web flasher's
 manifest (sixth part) and `scripts/flasher-local.sh` carry it. The image tool is littlefs-python,
 which the component installs into a venv in the build directory on the first build (needs pip
 access once). The device mounts the partition read-only at `/storage` (never formats it: a missing

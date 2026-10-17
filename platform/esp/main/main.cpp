@@ -17,6 +17,7 @@
 #include "esp_status_light.h"
 #include "hc/controller.h"
 #include "external_service.h"
+#include "zigbee_service.h"
 #include "littlefs_blob_store.h"
 #include "knx_service.h"
 #include "loop_queue.h"
@@ -97,6 +98,18 @@ hc::image::ImageService& image() {
 	return instance;
 }
 
+// ---- Zigbee (issue #15): the coordinator, the device database and the cluster datapoints; its
+// console command joins the console through the extension table ----
+hc::esp::ZigbeeService& zigbee() {
+	static hc::esp::ZigbeeService instance(controller(), g_queue, g_model);
+	return instance;
+}
+
+int zigbee_console(void*, int argc, char** argv) {
+	return hc::esp::zigbee_console_command(zigbee(), argc, argv);
+}
+// ---- end Zigbee ----
+
 // ---- external values (issue #17): weather and other HTTP JSON sources as datapoints ----
 hc::esp::ExternalService& external() {
 	static hc::esp::ExternalService instance(controller(), g_queue, g_model);
@@ -118,6 +131,7 @@ void loop_task(void*) {
 	bool serial_ready = g_serial.init();
 	ctl.start(); // opens the Improv window
 	knx().init();
+	zigbee().init();
 	// ---- runtime image ----
 	g_blobs.start(); // mounts /storage (shared with the web server's UI files) and opens /storage/state
 	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services));
@@ -139,11 +153,12 @@ void loop_task(void*) {
 	// ---- end web server ----
 	if (serial_ready) {
 		// The commands other components contribute: the web server's, the storage's, the KNX
-		// service's, the image's and the external values'.
-		static hc::esp::ConsoleCommand extensions[5] = {
+		// service's, the Zigbee coordinator's, the image's and the external values'.
+		static hc::esp::ConsoleCommand extensions[6] = {
 			*web.console_commands(),
 			*g_blobs.console_commands(),
 			{"knx", hc::esp::kKnxCommandHint, hc::esp::kKnxCommandHelp, &knx_console, nullptr},
+			{"zigbee", hc::esp::kZigbeeCommandHint, hc::esp::kZigbeeCommandHelp, &zigbee_console, nullptr},
 			{"image", hc::esp::kImageCommandHint, hc::esp::kImageCommandHelp, &hc::esp::ImageConsole::run,
 				&image_console()},
 			*external().console_command(),

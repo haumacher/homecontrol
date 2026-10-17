@@ -22,6 +22,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   the web server's portable half (JSON API `WebApi`, WebSocket feed `LiveFeed` and codec `websocket`,
   `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); the rule interpreter (`hc::rules`, `doc/rules.md`); the runtime image (`hc::image`: `Loader`,
   `ImageService`, `ImageStore`, the RAM stand-in `MemoryBlobStore`; `doc/image.md`). external values from HTTP JSON sources (`ExternalValues`, `doc/external.md`); Plain C++17, no ESP-IDF or POSIX
+  `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); the rule interpreter (`hc::rules`, `doc/rules.md`); the Zigbee adapter (`hc::zigbee`: `ZigbeeAdapter`, `DeviceDatabase`, the cluster mapping, over the platform's `ZigbeeDriver`, `doc/zigbee.md`), the runtime image (`hc::image`, `doc/image.md`). Plain C++17, no ESP-IDF or POSIX
   includes; everything the platform provides (clock, settings, time zone, network driver, status
   light, logging, the Improv serial port, the WiFi scan) is an interface in `core/include/hc/platform/`. Unit tests in `core/test/`.
   `core/hc_core.cmake` is the single source list of both builds; the event loop model is in
@@ -30,7 +31,8 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   text file), builds the controller as an ordinary executable (the simulator and the SBC fallback)
   and the test runner (core tests plus `platform/posix/test/`).
 - `platform/esp/` — the ESP-IDF project: `main/` (boots NVS, the controller, the network and the
-  console; `idf_component.yml` lists the managed components `mdns` and `led_strip`, pinned in the
+  console; `idf_component.yml` lists the managed components `mdns` and `led_strip`, and `esp-zigbee-lib`/`esp-zboss-lib` for the
+  esp32c6 and esp32h2, pinned in the
   versioned `dependencies.lock.<target>`), `components/` (`hc_core` compiles `core/` as a
   component; `hc_platform` the `hc::esp` platform: clock, NVS settings, time zone, status LED,
   event-loop queue; `hc_net` WiFi station with WPS and the scan, mDNS, SNTP, the WPS button; `hc_improv` the USB
@@ -39,7 +41,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   the updater; `hc_ota` the application's side of the OTA update: confirmation, update check,
   hand-over to the updater; `hc_web` the web server: esp_http_server with the core's API and
   WebSocket feed, the UI files from the LittleFS image, the `web` console command; `hc_knx` the
-  KNX tunnel; `hc_image` the `image` console command and its download; later zigbee, …), `updater/` (the small OTA updater app of the
+  KNX tunnel; `hc_image` the `image` console command and its download; `hc_zigbee` the coordinator; `hc_storage` the LittleFS mount and the blob store; `hc_external` the HTTP fetcher), `updater/` (the small OTA updater app of the
   WebSocket feed, the UI files from the LittleFS image, the `web` console command; `hc_storage` the
   one mount of the LittleFS `storage` partition at `/storage` and the BlobStore in `/storage/state`
   (`LittleFsBlobStore`, the `storage` console command, `doc/persistence.md`); later knx,

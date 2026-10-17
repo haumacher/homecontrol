@@ -1,0 +1,16 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# Settings of the application on the ESP32-C6 only (the IDF adds sdkconfig.defaults.app.<target> to
+# sdkconfig.defaults.app by itself; the updater and the ESP32-S3 build do not see them).
+
+# The Zigbee coordinator (issue #15, doc/zigbee.md): the esp-zigbee-lib as coordinator/router on the
+# C6's own 802.15.4 radio.
+CONFIG_ZB_ENABLED=y
+CONFIG_ZB_ZCZR=y
+CONFIG_ZB_RADIO_NATIVE=y
+
+# WiFi and 802.15.4 share the C6's one 2.4 GHz radio; the software coexistence arbiter divides it in
+# time (the IDF's default when both are enabled, stated explicitly). hc_zigbee calls
+# esp_coex_wifi_i154_enable() when the stack starts. Espressif's examples run WiFi with modem sleep
+# (WIFI_PS_MIN_MODEM) beside Zigbee; hc_net disables power save (doc/zigbee.md, "Coexistence").
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y

@@ -32,7 +32,7 @@ settings survive the switch; app partitions start on 64 KB boundaries.
 | `updater` | app / factory | 0x10000, 960 KB | same | same |
 | `app` | app / ota_0 | 0x100000, **2752 KB** | 0x100000, 4096 KB | 0x100000, 6144 KB |
 | `otadata` | data / ota | 0x3B0000, 8 KB | 0x500000 | 0x700000 |
-| `storage` | data / littlefs | 0x3B2000, 312 KB | 0x502000, 3064 KB | 0x702000, 9208 KB |
+| `storage` | data / littlefs | 0x3B2000, 268 KB (312 KB before the three Zigbee partitions) | 0x502000, 3064 KB | 0x702000, 9208 KB |
 
 Sizes measured on 2026-10-17 (esp32c6, ESP-IDF 5.3):
 
