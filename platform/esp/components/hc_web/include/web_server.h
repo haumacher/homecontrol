@@ -85,6 +85,8 @@ public:
 	/// The language packs (doc/i18n.md): ui.lang changes start their sync, /api/settings reports them;
 	/// their downloaded files are served at /i18n/<lang>.json (call before start()).
 	void set_language_packs(LanguagePacks* packs) { api_.set_language_packs(packs); }
+	/// The MQTT client the settings mqtt.user and mqtt.password reconnect (call before start()).
+	void set_mqtt(Mqtt* mqtt) { api_.set_mqtt(mqtt); }
 	/// The `web` console command (ConsoleContext::extensions).
 	const ConsoleCommand* console_commands() const { return &console_command_; }
 	size_t console_command_count() const { return 1; }

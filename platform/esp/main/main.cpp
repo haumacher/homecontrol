@@ -18,6 +18,7 @@
 #include "hc/controller.h"
 #include "external_service.h"
 #include "i18n_service.h"
+#include "mqtt_service.h"
 #include "zigbee_service.h"
 #include "littlefs_blob_store.h"
 #include "knx_service.h"
@@ -131,6 +132,14 @@ hc::esp::I18nService& i18n() {
 }
 // ---- end language packs ----
 
+// ---- MQTT (issue #18): states, commands, Home Assistant discovery and the history export, to the
+// broker the runtime image's mqtt member names (doc/mqtt.md) ----
+hc::esp::MqttService& mqtt() {
+	static hc::esp::MqttService instance(controller(), g_queue, g_model, &image().history(), g_wifi.hostname());
+	return instance;
+}
+// ---- end MQTT ----
+
 hc::esp::ImageConsole& image_console() {
 	static hc::esp::ImageConsole instance(image(), g_queue);
 	return instance;
@@ -155,6 +164,7 @@ void loop_task(void*) {
 	g_blobs.start(); // mounts /storage (shared with the web server's UI files) and opens /storage/state
 	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services));
 	image().set_external(&external().values());
+	image().set_mqtt(&mqtt().mqtt());
 	image().start();
 	i18n().start(); // language packs: the boot sync (after the blob store started)
 	hc::Log::info(kTag, "runtime image started; event-loop stack reserve %u B",
@@ -170,12 +180,13 @@ void loop_task(void*) {
 	static hc::esp::WebServer web(ctl, g_model, g_queue, g_services, g_ota, g_wifi.hostname());
 	web.set_image(&image());
 	web.set_language_packs(&i18n().packs());
+	web.set_mqtt(&mqtt().mqtt());
 	web.start();
 	// ---- end web server ----
 	if (serial_ready) {
 		// The commands other components contribute: the web server's, the storage's, the KNX
 		// service's, the Zigbee coordinator's, the image's and the external values'.
-		static hc::esp::ConsoleCommand extensions[7] = {
+		static hc::esp::ConsoleCommand extensions[8] = {
 			*web.console_commands(),
 			*g_blobs.console_commands(),
 			{"knx", hc::esp::kKnxCommandHint, hc::esp::kKnxCommandHelp, &knx_console, nullptr},
@@ -184,6 +195,7 @@ void loop_task(void*) {
 				&image_console()},
 			*external().console_command(),
 			*i18n().console_command(),
+			*mqtt().console_command(),
 		};
 		static hc::esp::ConsoleContext console{ctl, g_queue, g_wifi, g_services, g_ota,
 			hc::esp::SerialMux::kConsoleInput, extensions, sizeof(extensions) / sizeof(extensions[0]), &g_diag, &g_blobs};

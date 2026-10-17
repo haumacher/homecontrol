@@ -324,7 +324,9 @@ double decode_float16(uint32_t bits) {
 		m -= 2048;
 	}
 	unsigned e = (bits >> 11) & 0x0F;
-	return static_cast<double>(m * (1 << e)) * 0.01;
+	// Divide rather than multiply by 0.01: 2090 / 100.0 is the double nearest 20.9, 2090 * 0.01 is not
+	// (20.900000000000002 would reach the UI, MQTT and the API as the value).
+	return static_cast<double>(m * (1 << e)) / 100.0;
 }
 
 // --- Strings --------------------------------------------------------------------------------

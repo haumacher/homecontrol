@@ -109,3 +109,9 @@ outside world (weather, external services).
   C6 against a consumer access point: minimum modem sleep stalls the link for seconds and the KNX
   tunnel misses status telegrams, so the Zigbee coexistence gain (Espressif's recommendation) does
   not justify it as the default (doc/zigbee.md, the table). Revisited with a paired device (#15).
+- **2026-10-18 — MQTT is the integration path to Home Assistant and to long-term storage.** States,
+  commands, discovery configs per function and the history rings' export over the broker the image
+  names; the broker password is a device setting (never in the image, write-only on the Settings
+  page). Chosen over a native Home Assistant integration (nothing to install on the HA side) and
+  over an InfluxDB client on the device (one outbound protocol, the collector is the subscriber's
+  choice); spec/mqtt.md, doc/mqtt.md.
