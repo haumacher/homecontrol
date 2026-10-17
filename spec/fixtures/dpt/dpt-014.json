@@ -1,0 +1,17 @@
+{
+	"main": 14,
+	"title": "4-octet float (IEEE 754 single)",
+	"entries": [
+		{"dpt": "14.000", "bytes": "00 00 00 00", "value": 0.0},
+		{"dpt": "14.056", "bytes": "41 A8 00 00", "value": 21.0},
+		{"dpt": "14.056", "bytes": "C1 A8 00 00", "value": -21.0},
+		{"dpt": "14.056", "bytes": "3F C0 00 00", "value": 1.5},
+		{"dpt": "14.056", "bytes": "7F 7F FF FF", "value": 3.4028234663852886e+38, "comment": "largest finite value"},
+		{"dpt": "14.056", "bytes": "00 00 00 01", "value": 1.401298464324817e-45, "comment": "smallest denormal"},
+		{"dpt": "14.056", "bytes": "3D CC CC CD", "value": 0.1, "direction": "encode", "comment": "rounded to the nearest single"},
+		{"dpt": "14.056", "bytes": "7F C0 00 00", "error": "invalid", "comment": "not a number"},
+		{"dpt": "14.056", "bytes": "7F 80 00 00", "error": "invalid", "comment": "infinity"},
+		{"dpt": "14.056", "value": 1e+39, "error": "out_of_range"},
+		{"dpt": "14.056", "bytes": "41 A8 00", "error": "wrong_length"}
+	]
+}

@@ -1,0 +1,17 @@
+{
+	"main": 16,
+	"title": "Character string (A112): 14 octets, NUL padded",
+	"entries": [
+		{"dpt": "16.000", "bytes": "48 65 6C 6C 6F 00 00 00 00 00 00 00 00 00", "value": "Hello"},
+		{"dpt": "16.000", "bytes": "41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E", "value": "ABCDEFGHIJKLMN", "comment": "14 characters, no NUL"},
+		{"dpt": "16.000", "bytes": "00 00 00 00 00 00 00 00 00 00 00 00 00 00", "value": "", "comment": "empty"},
+		{"dpt": "16.001", "bytes": "47 72 FC DF 65 00 00 00 00 00 00 00 00 00", "value": "Grüße", "comment": "ISO 8859-1"},
+		{"dpt": "16.001", "bytes": "C4 D6 DC E4 F6 FC DF C4 D6 DC E4 F6 FC DF", "value": "ÄÖÜäöüßÄÖÜäöüß", "comment": "14 characters outside ASCII"},
+		{"dpt": "16.000", "bytes": "41 00 42 00 00 00 00 00 00 00 00 00 00 00", "value": "A", "direction": "decode", "comment": "the string ends at the first NUL"},
+		{"dpt": "16.000", "bytes": "47 72 FC DF 65 00 00 00 00 00 00 00 00 00", "error": "invalid", "comment": "16.000 is ASCII"},
+		{"dpt": "16.000", "bytes": "48 65 6C 6C 6F 00 00 00 00 00 00 00 00", "error": "wrong_length", "comment": "13 octets"},
+		{"dpt": "16.000", "value": "Grüße", "error": "out_of_range", "comment": "16.000 is ASCII"},
+		{"dpt": "16.000", "value": "ABCDEFGHIJKLMNO", "error": "out_of_range", "comment": "15 characters"},
+		{"dpt": "16.001", "value": "€", "error": "out_of_range", "comment": "the euro sign is not in ISO 8859-1"}
+	]
+}

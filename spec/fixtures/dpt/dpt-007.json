@@ -1,0 +1,20 @@
+{
+	"main": 7,
+	"title": "16-bit unsigned (U16)",
+	"entries": [
+		{"dpt": "7.001", "bytes": "00 00", "value": 0},
+		{"dpt": "7.001", "bytes": "FF FF", "value": 65535},
+		{"dpt": "7.001", "bytes": "12 34", "value": 4660},
+		{"dpt": "7.002", "bytes": "03 E8", "value": 1000, "comment": "ms"},
+		{"dpt": "7.003", "bytes": "00 64", "value": 1000, "comment": "unit 10 ms, value in ms"},
+		{"dpt": "7.003", "bytes": "00 64", "value": 1004, "direction": "encode", "comment": "100.4 rounds down"},
+		{"dpt": "7.003", "bytes": "00 65", "value": 1005, "direction": "encode", "comment": "100.5 rounds up"},
+		{"dpt": "7.003", "value": 655351, "error": "out_of_range"},
+		{"dpt": "7.004", "bytes": "FF FF", "value": 6553500, "comment": "unit 100 ms, value in ms"},
+		{"dpt": "7.004", "value": 6553501, "error": "out_of_range"},
+		{"dpt": "7.007", "bytes": "00 18", "value": 24, "comment": "hours"},
+		{"dpt": "7.001", "value": 65536, "error": "out_of_range"},
+		{"dpt": "7.001", "value": -1, "error": "out_of_range"},
+		{"dpt": "7.001", "bytes": "12", "error": "wrong_length"}
+	]
+}

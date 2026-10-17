@@ -1,0 +1,19 @@
+{
+	"main": 10,
+	"title": "Time of day (N3U5 r2U6 r2U6)",
+	"entries": [
+		{"dpt": "10.001", "bytes": "4D 2D 1E", "value": {"dayOfWeek": 2, "hour": 13, "minute": 45, "second": 30}, "comment": "Tuesday 13:45:30"},
+		{"dpt": "10.001", "bytes": "0D 2D 1E", "value": {"dayOfWeek": 0, "hour": 13, "minute": 45, "second": 30}, "comment": "no day"},
+		{"dpt": "10.001", "bytes": "CD 2D 1E", "value": {"dayOfWeek": 6, "hour": 13, "minute": 45, "second": 30}, "comment": "Saturday"},
+		{"dpt": "10.001", "bytes": "F7 3B 3B", "value": {"dayOfWeek": 7, "hour": 23, "minute": 59, "second": 59}, "comment": "Sunday, last second"},
+		{"dpt": "10.001", "bytes": "00 00 00", "value": {"dayOfWeek": 0, "hour": 0, "minute": 0, "second": 0}, "comment": "midnight, no day"},
+		{"dpt": "10.001", "bytes": "0D ED DE", "value": {"dayOfWeek": 0, "hour": 13, "minute": 45, "second": 30}, "direction": "decode", "comment": "reserved bits are ignored"},
+		{"dpt": "10.001", "bytes": "18 00 00", "error": "invalid", "comment": "hour 24"},
+		{"dpt": "10.001", "bytes": "00 3C 00", "error": "invalid", "comment": "minute 60"},
+		{"dpt": "10.001", "bytes": "00 00 3C", "error": "invalid", "comment": "second 60"},
+		{"dpt": "10.001", "bytes": "0D 2D", "error": "wrong_length"},
+		{"dpt": "10.001", "value": {"dayOfWeek": 0, "hour": 24, "minute": 0, "second": 0}, "error": "out_of_range"},
+		{"dpt": "10.001", "value": {"dayOfWeek": 8, "hour": 12, "minute": 0, "second": 0}, "error": "out_of_range", "comment": "days are 0..7"},
+		{"dpt": "10.001", "value": {"dayOfWeek": 1, "hour": 12, "minute": 60, "second": 0}, "error": "out_of_range"}
+	]
+}

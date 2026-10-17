@@ -1,0 +1,22 @@
+{
+	"main": 11,
+	"title": "Date (r3U5 r4U4 r1U7): day, month, year",
+	"entries": [
+		{"dpt": "11.001", "bytes": "11 0A 1A", "value": {"year": 2026, "month": 10, "day": 17}},
+		{"dpt": "11.001", "bytes": "01 01 5A", "value": {"year": 1990, "month": 1, "day": 1}, "comment": "first day: 90..99 are 1990..1999"},
+		{"dpt": "11.001", "bytes": "1F 0C 63", "value": {"year": 1999, "month": 12, "day": 31}},
+		{"dpt": "11.001", "bytes": "01 01 00", "value": {"year": 2000, "month": 1, "day": 1}, "comment": "0..89 are 2000..2089"},
+		{"dpt": "11.001", "bytes": "1D 02 00", "value": {"year": 2000, "month": 2, "day": 29}},
+		{"dpt": "11.001", "bytes": "1F 0C 59", "value": {"year": 2089, "month": 12, "day": 31}, "comment": "last day"},
+		{"dpt": "11.001", "bytes": "F1 FA 9A", "value": {"year": 2026, "month": 10, "day": 17}, "direction": "decode", "comment": "reserved bits are ignored"},
+		{"dpt": "11.001", "bytes": "01 01 64", "error": "invalid", "comment": "year 100"},
+		{"dpt": "11.001", "bytes": "01 00 1A", "error": "invalid", "comment": "month 0"},
+		{"dpt": "11.001", "bytes": "01 0D 1A", "error": "invalid", "comment": "month 13"},
+		{"dpt": "11.001", "bytes": "00 01 1A", "error": "invalid", "comment": "day 0"},
+		{"dpt": "11.001", "bytes": "11 0A", "error": "wrong_length"},
+		{"dpt": "11.001", "value": {"year": 1989, "month": 12, "day": 31}, "error": "out_of_range"},
+		{"dpt": "11.001", "value": {"year": 2090, "month": 1, "day": 1}, "error": "out_of_range"},
+		{"dpt": "11.001", "value": {"year": 2100, "month": 1, "day": 1}, "error": "out_of_range"},
+		{"dpt": "11.001", "value": {"year": 2026, "month": 13, "day": 1}, "error": "out_of_range"}
+	]
+}

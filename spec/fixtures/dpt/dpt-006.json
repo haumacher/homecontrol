@@ -1,0 +1,14 @@
+{
+	"main": 6,
+	"title": "8-bit signed (V8)",
+	"entries": [
+		{"dpt": "6.001", "bytes": "7F", "value": 127},
+		{"dpt": "6.001", "bytes": "80", "value": -128},
+		{"dpt": "6.001", "bytes": "FF", "value": -1},
+		{"dpt": "6.001", "bytes": "00", "value": 0},
+		{"dpt": "6.010", "bytes": "9C", "value": -100},
+		{"dpt": "6.010", "value": 128, "error": "out_of_range"},
+		{"dpt": "6.010", "value": -129, "error": "out_of_range"},
+		{"dpt": "6.010", "bytes": "00 00", "error": "wrong_length"}
+	]
+}

@@ -1,0 +1,12 @@
+{
+	"main": 18,
+	"title": "Scene control (B1r1U6): learn bit, scene number; one octet, not embedded",
+	"entries": [
+		{"dpt": "18.001", "bytes": "05", "value": {"control": false, "value": 5}, "comment": "activate scene number 5"},
+		{"dpt": "18.001", "bytes": "85", "value": {"control": true, "value": 5}, "comment": "learn scene number 5"},
+		{"dpt": "18.001", "bytes": "BF", "value": {"control": true, "value": 63}},
+		{"dpt": "18.001", "bytes": "45", "value": {"control": false, "value": 5}, "direction": "decode", "comment": "the reserved bit is ignored"},
+		{"dpt": "18.001", "value": {"control": false, "value": 64}, "error": "out_of_range"},
+		{"dpt": "18.001", "bytes": "", "error": "wrong_length"}
+	]
+}

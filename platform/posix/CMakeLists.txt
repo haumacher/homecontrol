@@ -49,6 +49,10 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/status_led_test.cpp"
 	"${HC_REPO_DIR}/core/test/improv_protocol_test.cpp"
 	"${HC_REPO_DIR}/core/test/improv_test.cpp"
+	"${HC_REPO_DIR}/core/test/datapoint_test.cpp"
+	"${HC_REPO_DIR}/core/test/dpt_test.cpp"
+	"${HC_REPO_DIR}/core/test/dpt_corpus_test.cpp"
+	"${HC_REPO_DIR}/core/test/datapoint_probe_test.cpp"
 	test/file_settings_test.cpp
 	test/posix_platform_test.cpp
 )
@@ -57,6 +61,8 @@ target_include_directories(hc_tests PRIVATE "${HC_REPO_DIR}/core/test")
 target_link_libraries(hc_tests PRIVATE hc_posix)
 # doctest uses exceptions only when they are enabled; tell it explicitly.
 target_compile_definitions(hc_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
+# The DPT conformance corpus (spec/fixtures/dpt) is read at run time.
+target_compile_definitions(hc_tests PRIVATE HC_SPEC_DIR="${HC_REPO_DIR}/spec")
 
 include("${HC_REPO_DIR}/third_party/doctest/cmake/doctest.cmake")
 doctest_discover_tests(hc_tests)
