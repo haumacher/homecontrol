@@ -198,6 +198,11 @@ delivery (this list grows; add every trap you fall into):
 - **Verify a wiring claim on the hardware by its log line, not by the build growing.** The core
   links in whether or not a platform service uses it; only the service's own log line (or its
   console command) proves it runs.
+- **A gate whose output goes through `tail` or `grep` has the exit code of the filter, not of
+  `ctest`.** Read the `N% tests passed` line, never the shell's exit code of a pipeline. And
+  `BuildId.FollowsGitDescribe` compares the test binary's build id with `git describe`: a binary
+  built from a dirty tree fails it after the commit (the id says `-dirty`, the tree no longer is);
+  rebuild and rerun that one test instead of hunting a regression.
 - **A watchdog panic on the C6 can leave no core dump and a cut register dump.** The panic
   handler prints with a 1 s watchdog budget before it writes the core dump; a slow USB Serial/JTAG
   reader exhausts it (`Saved PC` in `panic_print_char_usb_serial_jtag`, reset `TG0_WDT_HPSYS`).
