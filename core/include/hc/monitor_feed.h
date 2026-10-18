@@ -45,6 +45,8 @@ struct MonitorEvent {
 	enum class KnxDirection : uint8_t { rx, tx };
 	enum class ZigbeeEvent : uint8_t { report, action, command };
 	enum class CommandOrigin : uint8_t { app, ws, api };
+	/// Who authenticated a `ws` or `api` command: a session, a token, the E-Home connection.
+	enum class Via : uint8_t { session, token, ehome };
 	enum class RuleAction : uint8_t { command, read };
 	enum class ImageEvent : uint8_t { load, reload, unload };
 
@@ -55,6 +57,7 @@ struct MonitorEvent {
 		kShortForm = 8,  ///< KNX: the value travelled in the APCI octet.
 		kFromMonitor = 16, ///< KNX tx: a telegram a monitor client sent.
 		kViaToken = 32,  ///< command from the WebSocket: the client authenticated with a token.
+		kViaEhome = 64,  ///< command over the E-Home connection (doc/ehome.md).
 	};
 
 	struct Knx {
@@ -183,9 +186,9 @@ public:
 	bool read(const JsonSpan& spec, const char** code, const char** reason);
 
 	/// While an origin is set, commands are recorded with it (MonitorOrigin).
-	void set_origin(MonitorEvent::CommandOrigin origin, bool via_token) {
+	void set_origin(MonitorEvent::CommandOrigin origin, MonitorEvent::Via via) {
 		origin_ = origin;
-		origin_token_ = via_token;
+		origin_via_ = via;
 	}
 
 	// DatapointListener
@@ -235,7 +238,7 @@ private:
 	/// The newest event waits for the value its datapoint is reported with (a received telegram).
 	bool awaiting_value_ = false;
 	MonitorEvent::CommandOrigin origin_ = MonitorEvent::CommandOrigin::app;
-	bool origin_token_ = false;
+	MonitorEvent::Via origin_via_ = MonitorEvent::Via::session;
 	PendingSend pending_[kPendingSends] = {};
 	bool image_known_ = false;
 	uint64_t image_loaded_ms_ = 0;
@@ -249,14 +252,16 @@ void handle_monitor_request(const MonitorFeed* feed, const WebRequest& request, 
 /// command handlers). `feed` may be nullptr.
 class MonitorOrigin {
 public:
-	MonitorOrigin(MonitorFeed* feed, MonitorEvent::CommandOrigin origin, bool via_token = false) : feed_(feed) {
+	MonitorOrigin(MonitorFeed* feed, MonitorEvent::CommandOrigin origin,
+		MonitorEvent::Via via = MonitorEvent::Via::session)
+		: feed_(feed) {
 		if (feed_ != nullptr) {
-			feed_->set_origin(origin, via_token);
+			feed_->set_origin(origin, via);
 		}
 	}
 	~MonitorOrigin() {
 		if (feed_ != nullptr) {
-			feed_->set_origin(MonitorEvent::CommandOrigin::app, false);
+			feed_->set_origin(MonitorEvent::CommandOrigin::app, MonitorEvent::Via::session);
 		}
 	}
 	MonitorOrigin(const MonitorOrigin&) = delete;

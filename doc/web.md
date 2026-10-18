@@ -233,7 +233,12 @@ are all local).
   the last firing and its switch (disabled where the image fixes it). Polled every 30 s.
 - **Settings**: the deployed project (name, revision, generated when and by what, deployed when and
   how, whether it survives a restart) with **Forget project** (`DELETE /api/image` after a
-  confirmation), the theme, the device status (network, time, memory, update, web) and the
+  confirmation), the **E-Home** card (`ehome.js`, issue #41, doc/ehome.md: the connection's state
+  line from the live status's `ehome` member with the reason of a failure; not enrolled: **Connect
+  to E-Home** with the address and the code E-Home shows, `POST /api/ehome/enroll`, the answer's
+  installation or the refusal under the form; enrolled: the installation, the address, the switch
+  `ehome.enabled` and **Disconnect** after a confirmation, `DELETE /api/ehome`; the `ehome.*` keys
+  are left out of the generic settings list), the theme, the device status (network, time, memory, update, web) and the
   editable settings with their validation messages (`knx.gateway`, `knx.nat` among them), then the
   **System** section (`system.js`, what the serial console offers, issue #38): firmware update
   (check, update now, and **Install firmware file** (issue #39): reads the chosen file's app

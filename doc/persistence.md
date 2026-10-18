@@ -202,7 +202,7 @@ The budget counts the sample memory, 8 bytes per sample, which E-Home computes t
 side. `load()` refuses with the reason in the log, keeping the previous rings, when:
 
 - the image's budget exceeds the cap ("the image asks for 70000 bytes, the device allows at most
-  65536"), or the rings exceed the budget ("the rings need 1464 bytes, the image's budget is 976")
+  65536"), or the rings exceed the budget ("the rings need 1456 bytes, the image's budget is 976")
   — `budget_exceeded`;
 - a spec names a datapoint without `kHistory`, or a `kHistory` datapoint has no spec —
   `flag_mismatch`;

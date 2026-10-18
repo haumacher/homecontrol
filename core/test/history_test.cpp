@@ -162,9 +162,10 @@ TEST_CASE("History: a load whose rings exceed the budget is refused with the rea
 	boot.report(0, Value::of_real(20.0));
 	CHECK(boot.history.samples(0) == 1);
 
+	// (7200 / 60 + 1) + (3600 / 60 + 1) = 182 samples of 8 bytes.
 	const HistorySpec bigger[] = {{0, 7200, 60}, {1, 3600, 60}};
 	CHECK(boot.history.load(bigger, 2, 976) == HistoryStatus::budget_exceeded);
-	CHECK(capture.sink.contains("the rings need 1464 bytes, the image's budget is 976"));
+	CHECK(capture.sink.contains("the rings need 1456 bytes, the image's budget is 976"));
 	CHECK(boot.history.load(bigger, 2, 70000) == HistoryStatus::budget_exceeded);
 	CHECK(capture.sink.contains("the image asks for 70000 bytes, the device allows at most 65536"));
 	CHECK(boot.history.size() == 2);
@@ -253,12 +254,20 @@ TEST_CASE("History: a change is sampled at once, then not before the spacing; ke
 		CHECK(points[i].t - points[i - 1].t < 65);
 	}
 	CHECK(points.back().last == 23.0);
-	// A change after the spacing is sampled at once.
-	boot.run(60);
+	// A change after the spacing is sampled at once. On a flat line the keepalive takes a sample
+	// every 60 s on the tick, so the change must come in the second the spacing has passed, before
+	// that second's tick runs (the tick then finds the new sample and adds no keepalive).
+	CHECK(points.back().t == t0 + 665);
+	boot.run(59);
 	size_t before = boot.history.samples(0);
+	boot.clock.now_ms += 1000;
+	boot.clock.wall_seconds += 1; // t0 + 725: the last sample is 60 s old
 	boot.report(0, Value::of_real(19.5));
 	CHECK(boot.history.samples(0) == before + 1);
 	CHECK(boot.all(0).back().t == boot.clock.wall_seconds);
+	CHECK(boot.all(0).back().last == 19.5);
+	boot.loop.run_once(boot.clock.now_ms);
+	CHECK(boot.history.samples(0) == before + 1);
 	// A datapoint never reported has no samples.
 	CHECK(boot.history.samples(1) == 0);
 	CHECK(boot.history.samples(2) == 0);
@@ -479,11 +488,15 @@ TEST_CASE("History: a smaller ring keeps the newest saved samples; an image swap
 	// The same image again (no reboot): the new samples are saved by the load and restored.
 	boot.load(3600, 60);
 	CHECK(boot.history.samples(0) == samples);
-	// A shorter retention: the newest 11 samples.
+	// A shorter retention: the ring has room for 11 samples, but only the newest 10 are within the
+	// 600 s retention. Sample i was taken at kWall + 2 + 60 i, the load runs at kWall + 1802:
+	// sample 19 (kWall + 1142) is 660 s old and dropped, sample 20 (kWall + 1202) is 600 s old and kept.
+	CHECK(boot.clock.wall_seconds == kWall + 1802);
 	boot.load(600, 60);
 	std::vector<HistoryPoint> points = boot.all(0);
-	REQUIRE(points.size() == 11);
-	CHECK(points.front().last == 19);
+	REQUIRE(points.size() == 10);
+	CHECK(points.front().last == 20);
+	CHECK(points.front().t == kWall + 1202);
 	CHECK(points.back().last == 29);
 	// Rings of datapoints no longer in the image are deleted.
 	const DatapointSpec none[] = {{"Living.Temp", ValueType::real, 0}};

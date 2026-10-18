@@ -353,6 +353,21 @@ bool WebServer::start() {
 			response.retry_after_s = second.retry_after_s;
 			std::memcpy(response.set_cookie, second.set_cookie, sizeof(response.set_cookie));
 		}
+		if (response.deferred) {
+			// The answer waits for another service (the E-Home enrollment): poll it on the loop.
+			bool done = false;
+			for (uint32_t waited = 0; !done && waited < WebApi::kDeferredLimitMs; waited += WebApi::kDeferredPollMs) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(WebApi::kDeferredPollMs));
+				if (!executor_.run([&] { done = api_.poll_deferred(response); })) {
+					json_error(res, 503, "api.stopping", "the controller is stopping");
+					return;
+				}
+			}
+			if (!done) {
+				json_error(res, 504, "api.timeout", "the answer did not come in time");
+				return;
+			}
+		}
 		res.status = response.status;
 		if (response.set_cookie[0] != '\0') {
 			res.set_header("Set-Cookie", response.set_cookie);

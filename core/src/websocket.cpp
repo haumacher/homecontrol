@@ -152,7 +152,8 @@ bool utf8_valid(const uint8_t* p, size_t length) {
 	return true;
 }
 
-FrameDecoder::FrameDecoder(uint8_t* buffer, size_t capacity) : buffer_(buffer), capacity_(capacity) {}
+FrameDecoder::FrameDecoder(uint8_t* buffer, size_t capacity, Role role)
+	: buffer_(buffer), capacity_(capacity), masked_(role == Role::server) {}
 
 FrameDecoder::Event FrameDecoder::fail(uint16_t code, const char* why) {
 	failed_ = true;
@@ -181,8 +182,11 @@ FrameDecoder::Event FrameDecoder::header_complete() {
 	default:
 		return fail(kCloseProtocolError, "unknown opcode");
 	}
-	if ((b1 & 0x80) == 0) {
+	if (masked_ && (b1 & 0x80) == 0) {
 		return fail(kCloseProtocolError, "client frame not masked");
+	}
+	if (!masked_ && (b1 & 0x80) != 0) {
+		return fail(kCloseProtocolError, "server frame masked");
 	}
 	size_t length_bytes = 0;
 	uint8_t short_length = b1 & 0x7F;
@@ -191,8 +195,9 @@ FrameDecoder::Event FrameDecoder::header_complete() {
 	} else if (short_length == 127) {
 		length_bytes = 8;
 	}
-	if (header_need_ == 2) {
-		header_need_ = 2 + length_bytes + 4;
+	size_t need = 2 + length_bytes + (masked_ ? 4 : 0);
+	if (header_have_ < need) {
+		header_need_ = need;
 		return Event::need_more; // read the rest of the header
 	}
 	uint64_t length = short_length;
@@ -206,7 +211,9 @@ FrameDecoder::Event FrameDecoder::header_complete() {
 			return fail(kCloseProtocolError, "frame length not minimally encoded");
 		}
 	}
-	std::memcpy(mask_, header_ + 2 + length_bytes, 4);
+	if (masked_) {
+		std::memcpy(mask_, header_ + 2 + length_bytes, 4);
+	}
 	if (control) {
 		if (!frame_fin_) {
 			return fail(kCloseProtocolError, "fragmented control frame");
@@ -292,7 +299,9 @@ FrameDecoder::Event FrameDecoder::push(const uint8_t* data, size_t length, size_
 		size_t take = length - consumed < want ? length - consumed : want;
 		if (take > 0) {
 			std::memcpy(target + frame_have_, data + consumed, take);
-			apply_mask(target + frame_have_, take, mask_, static_cast<size_t>(frame_have_));
+			if (masked_) {
+				apply_mask(target + frame_have_, take, mask_, static_cast<size_t>(frame_have_));
+			}
 			frame_have_ += take;
 			consumed += take;
 		}

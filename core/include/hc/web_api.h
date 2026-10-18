@@ -18,6 +18,7 @@
 
 namespace hc {
 
+class EhomeLink;
 class ExternalValues;
 class LanguagePacks;
 class Mqtt;
@@ -54,6 +55,10 @@ struct WebRequest {
 	size_t body_length = 0;
 	/// Set by the platform on the second pass, after it computed the hash WebResponse asked for.
 	const PasswordHash* hash = nullptr;
+	/// The request came over the E-Home connection (doc/ehome.md): the principal "E-Home", with a
+	/// token's rights minus what WebApi::ehome_forbidden() names. Only EhomeLink sets it; the HTTP
+	/// servers never do.
+	bool ehome = false;
 };
 
 /// What the platform sends back. The body is written into the platform's buffer.
@@ -76,6 +81,11 @@ struct WebResponse {
 	bool stream = false;
 	size_t stream_length = 0;
 	uint32_t stream_token = 0;
+
+	/// The answer waits for another service (the E-Home enrollment): the platform calls
+	/// WebApi::poll_deferred() on the event loop every kDeferredPollMs until it returns true, then
+	/// sends this response. The core bounds the wait itself (EhomeLink::kEnrollTimeoutMs).
+	bool deferred = false;
 
 	/// The request needs a password hash: the platform derives `hash_params` from the password
 	/// (Crypto::pbkdf2_sha256, off the event loop) and calls handle() again with WebRequest::hash.
@@ -116,6 +126,10 @@ public:
 	static constexpr uint32_t kActionDelayMs = 750;
 	/// Zigbee devices per page of GET /api/zigbee.
 	static constexpr size_t kZigbeePageSize = 16;
+	/// How often a platform polls a deferred response (WebResponse::deferred), and the longest it
+	/// waits before it gives up (504 api.timeout; the core answers before).
+	static constexpr uint32_t kDeferredPollMs = 100;
+	static constexpr uint32_t kDeferredLimitMs = 60000;
 
 	WebApi(Controller& controller, DatapointModel& model, Auth& auth, WebHost& host);
 
@@ -141,6 +155,20 @@ public:
 	void set_external(ExternalValues* external) { external_ = external; }
 	/// The blob store (doc/persistence.md): the file count and bytes of the "storage" status.
 	void set_blob_store(const BlobStore* blobs) { blobs_ = blobs; }
+	/// The E-Home connection (doc/ehome.md): /api/ehome, the setting ehome.enabled, the "ehome"
+	/// status. Set by EhomeLink::start(); without one /api/ehome answers 501.
+	void set_ehome(EhomeLink* link) { ehome_ = link; }
+	EhomeLink* ehome() const { return ehome_; }
+	/// The E-Home state for the live feed's status signature (0 without a link).
+	uint8_t ehome_signature() const;
+
+	/// Whether the E-Home principal may not make `request` (spec/api.md "E-Home connection"): the
+	/// authentication routes (onboarding, login, the password), WiFi, the factory reset, the firmware
+	/// upload and its source (update.url), the API tokens, the enrollment. With the reason.
+	static bool ehome_forbidden(const WebRequest& request, const char** reason);
+
+	/// A deferred response (WebResponse::deferred): true when `response` holds the answer.
+	bool poll_deferred(WebResponse& response);
 
 	/// The runtime image service: /api/image and the "image" member of /api/status (doc/image.md).
 	/// The runtime image behind /api/image and the status; its changes resync the live feed.
@@ -242,6 +270,7 @@ private:
 	const char* zigbee_reason_ = nullptr;
 	ExternalValues* external_ = nullptr;
 	const BlobStore* blobs_ = nullptr;
+	EhomeLink* ehome_ = nullptr;
 	/// The deferred system action (restart, factory reset, WiFi reconnect, the restart into the
 	/// updater for an upload) and its timer.
 	enum class Pending : uint8_t { none, restart, factory_reset, wifi, upload };

@@ -39,9 +39,16 @@ public:
 	static bool https_supported();
 
 	bool fetch(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) override;
+	/// The E-Home enrollment's POST (doc/ehome.md): the body of every status is delivered.
+	bool post(const char* url, const char* body, size_t length, size_t max_bytes, FetchReceiver& receiver,
+		const char** error) override;
 	bool busy() const override { return busy_.load(); }
 
+	/// Longest POST body.
+	static constexpr size_t kMaxPostBody = 1024;
+
 private:
+	bool start(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error);
 	void worker();
 	void run_request();
 
@@ -59,6 +66,9 @@ private:
 	FetchReceiver* receiver_ = nullptr;
 	char body_[kBufferBytes] = {};
 	char error_[160] = {};
+	bool post_ = false;
+	char post_body_[kMaxPostBody] = {};
+	size_t post_length_ = 0;
 };
 
 } // namespace posix

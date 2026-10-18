@@ -99,6 +99,9 @@ public:
 	void stop();
 
 	Auth& auth() { return auth_; }
+	/// The API and the live feed, for the E-Home link (doc/ehome.md), which joins both.
+	WebApi& api() { return api_; }
+	LiveFeed& feed() { return feed_; }
 	/// The runtime image behind /api/image and the status (call before start()).
 	void set_image(image::ImageService* image) { api_.set_image(image); }
 	/// The language packs behind ui.lang's sync and GET /i18n/<lang>.json, which serves the pack

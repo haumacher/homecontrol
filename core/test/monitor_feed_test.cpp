@@ -242,7 +242,7 @@ TEST_CASE("MonitorFeed: the ring numbers events and overwrites the oldest") {
 TEST_CASE("MonitorFeed: command events carry the declared origin, names follow the model generation") {
 	RingFixture f;
 	{
-		hc::MonitorOrigin origin(&f.monitor, MonitorEvent::CommandOrigin::ws, true);
+		hc::MonitorOrigin origin(&f.monitor, MonitorEvent::CommandOrigin::ws, MonitorEvent::Via::token);
 		REQUIRE(f.model.command(0, Value::of_bool(true)) == DatapointStatus::ok);
 	}
 	{

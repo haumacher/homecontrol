@@ -43,6 +43,27 @@ bool HttplibFetcher::https_supported() {
 }
 
 bool HttplibFetcher::fetch(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) {
+	post_ = false;
+	return start(url, max_bytes, receiver, error);
+}
+
+bool HttplibFetcher::post(const char* url, const char* body, size_t length, size_t max_bytes, FetchReceiver& receiver,
+	const char** error) {
+	if (busy_.load()) {
+		*error = "busy: a fetch is in flight";
+		return false;
+	}
+	if (length > kMaxPostBody) {
+		*error = "the request body is longer than 1024 bytes";
+		return false;
+	}
+	std::memcpy(post_body_, body, length);
+	post_length_ = length;
+	post_ = true;
+	return start(url, max_bytes, receiver, error);
+}
+
+bool HttplibFetcher::start(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) {
 	if (busy_.load()) {
 		*error = "busy: a fetch is in flight";
 		return false;
@@ -107,6 +128,35 @@ void HttplibFetcher::run_request() {
 		client.set_read_timeout(kReadTimeoutS);
 		client.set_follow_location(true);
 		int status = 0;
+		if (post_) {
+			// The enrollment: the answer's body whatever the status (E-Home's refusal document).
+			httplib::Result answer = client.Post(path, std::string(post_body_, post_length_), "application/json");
+			if (!answer) {
+				std::snprintf(error_, sizeof(error_), "cannot connect: %s", httplib::to_string(answer.error()).c_str());
+			} else {
+				status = answer->status;
+				length = answer->body.size() < max_bytes_ ? answer->body.size() : max_bytes_;
+				std::memcpy(body_, answer->body.data(), length);
+				if (status != 200) {
+					std::snprintf(error_, sizeof(error_), "HTTP status %d", status);
+				} else if (answer->body.size() > max_bytes_) {
+					std::snprintf(error_, sizeof(error_), "body larger than %zu bytes", max_bytes_);
+				}
+			}
+			result.http_status = status;
+			result.ok = error_[0] == '\0';
+			result.body = body_;
+			result.length = length;
+			result.error = error_;
+			FetchReceiver* receiver = receiver_;
+			if (!executor_.run([&] {
+					receiver->fetch_done(result);
+					busy_.store(false);
+				})) {
+				busy_.store(false);
+			}
+			return;
+		}
 		httplib::Result response = client.Get(
 			path,
 			[&](const httplib::Response& head) {

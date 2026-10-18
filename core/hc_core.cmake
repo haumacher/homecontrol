@@ -110,6 +110,8 @@ list(APPEND HC_CORE_SOURCES
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/diagnostics.cpp")
 # Language packs that ship after the firmware (issue #24, doc/i18n.md).
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/language_packs.cpp")
+# The E-Home connection: the enrollment and the outbound socket (issue #41, doc/ehome.md).
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/ehome_link.cpp")
 # The MQTT client: Home Assistant discovery, commands, history export (issue #18, doc/mqtt.md).
 list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/mqtt.cpp"

@@ -29,6 +29,7 @@
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/demo.h"
+#include "hc/ehome_link.h"
 #include "hc/external_values.h"
 #include "hc/image/image_service.h"
 #include "hc/language_packs.h"
@@ -37,6 +38,7 @@
 #include "hc/version.h"
 #include "hc/posix/file_blob_store.h"
 #include "hc/posix/httplib_fetcher.h"
+#include "hc/posix/websocket_client.h"
 #include "hc/image/memory_blob_store.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/knx_settings.h"
@@ -353,6 +355,17 @@ int main(int argc, char** argv) {
 		if (!web->start()) {
 			return 1;
 		}
+	}
+	// The E-Home connection (doc/ehome.md): the enrollment over its own HTTP client, the socket over
+	// plain ws:// (the POSIX client has no TLS). It joins the web server's API and live feed.
+	std::unique_ptr<hc::posix::PosixWebSocketClient> ehome_client;
+	std::unique_ptr<hc::posix::HttplibFetcher> ehome_fetcher;
+	std::unique_ptr<hc::EhomeLink> ehome;
+	if (web) {
+		ehome_client.reset(new hc::posix::PosixWebSocketClient(executor));
+		ehome_fetcher.reset(new hc::posix::HttplibFetcher(executor));
+		ehome.reset(new hc::EhomeLink(web->api(), web->feed(), *ehome_client, *ehome_fetcher));
+		ehome->start();
 	}
 	tunnel.start();
 	hc::Log::info(kTag, "mDNS is not implemented on POSIX: _homecontrol._tcp is not announced (the host's wall clock "

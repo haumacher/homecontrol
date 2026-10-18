@@ -100,6 +100,9 @@ public:
 	}
 	/// The diagnostics whose core dump DELETE /api/coredump erases.
 	void set_diagnostics(EspDiagnostics* diagnostics) { diagnostics_ = diagnostics; }
+	/// The JSON API and the live feed, for the E-Home connection (doc/ehome.md; on the loop).
+	WebApi& api() { return api_; }
+	LiveFeed& feed() { return feed_; }
 	/// The `web` console command (ConsoleContext::extensions).
 	const ConsoleCommand* console_commands() const { return &console_command_; }
 	size_t console_command_count() const { return 1; }

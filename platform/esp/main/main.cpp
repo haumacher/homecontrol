@@ -17,6 +17,7 @@
 #include "esp_status_light.h"
 #include "hc/controller.h"
 #include "external_service.h"
+#include "ehome_service.h"
 #include "i18n_service.h"
 #include "mqtt_service.h"
 #include "zigbee_service.h"
@@ -188,6 +189,11 @@ void loop_task(void*) {
 	web.set_diagnostics(&g_diag);
 	web.start();
 	// ---- end web server ----
+	// ---- E-Home connection (issue #41, doc/ehome.md): outbound to the owner's E-Home, switched on
+	// in the Settings ----
+	static hc::esp::EhomeService ehome(ctl, g_queue, web);
+	ehome.start();
+	// ---- end E-Home connection ----
 	if (serial_ready) {
 		// The commands other components contribute: the web server's, the storage's, the KNX
 		// service's, the Zigbee coordinator's, the image's and the external values'.

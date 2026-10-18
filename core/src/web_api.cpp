@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "hc/ehome_link.h"
 #include "hc/image/image_service.h"
 #include "hc/json_document.h"
 #include "hc/knx/knx_settings.h"
@@ -86,6 +87,12 @@ constexpr SettingInfo kShownSettings[] = {
 	{knx::setting::kGateway, true},
 	{knx::setting::kNat, true},
 	{setting::kWifiSsid, false},
+	// The E-Home connection (doc/ehome.md): set by the enrollment, erased by "Disconnect"; the
+	// owner's switch. ehome.secret and ehome.socket are never listed.
+	{setting::kEhomeUrl, false},
+	{setting::kEhomeId, false},
+	{setting::kEhomeName, false},
+	{setting::kEhomeEnabled, true},
 };
 
 const SettingInfo* find_setting(const char* key) {
@@ -217,13 +224,62 @@ void WebApi::set_session_cookie(WebResponse& response, const char* session) {
 	}
 }
 
+bool WebApi::ehome_forbidden(const WebRequest& request, const char** reason) {
+	const char* path = request.path != nullptr ? request.path : "";
+	const char* why = nullptr;
+	if (starts_with(path, "/api/auth/")) {
+		why = "the E-Home connection does not log in, onboard or change the password";
+	} else if (std::strcmp(path, "/api/system/wifi") == 0) {
+		why = "the WiFi credentials are changed on site only";
+	} else if (std::strcmp(path, "/api/system/factory-reset") == 0) {
+		why = "a factory reset is made on site only";
+	} else if (std::strcmp(path, "/api/system/update/upload") == 0) {
+		why = "firmware never travels over the E-Home connection (the release server or the browser upload)";
+	} else if (std::strcmp(path, "/api/tokens") == 0 || starts_with(path, "/api/tokens/")) {
+		why = "API tokens are managed on site only";
+	} else if (std::strcmp(path, "/api/ehome") == 0 || starts_with(path, "/api/ehome/")) {
+		why = "the enrollment is managed on site only";
+	} else if (request.method != HttpMethod::get && std::strcmp(path, "/api/settings/update.url") == 0) {
+		why = "the firmware source (update.url) is set on site only";
+	} else if (request.method != HttpMethod::get && starts_with(path, "/api/settings/ehome.")) {
+		why = "the E-Home settings are the owner's, on site";
+	}
+	if (why != nullptr && reason != nullptr) {
+		*reason = why;
+	}
+	return why != nullptr;
+}
+
+uint8_t WebApi::ehome_signature() const {
+	return ehome_ != nullptr ? static_cast<uint8_t>(static_cast<uint8_t>(ehome_->state()) + 1) : 0;
+}
+
+bool WebApi::poll_deferred(WebResponse& response) {
+	if (ehome_ == nullptr) {
+		refuse(response, 500, "api.not_deferred", "no answer is pending");
+		return true;
+	}
+	return ehome_->poll_enroll(response);
+}
+
 void WebApi::handle(const WebRequest& request, WebResponse& response) {
 	response.status = 200;
 	response.length = 0;
 	response.needs_hash = false;
+	response.deferred = false;
 	const char* path = request.path != nullptr ? request.path : "";
 	bool state_changing = request.method != HttpMethod::get;
 	bool csrf_ok = request.requested_with != nullptr && std::strcmp(request.requested_with, kCsrfHeaderValue) == 0;
+
+	// ---- The E-Home principal: a token's rights minus what is done on site only ----
+	if (request.ehome) {
+		const char* reason = nullptr;
+		if (ehome_forbidden(request, &reason)) {
+			Log::warn(kTag, "%s %s over the E-Home connection refused: %s", method_name(request.method), path, reason);
+			refuse(response, 403, "ehome.forbidden", reason);
+			return;
+		}
+	}
 
 	// ---- Open endpoints ----
 	if (starts_with(path, "/api/auth/")) {
@@ -266,7 +322,9 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		return;
 	}
 	bool by_token = false;
-	if (request.authorization != nullptr) {
+	if (request.ehome) {
+		by_token = true; // EhomeLink authenticated the socket (spec/api.md "E-Home connection")
+	} else if (request.authorization != nullptr) {
 		if (auth_.token_from_authorization(request.authorization) < 0) {
 			Log::warn(kTag, "%s %s from %s: unknown or revoked token", method_name(request.method), path, request.source);
 			refuse(response, 401, "auth.token_invalid", "the bearer token is unknown or revoked");
@@ -349,6 +407,14 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 	}
 	if (std::strcmp(path, "/api/mqtt/discovery") == 0) {
 		mqtt_discovery(request, response);
+		return;
+	}
+	if (std::strcmp(path, "/api/ehome") == 0 || starts_with(path, "/api/ehome/")) { // ehome_link.cpp
+		if (ehome_ == nullptr) {
+			refuse(response, 501, "ehome.unavailable", "this build has no E-Home connection");
+			return;
+		}
+		ehome_->handle_route(path + 10, request, response);
 		return;
 	}
 	if (std::strcmp(path, "/api/monitor") == 0) { // the monitor stream (monitor_feed.cpp)
@@ -663,6 +729,10 @@ void WebApi::write_status(JsonWriter& json) {
 		image_->write_status(json);
 		json.end_object();
 	}
+	if (ehome_ != nullptr) {
+		json.key("ehome");
+		ehome_->write_status(json);
+	}
 }
 
 void WebApi::status(WebResponse& response) {
@@ -814,7 +884,8 @@ void WebApi::command(uint16_t id, const WebRequest& request, WebResponse& respon
 		return;
 	}
 	MonitorOrigin origin(feed_ != nullptr ? &feed_->monitor() : nullptr, MonitorEvent::CommandOrigin::api,
-		request.authorization != nullptr);
+		request.ehome ? MonitorEvent::Via::ehome
+		: request.authorization != nullptr ? MonitorEvent::Via::token : MonitorEvent::Via::session);
 	DatapointStatus status = model_.command(id, *value);
 	if (status != DatapointStatus::ok) {
 		refuse(response, command_http_status(status), datapoint_status_code(status), datapoint_command_reason(status));
@@ -913,6 +984,12 @@ void WebApi::settings(WebResponse& response) {
 		} else if (std::strcmp(info.key, setting::kWifiPowerSave) == 0) {
 			fallback = wifi_power_save_name(setting::kDefaultWifiPowerSave);
 			std::snprintf(value, sizeof(value), "%s", wifi_power_save_name(read_wifi_power_save(store, kTag)));
+			status = SettingsStatus::ok;
+		} else if (std::strcmp(info.key, setting::kEhomeEnabled) == 0) {
+			fallback = "false";
+			bool on = false;
+			store.get_bool(info.key, on);
+			std::snprintf(value, sizeof(value), "%s", on ? "true" : "false");
 			status = SettingsStatus::ok;
 		} else if (std::strcmp(info.key, knx::setting::kNat) == 0) {
 			// A boolean setting, shown as the console's on/off.
@@ -1041,6 +1118,29 @@ bool WebApi::apply_setting(const char* key, const char* value, const char** code
 			return false;
 		}
 		Log::info(kTag, "KNX NAT mode %s", nat ? "on" : "off");
+		return true;
+	}
+	if (std::strcmp(key, setting::kEhomeEnabled) == 0) {
+		bool on = std::strcmp(value, "true") == 0 || std::strcmp(value, "on") == 0;
+		if (!on && std::strcmp(value, "false") != 0 && std::strcmp(value, "off") != 0) {
+			*error = "ehome.enabled is true or false";
+			return false;
+		}
+		if (on && !ehome_enrolled(controller_.settings())) {
+			*code = "ehome.not_enrolled";
+			*error = "the controller is not enrolled with E-Home: connect to E-Home first";
+			return false;
+		}
+		SettingsStatus status = controller_.settings().set_bool(setting::kEhomeEnabled, on);
+		if (status != SettingsStatus::ok) {
+			*code = "settings.storage_error";
+			*error = settings_status_name(status);
+			return false;
+		}
+		Log::info(kTag, "E-Home connection switched %s", on ? "on" : "off");
+		if (ehome_ != nullptr) {
+			ehome_->enabled_changed();
+		}
 		return true;
 	}
 	if (std::strcmp(key, setting::kWifiPowerSave) == 0) {

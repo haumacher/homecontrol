@@ -103,19 +103,53 @@ bool LiveFeed::same_origin(const char* origin, const char* host) {
 
 size_t LiveFeed::client_count() const {
 	size_t n = 0;
-	for (const Client& c : clients_) {
-		n += c.used ? 1 : 0;
+	for (size_t i = 0; i < kMaxClients; ++i) {
+		n += clients_[i].used ? 1 : 0;
 	}
 	return n;
 }
 
 LiveFeed::Client* LiveFeed::find(uint32_t handle) {
-	for (Client& c : clients_) {
-		if (c.used && c.handle == handle) {
-			return &c;
+	for (size_t i = 0; i < kMaxClients; ++i) {
+		if (clients_[i].used && clients_[i].handle == handle) {
+			return &clients_[i];
 		}
 	}
 	return nullptr;
+}
+
+void LiveFeed::attach_ehome(WsTransport& transport, uint32_t handle) {
+	Client& slot = clients_[kEhomeSlot];
+	slot = Client{};
+	slot.used = true;
+	slot.handle = handle;
+	slot.transport = &transport;
+	slot.principal = Principal::ehome;
+	slot.snapshot_next = kNoSnapshot;
+	slot.opened_ms = api_.controller().clock().monotonic_ms();
+	Log::info(kTag, "E-Home joined the live feed");
+	JsonWriter json(out_, sizeof(out_));
+	json.begin_object()
+		.member("type", "hello")
+		.member("authenticated", true)
+		.member("onboarded", api_.auth().has_password())
+		.member("device", api_.host().device_name())
+		.member("version", kVersion)
+		.end_object();
+	send(slot, out_, json.length());
+}
+
+void LiveFeed::ehome_message(const char* text, size_t length) {
+	if (clients_[kEhomeSlot].used) {
+		handle_message(clients_[kEhomeSlot], text, length);
+	}
+}
+
+void LiveFeed::detach_ehome() {
+	if (clients_[kEhomeSlot].used) {
+		clients_[kEhomeSlot] = Client{};
+		Log::info(kTag, "E-Home left the live feed");
+	}
 }
 
 bool LiveFeed::open(uint32_t handle, const char* cookie, const char* origin, const char* host) {
@@ -128,9 +162,9 @@ bool LiveFeed::open(uint32_t handle, const char* cookie, const char* origin, con
 	}
 	Client* slot = nullptr;
 	if (refusal_code == nullptr) {
-		for (Client& c : clients_) {
-			if (!c.used) {
-				slot = &c;
+		for (size_t i = 0; i < kMaxClients; ++i) {
+			if (!clients_[i].used) {
+				slot = &clients_[i];
 				break;
 			}
 		}
@@ -151,6 +185,7 @@ bool LiveFeed::open(uint32_t handle, const char* cookie, const char* origin, con
 	*slot = Client{};
 	slot->used = true;
 	slot->handle = handle;
+	slot->transport = &transport_;
 	slot->snapshot_next = kNoSnapshot;
 	slot->opened_ms = api_.controller().clock().monotonic_ms();
 	Auth& auth = api_.auth();
@@ -186,7 +221,7 @@ void LiveFeed::closed(uint32_t handle) {
 }
 
 void LiveFeed::send(Client& client, const char* text, size_t length) {
-	if (!transport_.ws_send(client.handle, text, length) && client.subscribed) {
+	if (!client.transport->ws_send(client.handle, text, length) && client.subscribed) {
 		if (client.snapshot_next != 0) {
 			Log::warn(kTag, "WebSocket client %u: message dropped (send buffers full): full resync follows",
 				static_cast<unsigned>(client.handle));
@@ -205,15 +240,20 @@ void LiveFeed::refuse_and_close(Client& client, uint16_t ws_code, const char* co
 	Log::warn(kTag, "WebSocket client %u closed: %s", static_cast<unsigned>(client.handle), text);
 	send_error(client, code, text);
 	uint32_t handle = client.handle;
+	WsTransport* transport = client.transport;
 	client = Client{};
-	transport_.ws_close(handle, ws_code, text);
+	transport->ws_close(handle, ws_code, text);
 }
 
 void LiveFeed::message(uint32_t handle, const char* text, size_t length) {
 	Client* c = find(handle);
-	if (c == nullptr) {
-		return;
+	if (c != nullptr) {
+		handle_message(*c, text, length);
 	}
+}
+
+void LiveFeed::handle_message(Client& client, const char* text, size_t length) {
+	Client* c = &client;
 	JsonSpan body;
 	JsonSpan type;
 	const char* error = nullptr;
@@ -223,6 +263,10 @@ void LiveFeed::message(uint32_t handle, const char* text, size_t length) {
 		return;
 	}
 	if (json_string_equals(type, "auth")) {
+		if (c->principal == Principal::ehome) {
+			send_error(*c, "ws.bad_message", "the E-Home connection is authenticated already");
+			return;
+		}
 		authenticate_token(*c, body);
 		return;
 	}
@@ -299,7 +343,9 @@ void LiveFeed::command(Client& client, const JsonSpan& message) {
 		if (!value) {
 			code = "dp.wrong_type";
 		} else {
-			MonitorOrigin origin(&monitor_, MonitorEvent::CommandOrigin::ws, client.principal == Principal::token);
+			MonitorOrigin origin(&monitor_, MonitorEvent::CommandOrigin::ws,
+				client.principal == Principal::ehome ? MonitorEvent::Via::ehome
+				: client.principal == Principal::token ? MonitorEvent::Via::token : MonitorEvent::Via::session);
 			status = model.command(dp->id(), *value);
 			if (status != DatapointStatus::ok) {
 				code = datapoint_status_code(status);
@@ -343,6 +389,7 @@ LiveFeed::StatusSignature LiveFeed::signature() {
 	s.sessions = static_cast<uint32_t>(api_.auth().session_count());
 	s.clients = static_cast<uint32_t>(client_count());
 	s.datapoints = static_cast<uint32_t>(api_.model().size());
+	s.ehome = api_.ehome_signature();
 	return s;
 }
 
@@ -390,6 +437,9 @@ void LiveFeed::send_status(Client* only) {
 }
 
 bool LiveFeed::still_authorized(Client& client) {
+	if (client.principal == Principal::ehome) {
+		return true; // the E-Home link closes its socket itself
+	}
 	Auth& auth = api_.auth();
 	if (client.principal == Principal::session) {
 		if (!auth.session_alive(client.session)) {
@@ -566,7 +616,7 @@ void LiveFeed::pump() {
 			json.release();
 			bool done = id >= model.size();
 			json.end_array().member("done", done).end_object();
-			if (!transport_.ws_send(c.handle, out_, json.length())) {
+			if (!c.transport->ws_send(c.handle, out_, json.length())) {
 				blocked = true; // retried on writable() or the next tick
 				break;
 			}
@@ -682,7 +732,7 @@ void LiveFeed::monitor_flush() {
 				continue;
 			}
 			json.end_array().member("next", next).end_object();
-			if (!transport_.ws_send(c.handle, out_, json.length())) {
+			if (!c.transport->ws_send(c.handle, out_, json.length())) {
 				blocked = true; // retried on writable() or the next tick; the ring may overtake it (gap)
 				break;
 			}

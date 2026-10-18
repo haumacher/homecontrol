@@ -20,58 +20,76 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   astronomy and the scheduler (`doc/time.md`), the KNX time master, last-value persistence and
   short-term history over the platform's `BlobStore` (`ValueStore`, `History`, `doc/persistence.md`),
   the web server's portable half (JSON API `WebApi`, WebSocket feed `LiveFeed` and codec `websocket`,
-  `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); the rule interpreter (`hc::rules`, `doc/rules.md`); the runtime image (`hc::image`: `Loader`,
-  `ImageService`, `ImageStore`, the RAM stand-in `MemoryBlobStore`; `doc/image.md`). external values from HTTP JSON sources (`ExternalValues`, `doc/external.md`); the language packs of the web UI (`LanguagePacks`, the `ui.lang` setting; `doc/i18n.md`); the MQTT client (`Mqtt`: states, commands, Home Assistant discovery, history export over the platform's `MqttClient`; `spec/mqtt.md`, `doc/mqtt.md`); Plain C++17, no ESP-IDF or POSIX
-  `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`); the monitor stream for E-Home's group monitor (`MonitorFeed`: KNX, Zigbee and the controller's actions, spec/api.md "Monitor"); the rule interpreter (`hc::rules`, `doc/rules.md`); the Zigbee adapter (`hc::zigbee`: `ZigbeeAdapter`, `DeviceDatabase`, the cluster mapping, over the platform's `ZigbeeDriver`, `doc/zigbee.md`), the runtime image (`hc::image`, `doc/image.md`; dynamic datapoints of providers such as the Zigbee adapter, `DynamicSpecProvider`). Plain C++17, no ESP-IDF or POSIX
-  includes; everything the platform provides (clock, settings, time zone, network driver, status
-  light, logging, the Improv serial port, the WiFi scan, the diagnostics) is an interface in `core/include/hc/platform/`. Unit tests in `core/test/`.
-  `core/hc_core.cmake` is the single source list of both builds; the event loop model is in
-  `doc/core.md`, the network bring-up in `doc/network.md`.
+  `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`), the monitor stream
+  for E-Home's group monitor (`MonitorFeed`: KNX, Zigbee and the controller's actions, spec/api.md
+  "Monitor"), the rule interpreter (`hc::rules`, `doc/rules.md`), the runtime image (`hc::image`:
+  `Loader`, `ImageService`, `ImageStore`, the RAM stand-in `MemoryBlobStore`, dynamic datapoints of
+  providers such as the Zigbee adapter through `DynamicSpecProvider`; `doc/image.md`), the Zigbee
+  adapter (`hc::zigbee`: `ZigbeeAdapter`, `DeviceDatabase`, the cluster mapping, over the platform's
+  `ZigbeeDriver`; `doc/zigbee.md`), external values from HTTP JSON sources (`ExternalValues`,
+  `doc/external.md`), the language packs of the web UI (`LanguagePacks`, the `ui.lang` setting;
+  `doc/i18n.md`), the MQTT client (`Mqtt`: states, commands, Home Assistant discovery, history
+  export over the platform's `MqttClient`; `spec/mqtt.md`, `doc/mqtt.md`), and the E-Home
+  connection (`EhomeLink`: enrollment, the outbound WebSocket over the platform's
+  `WebSocketClient`, requests under the "E-Home" principal; spec/api.md "E-Home connection",
+  `doc/ehome.md`). Plain C++17, no ESP-IDF or POSIX includes; everything the platform provides
+  (clock, settings, time zone, network driver, status light, logging, the Improv serial port, the
+  WiFi scan, the diagnostics, the sockets and fetchers) is an interface in
+  `core/include/hc/platform/`. Unit tests in `core/test/`. `core/hc_core.cmake` is the single
+  source list of both builds; the event loop model is in `doc/core.md`, the network bring-up in
+  `doc/network.md`.
 - `platform/posix/` — the Linux build: implements the platform interfaces with POSIX (settings in a
   text file), builds the controller as an ordinary executable (the simulator and the SBC fallback)
   and the test runner (core tests plus `platform/posix/test/`).
 - `platform/esp/` — the ESP-IDF project: `main/` (boots NVS, the controller, the network and the
-  console; `idf_component.yml` lists the managed components `mdns` and `led_strip`, and `esp-zigbee-lib`/`esp-zboss-lib` for the
-  esp32c6 and esp32h2, pinned in the
-  versioned `dependencies.lock.<target>`), `components/` (`hc_core` compiles `core/` as a
+  console; `idf_component.yml` lists the managed components `mdns`, `led_strip` and
+  `esp_websocket_client`, and `esp-zigbee-lib`/`esp-zboss-lib` for the esp32c6 and esp32h2, pinned
+  in the versioned `dependencies.lock.<target>`), `components/` (`hc_core` compiles `core/` as a
   component; `hc_platform` the `hc::esp` platform: clock, NVS settings, time zone, status LED,
-  event-loop queue, the diagnostics `EspDiagnostics` (reset reason, boot record in NVS `diag`, core
-  dump, task watchdog on the event loop; `doc/diagnostics.md`); `hc_net` WiFi station with WPS and the scan, mDNS, SNTP, the WPS button; `hc_improv` the USB
-  Serial/JTAG port shared by Improv and the console (reader task, console input device);
-  `hc_console` the serial console and its command table (grouped `help`, `status` with the boot
-  record and the task stacks, `log level|tail`, `coredump status|clear`, `crash yes`, `factory reset
-  yes`; `doc/diagnostics.md`); `hc_settings` the NVS settings, shared with
-  the updater; `hc_ota` the application's side of the OTA update: confirmation, update check,
-  hand-over to the updater; `hc_web` the web server: esp_http_server with the core's API and
-  WebSocket feed, the UI files from the LittleFS image, the `web` console command; `hc_knx` the
-  KNX tunnel; `hc_image` the `image` console command and its download; `hc_zigbee` the coordinator; `hc_storage` the LittleFS mount and the blob store; `hc_external` the HTTP fetcher; `hc_i18n` the language pack download and the `lang` console command), `updater/` (the small OTA updater app of the
-  WebSocket feed, the UI files from the LittleFS image, the `web` console command; `hc_storage` the
-  one mount of the LittleFS `storage` partition at `/storage` and the BlobStore in `/storage/state`
-  (`LittleFsBlobStore`, the `storage` console command, `doc/persistence.md`); later knx,
-  zigbee, …), `updater/` (the small OTA updater app of the
-  asymmetric partition layout, its own ESP-IDF project), `partitions-<size>.csv` (generated by
-  `tools/gen_partitions.py`; the `coredump` partition, 64 KB, sits between `storage` and the Zigbee
-  partitions), `hc_project.cmake` (flash size and table selection shared by both
-  projects), `sdkconfig.defaults` (shared by both projects) and `sdkconfig.defaults.app` (the
-  application only, e.g. the web server's HTTP settings); the OTA design is `doc/ota.md`.
+  event-loop queue, the system facts for the System page, the diagnostics `EspDiagnostics` (reset
+  reason, boot record in NVS `diag`, core dump, task watchdog on the event loop;
+  `doc/diagnostics.md`); `hc_net` WiFi station with WPS and the scan, mDNS, SNTP, the WPS button;
+  `hc_improv` the USB Serial/JTAG port shared by Improv and the console (reader task, console input
+  device); `hc_console` the serial console and its command table (grouped `help`, `status` with the
+  boot record and the task stacks, `log level|tail`, `coredump status|clear`, `crash yes`, `factory
+  reset yes`; `doc/diagnostics.md`); `hc_settings` the NVS settings, shared with the updater;
+  `hc_ota` the application's side of the OTA update: confirmation, update check, hand-over to the
+  updater, the firmware upload instruction; `hc_web` the web server: esp_http_server with the
+  core's API and WebSocket feed, the UI files from the LittleFS image, the `web` console command;
+  `hc_knx` the KNX tunnel; `hc_image` the `image` console command and its download; `hc_zigbee` the
+  coordinator; `hc_storage` the one mount of the LittleFS `storage` partition at `/storage` and the
+  BlobStore in `/storage/state` (`LittleFsBlobStore`, the `storage` console command,
+  `doc/persistence.md`); `hc_external` the HTTP fetcher; `hc_i18n` the language pack download and
+  the `lang` console command; `hc_mqtt` the MQTT client; `hc_ehome` the E-Home connection
+  (`EspWebSocketClient` on the managed component `esp_websocket_client`)), `updater/` (the small
+  OTA updater app of the asymmetric partition layout, its own ESP-IDF project: downloads from the
+  update server or takes the firmware upload from the browser; `doc/ota.md`),
+  `partitions-<size>.csv` (generated by `tools/gen_partitions.py`; the `coredump` partition, 64 KB,
+  sits between `storage` and the Zigbee partitions), `hc_project.cmake` (flash size and table
+  selection shared by both projects), `sdkconfig.defaults` (shared by both projects) and
+  `sdkconfig.defaults.app` (the application only, e.g. the web server's HTTP settings, the
+  FreeRTOS run-time statistics, the mbedTLS dynamic buffers); the OTA design is `doc/ota.md`.
 - `spec/` — the contract with E-Home: the runtime image format (`spec/runtime-image.md`, fixtures
-  and the KNX test-system template in `spec/fixtures/images/`), the rule language, and the
-  conformance fixtures both rule interpreters (C++ here, Java in E-Home) must pass.
+  and the KNX test-system template in `spec/fixtures/images/`), the Zigbee bindings and export
+  (`spec/zigbee.md`), the REST and WebSocket API including the E-Home connection (`spec/api.md`),
+  the rule language, and the conformance fixtures both rule interpreters (C++ here, Java in E-Home)
+  must pass.
 - `web/` — the device web UI in `web/ui/dist/` (plain ES modules and CSS, no framework, no build
   step; `doc/web.md`), gzip-compressed into the LittleFS image `storage.bin` by
-  `platform/esp/tools/gen_ui_image.py` during the firmware build; the REST and WebSocket API is
-  `spec/api.md`; every text goes through `t(key)` over the English base `web/ui/dist/lang/en.json`,
-  the committed language packs are `web/ui/lang/<code>.json` (German first; same key set, checked by
-  `scripts/i18n-pack.py check` and the host test; `doc/i18n.md`);
-  `web/flasher/` the web flasher (ESP Web Tools page and manifest; local firmware copies from
-  `scripts/flasher-local.sh` in `web/flasher/firmware/` are not versioned).
+  `platform/esp/tools/gen_ui_image.py` during the firmware build; every text goes through `t(key)`
+  over the English base `web/ui/dist/lang/en.json`, the committed language packs are
+  `web/ui/lang/<code>.json` (German first; same key set, checked by `scripts/i18n-pack.py check`
+  and the host test; `doc/i18n.md`); `web/flasher/` the web flasher (ESP Web Tools page and
+  manifest; local firmware copies from `scripts/flasher-local.sh` in `web/flasher/firmware/` are
+  not versioned).
 - `scripts/` — developer helpers (`flasher-local.sh`, `update-server.py`: the development OTA update
   server, also serving the release's language packs; `i18n-pack.py`: pack check, DeepL fill-in with
   `DEEPL_AUTH_KEY`, the per-release i18n manifest).
 - `doc/` — design notes; `doc/hardware.md` for boards, flash sizes, partition tables and wiring,
-  `doc/diagnostics.md` for the reset reason, the boot record, core dumps, the watchdog and the console,
-  `doc/core.md` for the core and its event loop, `doc/ota.md` for the OTA update, `doc/i18n.md` for
-  the UI languages and language packs.
+  `doc/diagnostics.md` for the reset reason, the boot record, core dumps, the watchdog and the
+  console, `doc/core.md` for the core and its event loop, `doc/ota.md` for the OTA update and the
+  firmware upload, `doc/i18n.md` for the UI languages and language packs, `doc/ehome.md` for the
+  E-Home connection.
 - `third_party/` — vendored code with its license (doctest, the unit test framework; cpp-httplib,
   the POSIX build's HTTP server).
 - `.github/workflows/ci.yml` — host build with tests; the esp32c6 firmware build (partition table

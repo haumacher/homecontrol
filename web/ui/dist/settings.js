@@ -5,6 +5,7 @@
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
+import { ehomeCard } from "/ehome.js";
 import { formatAgo, formatBytes, formatDuration } from "/format.js";
 import { t, tv, has, bundled, language, languageFound } from "/i18n.js";
 import { loadModel } from "/model.js";
@@ -276,7 +277,12 @@ export function renderSettings(content, ctx) {
 	const editable = h("div", { class: "card" }, h("p", { class: "muted" }, t("app.loading")));
 	const message = h("p", { class: "message error", role: "alert", hidden: true });
 
-	const showStatus = (s) => replace(status, statusCards(s));
+	// The E-Home card (doc/ehome.md): its state from the status, its address from the settings.
+	const ehome = ehomeCard(() => loadSettings());
+	const showStatus = (s) => {
+		replace(status, statusCards(s));
+		ehome.update(s);
+	};
 	const onStatus = (event) => showStatus(event.detail);
 	ctx.live.addEventListener("status", onStatus);
 	if (ctx.live.status) {
@@ -308,7 +314,9 @@ export function renderSettings(content, ctx) {
 			return;
 		}
 		lastState = i18n ? i18n.state : null;
-		replace(editable, data.settings.map((s) => (s.key === "ui.lang" ? languageRow(s, i18n, ctx, reload)
+		const url = data.settings.find((s) => s.key === "ehome.url");
+		ehome.setAddress(url ? url.value : "");
+		replace(editable, data.settings.filter((s) => !s.key.startsWith("ehome.")).map((s) => (s.key === "ui.lang" ? languageRow(s, i18n, ctx, reload)
 			: kChoices[s.key] ? choiceRow(s, kChoices[s.key]) : settingRow(s, () => {}))));
 	}).catch((error) => {
 		replace(editable, h("p", { class: "message error" }, errorText(error)));
@@ -335,7 +343,7 @@ export function renderSettings(content, ctx) {
 	showImage();
 	content.appendChild(message);
 	content.appendChild(h("h2", { class: "section-title" }, t("image.section")));
-	content.appendChild(h("div", { class: "cards" }, project, themeCard()));
+	content.appendChild(h("div", { class: "cards" }, project, ehome.element, themeCard()));
 	content.appendChild(h("h2", { class: "section-title" }, t("settings.status")));
 	content.appendChild(status);
 	content.appendChild(h("h2", { class: "section-title" }, t("settings.editable")));

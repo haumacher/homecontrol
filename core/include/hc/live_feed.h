@@ -88,7 +88,18 @@ public:
 	/// the status at once; value updates queued for the old model are dropped.
 	void resync();
 
+	/// The browser clients (at most kMaxClients; the E-Home socket is not counted).
 	size_t client_count() const;
+
+	/// The E-Home socket (doc/ehome.md) joins as one more client in a slot of its own, beside the
+	/// kMaxClients browsers: authenticated as the principal "E-Home" (a token's rights), greeted with
+	/// `hello`; its messages go through `transport` with `handle`. Replaces an attached one.
+	void attach_ehome(WsTransport& transport, uint32_t handle);
+	/// A complete text message from E-Home (after attach_ehome()).
+	void ehome_message(const char* text, size_t length);
+	/// The E-Home socket is gone (no close is sent).
+	void detach_ehome();
+	bool ehome_attached() const { return clients_[kEhomeSlot].used; }
 
 	void datapoint_updated(const DatapointUpdate& update) override;
 
@@ -105,11 +116,14 @@ public:
 	static bool same_origin(const char* origin, const char* host);
 
 private:
-	enum class Principal : uint8_t { none, session, token };
+	enum class Principal : uint8_t { none, session, token, ehome };
+	/// The slot of the E-Home socket, after the browsers'.
+	static constexpr size_t kEhomeSlot = kMaxClients;
 
 	struct Client {
 		bool used = false;
 		uint32_t handle = 0;
+		WsTransport* transport = nullptr;
 		Principal principal = Principal::none;
 		SessionRef session;
 		int token_slot = -1;
@@ -122,6 +136,7 @@ private:
 	};
 
 	Client* find(uint32_t handle);
+	void handle_message(Client& client, const char* text, size_t length);
 	void send(Client& client, const char* text, size_t length);
 	void send_error(Client& client, const char* code, const char* text);
 	void refuse_and_close(Client& client, uint16_t ws_code, const char* code, const char* text);
@@ -151,10 +166,11 @@ private:
 		uint32_t sessions = 0;
 		uint32_t clients = 0;
 		uint32_t datapoints = 0;
+		uint8_t ehome = 0; ///< The E-Home connection's state.
 		bool operator!=(const StatusSignature& o) const {
 			return link != o.link || mode != o.mode || led != o.led || synchronized != o.synchronized ||
 				improv != o.improv || mdns != o.mdns || ip_hash != o.ip_hash || sessions != o.sessions ||
-				clients != o.clients || datapoints != o.datapoints;
+				clients != o.clients || datapoints != o.datapoints || ehome != o.ehome;
 		}
 	};
 	StatusSignature signature();
@@ -162,7 +178,7 @@ private:
 	WebApi& api_;
 	EventLoop& loop_;
 	WsTransport& transport_;
-	Client clients_[kMaxClients];
+	Client clients_[kMaxClients + 1];
 	uint16_t pending_[kMaxPending] = {};
 	size_t pending_count_ = 0;
 	bool flush_posted_ = false;

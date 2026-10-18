@@ -96,7 +96,18 @@ target_compile_definitions(hc_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WIT
 target_compile_definitions(hc_tests PRIVATE HC_SPEC_DIR="${HC_REPO_DIR}/spec")
 
 include("${HC_REPO_DIR}/third_party/doctest/cmake/doctest.cmake")
+# Our discovery script in place of the vendored doctestAddTests.cmake, which loses test cases whose
+# name contains ';' (CMake list splitting) while ctest stays green.
+set(_DOCTEST_DISCOVER_TESTS_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/test/doctest_add_tests.cmake")
 doctest_discover_tests(hc_tests)
+# The guard of the test gate: every test case the runner lists is a CTest entry. The tests file is
+# the one doctest_discover_tests generates (named after the hash of TEST_SPEC and EXTRA_ARGS).
+string(SHA1 hc_discover_hash " ")
+string(SUBSTRING "${hc_discover_hash}" 0 7 hc_discover_hash)
+add_test(NAME TestDiscovery.EveryTestCaseIsACTestEntry
+	COMMAND "${CMAKE_COMMAND}" "-DHC_TEST_EXE=$<TARGET_FILE:hc_tests>"
+		"-DHC_CTEST_FILE=${CMAKE_CURRENT_BINARY_DIR}/hc_tests_tests-${hc_discover_hash}.cmake"
+		-P "${CMAKE_CURRENT_LIST_DIR}/test/check_test_discovery.cmake")
 # The build id follows the checkout at build time, not at configure time (#36): the controller's
 # --version must report what `git describe --always --dirty` says now.
 add_test(NAME BuildId.FollowsGitDescribe
@@ -189,6 +200,11 @@ foreach(pack ${hc_lang_packs})
 endforeach()
 add_custom_target(hc_lang_packs ALL DEPENDS ${hc_lang_copies})
 
+# The E-Home connection (issue #41, doc/ehome.md): the enrollment and the socket against a fake E-Home; the
+# POSIX WebSocket client (plain ws://, in the web library for the LoopExecutor) and its test against an
+# in-process server speaking the core's codec.
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/ehome_link_test.cpp")
+target_sources(hc_posix_web PRIVATE src/websocket_client.cpp)
 # The MQTT client's core tests (issue #18, doc/mqtt.md).
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/mqtt_codec_test.cpp"
@@ -198,7 +214,8 @@ target_sources(hc_tests PRIVATE
 # The POSIX MQTT client (a small MQTT 3.1.1 client over TCP, in the web library for the LoopExecutor) and
 # its test against an in-process broker speaking the core's codec.
 target_sources(hc_posix_web PRIVATE src/mqtt_client.cpp)
-add_executable(hc_posix_mqtt_tests "${HC_REPO_DIR}/core/test/test_main.cpp" test/posix_mqtt_client_test.cpp)
+add_executable(hc_posix_mqtt_tests "${HC_REPO_DIR}/core/test/test_main.cpp" test/posix_mqtt_client_test.cpp
+	test/posix_websocket_client_test.cpp)
 target_include_directories(hc_posix_mqtt_tests SYSTEM PRIVATE "${HC_REPO_DIR}/third_party/doctest")
 target_include_directories(hc_posix_mqtt_tests PRIVATE "${HC_REPO_DIR}/core/test")
 target_link_libraries(hc_posix_mqtt_tests PRIVATE hc_posix_web)

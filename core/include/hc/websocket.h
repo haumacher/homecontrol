@@ -60,7 +60,9 @@ size_t encode_close(uint8_t* out, uint16_t code, const char* reason);
 /// Whether `data` is valid UTF-8.
 bool utf8_valid(const uint8_t* data, size_t length);
 
-/// Decodes what a client sends: frames must be masked (section 5.1), reserved bits zero, control
+/// Decodes what a client sends (Role::server: frames must be masked, section 5.1) or what a server
+/// sends (Role::client: frames must not be masked; the E-Home client of the POSIX build), reserved
+/// bits zero, control
 /// frames unfragmented and at most 125 bytes; data frames are reassembled into one message in the
 /// caller's buffer (a text message is checked for valid UTF-8). The decoder stops at each complete
 /// message or control frame (Event::message, Event::control); its payload stays valid until the
@@ -75,9 +77,12 @@ public:
 		error,     ///< Protocol violation: close_code(), error().
 	};
 
+	/// Which side decodes: a server reads masked client frames, a client unmasked server frames.
+	enum class Role : uint8_t { server, client };
+
 	/// `buffer` receives the payload of data messages; a message longer than `capacity` is refused
 	/// with kCloseTooBig.
-	FrameDecoder(uint8_t* buffer, size_t capacity);
+	FrameDecoder(uint8_t* buffer, size_t capacity, Role role = Role::server);
 
 	/// Consumes bytes up to the next event; `consumed` tells how many. Call again with the rest.
 	Event push(const uint8_t* data, size_t length, size_t& consumed);
@@ -96,6 +101,7 @@ private:
 
 	uint8_t* buffer_;
 	size_t capacity_;
+	bool masked_; ///< Frames must be masked (a server's decoder).
 
 	uint8_t header_[kMaxHeader] = {};
 	size_t header_have_ = 0;

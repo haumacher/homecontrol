@@ -25,3 +25,16 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 # uxTaskGetSystemState() for the console's task list (name, priority, stack high-water mark).
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# The E-Home connection (issue #41, doc/ehome.md): the event loop sends on the WebSocket while the client
+# task waits for the loop to take a received message, so sending must not need the client's main lock.
+CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
+# TLS memory for the E-Home connection next to the other TLS clients (OTA check, HTTP fetcher, MQTT): the
+# heap's largest free block (about 24 KB on a busy C6) rules out the static 16 KB + 4 KB record buffers per
+# connection. Dynamic buffers allocate each record buffer at the size of the record and free it after use;
+# the configuration's certificate data is freed after the handshake; the peer's certificate is not kept
+# after the handshake (about 4 KB; IDF 5.3's counterpart of a "free peer certificate" option).
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+# CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE is not set

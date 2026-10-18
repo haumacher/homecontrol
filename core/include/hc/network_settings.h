@@ -42,7 +42,8 @@ constexpr size_t kMaxSsidLength = 32;
 
 } // namespace setting
 
-/// Whether a key holds a secret that listings and logs must mask (wifi.psk, the web.* hashes).
+/// Whether a key holds a secret that listings and logs must mask (wifi.psk, the web.* hashes,
+/// mqtt.password, ehome.secret).
 bool setting_is_secret(const char* key);
 
 /// An SSID: 1 to 32 bytes. On refusal `error` names the problem.

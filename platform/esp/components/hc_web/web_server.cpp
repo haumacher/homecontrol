@@ -67,13 +67,16 @@ const char* status_line(int status) {
 		case 404: return "404 Not Found";
 		case 405: return "405 Method Not Allowed";
 		case 409: return "409 Conflict";
+		case 410: return "410 Gone";
 		case 413: return "413 Content Too Large";
 		case 415: return "415 Unsupported Media Type";
 		case 422: return "422 Unprocessable Content";
 		case 429: return "429 Too Many Requests";
 		case 500: return "500 Internal Server Error";
 		case 501: return "501 Not Implemented";
+		case 502: return "502 Bad Gateway";
 		case 503: return "503 Service Unavailable";
+		case 504: return "504 Gateway Timeout";
 		case 507: return "507 Insufficient Storage";
 		default: return status >= 500 ? "500 Internal Server Error" : "400 Bad Request";
 	}
@@ -211,7 +214,7 @@ void EspCrypto::pbkdf2_sha256(const uint8_t* password, size_t password_length, c
 // ---- The job slot (httpd task -> event loop) ---------------------------------------------------
 
 struct WebServer::Job {
-	enum class Kind : uint8_t { api, api_stream, ws_open, ws_message };
+	enum class Kind : uint8_t { api, api_poll, api_stream, ws_open, ws_message };
 
 	Kind kind = Kind::api;
 	uint32_t sequence = 0;
@@ -504,6 +507,9 @@ void WebServer::run_job(void* context, const LoopMessage&) {
 			}
 			self.api_.handle(job.request, job.response);
 			break;
+		case Job::Kind::api_poll:
+			job.stream_ok = self.api_.poll_deferred(job.response);
+			break;
 		case Job::Kind::api_stream:
 			job.stream_ok = self.api_.read_stream(job.stream_token, job.stream_offset, g_response, sizeof(g_response),
 				job.stream_got);
@@ -630,6 +636,22 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 		std::memset(static_cast<void*>(&job.hash), 0, sizeof(job.hash));
 		if (!ran) {
 			return send_refusal(req, 503, "api.busy", "the controller is busy; try again");
+		}
+	}
+	if (job.response.deferred) {
+		// The answer waits for another service (the E-Home enrollment, doc/ehome.md): poll it on the
+		// loop. The httpd task waits meanwhile (the core bounds the wait well below the limit).
+		job.stream_ok = false;
+		for (uint32_t waited = 0; !job.stream_ok && waited < WebApi::kDeferredLimitMs;
+			waited += WebApi::kDeferredPollMs) {
+			vTaskDelay(pdMS_TO_TICKS(WebApi::kDeferredPollMs));
+			job.kind = Job::Kind::api_poll;
+			if (!run_on_loop()) {
+				wait_job();
+			}
+		}
+		if (!job.stream_ok) {
+			return send_refusal(req, 504, "api.timeout", "the answer did not come in time");
 		}
 	}
 	if (heap.data == nullptr) {
