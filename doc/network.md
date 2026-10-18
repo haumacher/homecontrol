@@ -204,7 +204,10 @@ When the network first comes up the controller announces itself:
   `homecontrol-a1b2c3.local` (also sent as the DHCP host name);
 - service `_homecontrol._tcp` on port 80 (the web server and API, `doc/web.md`), instance name =
   the host name (unique per device, so E-Home's controller search lists every controller; #32), TXT
-  records `version=<hc::kVersion>` and `build=<git describe of the build>`.
+  records `version=<hc::kVersion>` and `build=<git describe of the build>`;
+- service `_http._tcp` on port 80 with the TXT record `path=/` (added 2026-10-18 at the author's
+  request): the standard announcement of a web interface, which routers such as the FRITZ!Box turn
+  into a link to the device in their home-network list, as they do for the phoneblock dongle.
 
 Check from the desk machine: `avahi-browse -r _homecontrol._tcp`. E-Home's search sends a *legacy
 unicast* query (from a port other than 5353) for the PTR of `_homecontrol._tcp.local`; the ESP-IDF

@@ -60,14 +60,21 @@ void NetServices::start_mdns() {
 		err = mdns_service_add(nullptr, kServiceType, kServiceProtocol, kServicePort, txt,
 			sizeof(txt) / sizeof(txt[0]));
 	}
+	if (err == ESP_OK) {
+		// The web UI as a standard HTTP service, so that routers list a link to the device (the
+		// FRITZ!Box shows the web interface of a device that announces _http._tcp, as the phoneblock
+		// dongle does); the path TXT names the page to open.
+		mdns_txt_item_t http_txt[] = {{"path", "/"}};
+		err = mdns_service_add(nullptr, "_http", "_tcp", kServicePort, http_txt, 1);
+	}
 	if (err != ESP_OK) {
 		ESP_LOGE(kTag, "mDNS not announced: %s (retried at the next network up)", esp_err_to_name(err));
 		mdns_free();
 		return;
 	}
 	mdns_running_ = true;
-	ESP_LOGI(kTag, "mDNS: %s.local, service %s.%s port %u, instance %s, TXT version=%s build=%s", hostname_,
-		kServiceType, kServiceProtocol, static_cast<unsigned>(kServicePort), hostname_, kVersion, build_id());
+	ESP_LOGI(kTag, "mDNS: %s.local, services %s.%s and _http._tcp port %u, instance %s, TXT version=%s build=%s",
+		hostname_, kServiceType, kServiceProtocol, static_cast<unsigned>(kServicePort), hostname_, kVersion, build_id());
 }
 
 void NetServices::start_sntp() {
