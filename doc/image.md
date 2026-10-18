@@ -48,6 +48,16 @@ tracking and diagnostics follow datapoints whose position moved; rule timers, st
 overrides follow the rule id (`spec/rules.md` 7.6). The KNX adapter re-reads read-on-start
 datapoints when it is configured with the tunnel up.
 
+**Implied datapoints.** The loader adds datapoints the image does not declare: the time master's
+(`knx.time`, `knx.date`, `knx.datetime`) and, since the decision of 2026-10-18 (#28), one per rule
+parameter, `rule/<ruleId>/<parameterId>` with `enabled` first in each rule (`spec/rules.md` 8.6;
+`rules::parameter_datapoints()` is the one derivation). They follow the declared datapoints in the
+model, before the providers' datapoints below; `rule/` is a reserved prefix for declared ids. The
+rule engine owns the parameter datapoints through its technology `rules`: it publishes a
+parameter's value when it changes, and a command on the datapoint is a `setParameter` with the same
+validation. They are not persisted by the value store (the parameter store keeps the overrides) and
+keep no history.
+
 **Dynamic datapoints.** Some datapoints come and go at run time: a Zigbee device joins or is
 removed. A `DynamicSpecProvider` registered with `ImageService::add_provider()` states the datapoints
 it needs (`dynamic_specs()`: name, type, flags, unit, the `Technology` that owns them), given the

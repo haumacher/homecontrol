@@ -185,6 +185,10 @@ Behavior:
   unknown), except the transmit-only ones, whose owner decides. **Tunnel up**: the read-on-start datapoints are read, one every 100 ms
   (`kReadSpacingMs`), so a hundred reads take ten seconds instead of flooding the gateway; the tunnel
   queue additionally paces them to the bus.
+- **Reads on request**: a rule's `read` action (`spec/rules.md` 7.12) reaches the adapter through
+  `Technology::read`; the datapoint joins the same read queue (one read per 100 ms, duplicates
+  merged), so a rule reading twenty datapoints at once keeps the spacing. Refused, with a log line
+  and the rule's `readRefused`, while the tunnel is down; the pending flags are dropped then.
 
 ## Time master
 

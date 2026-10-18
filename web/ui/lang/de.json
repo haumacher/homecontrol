@@ -97,6 +97,7 @@
 	"technology.knx": "KNX",
 	"technology.zigbee": "Zigbee",
 	"technology.scheduler": "Der Zeitplan",
+	"technology.rules": "Das Regelwerk",
 	"binding.knx": "KNX",
 	"binding.dpt": "DPT {dpt}",
 	"binding.send": "sendet an {address}",
