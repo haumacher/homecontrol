@@ -187,13 +187,52 @@ function languageRow(setting, i18n, ctx, reload) {
 	return h("div", { class: "field" }, h("label", { for: id }, t("settings.key.ui.lang")), select, feedback);
 }
 
-/// The deployed image: project, revision, when and how it came; "forget image" removes it.
+/// Installs a runtime image from a file the owner picked (the field round trip of issue #40: the
+/// image E-Home exported, carried here without an E-Home on this network). PUT /api/image as E-Home
+/// does; a refusal lists the loader's reasons.
+function installControls(rerender, feedback) {
+	const input = h("input", { type: "file", accept: ".json,application/json" });
+	const button = h("button", { type: "button", class: "button secondary", onclick: async () => {
+		const file = input.files && input.files[0];
+		if (!file) {
+			input.click();
+			return;
+		}
+		let image;
+		try {
+			image = JSON.parse(await file.text());
+		} catch (error) {
+			replace(feedback, t("image.install.invalid_file", { name: file.name }));
+			return;
+		}
+		button.disabled = true;
+		replace(feedback, t("image.install.working", { name: file.name }));
+		try {
+			const result = await api("PUT", "/api/image", image);
+			replace(feedback, t("image.install.done", { name: result.image.name || result.image.projectId, revision: result.image.revision }));
+			rerender();
+		} catch (error) {
+			const refusals = (error.body && error.body.refusals) || [];
+			replace(feedback, h("span", null, errorText(error)),
+				refusals.length ? h("ul", { class: "refusals" }, refusals.map((r) => h("li", null, `${r.path}: ${r.reason}`))) : null,
+				error.body && error.body.total > refusals.length
+					? h("span", { class: "muted" }, t("image.install.more", { count: error.body.total - refusals.length })) : null);
+			button.disabled = false;
+		}
+	} }, t("image.install"));
+	return h("div", { class: "field" }, h("label", null, t("image.install.label")),
+		h("div", { class: "field-row" }, input, button), h("span", { class: "hint" }, t("image.install.hint")));
+}
+
+/// The deployed image: project, revision, when and how it came; "forget image" removes it; a file
+/// installs a new one.
 function imageCard(ctx, rerender) {
 	const card = h("section", { class: "card" }, h("h2", null, t("image.title")), h("p", { class: "muted" }, t("app.loading")));
 	const feedback = h("p", { class: "error-text", role: "status" });
 	loadModel().then((model) => {
 		if (!model.loaded) {
-			replace(card, h("h2", null, t("image.title")), h("p", { class: "muted" }, t("image.none")));
+			replace(card, h("h2", null, t("image.title")), h("p", { class: "muted" }, t("image.none")),
+				installControls(rerender, feedback), feedback);
 			return;
 		}
 		const deployedAgo = model.nowMs - model.loadedMs + (Date.now() - model.fetchedAt);
@@ -217,7 +256,7 @@ function imageCard(ctx, rerender) {
 			model.generator ? [t("image.generator"), model.generator] : null,
 			[t("image.deployed"), t("image.deployed.value", { ago: formatAgo(deployedAgo), source: tv("image.source.", model.source) })],
 			[t("image.stored"), model.stored ? t("status.yes") : t("image.not_stored")],
-		]), h("p", { class: "hint" }, t("image.forget.hint")), forget, feedback);
+		]), h("p", { class: "hint" }, t("image.forget.hint")), forget, installControls(rerender, feedback), feedback);
 	}).catch((error) => {
 		replace(card, h("h2", null, t("image.title")), h("p", { class: "muted" },
 			error && error.code === "image.unavailable" ? t("image.unavailable") : errorText(error)));

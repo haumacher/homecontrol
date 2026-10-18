@@ -154,7 +154,15 @@ ring for tools without a socket. The monitor also sends a typed (DPT and value) 
 write, response or read to the tunnel, as the console's `knx write` does, behind the same
 authentication as the commands; its telegrams come back as `tx` events marked `"origin": "monitor"`.
 
-### Console parity: what the console does, the API does
+### The field round trip (issue #40)
+
+The Settings page's project card installs a runtime image from a file ("Install project file":
+`PUT /api/image` with the file's JSON, the loader's refusals listed), and the Zigbee page exports
+the device list for E-Home's importer (`GET /api/zigbee/export`, spec/zigbee.md "Export"). Together
+they close the loop for an installation without an E-Home on its network: pair on the device,
+export, engineer in E-Home, export the image, install it here.
+
+## Console parity: what the console does, the API does
 
 An installed device's serial console is out of reach, so every console command that operates the
 device has a route (issue #38; the mapping is in doc/diagnostics.md, "The console"). The routes

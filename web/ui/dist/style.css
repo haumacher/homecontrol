@@ -1277,3 +1277,22 @@ input.number {
 	overflow-wrap: anywhere;
 	user-select: all;
 }
+
+/* A file picker beside its button (the project file installer, settings.js). */
+.field-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	align-items: center;
+}
+.field-row input[type="file"] {
+	flex: 1 1 12rem;
+	min-width: 0;
+}
+
+/* The loader's refusals of an installed project file. */
+.refusals {
+	margin: 0.25rem 0 0;
+	padding-left: 1.25rem;
+	font-size: 0.9em;
+}
