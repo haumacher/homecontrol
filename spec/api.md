@@ -626,6 +626,81 @@ to the image's value removes the override). 200 `{"ok": true, "schedule": {...}}
 parser's reason), 500 `api.response_too_large`, 503 `api.busy` (the event loop did not take the
 request within 5 s, ESP).
 
+## E-Home connection (issue #41)
+
+E-Home is a service on the public internet that manages many installations; it can never reach a
+controller in a home's private network. So the controller connects to E-Home, outbound, over TLS,
+and only while its owner has switched the connection on for configuration and deployment. Firmware
+does not travel over this connection (it comes from the release server of `update.url` or the
+browser upload, doc/ota.md). The connection carries the controller's live feed to E-Home and
+E-Home's requests to the controller, in the same JSON the browser and the local API use.
+
+### Settings
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `ehome.url` | string, `https://host[:port][/path]` | empty | The E-Home service the controller is enrolled with (set by the enrollment). |
+| `ehome.id` | string | empty | The controller's id at that service (assigned by the enrollment). |
+| `ehome.name` | string | empty | The installation's name at E-Home, shown on the Settings page. |
+| `ehome.secret` | secret, 64 hex digits | empty | The controller's credential (received at the enrollment; never shown or listed). |
+| `ehome.enabled` | boolean | `false` | The owner's switch: while true the controller keeps the connection up (with the network backoff of doc/network.md); while false it never connects. |
+
+`ehome.url`, `ehome.id` and `ehome.name` are read-only in the settings list; `ehome.enabled` is
+editable (`PUT /api/settings/ehome.enabled`, the switch on the Settings page). "Disconnect from
+E-Home" (`DELETE /api/ehome`) erases all five.
+
+### Enrollment
+
+In E-Home the installer opens the project and asks for an enrollment code (valid 15 minutes, one
+use). On the controller's Settings page the owner enters the E-Home address and the code:
+
+`POST /api/ehome/enroll` with `{"url": "https://ehome.example", "code": "ABCD-EFGH"}` (session or
+token principal, CSRF header). The controller calls E-Home's `POST <url>/api/controllers/enroll`
+with `{"code": "ABCD-EFGH", "name": "<device name>", "version": "<firmware>", "build": "<build id>"}`
+over TLS (the IDF certificate bundle; plain `http://` only for development) and expects
+`200 {"controller": "<id>", "installation": "<name>", "secret": "<64 hex digits>", "socket": "wss://ehome.example/api/controllers/<id>/socket"}`.
+It stores the five settings with `ehome.enabled` true and answers `200 {"ok": true, "installation":
+"<name>"}` and connects. E-Home's refusals come through with their status: 404 `ehome.code_unknown`
+(wrong or used code), 410 `ehome.code_expired`, 409 `ehome.enrolled` (the controller is already
+enrolled somewhere; disconnect first), 502 `ehome.unreachable` with the reason (DNS, TLS, refused).
+
+### The socket
+
+With `ehome.enabled` true the controller opens the WebSocket of `socket` (TLS) and authenticates:
+
+```
+E-Home → {"type": "challenge", "nonce": "<32 hex digits>"}
+device → {"type": "auth", "controller": "<id>", "mac": "<HMAC-SHA256(secret, nonce) as 64 hex digits>", "version": "0.1.0", "build": "a9d0216"}
+E-Home → {"type": "ready", "installation": "<name>"}        or {"type": "refused", "code": "...", "error": "..."} and the close
+```
+
+After `ready` the socket is the live feed of this document's WebSocket section: E-Home sends
+`{"type": "subscribe"}` and receives `status`, `datapoints`, `zigbee` and `monitor` messages exactly
+as a browser does, and sends `command`, `read` and the monitor's `send`/`read` as a browser does.
+In addition E-Home makes requests:
+
+```
+E-Home → {"type": "request", "id": 7, "method": "GET", "path": "/api/zigbee/export?from=0"}
+device → {"type": "response", "id": 7, "status": 200, "body": {...}}
+```
+
+`method`, `path` (with query) and `body` are what the local API takes; the answer carries the
+route's status and JSON body (or `{"error", "code"}` on a refusal). A request body above 4 KB (the
+runtime image) is sent as `{"type": "request", "id": 8, "method": "PUT", "path": "/api/image",
+"length": 10226}` followed by binary frames carrying the body; the controller answers after the last
+byte, or 413 `api.too_large` when `length` exceeds what the route accepts. Requests run with the
+"E-Home" principal: everything a token may do, nothing more (no onboarding, no password change, no
+WiFi change, no factory reset). One request at a time per socket; a second before the response is
+refused 429 `ehome.busy`. The device pings every 30 s; a missed pong closes the socket and the
+backoff reconnects it.
+
+### Status
+
+`GET /api/status` gains `"ehome": {"enabled": true, "state": "connected" | "connecting" | "off" |
+"failed", "installation": "<name>", "since_s": 812, "error": "..."}`; the WebSocket `status`
+message carries the same member; the Settings page shows it beside the switch. E-Home shows each
+controller of a project as online or offline with the last contact.
+
 ## WebSocket `/ws`
 
 Text messages, each one JSON object with a `type`. At most 4 clients; a fifth gets an `error`

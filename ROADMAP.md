@@ -139,6 +139,17 @@ outside world (weather, external services).
 - **2026-10-18 — Function roles follow the KNX inputs E-Home binds.** A dimmer gets the optional
   `step` role for relative dimming (DPT 3.007); the device sends the scene code `scene − 1` (#30,
   #31, from ehome #50).
+- **2026-10-18 — E-Home is a service on the public internet; the controller connects to it, not
+  the other way round (#41).** The author: "ehome can never reach a device in the private LAN of an
+  installation. The device must actively connect to ehome to push detected zigbee devices, or request
+  a new version of the project layout. We think of ehome as a SaaS software provided for managing
+  multiple installations." Decided: an outbound WebSocket over TLS carrying the existing live feed
+  and a request envelope for the existing API, authenticated with a per-controller secret obtained
+  through an enrollment code E-Home shows for the project; the connection is not permanent: the owner
+  switches it on from the device's Settings page for configuration and deployment and off again;
+  firmware never travels over it ("a CDN is a much better solution for that - see the phoneblock
+  dongle": the release server of `update.url`, plus the browser upload). spec/api.md "E-Home
+  connection". The device's local UI and API stay the installer's on-site tools.
 - **2026-10-18 — Push updates start with the upload page in the updater app (#39).** The author:
   start with the upload page in the updater app; there is no E-Home installation with a stable URL
   yet. The application stores an *await upload* instruction with a one-time token and restarts into
