@@ -116,6 +116,7 @@ target_sources(hc_tests PRIVATE
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/knx_time_master_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/transmitter_probe_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/function_roles_probe_test.cpp") # function roles (#30)
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/schedule_output_probe_test.cpp") # schedule outputs are not rule outputs (#33)
 # State persistence and short-term history (issue #21).
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/value_store_test.cpp"

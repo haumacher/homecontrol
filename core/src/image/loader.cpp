@@ -116,6 +116,15 @@ bool Plan::has_schedule(const char* id) const {
 	return false;
 }
 
+bool Plan::schedule_owns_output(const char* datapoint) const {
+	for (size_t i = 0; i < schedule_count; ++i) {
+		if (schedules[i].output != nullptr && std::strcmp(schedules[i].output, datapoint) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // ---- Value types -------------------------------------------------------------------------------
 
 namespace {
@@ -2047,6 +2056,7 @@ void parse_history(Ctx& c, const JsonSpan& root, size_t cap) {
 struct PlanSchedules : rules::ScheduleDirectory {
 	explicit PlanSchedules(const Plan& p) : plan(p) {}
 	bool has_schedule(const char* id) const override { return plan.has_schedule(id); }
+	bool owns_output(const char* datapoint) const override { return plan.schedule_owns_output(datapoint); }
 	const Plan& plan;
 };
 

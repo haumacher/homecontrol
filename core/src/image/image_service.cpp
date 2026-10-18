@@ -28,6 +28,7 @@ constexpr char kNoRules[] = "[]";
 struct PlanSchedules : rules::ScheduleDirectory {
 	explicit PlanSchedules(const Plan& p) : plan(p) {}
 	bool has_schedule(const char* id) const override { return plan.has_schedule(id); }
+	bool owns_output(const char* datapoint) const override { return plan.schedule_owns_output(datapoint); }
 	const Plan& plan;
 };
 

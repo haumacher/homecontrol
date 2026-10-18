@@ -117,6 +117,9 @@ struct Plan {
 
 	/// The schedule ids, for the rule loader's `schedule` triggers.
 	bool has_schedule(const char* id) const;
+	/// Whether `datapoint` is the `output` of a schedule entry: the scheduler owns it, a rule may
+	/// not write it (spec/rules.md 10.1, notWritable).
+	bool schedule_owns_output(const char* datapoint) const;
 };
 
 /// Parses and validates a runtime image (spec/runtime-image.md) into a Plan, without changing
