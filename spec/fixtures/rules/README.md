@@ -145,6 +145,7 @@ Reals compare with a relative tolerance of 1e-9; everything else compares exactl
 | `51-parameter-datapoint-command` | A command to a parameter datapoint sets the parameter; an invalid value is refused; a fixed parameter's datapoint is not writable. |
 | `52-parameter-datapoint-other-rule` | Another rule reads, triggers on and writes a parameter datapoint; the parameter's event comes before the datapoint's update. |
 | `53-parameter-datapoint-enabled` | The enable switch as a datapoint: commands disable and enable the rule, another rule follows it, a fixed switch is not writable. |
+| `54-silence-read-parameter-datapoint` | A `silence` trigger whose period is a parameter: a tuner writes the parameter's datapoint `rule/watch/after`, the silence fires a `read` after it, the answer re-arms it, and after a reboot the silence counts from boot. |
 
 The expected outputs were computed by hand and cross-checked against a throw-away executable model of
 the specification; a `note` starting with "Review:" contains a judgment call the author should
