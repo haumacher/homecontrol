@@ -103,7 +103,13 @@ and `none` the per-household choice, with both named on the Settings page.
 The SDK finds its storage by fixed labels: `zb_storage` (16 KB, the stack's NVRAM: network, keys,
 children, bindings) and `zb_fct` (4 KB, factory data: install codes; unused but required). The
 device database lives in `zb_db` (24 KB, NVS) until the LittleFS `BlobStore` of
-`doc/persistence.md` exists. The three partitions (44 KB) sit at the end of the flash
+`doc/persistence.md` exists. Each blob there has two NVS keys named by the hash of its name: the
+name (`n<hash>`, a string) and the content (`d<hash>`, written straight from the JSON buffer, read
+straight into the load's buffer). A save measures the JSON first and allocates exactly its size; a
+load allocates one buffer of the blob, checks the text in a first pass and parses it into the table
+in a second (no temporary table): with 30 devices no block larger than the JSON (about 14 KB) is
+needed. Firmware before issue #44 kept name and content in one blob `b<hash>`; it is still read, and
+the first save after the update moves it (`hc.blob: ... moved from the legacy layout`). The three partitions (44 KB) sit at the end of the flash
 (`tools/gen_partitions.py`); the `storage` partition gives up the room, on the 4 MB flash from 312
 to 268 KB. They exist on every flash size and target (the ESP32-S3 simply does not use them).
 

@@ -444,41 +444,39 @@ bool DeviceDatabase::read_json(const char* text, size_t length, const char** err
 		fail(error, "the database has no devices array");
 		return false;
 	}
-	// Parsed into a temporary table first, so that a refusal changes nothing.
-	ZigbeeDevice* table = new (std::nothrow) ZigbeeDevice[kMaxDevices];
-	if (table == nullptr) {
-		fail(error, "out of memory");
-		return false;
-	}
+	// Two passes over the text, so that a refusal changes nothing without a temporary table: the
+	// first checks every device (one scratch entry on the stack, the addresses for the duplicate
+	// check), the second parses the checked devices straight into the table.
+	Ieee seen[kMaxDevices];
 	size_t count = 0;
 	size_t position = 0;
 	JsonSpan item;
-	bool ok = true;
-	while (ok && json_next_item(devices, position, item)) {
-		if (count >= kMaxDevices) {
-			fail(error, "more than 32 devices");
-			ok = false;
-			break;
-		}
-		ok = read_device(item, table[count], error);
-		if (ok) {
+	{
+		ZigbeeDevice scratch;
+		while (json_next_item(devices, position, item)) {
+			if (count >= kMaxDevices) {
+				fail(error, "more than 32 devices");
+				return false;
+			}
+			if (!read_device(item, scratch, error)) {
+				return false;
+			}
 			for (size_t i = 0; i < count; ++i) {
-				if (table[i].ieee == table[count].ieee) {
+				if (seen[i] == scratch.ieee) {
 					fail(error, "a device is listed twice");
-					ok = false;
+					return false;
 				}
 			}
+			seen[count++] = scratch.ieee;
 		}
-		++count;
 	}
-	if (ok) {
-		for (size_t i = 0; i < count; ++i) {
-			devices_[i] = table[i];
-		}
-		count_ = count;
+	position = 0;
+	size_t parsed = 0;
+	while (parsed < count && json_next_item(devices, position, item) && read_device(item, devices_[parsed], nullptr)) {
+		++parsed;
 	}
-	delete[] table;
-	return ok;
+	count_ = parsed; // == count: the same text passed the first pass
+	return true;
 }
 
 bool DeviceDatabase::load(const char** error) {
@@ -518,16 +516,25 @@ bool DeviceDatabase::save(const char** error) {
 		fail(error, "no blob store");
 		return false;
 	}
-	char* buffer = new (std::nothrow) char[BlobStore::kMaxBlobSize];
+	// Measured first, so that the buffer is exactly the JSON (with its NUL): a save of a full
+	// database needs no block larger than its text.
+	JsonWriter counter = JsonWriter::counter();
+	write_json(counter);
+	size_t length = counter.length();
+	if (length > BlobStore::kMaxBlobSize) {
+		fail(error, "the database does not fit a blob (20 KB)");
+		return false;
+	}
+	char* buffer = new (std::nothrow) char[length + 1];
 	if (buffer == nullptr) {
 		fail(error, "out of memory");
 		return false;
 	}
-	JsonWriter json(buffer, BlobStore::kMaxBlobSize);
+	JsonWriter json(buffer, length + 1);
 	write_json(json);
 	bool ok = false;
-	if (json.overflowed()) {
-		fail(error, "the database does not fit a blob (20 KB)");
+	if (json.overflowed() || json.length() != length) {
+		fail(error, "the database changed while it was written"); // cannot happen: one thread
 	} else {
 		BlobChunk chunk{json.data(), json.length()};
 		BlobStatus status = store_->write(kBlobName, &chunk, 1);

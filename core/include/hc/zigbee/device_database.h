@@ -106,8 +106,10 @@ struct ZigbeeDevice {
 };
 
 /// The joined devices, persisted as JSON in the BlobStore blob kBlobName (format in spec/zigbee.md).
-/// Statically sized (kMaxDevices); reading and writing the blob allocate a temporary buffer, which
-/// happens at start and when a device joins, is interviewed, renamed or removed, never per frame.
+/// Statically sized (kMaxDevices); reading and writing the blob allocate one temporary buffer of
+/// exactly the blob's size (a save measures the JSON first; a load checks the text in a first pass
+/// and parses it into the table in a second, without a temporary table), which happens at start and
+/// when a device joins, is interviewed, renamed or removed, never per frame.
 ///
 /// Threading: the event loop's thread.
 class DeviceDatabase {
