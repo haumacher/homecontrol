@@ -188,6 +188,13 @@ delivery (this list grows; add every trap you fall into):
   platform/esp && idf.py …`) changes the directory under a call running at the same time, whose
   relative paths (`spec/api.md`) then miss. Every call that may run beside another uses absolute
   paths, including the first `cd` of a chain.
+- **A build that stalls the event loop locks you out of the board.** The task watchdog resets a
+  stalled loop every few seconds, esptool then fails with "Write timeout" on every reset mode, and
+  only BOOT held during RESET (the user's hands) gets the chip into download mode. A stall inside a
+  flash operation (NVS, LittleFS) also leaves no core dump, so there is no backtrace afterwards.
+  Before uploading a build with new storage, locking or task hand-over code: build the previous
+  master in a worktree first so the rollback image is at hand, watch the serial log for the first
+  minutes with the browser open, and treat two watchdog resets as a revert, not a debugging session.
 - **Verify a wiring claim on the hardware by its log line, not by the build growing.** The core
   links in whether or not a platform service uses it; only the service's own log line (or its
   console command) proves it runs.
