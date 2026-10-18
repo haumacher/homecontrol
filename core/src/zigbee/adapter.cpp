@@ -72,7 +72,7 @@ bool reporting_in(const ZigbeePoint* table, size_t count, const ZigbeeDevice& de
 			return true;
 		}
 	}
-	if (bound || !device.interviewed) {
+	if (bound || !device.has_result()) {
 		return false;
 	}
 	const ZigbeeEndpoint* e = device.endpoint(endpoint);
@@ -93,6 +93,9 @@ const char* step_name(uint8_t step) {
 	}
 	return "?";
 }
+
+static_assert(ZigbeeAdapter::kMaxQueriedEndpoints == ZigbeeDevice::kMaxMissing,
+	"the queried endpoints and the missing list of an incomplete interview hold each other");
 
 } // namespace
 
@@ -178,7 +181,7 @@ bool ZigbeeAdapter::start(const char** error) {
 		Log::info(kTag, "%u device(s) in the database", static_cast<unsigned>(database_.size()));
 	}
 	for (size_t i = 0; i < database_.size(); ++i) {
-		database_.at(i).refresh = database_.at(i).interviewed;
+		database_.at(i).refresh = database_.at(i).has_result();
 	}
 	check_timer_ = loop_.schedule_periodic(start_ms_ + kCheckPeriodMs, kCheckPeriodMs,
 		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::check_stale>(this));
@@ -566,7 +569,7 @@ void ZigbeeAdapter::model_loaded(const image::ImageBindings& bindings) {
 			known = same_point(next->points[i], points_[j]) && ids_[j] != kNoId;
 		}
 		ZigbeeDevice* device = known ? nullptr : database_.find(next->points[i].ieee);
-		if (device != nullptr && device->interviewed && !device->refresh) {
+		if (device != nullptr && device->has_result() && !device->refresh) {
 			device->refresh = true;
 			refresh = true;
 		}
@@ -614,7 +617,7 @@ size_t ZigbeeAdapter::device_points(const ZigbeeDevice& device, ZigbeePoint* out
 	}
 	size_t n = 0;
 	for (size_t i = 0; i < override_count_ && n < capacity; ++i) {
-		if (overrides_[i].ieee == device.ieee) {
+		if (overrides_[i].ieee == device.ieee && device.endpoint(overrides_[i].endpoint) != nullptr) {
 			out[n++] = overrides_[i];
 		}
 	}
@@ -748,6 +751,7 @@ bool ZigbeeAdapter::interview(Ieee ieee, const char** error) {
 		return false;
 	}
 	device->interview_pending = true;
+	device->interview_retry = false;
 	if (interview_.active) {
 		Log::info(kTag, "interview queued behind the running one");
 		return true;
@@ -793,26 +797,35 @@ void ZigbeeAdapter::touch(ZigbeeDevice& device) {
 	}
 	if (device.stale) {
 		device.stale = false;
-		device.refresh = device.interviewed;
+		device.refresh = device.has_result();
 		char text[64];
 		Log::info(kTag, "%s heard again: reading its datapoints", device_text(device, text, sizeof(text)));
 		schedule_refresh();
 		notify(ZigbeeEvent::Kind::changed, device.ieee);
 	}
+	// A device not interviewed (never, failed or incomplete) is interviewed when it is heard, at most
+	// once per kInterviewRetryMs: a sleepy device answers right after its own frames.
 	if (!device.interviewed && !device.interview_pending &&
 		(device.interview_ms == 0 || now - device.interview_ms >= kInterviewRetryMs) &&
 		!(interview_.active && interview_.ieee == device.ieee)) {
 		device.interview_pending = true;
+		device.interview_retry = device.incomplete();
 		start_pending_interview();
 	}
 }
 
 uint32_t ZigbeeAdapter::stale_timeout_s(Ieee ieee) const {
+	const ZigbeeDevice* device = database_.find(ieee);
+	if (device == nullptr) {
+		return 0;
+	}
 	uint32_t longest = 0;
 	for (size_t i = 0; i < point_count_; ++i) {
 		const ZigbeePoint& point = points_[i];
-		// A function without a periodic report (max 0: on change only, 65535: no reports) promises nothing.
-		if (point.ieee == ieee && configures_reporting(point.function) && point.reporting.periodic()) {
+		// A function without a periodic report (max 0: on change only, 65535: no reports) promises nothing;
+		// neither does one on an endpoint the device has not described (its reporting is not configured).
+		if (point.ieee == ieee && configures_reporting(point.function) && point.reporting.periodic() &&
+			device->endpoint(point.endpoint) != nullptr) {
 			uint32_t max_s = point.reporting.max_s;
 			if (max_s > longest) {
 				longest = max_s;
@@ -916,8 +929,11 @@ void ZigbeeAdapter::refresh_due() {
 	device->refresh = false;
 	if (device->short_addr != kNoShortAddress) {
 		// One Read Attributes per endpoint and cluster, started at the group's first point.
+		// Only the endpoints the device described (a binding may name one an incomplete interview
+		// has not learnt yet; the retry reads it).
 		auto readable = [&](const ZigbeePoint& p) {
-			return p.ieee == device->ieee && (p.flags() & DatapointFlags::kReadOnStart) != 0;
+			return p.ieee == device->ieee && (p.flags() & DatapointFlags::kReadOnStart) != 0 &&
+				device->endpoint(p.endpoint) != nullptr;
 		};
 		auto same_group = [](const ZigbeePoint& a, const ZigbeePoint& b) {
 			return a.endpoint == b.endpoint && a.cluster() == b.cluster();
@@ -972,6 +988,8 @@ void ZigbeeAdapter::start_pending_interview() {
 }
 
 void ZigbeeAdapter::start_interview(ZigbeeDevice& device) {
+	bool retry = device.interview_retry && device.incomplete();
+	device.interview_retry = false;
 	device.interview_ms = clock_.monotonic_ms();
 	loop_.cancel(interview_.timer);
 	interview_.active = true;
@@ -980,14 +998,42 @@ void ZigbeeAdapter::start_interview(ZigbeeDevice& device) {
 	interview_.attempts = 0;
 	interview_.index = 0;
 	interview_.queried_count = 0;
+	interview_.names_wanted = true;
+	interview_.first_new = 0;
 	interview_.result = ZigbeeDevice();
 	interview_.result.ieee = device.ieee;
 	interview_.timer = TimerHandle();
 	char text[64];
-	Log::info(kTag, "interviewing %s (short 0x%04x)", device_text(device, text, sizeof(text)),
-		static_cast<unsigned>(device.short_addr));
+	device_text(device, text, sizeof(text));
+	if (!retry) {
+		Log::info(kTag, "interviewing %s (short 0x%04x)", text, static_cast<unsigned>(device.short_addr));
+		notify(ZigbeeEvent::Kind::interviewing, device.ieee);
+		send_step();
+		return;
+	}
+	// The retry of an incomplete interview starts from its partial result and asks for the rest.
+	ZigbeeDevice& result = interview_.result;
+	std::memcpy(result.manufacturer, device.manufacturer, sizeof(result.manufacturer));
+	std::memcpy(result.model, device.model, sizeof(result.model));
+	result.endpoint_count = device.endpoint_count;
+	for (size_t i = 0; i < device.endpoint_count; ++i) {
+		result.endpoints[i] = device.endpoints[i];
+	}
+	interview_.first_new = device.endpoint_count;
+	interview_.names_wanted = device.missing_names;
+	for (size_t i = 0; i < device.missing_count; ++i) {
+		interview_.queried[i] = device.missing[i];
+	}
+	interview_.queried_count = device.missing_count;
+	char why[96];
+	Log::info(kTag, "%s heard again (short 0x%04x): retrying its incomplete interview (%s)", text,
+		static_cast<unsigned>(device.short_addr), missing_text(device, why, sizeof(why)));
 	notify(ZigbeeEvent::Kind::interviewing, device.ieee);
-	send_step();
+	if (interview_.queried_count > 0) {
+		next_simple_descriptor();
+	} else {
+		start_basic();
+	}
 }
 
 void ZigbeeAdapter::send_step() {
@@ -1042,15 +1088,23 @@ void ZigbeeAdapter::step_timeout() {
 		case Step::active_endpoints:
 			fail_interview("no answer to the active endpoint request");
 			break;
-		case Step::simple_descriptor:
-			Log::warn(kTag, "no simple descriptor for endpoint %u: skipped",
-				static_cast<unsigned>(interview_.queried[interview_.index]));
+		case Step::simple_descriptor: {
+			// A sleepy device may have fallen asleep: the interview goes on and ends incomplete.
+			ZigbeeDevice& result = interview_.result;
+			uint8_t id = interview_.queried[interview_.index];
+			Log::warn(kTag, "no simple descriptor for endpoint %u: the interview stays incomplete",
+				static_cast<unsigned>(id));
+			if (result.missing_count < ZigbeeDevice::kMaxMissing) {
+				result.missing[result.missing_count++] = id;
+			}
 			++interview_.index;
 			next_simple_descriptor();
 			break;
+		}
 		case Step::basic:
-			Log::warn(kTag, "no manufacturer and model from the Basic cluster: the device stays unnamed");
-			start_zone(0);
+			Log::warn(kTag, "no manufacturer and model from the Basic cluster: the interview stays incomplete");
+			interview_.result.missing_names = true;
+			start_zone(interview_.first_new);
 			break;
 		case Step::zone:
 			Log::warn(kTag, "no IAS zone type for endpoint %u: its zone is named \"alarm\"",
@@ -1068,10 +1122,15 @@ void ZigbeeAdapter::next_simple_descriptor() {
 		return;
 	}
 	if (interview_.result.endpoint_count == 0) {
-		fail_interview("no endpoint of the Home Automation or Light Link profile");
+		fail_interview(interview_.result.missing_count > 0 ? "no simple descriptor answered"
+			: "no endpoint of the Home Automation or Light Link profile");
 		return;
 	}
-	start_basic();
+	if (interview_.names_wanted) {
+		start_basic();
+	} else {
+		start_zone(interview_.first_new);
+	}
 }
 
 void ZigbeeAdapter::start_basic() {
@@ -1124,14 +1183,34 @@ void ZigbeeAdapter::finish_interview() {
 		start_pending_interview();
 		return;
 	}
-	const ZigbeeDevice& result = interview_.result;
-	std::memcpy(device->manufacturer, result.manufacturer, sizeof(device->manufacturer));
-	std::memcpy(device->model, result.model, sizeof(device->model));
+	ZigbeeDevice& result = interview_.result;
+	bool incomplete = result.missing_count > 0 || result.missing_names;
+	// What the device knew before and this interview could not confirm stays: an endpoint that did
+	// not answer keeps its earlier descriptor, unanswered names keep the earlier names.
+	for (size_t m = 0; m < result.missing_count && result.endpoint_count < ZigbeeDevice::kMaxEndpoints; ++m) {
+		const ZigbeeEndpoint* earlier = device->endpoint(result.missing[m]);
+		if (earlier != nullptr && result.endpoint(result.missing[m]) == nullptr) {
+			result.endpoints[result.endpoint_count++] = *earlier;
+		}
+	}
+	if (!result.missing_names || result.manufacturer[0] != '\0' || result.model[0] != '\0') {
+		std::memcpy(device->manufacturer, result.manufacturer, sizeof(device->manufacturer));
+		std::memcpy(device->model, result.model, sizeof(device->model));
+	}
 	device->endpoint_count = result.endpoint_count;
 	for (size_t i = 0; i < result.endpoint_count; ++i) {
 		device->endpoints[i] = result.endpoints[i];
 	}
-	device->interviewed = true;
+	device->interviewed = !incomplete;
+	device->missing_count = result.missing_count;
+	for (size_t i = 0; i < result.missing_count; ++i) {
+		device->missing[i] = result.missing[i];
+	}
+	device->missing_names = result.missing_names;
+	if (incomplete) {
+		// The retry waits for the device's next frame after kInterviewRetryMs, counted from here.
+		device->interview_ms = clock_.monotonic_ms();
+	}
 	save_database();
 	if (started_) {
 		rebuild(nullptr);
@@ -1140,13 +1219,50 @@ void ZigbeeAdapter::finish_interview() {
 	size_t points = device_points(*device, mapped, kMaxDevicePoints);
 	char ieee[kIeeeText];
 	format_ieee(device->ieee, ieee);
-	Log::info(kTag, "device %s interviewed: \"%s\" \"%s\", %u endpoint(s), %u datapoint(s)", ieee, device->manufacturer,
-		device->model, static_cast<unsigned>(device->endpoint_count), static_cast<unsigned>(points));
+	if (incomplete) {
+		char why[96];
+		Log::warn(kTag, "interview of %s incomplete (%s): \"%s\" \"%s\", %u endpoint(s), %u datapoint(s) in use; the rest "
+			"is asked for when the device is heard after %u s", ieee, missing_text(*device, why, sizeof(why)),
+			device->manufacturer, device->model, static_cast<unsigned>(device->endpoint_count),
+			static_cast<unsigned>(points), static_cast<unsigned>(kInterviewRetryMs / 1000));
+	} else {
+		Log::info(kTag, "device %s interviewed: \"%s\" \"%s\", %u endpoint(s), %u datapoint(s)", ieee,
+			device->manufacturer, device->model, static_cast<unsigned>(device->endpoint_count),
+			static_cast<unsigned>(points));
+	}
 	setup_reporting(*device);
 	device->refresh = true;
 	schedule_refresh();
-	notify(ZigbeeEvent::Kind::interviewed, device->ieee);
+	notify(incomplete ? ZigbeeEvent::Kind::interview_incomplete : ZigbeeEvent::Kind::interviewed, device->ieee);
 	start_pending_interview();
+}
+
+const char* ZigbeeAdapter::missing_text(const ZigbeeDevice& device, char* buffer, size_t size) {
+	if (size == 0) {
+		return buffer;
+	}
+	buffer[0] = '\0';
+	size_t used = 0;
+	auto append = [&](const char* text) {
+		int n = std::snprintf(buffer + used, size - used, "%s", text);
+		if (n > 0) {
+			used += static_cast<size_t>(n) < size - used ? static_cast<size_t>(n) : size - used - 1;
+		}
+	};
+	if (device.missing_count > 0) {
+		append(device.missing_count == 1 ? "endpoint " : "endpoints ");
+		for (size_t i = 0; i < device.missing_count; ++i) {
+			char id[8];
+			std::snprintf(id, sizeof(id), "%s%u", i > 0 ? ", " : "", static_cast<unsigned>(device.missing[i]));
+			append(id);
+		}
+		append(" did not answer");
+	}
+	if (device.missing_names) {
+		append(device.missing_count > 0 ? "; " : "");
+		append("manufacturer and model did not answer");
+	}
+	return buffer;
 }
 
 void ZigbeeAdapter::setup_reporting(const ZigbeeDevice& device) {
@@ -1207,7 +1323,7 @@ void ZigbeeAdapter::reconfigure_reporting(const ZigbeePoint* old_table, size_t o
 		const ZigbeeDevice& device = database_.at(d);
 		// A device not interviewed (or interviewed now) is configured when its interview finishes; one
 		// that left when it rejoins and is interviewed again.
-		if (!device.interviewed || device.left || device.short_addr == kNoShortAddress ||
+		if (!device.has_result() || device.left || device.short_addr == kNoShortAddress ||
 			(interview_.active && interview_.ieee == device.ieee)) {
 			continue;
 		}
@@ -1247,7 +1363,7 @@ void ZigbeeAdapter::reconfigure_reporting(const ZigbeePoint* old_table, size_t o
 		if (device_has_overrides(device.ieee)) {
 			for (size_t i = 0; i < override_count_; ++i) {
 				const ZigbeePoint& point = overrides_[i];
-				if (point.ieee == device.ieee) {
+				if (point.ieee == device.ieee && device.endpoint(point.endpoint) != nullptr) {
 					check(point.endpoint, point.function, point.reporting);
 				}
 			}
@@ -1326,9 +1442,10 @@ void ZigbeeAdapter::device_announced(NodeAddress address) {
 		Log::info(kTag, "%s announced itself (short 0x%04x)", device_text(*device, text, sizeof(text)),
 			static_cast<unsigned>(address.short_addr));
 	}
-	if (device->left && device->interviewed) {
+	if (device->left && device->has_result()) {
 		// It left (a factory reset) and joined again: its endpoints may have changed.
 		device->interview_pending = true;
+		device->interview_retry = false;
 	}
 	bool was_left = device->left;
 	device->left = false;
@@ -1348,7 +1465,10 @@ void ZigbeeAdapter::device_joined(NodeAddress address) {
 		return; // a new device: the announce that follows adds and interviews it
 	}
 	device->left = false;
-	if (device->interviewed && !device->interview_pending && !(interview_.active && interview_.ieee == device->ieee)) {
+	// A device with endpoints (interviewed or incomplete) and no full interview due yet; a due retry
+	// of an incomplete interview becomes a full one.
+	bool full_due = device->interview_pending && !device->interview_retry;
+	if (device->has_result() && !full_due && !(interview_.active && interview_.ieee == device->ieee)) {
 		// A fresh join of a known device means a factory reset: the device forgot the bindings and
 		// the reporting the first interview configured, and a sleepy device listens only now, right
 		// after the join. The interview starts with its announce (it holds the network key then); if
@@ -1357,6 +1477,7 @@ void ZigbeeAdapter::device_joined(NodeAddress address) {
 		Log::info(kTag, "%s joined afresh (short 0x%04x): it was reset, interviewing it again",
 			device_text(*device, text, sizeof(text)), static_cast<unsigned>(address.short_addr));
 		device->interview_pending = true;
+		device->interview_retry = false;
 		notify(ZigbeeEvent::Kind::joined, device->ieee);
 		if (device->seen_ms != 0 && clock_.monotonic_ms() - device->seen_ms < kAnnounceBeforeJoinMs) {
 			start_pending_interview();
@@ -1531,7 +1652,7 @@ void ZigbeeAdapter::attributes(NodeAddress address, uint8_t endpoint, uint16_t c
 		traffic(ZigbeeTraffic::Kind::report, *device, endpoint, cluster, record.attribute, id, &*converted);
 	}
 	if (basic_step) {
-		start_zone(0);
+		start_zone(interview_.first_new);
 	} else if (zone_step && zone_answered) {
 		driver_.ias_enroll(device->ieee, device->short_addr, endpoint);
 		start_zone(static_cast<uint8_t>(interview_.index + 1));
@@ -1757,6 +1878,7 @@ const char* zigbee_event_name(ZigbeeEvent::Kind kind) {
 		case ZigbeeEvent::Kind::interviewing: return "interviewing";
 		case ZigbeeEvent::Kind::interviewed: return "interviewed";
 		case ZigbeeEvent::Kind::interview_failed: return "interview_failed";
+		case ZigbeeEvent::Kind::interview_incomplete: return "interview_incomplete";
 		case ZigbeeEvent::Kind::left: return "left";
 		case ZigbeeEvent::Kind::removed: return "removed";
 		case ZigbeeEvent::Kind::changed: return "changed";
@@ -1792,6 +1914,11 @@ void ZigbeeAdapter::write_device_json(JsonWriter& json, size_t index) const {
 	json.member("stale", device.stale);
 	json.member("left", device.left);
 	json.member("interviewing", interview_.active && interview_.ieee == device.ieee);
+	if (device.incomplete()) {
+		write_missing_json(json, device);
+		char why[96];
+		json.member("incomplete", missing_text(device, why, sizeof(why)));
+	}
 	if (device.last_seen_s > 0) {
 		json.member("last_seen", static_cast<int64_t>(device.last_seen_s));
 	}
@@ -1821,6 +1948,9 @@ void ZigbeeAdapter::write_device_export_json(JsonWriter& json, size_t index) con
 	json.member("model", device.model);
 	json.member("label", device.label);
 	json.member("interviewed", device.interviewed);
+	if (device.incomplete()) {
+		write_missing_json(json, device);
+	}
 	json.key("endpoints").begin_array();
 	for (size_t e = 0; e < device.endpoint_count; ++e) {
 		const ZigbeeEndpoint& endpoint = device.endpoints[e];

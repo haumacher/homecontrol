@@ -317,7 +317,7 @@ const char* point_name(const ZigbeePoint& point, char* buffer, size_t size) {
 }
 
 size_t map_device(const ZigbeeDevice& device, ZigbeePoint* out, size_t capacity) {
-	if (!device.interviewed) {
+	if (!device.has_result()) {
 		return 0;
 	}
 	size_t count = 0;

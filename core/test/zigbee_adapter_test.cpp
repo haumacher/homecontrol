@@ -364,12 +364,15 @@ TEST_CASE("ZigbeeAdapter: interview timeouts, retries and a later retry") {
 	uint8_t endpoints[] = {1};
 	f.adapter.active_endpoints(ZigbeeFixture::by_short(kSensorShort), 0, endpoints, 1);
 	f.descriptor(kSensorShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0302, {0x0000, 0x0402}, {});
-	// The Basic cluster never answers: interviewed without names after three attempts.
+	// The Basic cluster never answers: after three attempts the interview ends incomplete, the
+	// endpoint's functions are in use (issue #47).
 	f.run_for(3 * ZigbeeAdapter::kInterviewTimeoutMs);
 	CHECK(f.driver.count("read 0x3c4d 1 0x0000 4,5") == 3);
-	CHECK(capture.sink.contains("no manufacturer and model from the Basic cluster"));
+	CHECK(capture.sink.contains("no manufacturer and model from the Basic cluster: the interview stays incomplete"));
 	const hc::zigbee::ZigbeeDevice* device = f.adapter.devices().find(kSensor);
-	CHECK(device->interviewed);
+	CHECK_FALSE(device->interviewed);
+	CHECK(device->incomplete());
+	CHECK(device->missing_names);
 	CHECK(std::string(device->model).empty());
 	CHECK(f.dp(kSensorTemperature) != nullptr);
 }
@@ -764,4 +767,344 @@ TEST_CASE("ZigbeeAdapter: a read asks the device for the attribute behind the da
 	CHECK(f.model.read(f.dp(kBulbOn)->id()) == DatapointStatus::refused);
 	CHECK(capture.sink.contains("read of 'zigbee.00124b0001020304.11.on' refused: the device left the network"));
 	CHECK(f.driver.calls.size() == calls);
+}
+
+// ---- Incomplete interviews (issue #47) --------------------------------------------------------
+
+namespace {
+
+const char* const kSleepyTemperature = "zigbee.00158d0005060708.1.temperature";
+const char* const kSleepyOccupancy = "zigbee.00158d0005060708.2.occupancy";
+const char* const kSleepyBattery = "zigbee.00158d0005060708.2.battery";
+
+/// Records the names of the adapter's events.
+struct EventRecorder : hc::zigbee::ZigbeeEventListener {
+	std::vector<std::string> names;
+	void zigbee_event(const hc::zigbee::ZigbeeEvent& event) override {
+		names.push_back(hc::zigbee::zigbee_event_name(event.kind));
+	}
+	bool has(const std::string& name) const {
+		for (const std::string& n : names) {
+			if (n == name) {
+				return true;
+			}
+		}
+		return false;
+	}
+};
+
+/// Endpoint 2 of the sleepy sensor: occupancy and battery.
+void describe_sleepy_2(ZigbeeFixture& f) {
+	f.descriptor(kSensorShort, 2, hc::zigbee::kHomeAutomationProfile, 0x0107, {0x0000, 0x0001, 0x0406}, {});
+}
+
+/// A sleepy sensor with active endpoints [2, 1] that falls asleep before the descriptor of endpoint
+/// 2 is read: endpoint 1 (temperature) and the Basic cluster answer later.
+void join_sleepy(ZigbeeFixture& f) {
+	f.adapter.device_announced(ZigbeeFixture::node(kSensor, kSensorShort));
+	uint8_t endpoints[] = {2, 1};
+	f.adapter.active_endpoints(ZigbeeFixture::by_short(kSensorShort), 0, endpoints, 2);
+	REQUIRE(f.driver.calls.back() == "simple 0x3c4d 2");
+	f.run_for(ZigbeeAdapter::kInterviewAttempts * ZigbeeAdapter::kInterviewTimeoutMs);
+	REQUIRE(f.driver.count("simple 0x3c4d 2") == ZigbeeAdapter::kInterviewAttempts);
+	REQUIRE(f.driver.calls.back() == "simple 0x3c4d 1");
+	f.descriptor(kSensorShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0302, {0x0000, 0x0402}, {});
+	f.basic(kSensorShort, 1, "Sleepy Things", "ST-2");
+	REQUIRE(f.adapter.interviewing() == 0);
+}
+
+std::string view_json(const ZigbeeFixture& f) {
+	std::vector<char> buffer(8192);
+	hc::JsonWriter json(buffer.data(), buffer.size());
+	f.adapter.write_json(json);
+	REQUIRE_FALSE(json.overflowed());
+	return std::string(json.data(), json.length());
+}
+
+std::string export_json(const ZigbeeFixture& f, hc::zigbee::Ieee ieee) {
+	std::vector<char> buffer(8192);
+	hc::JsonWriter json(buffer.data(), buffer.size());
+	const hc::zigbee::DeviceDatabase& devices = f.adapter.devices();
+	for (size_t i = 0; i < devices.size(); ++i) {
+		if (devices.at(i).ieee == ieee) {
+			f.adapter.write_device_export_json(json, i);
+		}
+	}
+	REQUIRE_FALSE(json.overflowed());
+	return std::string(json.data(), json.length());
+}
+
+} // namespace
+
+TEST_CASE("ZigbeeAdapter: an unanswered endpoint leaves the interview incomplete until a retry completes it") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	EventRecorder events;
+	f.adapter.set_event_listener(&events);
+	f.start_network();
+	join_sleepy(f);
+	CHECK(capture.sink.contains("no simple descriptor for endpoint 2: the interview stays incomplete"));
+	CHECK(capture.sink.contains("interview of 00158d0005060708 incomplete (endpoint 2 did not answer)"));
+	CHECK(events.has("interview_incomplete"));
+	CHECK_FALSE(events.has("interviewed"));
+	const hc::zigbee::ZigbeeDevice* device = f.adapter.devices().find(kSensor);
+	REQUIRE(device != nullptr);
+	CHECK_FALSE(device->interviewed);
+	CHECK(device->incomplete());
+	REQUIRE(device->missing_count == 1);
+	CHECK(device->missing[0] == 2);
+	CHECK_FALSE(device->missing_names);
+	CHECK(std::string(device->model) == "ST-2");
+	// The functions of endpoint 1 are datapoints, those of endpoint 2 are unknown yet.
+	REQUIRE(f.dp(kSleepyTemperature) != nullptr);
+	CHECK(f.dp(kSleepyOccupancy) == nullptr);
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..600 10"));
+	// The view and the export say so.
+	std::string view = view_json(f);
+	CHECK(view.find("\"interviewed\":false") != std::string::npos);
+	CHECK(view.find("\"missing\":{\"endpoints\":[2],\"names\":false},\"incomplete\":\"endpoint 2 did not answer\"") !=
+		std::string::npos);
+	std::string exported = export_json(f, kSensor);
+	CHECK(exported.find("\"interviewed\":false,\"missing\":{\"endpoints\":[2],\"names\":false},\"endpoints\":[{\"id\":1,") !=
+		std::string::npos);
+	// The persisted database too.
+	std::string blob(f.store.blobs["zigbee-devices.json"].begin(), f.store.blobs["zigbee-devices.json"].end());
+	CHECK(blob.find("\"interviewed\":false") != std::string::npos);
+	CHECK(blob.find("\"missing\":{\"endpoints\":[2],\"names\":false}") != std::string::npos);
+
+	// A report right after: the value is taken, the retry waits for its delay.
+	f.report(kSensorShort, 1, cluster::kTemperatureMeasurement, attribute::kMeasuredValue, zcl_type::kInt16, 2150);
+	CHECK(f.dp(kSleepyTemperature)->value() == Value::of_real(21.5));
+	CHECK(f.adapter.interviewing() == 0);
+	// After the delay its next frame starts the retry, which asks only for what is missing.
+	f.run_for(ZigbeeAdapter::kInterviewRetryMs);
+	size_t actives = f.driver.count("active 0x3c4d");
+	size_t basics = f.driver.count("read 0x3c4d 1 0x0000 4,5");
+	f.report(kSensorShort, 1, cluster::kTemperatureMeasurement, attribute::kMeasuredValue, zcl_type::kInt16, 2150);
+	CHECK(f.adapter.interviewing() == kSensor);
+	CHECK(f.driver.calls.back() == "simple 0x3c4d 2");
+	CHECK(capture.sink.contains("retrying its incomplete interview (endpoint 2 did not answer)"));
+	describe_sleepy_2(f);
+	CHECK(f.adapter.interviewing() == 0);
+	CHECK(f.driver.count("active 0x3c4d") == actives);
+	CHECK(f.driver.count("read 0x3c4d 1 0x0000 4,5") == basics); // the names are known
+	CHECK(events.names.back() == "interviewed");
+	device = f.adapter.devices().find(kSensor);
+	CHECK(device->interviewed);
+	CHECK_FALSE(device->incomplete());
+	CHECK(device->missing_count == 0);
+	REQUIRE(device->endpoint_count == 2);
+	CHECK(device->endpoint(1) != nullptr);
+	CHECK(device->endpoint(2) != nullptr);
+	CHECK(std::string(device->manufacturer) == "Sleepy Things");
+	// The model is rebuilt with both endpoints' datapoints; endpoint 1's value survived.
+	REQUIRE(f.dp(kSleepyOccupancy) != nullptr);
+	REQUIRE(f.dp(kSleepyBattery) != nullptr);
+	CHECK(f.dp(kSleepyTemperature)->value() == Value::of_real(21.5));
+	CHECK(f.dp(kSleepyTemperature)->quality() == Quality::good);
+	CHECK(f.driver.has("configure 0x3c4d 2 0x0406 0x0000 0..600 0"));
+	f.report(kSensorShort, 2, cluster::kOccupancySensing, 0x0000, zcl_type::kBitmap8, 1);
+	CHECK(f.dp(kSleepyOccupancy)->value() == Value::of_bool(true));
+	view = view_json(f);
+	CHECK(view.find("\"missing\"") == std::string::npos);
+	CHECK(view.find("\"incomplete\"") == std::string::npos);
+	f.adapter.set_event_listener(nullptr);
+}
+
+TEST_CASE("ZigbeeAdapter: an endpoint that never answers is retried at most once per delay") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.start_network();
+	join_sleepy(f);
+	auto heard = [&f](int16_t centi) {
+		f.report(kSensorShort, 1, cluster::kTemperatureMeasurement, attribute::kMeasuredValue, zcl_type::kInt16, centi);
+	};
+	// Frames before the delay start nothing.
+	for (int i = 0; i < 5; ++i) {
+		f.run_for(ZigbeeAdapter::kInterviewRetryMs / 6);
+		heard(static_cast<int16_t>(2000 + i));
+		CHECK(f.adapter.interviewing() == 0);
+	}
+	CHECK(f.driver.count("simple 0x3c4d 2") == 3);
+	for (int round = 1; round <= 3; ++round) {
+		f.run_for(ZigbeeAdapter::kInterviewRetryMs);
+		heard(2100);
+		REQUIRE(f.adapter.interviewing() == kSensor);
+		// The retry times out again: incomplete again, the delay counts from its end.
+		f.run_for(ZigbeeAdapter::kInterviewAttempts * ZigbeeAdapter::kInterviewTimeoutMs);
+		CHECK(f.adapter.interviewing() == 0);
+		CHECK(f.driver.count("simple 0x3c4d 2") == static_cast<size_t>(3 + 3 * round));
+		heard(2200);
+		CHECK(f.adapter.interviewing() == 0);
+		f.run_for(ZigbeeAdapter::kInterviewRetryMs - 1000);
+		heard(2300);
+		CHECK(f.adapter.interviewing() == 0);
+		// Endpoint 1 keeps working throughout.
+		CHECK(f.dp(kSleepyTemperature)->value() == Value::of_real(23.0));
+		CHECK(f.adapter.devices().find(kSensor)->incomplete());
+	}
+	CHECK(f.driver.count("active 0x3c4d") == 1);
+	CHECK(capture.sink.count("retrying its incomplete interview") == 3);
+}
+
+TEST_CASE("ZigbeeAdapter: an unanswered Basic cluster leaves the interview incomplete and is read again") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.start_network();
+	f.adapter.device_announced(ZigbeeFixture::node(kSensor, kSensorShort));
+	uint8_t endpoints[] = {1};
+	f.adapter.active_endpoints(ZigbeeFixture::by_short(kSensorShort), 0, endpoints, 1);
+	f.descriptor(kSensorShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0302, {0x0000, 0x0001, 0x0402, 0x0405}, {});
+	f.run_for(ZigbeeAdapter::kInterviewAttempts * ZigbeeAdapter::kInterviewTimeoutMs);
+	CHECK(f.adapter.interviewing() == 0);
+	const hc::zigbee::ZigbeeDevice* device = f.adapter.devices().find(kSensor);
+	CHECK(device->incomplete());
+	CHECK(device->missing_names);
+	CHECK(device->missing_count == 0);
+	CHECK(view_json(f).find("\"incomplete\":\"manufacturer and model did not answer\"") != std::string::npos);
+	// Its functions work meanwhile.
+	REQUIRE(f.dp(kSensorTemperature) != nullptr);
+	REQUIRE(f.dp(kSensorHumidity) != nullptr);
+	f.report(kSensorShort, 1, cluster::kRelativeHumidity, attribute::kMeasuredValue, zcl_type::kUint16, 4550);
+	CHECK(f.dp(kSensorHumidity)->value() == Value::of_real(45.5));
+	CHECK(f.adapter.interviewing() == 0);
+	// The retry reads only the names.
+	f.run_for(ZigbeeAdapter::kInterviewRetryMs);
+	size_t simples = f.driver.count("simple 0x3c4d");
+	f.report(kSensorShort, 1, cluster::kRelativeHumidity, attribute::kMeasuredValue, zcl_type::kUint16, 4600);
+	CHECK(f.adapter.interviewing() == kSensor);
+	CHECK(f.driver.calls.back() == "read 0x3c4d 1 0x0000 4,5");
+	f.basic(kSensorShort, 1, "LUMI", "lumi.weather");
+	CHECK(f.adapter.interviewing() == 0);
+	CHECK(f.driver.count("simple 0x3c4d") == simples);
+	device = f.adapter.devices().find(kSensor);
+	CHECK(device->interviewed);
+	CHECK_FALSE(device->missing_names);
+	CHECK(std::string(device->model) == "lumi.weather");
+	CHECK(f.dp(kSensorHumidity)->value() == Value::of_real(46.0));
+}
+
+TEST_CASE("ZigbeeAdapter: an incomplete device stays incomplete across a restart and is retried when heard") {
+	hc_test::FakeBlobStore store;
+	{
+		ZigbeeFixture f;
+		f.start_network();
+		join_sleepy(f);
+		store = f.store;
+	}
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.store = store;
+	f.start_network();
+	const hc::zigbee::ZigbeeDevice* device = f.adapter.devices().find(kSensor);
+	REQUIRE(device != nullptr);
+	CHECK(device->incomplete());
+	REQUIRE(device->missing_count == 1);
+	CHECK(device->missing[0] == 2);
+	REQUIRE(f.dp(kSleepyTemperature) != nullptr);
+	// Its known datapoints are read like an interviewed device's.
+	f.run_for(ZigbeeAdapter::kRefreshSpacingMs);
+	CHECK(f.driver.has("read 0x3c4d 1 0x0402 0"));
+	// The first frame after the restart retries at once (no interview since the boot).
+	f.report(kSensorShort, 1, cluster::kTemperatureMeasurement, attribute::kMeasuredValue, zcl_type::kInt16, 1990);
+	CHECK(f.adapter.interviewing() == kSensor);
+	CHECK(f.driver.calls.back() == "simple 0x3c4d 2");
+	describe_sleepy_2(f);
+	CHECK(f.adapter.devices().find(kSensor)->interviewed);
+	CHECK(f.dp(kSleepyOccupancy) != nullptr);
+	CHECK(f.dp(kSleepyTemperature)->value() == Value::of_real(19.9));
+}
+
+TEST_CASE("ZigbeeAdapter: a reset or a manual interview of an incomplete device interviews it fully") {
+	ZigbeeFixture f;
+	f.start_network();
+	join_sleepy(f);
+	// A fresh join (factory reset): the full interview with the announce.
+	f.adapter.device_joined(ZigbeeFixture::node(kSensor, kSensorShort));
+	f.adapter.device_announced(ZigbeeFixture::node(kSensor, kSensorShort));
+	CHECK(f.adapter.interviewing() == kSensor);
+	CHECK(f.driver.calls.back() == "active 0x3c4d");
+	// A full interview that misses endpoint 2 again keeps endpoint 1 and stays incomplete.
+	uint8_t endpoints[] = {2, 1};
+	f.adapter.active_endpoints(ZigbeeFixture::by_short(kSensorShort), 0, endpoints, 2);
+	f.run_for(ZigbeeAdapter::kInterviewAttempts * ZigbeeAdapter::kInterviewTimeoutMs);
+	f.descriptor(kSensorShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0302, {0x0000, 0x0402}, {});
+	f.basic(kSensorShort, 1, "Sleepy Things", "ST-2");
+	CHECK(f.adapter.devices().find(kSensor)->incomplete());
+	// The console's or the UI's "interview again" asks for everything.
+	REQUIRE(f.adapter.interview(kSensor));
+	CHECK(f.driver.calls.back() == "active 0x3c4d");
+	f.adapter.active_endpoints(ZigbeeFixture::by_short(kSensorShort), 0, endpoints, 2);
+	describe_sleepy_2(f);
+	f.descriptor(kSensorShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0302, {0x0000, 0x0402}, {});
+	f.basic(kSensorShort, 2, "Sleepy Things", "ST-2");
+	const hc::zigbee::ZigbeeDevice* device = f.adapter.devices().find(kSensor);
+	CHECK(device->interviewed);
+	CHECK(device->endpoint_count == 2);
+	// A later full interview of the interviewed device that misses endpoint 2 keeps its earlier
+	// descriptor (and its datapoints) but is no longer complete.
+	REQUIRE(f.adapter.interview(kSensor));
+	f.adapter.active_endpoints(ZigbeeFixture::by_short(kSensorShort), 0, endpoints, 2);
+	f.run_for(ZigbeeAdapter::kInterviewAttempts * ZigbeeAdapter::kInterviewTimeoutMs);
+	f.descriptor(kSensorShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0302, {0x0000, 0x0402}, {});
+	f.basic(kSensorShort, 1, "Sleepy Things", "ST-2");
+	device = f.adapter.devices().find(kSensor);
+	CHECK_FALSE(device->interviewed);
+	CHECK(device->incomplete());
+	CHECK(device->endpoint_count == 2);
+	CHECK(device->endpoint(2) != nullptr);
+	CHECK(f.dp(kSleepyOccupancy) != nullptr);
+}
+
+// ---- Probe: an incomplete interview composed with a reporting override on the missing endpoint ------
+
+TEST_CASE("ZigbeeAdapter probe: the override of a function on the unanswered endpoint is configured by the retry") {
+	ZigbeeFixture f;
+	f.start_network();
+	hc::zigbee::ZigbeeOverride bindings[2];
+	bindings[0].name = "hall.temperature";
+	bindings[0].ieee = kSensor;
+	bindings[0].endpoint = 1;
+	bindings[0].cluster = cluster::kTemperatureMeasurement;
+	bindings[0].attribute = attribute::kMeasuredValue;
+	bindings[1].name = "hall.presence";
+	bindings[1].ieee = kSensor;
+	bindings[1].endpoint = 2;
+	bindings[1].cluster = cluster::kOccupancySensing;
+	bindings[1].attribute = 0x0000;
+	bindings[1].reporting.set = hc::zigbee::ReportingOverride::kMax;
+	bindings[1].reporting.max_s = 120;
+	REQUIRE(f.adapter.configure(bindings, 2));
+	join_sleepy(f);
+	const hc::zigbee::ZigbeeDevice* device = f.adapter.devices().find(kSensor);
+	REQUIRE(device != nullptr);
+	CHECK(device->incomplete());
+	// Both bound datapoints exist (bindings do not wait for the device); only endpoint 1 is configured.
+	REQUIRE(f.dp("hall.temperature") != nullptr);
+	REQUIRE(f.dp("hall.presence") != nullptr);
+	CHECK(f.dp("hall.presence")->quality() == Quality::unknown);
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..600 10"));
+	CHECK(f.driver.count("configure 0x3c4d 2") == 0);
+	CHECK(f.adapter.stale_timeout_s(kSensor) == 3 * 600);
+	std::string exported = export_json(f, kSensor);
+	CHECK(exported.find("\"interviewed\":false") != std::string::npos);
+	// The unanswered endpoint's function is not in the export yet: nothing is known about it.
+	CHECK(exported.find("\"function\":\"occupancy\"") == std::string::npos);
+
+	// The retry completes the interview: the missing endpoint is configured with the image's override.
+	f.run_for(ZigbeeAdapter::kInterviewRetryMs);
+	f.report(kSensorShort, 1, cluster::kTemperatureMeasurement, attribute::kMeasuredValue, zcl_type::kInt16, 2000);
+	REQUIRE(f.adapter.interviewing() == kSensor);
+	describe_sleepy_2(f);
+	CHECK(f.adapter.interviewing() == 0);
+	CHECK(f.driver.has("configure 0x3c4d 2 0x0406 0x0000 0..120 0"));
+	CHECK(f.driver.count("configure 0x3c4d 2") == 1);
+	CHECK(f.adapter.stale_timeout_s(kSensor) == 3 * 600); // the longer default of the temperature rules
+	exported = export_json(f, kSensor);
+	CHECK(exported.find("\"interviewed\":true") != std::string::npos);
+	CHECK(exported.find("\"function\":\"occupancy\",\"endpoint\":2,\"cluster\":1030,\"attribute\":0,\"type\":\"boolean\","
+		"\"writable\":false,\"reporting\":{\"min\":0,\"max\":120},\"datapoint\":\"hall.presence\"") != std::string::npos);
+	f.report(kSensorShort, 2, cluster::kOccupancySensing, 0x0000, zcl_type::kBitmap8, 1);
+	CHECK(f.dp("hall.presence")->value() == Value::of_bool(true));
+	CHECK(f.dp("hall.temperature")->value() == Value::of_real(20.0));
 }

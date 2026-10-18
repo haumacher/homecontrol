@@ -189,7 +189,8 @@ const char* point_name(const ZigbeePoint& point, char* buffer, size_t size);
 /// The generic rules: the points of every known server attribute on every endpoint of the device,
 /// and an action point per endpoint whose client clusters include On/Off or Level Control. Writes up
 /// to `capacity` points to `out` (which may be nullptr) and returns the number of points the device
-/// has. A device that is not interviewed has none.
+/// has. A device without an interview result has none; an incomplete interview's endpoints are
+/// mapped (ZigbeeDevice::has_result()).
 size_t map_device(const ZigbeeDevice& device, ZigbeePoint* out, size_t capacity);
 
 /// A device binding supplied by the runtime image (the `zigbee` binding of a datapoint,

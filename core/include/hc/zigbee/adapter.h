@@ -94,6 +94,9 @@ struct ZigbeeEvent {
 		interviewing,     ///< The device's interview started.
 		interviewed,      ///< The interview finished; its datapoints are in the model.
 		interview_failed, ///< The interview failed (it is tried again when the device is heard).
+		/// The interview ended incomplete: what answered is stored and in the model, the device is not
+		/// interviewed, and the rest is asked for again when the device is heard (ZigbeeDevice::missing).
+		interview_incomplete,
 		left,             ///< The device left the network (it stays in the database).
 		removed,          ///< The device was removed from the database.
 		changed,          ///< Something else about the device changed (label, stale, heard again).
@@ -103,8 +106,8 @@ struct ZigbeeEvent {
 	uint32_t permit_join_s = 0; ///< For permit: how long the network is open.
 };
 
-/// "network", "permit", "joined", "interviewing", "interviewed", "interview_failed", "left",
-/// "removed", "changed".
+/// "network", "permit", "joined", "interviewing", "interviewed", "interview_failed",
+/// "interview_incomplete", "left", "removed", "changed".
 const char* zigbee_event_name(ZigbeeEvent::Kind kind);
 
 /// Told about every ZigbeeEvent (ZigbeeAdapter::set_event_listener()), on the event loop's thread,
@@ -128,9 +131,15 @@ protected:
 ///   interview, one device at a time: active endpoints, the simple descriptor of each, the Basic
 ///   cluster's manufacturer and model, the IAS zone type and the IAS enrollment of a zone endpoint.
 ///   Each step has kInterviewTimeoutMs and kInterviewAttempts; a device whose endpoints cannot be
-///   learnt stays uninterviewed and is tried again when it is heard after kInterviewRetryMs. Missing
-///   names or zone types do not fail it. On success the database is written, the reporting of the
-///   mapped attributes is configured, their clusters bound to the coordinator, the datapoints loaded.
+///   learnt stays uninterviewed and is tried again when it is heard after kInterviewRetryMs. An
+///   endpoint whose simple descriptor or a Basic cluster that stays unanswered (a sleepy device fell
+///   asleep) ends the interview *incomplete*: the endpoints learnt are stored and mapped like a
+///   finished interview's, the device is not interviewed and records what is missing; when it is
+///   heard again, at least kInterviewRetryMs after that end, a retry asks for the missing parts
+///   only. A zone type that stays unanswered does not make it incomplete (the zone is named
+///   "alarm", doc/zigbee.md). At the end (finished or incomplete) the database is written, the
+///   reporting of the mapped attributes is configured, their clusters bound to the coordinator, the
+///   datapoints loaded.
 /// - **Datapoints.** Registered with the image service (a DynamicSpecProvider with a listener), the
 ///   adapter does not load the model: it states the generic datapoints of the devices the image does
 ///   not bind (dynamic_specs()), notifies the service when that set changes (a device interviewed or
@@ -248,7 +257,8 @@ public:
 	const ZigbeePoint& point(size_t index) const { return points_[index]; }
 	/// The model id of point `index`; kNoId while it is not in the model.
 	uint16_t point_id(size_t index) const { return loaded_ ? ids_[index] : kNoId; }
-	/// The device's stale timeout in seconds (0: never stale).
+	/// The device's stale timeout in seconds (0: never stale, or unknown); only the functions of the
+	/// endpoints it described count.
 	uint32_t stale_timeout_s(Ieee ieee) const;
 	/// The device being interviewed, 0 if none.
 	Ieee interviewing() const { return interview_.active ? interview_.ieee : 0; }
@@ -270,8 +280,9 @@ public:
 	uint32_t permit_join_s() const;
 
 	/// {"network": {...}, "devices": [{ieee, short, manufacturer, model, label, interviewed, stale,
-	/// left, interviewing, last_seen, seen_ago_s, datapoints: [names]}]} for the console, the API and
-	/// E-Home's pairing view (spec/zigbee.md).
+	/// left, interviewing, last_seen, seen_ago_s, missing, incomplete, datapoints: [names]}]} for the
+	/// console, the API and E-Home's pairing view (spec/zigbee.md; `missing` and `incomplete` only for
+	/// an incomplete interview).
 	void write_json(JsonWriter& json) const;
 	/// The members of the "network" object into an open object.
 	void write_network_json(JsonWriter& json) const;
@@ -280,7 +291,8 @@ public:
 	/// The device as E-Home's importer needs it (spec/zigbee.md "Export"): identity, label, the
 	/// interview result (endpoints with profile, device id, input and output clusters, zone type)
 	/// and every function the mapping derives, with its generic datapoint name, cluster, attribute,
-	/// value type, unit, whether it is commandable, and the name the loaded model gives it.
+	/// value type, unit, whether it is commandable, and the name the loaded model gives it; `missing`
+	/// for an incomplete interview.
 	void write_device_export_json(JsonWriter& json, size_t index) const;
 
 	// Technology
@@ -312,6 +324,12 @@ private:
 		uint8_t index = 0;
 		uint8_t queried[kMaxQueriedEndpoints] = {};
 		uint8_t queried_count = 0;
+		/// Basic is read; false in the retry of an incomplete interview whose names are known (the
+		/// retry starts `result` from the device's partial result, `queried` are its missing endpoints).
+		bool names_wanted = true;
+		/// The first endpoint of `result` this interview learnt (the zone types are read from there).
+		uint8_t first_new = 0;
+		/// What stayed unanswered (`result.missing`, `result.missing_names`) is collected in `result`.
 		ZigbeeDevice result;
 		TimerHandle timer;
 	};
@@ -325,6 +343,9 @@ private:
 	void start_basic();
 	void start_zone(uint8_t from_index);
 	void finish_interview();
+	/// The English reason of an incomplete device ("endpoint 2 did not answer"), for the log and the
+	/// adapter view.
+	static const char* missing_text(const ZigbeeDevice& device, char* buffer, size_t size);
 	void fail_interview(const char* reason);
 	void end_interview();
 	void start_pending_interview();
@@ -348,7 +369,10 @@ private:
 	void free_pending();
 	bool specs_differ() const;
 	long index_of(uint16_t id) const;
-	/// The points of one device: its bindings, or the generic mapping when the image binds none.
+	/// The points of one device on the endpoints it described: its bindings, or the generic mapping
+	/// when the image binds none. A binding of an endpoint the device has not described (an incomplete
+	/// interview's missing endpoint, or one the device lacks) is a datapoint but gets no coordinator
+	/// binding, reporting configuration or read until an interview learns the endpoint.
 	size_t device_points(const ZigbeeDevice& device, ZigbeePoint* out, size_t capacity) const;
 	const char* device_text(const ZigbeeDevice& device, char* buffer, size_t size) const;
 

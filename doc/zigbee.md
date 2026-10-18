@@ -136,8 +136,49 @@ exchange the key. The interview:
    address, answers the zone's Zone Enroll Request and receives its status changes.
 
 Each step has 10 s and 3 attempts. A device whose endpoints cannot be learnt stays uninterviewed and
-is tried again when it is heard after a minute; missing names or zone types do not fail the
-interview. One device is interviewed at a time; others wait their turn.
+is tried again when it is heard after a minute. One device is interviewed at a time; others wait
+their turn.
+
+**Incomplete interviews** (issue #47). A battery device answers the active endpoint request and may
+fall asleep before the next request reaches it (seen with the Hue SML002: endpoint 2, the one with
+the sensors, was skipped and the device counted as interviewed with endpoint 1 alone, for good). An
+endpoint whose simple descriptor stays unanswered, or a Basic cluster that does, therefore ends the
+interview *incomplete*, not done:
+
+- What answered is kept and used: the database stores the endpoints learnt, their datapoints are
+  loaded, read, bound and their reporting configured as after a finished interview. The device is
+  **not** `interviewed`; it records what is missing (`missing`: the endpoints that did not answer,
+  `names` when manufacturer and model did not), persisted in the database, so it is incomplete
+  again after a restart. A re-interview of a device that knew more keeps the earlier descriptor of
+  an endpoint that does not answer now (and the earlier names), but the device is incomplete.
+- Coordinator bindings, reporting configuration, the reads and the stale timeout follow the
+  endpoints the device described, never the image's knowledge alone: an image binding of a function
+  on an endpoint not described yet is a datapoint (unknown until the device reports it) but gets no
+  request until an interview learns the endpoint, so the short time a sleepy device listens is not
+  spent on requests the retry repeats. The same holds for an interviewed device whose binding names
+  an endpoint it does not have.
+- The log says `interview of <ieee> incomplete (endpoint 2 did not answer)`, the WebSocket sends the
+  `zigbee` event `interview_incomplete`, `GET /api/zigbee` shows `missing` and the English reason
+  `incomplete`, the export `missing`, and the Zigbee page the state "Interview incomplete" with the
+  reason in the UI's language.
+- **Retry.** The device's own next frame (a report, a command, an announce: anything that proves it
+  is awake, which is when a sleepy device answers) starts a retry, at most once per
+  `kInterviewRetryMs` (60 s) counted from the end of the incomplete interview, so a device that never
+  answers costs one short request round per minute while it is active, and nothing while it is
+  silent. The retry asks only for what is missing (the missing descriptors, the Basic cluster only
+  when the names are missing, the zone types of the endpoints it learns) so that it fits the short
+  time a sleepy device listens after its frame; it logs `<device> heard again: retrying its
+  incomplete interview (endpoint 2 did not answer)`. When everything answers, the device is
+  `interviewed` and the model is rebuilt with the new endpoints' datapoints (the others keep their
+  values). Once the retry delay has passed, a restart retries with the first frame.
+- A fresh join (factory reset), a rejoin after a leave and `zigbee interview` / "Interview again"
+  interview the device fully, as before.
+- **The IAS zone type stays as before**: a zone type that does not answer names the zone "alarm" and
+  does not make the interview incomplete. The zone type only chooses the generic datapoint's name
+  (contact, motion, ...): counting it as missing would rename the datapoint when a retry reads it,
+  under rules and E-Home bindings that already use the name; the zone's notifications work either
+  way, and an image binding names the point independently of the type. `zigbee interview` reads it
+  when wanted.
 
 After the interview the adapter writes the database, loads the device's datapoints, binds each
 mapped server cluster to the coordinator's endpoint 1 (bindings for the buttons' client clusters,
@@ -259,9 +300,10 @@ allocate nothing.
 The **Zigbee** page (doc/web.md, "Pages") does what the console does, over the API (spec/api.md,
 "Zigbee"): **Pair** opens the network for 254 s (`POST /api/zigbee/permit`) and counts down;
 **Close** ends it early. While it is open, the WebSocket's `zigbee` events (`joined`,
-`interviewing`, `interviewed`, `interview_failed`, `left`, ...) appear in a list under the network
+`interviewing`, `interviewed`, `interview_failed`, `interview_incomplete`, `left`, ...) appear in a list under the network
 card as they happen, and the device cards follow (the page reads `GET /api/zigbee` again on each
-event). Each device card shows the state, manufacturer and model, IEEE, last seen and its
+event). Each device card shows the state (an incomplete interview with what did not answer),
+manufacturer and model, IEEE, last seen and its
 datapoints' live values, with **Identify** (10 s), **Rename** (the label), **Interview again** and
 **Remove** (after a confirmation; asks the device to leave and forgets it). The adapter reports
 every change of its device list through `ZigbeeEventListener` (one listener, the `WebApi`, which

@@ -85,8 +85,11 @@ an endpoint is bound twice`.
 
 ### Reporting overrides (haumacher/ehome #64)
 
-After a device's interview the controller configures the reporting of each bound (or generic)
-function with the defaults of the function table in `doc/zigbee.md`. A binding's `reporting`
+After a device's interview (finished or incomplete) the controller configures the reporting of each
+bound (or generic) function on an endpoint the device described with the defaults of the function
+table in `doc/zigbee.md`; a binding of an endpoint not described (yet) is a datapoint but is
+configured, bound and read only once an interview learns the endpoint (doc/zigbee.md "Incomplete
+interviews"). A binding's `reporting`
 replaces them for that function; each member is optional, and a missing one keeps the default. The
 image carries values in the datapoint's unit; the controller keeps the defaults and the knowledge of
 the attributes' raw scales.
@@ -171,7 +174,8 @@ The controller keeps the joined devices in the blob `zigbee-devices.json` (at mo
 | `short` | The last known network address (absent when unknown). |
 | `manufacturer`, `model` | Basic cluster attributes 0x0004 and 0x0005 (at most 32 bytes; empty when the device did not answer). |
 | `label` | The user's name for the device (`zigbee label`, at most 32 bytes). |
-| `interviewed` | Whether the interview finished (endpoints known). |
+| `interviewed` | Whether the interview finished (endpoints, clusters and names known). |
+| `missing` | Only for an incomplete interview (`interviewed` false, `endpoints` not empty): `{"endpoints": [2], "names": false}`, the endpoints whose simple descriptor did not answer (ids 1..240, at most 8) and whether the Basic cluster's manufacturer and model did not (doc/zigbee.md "Incomplete interviews"). The endpoints present are used; the device is interviewed again when it is heard. Absent otherwise; a reader drops it for an interviewed device or one without endpoints. Added for issue #47; older blobs without it load as before. |
 | `last_seen` | Wall-clock seconds (Unix time) of the last frame, absent before the clock is set. |
 | `endpoints` | At most 4: `id`, `profile` and `device` from the simple descriptor, `in`/`out` the server/client clusters (at most 12 each, the known clusters first), `zone_type` of an IAS zone (absent otherwise). |
 
@@ -204,6 +208,13 @@ pairs in the field, E-Home names, places and wires, and ships back as the bindin
 }
 ```
 
+- `interviewed`: whether the interview finished. `false` with `endpoints` present is an incomplete
+  interview: `missing` (as in the device database: `{"endpoints": [2], "names": false}`) names the
+  endpoints that did not answer and whether the names did not; the endpoints and functions listed
+  are real but the list is not final (the controller retries when the device is heard). An
+  importer keeps what it has and shows the device as incomplete; a later export brings the rest.
+  `missing` is absent for an interviewed device and one never interviewed (no endpoints). Added
+  for issue #47 (`version` stays 1: an added member).
 - `endpoints`: the interview result as kept in the database (`ZigbeeEndpoint`: at most 4 endpoints,
   12 clusters per direction; `zone_type` only for an IAS Zone endpoint whose type was read).
 - `functions`: every function the mapping (`doc/zigbee.md`, the function table) derives from the
@@ -254,5 +265,8 @@ device's datapoints in the model (empty while they are not loaded). On a control
 the view is `{"available": false, "reason": "..."}`.
 `left`: the device announced its leave (it is kept; a rejoin clears it); `interviewing`: its
 interview runs now; `seen_ago_s`: seconds since it was last heard (absent before it was heard since
-the start). `GET /api/zigbee` (spec/api.md) pages the same device objects with `write_device_json()`
+the start). For an incomplete interview (doc/zigbee.md "Incomplete interviews"; `interviewed` false
+with datapoints) the device also has `missing` (as in the device database) and `incomplete`, the
+English reason, e.g. `"incomplete": "endpoint 2 did not answer"` or `"endpoints 2, 3 did not answer;
+manufacturer and model did not answer"`; a UI translates from `missing`. `GET /api/zigbee` (spec/api.md) pages the same device objects with `write_device_json()`
 and the network with `write_network_json()`.
