@@ -12,6 +12,7 @@
 
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
+#include "hal/usb_serial_jtag_ll.h"
 #include "esp_log.h"
 #include "esp_rom_caps.h"
 #include "esp_vfs.h"
@@ -35,21 +36,24 @@ namespace {
 
 constexpr const char* kTag = "hc.console";
 
-/// Driver buffers. Receive: an Improv frame fits. Transmit: what the writer hands over between two
-/// USB transfers; the burst buffer is the ring (the writer runs only when the loop is idle).
+/// Driver buffers. Receive: an Improv frame fits. Transmit: unused (the writer polls the FIFO
+/// itself, see kPacket), the smallest the driver accepts.
 constexpr uint32_t kRxBuffer = 512;
-constexpr uint32_t kTxBuffer = 2048;
+constexpr uint32_t kTxBuffer = 64;
 
 /// The writer: below the serial reader (4) and the event loop (5), so input is read first and the
 /// loop is never preempted by output. Its stack holds only the driver call.
 constexpr uint32_t kWriterStack = 2048;
 constexpr UBaseType_t kWriterPriority = 3;
 
-/// One driver call writes at most this much (the driver takes a write whole or not at all), and
-/// waits at most this long for room in its transmit buffer (then the writer tries again: no host
-/// reads, the ring fills and drops).
-constexpr size_t kWriteChunk = 256;
-constexpr TickType_t kWriteTicks = pdMS_TO_TICKS(100);
+/// The writer transmits by polling the port's FIFO, one USB packet at a time, and never uses the
+/// driver's interrupt-driven transmit path: the driver's handler leaves the "IN empty" interrupt
+/// asserted while the host has not taken the previous packet (the FIFO is empty but not writable),
+/// so with a host that polls slowly the interrupt fires back to back and starves every task until
+/// the host's next poll (issue #46, measured on the board: the loop missed its timers for most of
+/// the time output flowed, and the task watchdog ended it). Polling costs the writer one tick of
+/// sleep per packet it cannot place; a host that reads keeps up with the logs.
+constexpr size_t kPacket = 64;
 
 /// Queued bytes the writer could not hand over for this long: nobody reads the port.
 constexpr TickType_t kUnreadTicks = pdMS_TO_TICKS(1000);
@@ -109,16 +113,38 @@ void writer_task(void*) {
 			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 			continue;
 		}
-		if (n > kWriteChunk) {
-			n = kWriteChunk;
+		// Kept off every round: anything that enables it (the driver's own write path) brings the
+		// handler back between the writer's packets.
+		usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_IN_EMPTY);
+		if (!usb_serial_jtag_ll_txfifo_writable()) {
+			vTaskDelay(1); // the host has not taken the previous packet yet
+			continue;
+		}
+		if (n > kPacket) {
+			n = kPacket;
 		}
 		// The producers only write behind the queued bytes: the run stays valid outside the lock.
-		if (usb_serial_jtag_write_bytes(data, n, kWriteTicks) > 0) {
-			TickType_t now = xTaskGetTickCount();
-			portENTER_CRITICAL(&g_lock);
-			g_ring.consume(n);
-			g_progress = now;
-			portEXIT_CRITICAL(&g_lock);
+		int written = usb_serial_jtag_ll_write_txfifo(data, static_cast<uint32_t>(n));
+		usb_serial_jtag_ll_txfifo_flush();
+		if (written <= 0) {
+			vTaskDelay(1);
+			continue;
+		}
+		TickType_t now = xTaskGetTickCount();
+		portENTER_CRITICAL(&g_lock);
+		g_ring.consume(static_cast<size_t>(written));
+		size_t left = g_ring.queued();
+		g_progress = now;
+		portEXIT_CRITICAL(&g_lock);
+		if (static_cast<size_t>(written) == kPacket && left == 0) {
+			// A full packet ends a transfer only with a short one after it: the host holds the data
+			// until then. Send the empty packet once the full one is taken.
+			for (int tries = 0; tries < 50 && !usb_serial_jtag_ll_txfifo_writable(); ++tries) {
+				vTaskDelay(1);
+			}
+			if (usb_serial_jtag_ll_txfifo_writable()) {
+				usb_serial_jtag_ll_txfifo_flush();
+			}
 		}
 	}
 }
@@ -202,6 +228,11 @@ bool ConsoleOutput::start() {
 	// What still reads or writes the IDF console's device goes through the driver as well.
 	usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
 	usb_serial_jtag_vfs_use_driver();
+	// The driver enables the "IN empty" interrupt at install; with nothing queued its handler answers
+	// every one with an empty packet and keeps it enabled, which also keeps the FIFO busy whenever the
+	// writer looks (and storms while the host is slow, see kPacket). The writer transmits by polling
+	// and keeps that interrupt off.
+	usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_IN_EMPTY);
 
 	g_writer = xTaskCreateStatic(&writer_task, "hc_out", kWriterStack, nullptr, kWriterPriority, g_writer_stack,
 		&g_writer_tcb);
@@ -269,7 +300,7 @@ void ConsoleOutput::drain(uint32_t timeout_ms) {
 		size_t queued = g_ring.queued();
 		portEXIT_CRITICAL(&g_lock);
 		if (queued == 0) {
-			vTaskDelay(pdMS_TO_TICKS(20)); // the driver's buffer goes out in a USB transfer or two
+			vTaskDelay(pdMS_TO_TICKS(20)); // the last packet goes out in a USB transfer or two
 			return;
 		}
 		vTaskDelay(pdMS_TO_TICKS(10));

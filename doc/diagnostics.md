@@ -203,6 +203,22 @@ and every further line is dropped and counted; the event loop does not notice. O
 queue at most the 4 KB (the writer runs when the loop is idle): a console command printing more,
 such as `log tail` over the whole log ring, ends in the marker line.
 
+### Why the writer polls the port
+
+The IDF driver's interrupt-driven transmit path is not used (issue #46, measured on the board): its
+handler leaves the "IN empty" interrupt asserted when the FIFO is empty but not yet writable (the
+host has not taken the previous packet), so the interrupt fires back to back until the host's next
+poll; with a host that drains slowly (about one packet per 50 ms was measured with `cat` on Linux)
+the storm takes the CPU from every task, the event loop misses its timers, and the task watchdog
+ends it. The handler also answers every poll with an empty packet while nothing is queued and keeps
+the interrupt enabled, which keeps the FIFO busy for anybody else. The writer task therefore keeps
+that interrupt disabled and transmits by polling: when the FIFO is writable it places one USB packet
+(64 bytes) and flushes it, after a full packet it sends the empty one that ends the transfer, and
+otherwise sleeps a tick. Throughput is bound by the host's polling; a reading host keeps up with the
+logs. The driver stays installed for the receive side (the Improv reader and the console). A
+`cat /dev/ttyACM<n>` attached for two minutes leaves `loop.missed` at its idle rate and
+`longest_turn_ms` below 100 ms; before, the board rebooted within half a minute.
+
 ## Testing on the board
 
 1. Flash the full image once (the partition table changed): `write_flash @flash_args`.

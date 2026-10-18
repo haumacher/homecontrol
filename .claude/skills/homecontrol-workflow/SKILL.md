@@ -74,7 +74,7 @@ contains, in order:
     work; the full matrix (`esp32c6` and whatever `CLAUDE.md` lists) runs at the end, each in its
     own build directory (`idf.py -B build-esp32c6 set-target esp32c6`, so switching targets does
     not wipe the other build). Flashing is **not** part of an agent's loop unless the brief says
-    so and names the port; the user said: only the C6 at `/dev/ttyACM1`, never `/dev/ttyACM0`.
+    so and names the port; the user said: only the C6 (resolve its node by id, CLAUDE.md), never the S3.
   - A run whose inputs did not change is not repeated "to be sure". Batch independent lookups
     (several greps in one call) instead of one grep per turn.
 - **The standing rules block**: ALL existing tests green; the core compiles with
@@ -127,7 +127,7 @@ reports filed during the crash are untriaged.
   `build/` only if neither runs the host build; give a second agent its own git worktree (§10)
   and its own build directories. ESP-IDF builds in one `build-<target>/` are never concurrent.
 - **The board is a single resource.** Only one agent (or the orchestrator) flashes or monitors
-  `/dev/ttyACM1` at a time; an open `idf.py monitor` blocks the next flash.
+  the C6's port at a time; an open `idf.py monitor` blocks the next flash.
 - A commit made while an agent has uncommitted work in the tree must be **selective**
   (`git add <files>`).
 
@@ -248,7 +248,7 @@ Two things to run:
 
 ```bash
 ./build/homecontrol --image spec/fixtures/<image>.json        # the controller on Linux, against the KNX test system
-source ~/tools/esp/esp-idf/export.sh && cd platform/esp && idf.py -B build-esp32c6 -p /dev/ttyACM1 flash monitor
+source ~/tools/esp/esp-idf/export.sh && cd platform/esp && idf.py -B build-esp32c6 -p $(readlink -f /dev/serial/by-id/*E8:F6:0A:F8:83:EC*) flash monitor
 ```
 
 The monitor is left with Ctrl-]. Read the boot log for the heap watermark, the IP address and the
@@ -263,7 +263,7 @@ About 40 s all in, the stored image and the Zigbee database stay in place, and t
 build id to compare with `hc_generated/hc_build_id.h`. USB (`esptool.py ... write_flash`) stays for
 the updater (`0x10000 hc_updater.bin`), the bootloader, the partition table, and the UI image
 `storage.bin` (which wipes the stored runtime image and persisted values: redeploy afterwards).
-Only the C6 at `/dev/ttyACM1` is flashed; the S3 at `/dev/ttyACM0` is another project's board.
+Only the C6 is flashed, at the node its id resolves to (it moves between ttyACM0 and ttyACM1); the S3 is another project's board.
 Tell the user the commit hash and what to try. Never leave a broken build on the board — it is the
 shared reference for bug reports.
 

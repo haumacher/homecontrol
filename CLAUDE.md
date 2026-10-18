@@ -113,10 +113,10 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   build directory's `sdkconfig` deleted. Flash the C6 from the build
   directory (the reset sequence of `idf.py flash` fails on this board; put it into download mode
   with BOOT held during RESET): `cd platform/esp/build-esp32c6 && esptool.py --chip esp32c6 --port
-  /dev/ttyACM1 --before no_reset --after hard_reset write_flash @flash_args` (bootloader, table,
+  $(readlink -f /dev/serial/by-id/*E8:F6:0A:F8:83:EC*) --before no_reset --after hard_reset write_flash @flash_args` (bootloader, table,
   updater, application at 0x100000, otadata, the web UI image `storage.bin` at the storage
   partition; `@app-flash_args` writes only the application). Watch with
-  `idf.py -B build-esp32c6 -p /dev/ttyACM1 monitor` (exit with Ctrl-]). OTA updates during
+  `idf.py -B build-esp32c6 -p <the C6's node> monitor` (exit with Ctrl-]). OTA updates during
   development: `scripts/update-server.py` and the console's `update now` (`doc/ota.md`).
 - **Run on the host**: `build/homecontrol [--settings <file>] [--http <port>] [--demo]` (default
   `homecontrol.settings` in the working directory; format in `doc/network.md`); the web UI and API
@@ -129,8 +129,9 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   serial console (prompt `hc>`, in the monitor): `wifi set <ssid> <psk>`, then `wifi status`
   (`doc/network.md`).
 - **Boards on the desk**: two Espressif USB-JTAG boards are connected. **Use only the ESP32-C6**
-  at `/dev/ttyACM1` (MAC E8:F6:0A:F8:83:EC; `ls -l /dev/serial/by-id/` shows which port is which
-  after a replug). The ESP32-S3 at `/dev/ttyACM0` belongs to another project: never flash it.
+  (MAC E8:F6:0A:F8:83:EC); resolve its port by id every time, never by a remembered number:
+  `readlink -f /dev/serial/by-id/*E8:F6:0A:F8:83:EC*` (it moves between `/dev/ttyACM0` and
+  `/dev/ttyACM1` after a reset while a reader holds the old node). The ESP32-S3 (the other `ttyACM`) belongs to another project: never flash it.
   Details and flash sizes in `doc/hardware.md`.
 - **KNX during development**: only the author's test system, whose address is in the developer's
   private notes, never in the repository. The author's home installation is off limits without
