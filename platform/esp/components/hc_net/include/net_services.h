@@ -13,7 +13,8 @@ namespace hc {
 namespace esp {
 
 /// The services that start when the network first comes up: the mDNS announcement
-/// (<hostname>.local, service _homecontrol._tcp on port 80 with TXT version and build) and SNTP
+/// (<hostname>.local, service _homecontrol._tcp on port 80, instance name = the host name, TXT
+/// version and build) and SNTP
 /// against the setting ntp.server (default pool.ntp.org), whose first delivery marks the
 /// EspClock synchronized. Both keep running across later link losses (they follow the interface
 /// by themselves). Runs on the event loop.

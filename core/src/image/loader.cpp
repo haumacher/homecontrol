@@ -1356,7 +1356,8 @@ struct FunctionKind {
 
 constexpr Role kLight[] = {{"command", kRoleBool, true, true}, {"state", kRoleBool, false, false}};
 constexpr Role kDimmer[] = {{"levelCommand", kRoleNumber, true, true}, {"level", kRoleNumber, false, false},
-	{"command", kRoleBool, true, false}, {"state", kRoleBool, false, false}};
+	{"command", kRoleBool, true, false}, {"state", kRoleBool, false, false},
+	{"step", kRoleControlled, true, false}}; // relative dimming, KNX DPT 3.007 (#30)
 constexpr Role kBlind[] = {{"move", kRoleBool, true, true}, {"stop", kRoleBool, true, false},
 	{"position", kRoleNumber, false, false}, {"positionCommand", kRoleNumber, true, false},
 	{"slat", kRoleNumber, false, false}, {"slatCommand", kRoleNumber, true, false}};
@@ -1378,6 +1379,20 @@ constexpr FunctionKind kFunctionKinds[] = {
 	{"scene", kScene, sizeof(kScene) / sizeof(Role)},
 	{"button", kButton, sizeof(kButton) / sizeof(Role)},
 };
+
+/// The value types a role accepts, for refusals: "boolean", "a number", "boolean or controlled", ...
+const char* role_types_text(uint8_t types) {
+	switch (types) {
+		case kRoleBool: return "boolean";
+		case kRoleNumber: return "a number (unsigned, signed or real)";
+		case kRoleEnum: return "enumeration";
+		case kRoleControlled: return "controlled";
+		case kRoleEnum | kRoleNumber: return "enumeration or a number";
+		case kRoleBool | kRoleControlled: return "boolean or controlled";
+		case kRoleNumber | kRoleEnum | kRoleControlled: return "a number, enumeration or controlled";
+		default: return "any type";
+	}
+}
 
 bool role_type_fits(uint8_t types, ValueType type) {
 	if (types == kRoleAny) {
@@ -1514,8 +1529,8 @@ void parse_functions(Ctx& c, const JsonSpan& root, const Ids& locations, const I
 			}
 			const DatapointSpec& spec = c.plan.datapoints[dp];
 			if (!role_type_fits(role.types, spec.type)) {
-				c.refuse("datapoint '%s' is %s, which does not fit the role %s of a %s", name,
-					value_type_label(spec.type), role.name, kind->name);
+				c.refuse("datapoint '%s' is %s, but the role %s of a %s takes %s", name,
+					value_type_label(spec.type), role.name, kind->name, role_types_text(role.types));
 			}
 			if (role.writable && (spec.flags & DatapointFlags::kWritable) == 0) {
 				c.refuse("the role %s needs a writable datapoint; '%s' is not", role.name, name);

@@ -153,8 +153,10 @@ export function functionTile(fn, env) {
 		case "scene":
 			if (writable("command")) {
 				action = () => {
-					const scene = fn.scene || 1;
-					send("command", typeOf("command") === "controlled" ? { control: false, value: scene } : scene);
+					// The image counts scenes from 1 (spec/runtime-image.md 3.5); the datapoint carries the
+					// KNX scene code, which counts from 0 (DPT 17.001, 18.001).
+					const code = (fn.scene || 1) - 1;
+					send("command", typeOf("command") === "controlled" ? { control: false, value: code } : code);
 				};
 				actionLabel = t("tile.activate", { name });
 			}
@@ -201,6 +203,14 @@ export function functionTile(fn, env) {
 
 	if (fn.kind === "dimmer" && writable("levelCommand")) {
 		controls.push(rangeControl("levelCommand", "level", "tile.level"));
+	}
+	if (fn.kind === "dimmer" && writable("step")) {
+		// Relative dimming (KNX DPT 3.007): the control bit is the direction, the value the step code;
+		// code 3 is a 25 % step, so four taps run through the range.
+		const dim = (brighter) => send("step", { control: brighter, value: 3 }, "level");
+		controls.push(h("div", { class: "button-row" },
+			h("button", { type: "button", class: "round", "aria-label": t("tile.darker", { name }), onclick: () => dim(false) }, icon(icons.minus)),
+			h("button", { type: "button", class: "round", "aria-label": t("tile.brighter", { name }), onclick: () => dim(true) }, icon(icons.plus))));
 	}
 	if (fn.kind === "blind") {
 		const buttons = [];

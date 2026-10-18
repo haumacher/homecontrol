@@ -115,3 +115,22 @@ outside world (weather, external services).
   page). Chosen over a native Home Assistant integration (nothing to install on the HA side) and
   over an InfluxDB client on the device (one outbound protocol, the collector is the subscriber's
   choice); spec/mqtt.md, doc/mqtt.md.
+- **2026-10-18 — The 4 MB C6 is the minimum requirement, not a development-only board.** The author
+  overrules the entry of 2026-10-17: the controller must keep fitting the 4 MB layout and the C6's
+  RAM; larger modules only gain storage (doc/hardware.md, #22).
+- **2026-10-18 — The security story of #20 is confirmed for the first versions.** Plain HTTP on the
+  LAN, PBKDF2 device password, hashed revocable tokens, SHA-256 in the update manifest, no secure
+  boot or flash encryption; Ed25519 key pairing with signed images and manifests is #35.
+- **2026-10-18 — The rule-specification questions are decided (#25–#28, #33, #34).** Confirmed as
+  specified: a condition without value runs neither branch, the cascade loop guard of 32 (the log
+  names the culprit), inclusive `between` and half-open `inWindow`, no time in `match`, timers
+  100 ms..30 d, disabling cancels timers, `start` fires for every rule at every swap. Changed: a
+  parameter set to its default stores no override; rule states survive a reboot (coalesced writes),
+  timers do not; `dateTime` arithmetic is exact elapsed time (UTC, converted back); the canonical
+  text is defined on normalized trees and the AST stays numeric for enumerations (E-Home prints the
+  names); rule parameters are mirrored as datapoints `rule/<ruleId>/<parameterId>`; labels are a
+  string or a language map; a `read` action and a `silence` trigger are added; every limit the core
+  enforces is named in the spec; rule text names datapoints, never function roles.
+- **2026-10-18 — Function roles follow the KNX inputs E-Home binds.** A dimmer gets the optional
+  `step` role for relative dimming (DPT 3.007); the device sends the scene code `scene − 1` (#30,
+  #31, from ehome #50).

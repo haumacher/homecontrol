@@ -136,6 +136,22 @@ addresses, device lists and router names are deliberately not in this repository
 live in the developer's local notes. Builds, fixtures and tests never contain a gateway address of
 a real installation, and no gateway is ever chosen from discovery automatically.
 
+## Production requirement: the development board is the minimum (decided 2026-10-18, #22)
+
+The author's decision: the board on the desk — an ESP32-C6 module with **4 MB flash** (N4) and the
+C6's 512 KB SRAM — is the minimum a HomeControl installation may run on. Consequences:
+
+- The controller must keep fitting the 4 MB layout (`partitions-4MB.csv`: application 2.75 MB in
+  each OTA slot, updater 960 KB, storage, core dump, the Zigbee partitions). Nothing may depend on
+  the 8 or 16 MB tables; they only give such modules more storage.
+- The size line of every build (`idf.py size`, the "free" percentage of the application partition)
+  and the free heap after boot stay part of every package's report and of the build gate. When a
+  feature does not fit, the first thing to drop is the esp32s3 target's unused components, the
+  second is making the feature an optional component selected at build time, never a silent cut.
+- Heap: with WiFi, the KNX tunnel, Zigbee formed, the web server and the test-system image the
+  board has about 110 KB free (minimum 93 KB); a WebSocket client costs about 30 KB. Steady-state
+  code allocates nothing; images allocate on load.
+
 ## Later options
 
 - ESP32-P4 + ESP32-C6 (the C6 as wireless co-processor) if RAM or wired Ethernet become

@@ -202,12 +202,15 @@ When the network first comes up the controller announces itself:
 
 - host name `homecontrol-<last three bytes of the WiFi MAC in lower-case hex>`, for example
   `homecontrol-a1b2c3.local` (also sent as the DHCP host name);
-- service `_homecontrol._tcp` on port 80, instance name `HomeControl`, TXT records
-  `version=<hc::kVersion>` and `build=<git describe of the build>`.
+- service `_homecontrol._tcp` on port 80 (the web server and API, `doc/web.md`), instance name =
+  the host name (unique per device, so E-Home's controller search lists every controller; #32), TXT
+  records `version=<hc::kVersion>` and `build=<git describe of the build>`.
 
-Check from the desk machine: `avahi-browse -r _homecontrol._tcp`. Port 80 has no server yet (the web
-server is a later package); the announcement is for discovery by E-Home. The POSIX build does not
-announce (it logs so at start).
+Check from the desk machine: `avahi-browse -r _homecontrol._tcp`. E-Home's search sends a *legacy
+unicast* query (from a port other than 5353) for the PTR of `_homecontrol._tcp.local`; the ESP-IDF
+responder answers it unicast to the asking port with the SRV, TXT and A records as additionals, so
+one exchange yields host, port, version and address (verified against the board with a hand-made
+query, 2026-10-18). The POSIX build does not announce (it logs so at start).
 
 ## Time: SNTP and the time zone
 

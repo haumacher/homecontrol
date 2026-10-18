@@ -110,6 +110,7 @@ target_sources(hc_tests PRIVATE
 # The KNX time master (issue #9, doc/knx.md "Time master").
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/knx_time_master_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/transmitter_probe_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/function_roles_probe_test.cpp") # function roles (#30)
 # State persistence and short-term history (issue #21).
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/value_store_test.cpp"

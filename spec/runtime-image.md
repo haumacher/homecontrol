@@ -183,13 +183,13 @@ What the inhabitant operates: a light, a blind, a sensor. A function names the d
 | `kind` | below | yes | |
 | `room` | location id | no | |
 | `unit` | string | no | For the UI. |
-| `scene` | integer 1..64 | for `scene` | The scene number sent. |
+| `scene` | integer 1..64 | for `scene` | The scene number as people count it. The device sends the KNX scene code `scene − 1` on the `command` datapoint (DPT 17.001 and 18.001 count from 0). |
 | `datapoints` | object role → datapoint id | yes | |
 
 | Kind | Roles (**required**; *command roles need a writable datapoint*) |
 |---|---|
 | `light` | ***command*** (boolean), `state` (boolean) |
-| `dimmer` | ***levelCommand*** (number), `level` (number), *command* (boolean), `state` (boolean) |
+| `dimmer` | ***levelCommand*** (number), `level` (number), *command* (boolean), `state` (boolean), *step* (controlled: relative dimming, KNX DPT 3.007; the control bit is the direction, 1 brighter, the value the step code 1..7, 0 stops) |
 | `blind` | ***move*** (boolean), *stop* (boolean), `position` (number), *positionCommand* (number), `slat` (number), *slatCommand* (number) |
 | `switch` | ***command*** (boolean), `state` (boolean) |
 | `sensor` | **value** (any type) |

@@ -48,7 +48,9 @@ void NetServices::start_mdns() {
 		err = mdns_hostname_set(hostname_);
 	}
 	if (err == ESP_OK) {
-		err = mdns_instance_name_set("HomeControl");
+		// The instance name must be unique per device on the LAN (E-Home lists every controller it
+		// finds, haumacher/ehome #42): the host label carries the MAC's last three bytes.
+		err = mdns_instance_name_set(hostname_);
 	}
 	mdns_txt_item_t txt[] = {
 		{"version", kVersion},
@@ -64,8 +66,8 @@ void NetServices::start_mdns() {
 		return;
 	}
 	mdns_running_ = true;
-	ESP_LOGI(kTag, "mDNS: %s.local, service %s.%s port %u, TXT version=%s build=%s", hostname_, kServiceType,
-		kServiceProtocol, static_cast<unsigned>(kServicePort), kVersion, build_id());
+	ESP_LOGI(kTag, "mDNS: %s.local, service %s.%s port %u, instance %s, TXT version=%s build=%s", hostname_,
+		kServiceType, kServiceProtocol, static_cast<unsigned>(kServicePort), hostname_, kVersion, build_id());
 }
 
 void NetServices::start_sntp() {

@@ -51,6 +51,8 @@
 	"tile.position": "Position of {name}",
 	"tile.up": "{name} up",
 	"tile.down": "{name} down",
+	"tile.brighter": "{name} brighter",
+	"tile.darker": "{name} darker",
 	"tile.stop": "Stop {name}",
 	"tile.colder": "Lower the setpoint of {name}",
 	"tile.warmer": "Raise the setpoint of {name}",

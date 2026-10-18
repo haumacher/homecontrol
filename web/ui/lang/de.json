@@ -51,6 +51,8 @@
 	"tile.position": "Position von {name}",
 	"tile.up": "{name} hoch",
 	"tile.down": "{name} runter",
+	"tile.brighter": "{name} heller",
+	"tile.darker": "{name} dunkler",
 	"tile.stop": "{name} anhalten",
 	"tile.colder": "Sollwert von {name} senken",
 	"tile.warmer": "Sollwert von {name} erhöhen",
