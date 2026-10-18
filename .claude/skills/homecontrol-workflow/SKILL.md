@@ -231,6 +231,16 @@ source ~/tools/esp/esp-idf/export.sh && cd platform/esp && idf.py -B build-esp32
 
 The monitor is left with Ctrl-]. Read the boot log for the heap watermark, the IP address and the
 mDNS name, then open the device's web UI in the Playwright browser when the package touched it.
+
+**Application builds go to the board through the browser, not USB** (since #39, 2026-10-18): on the
+device's Settings page, opened by IP address, System → "Install firmware file" → pick
+`platform/esp/build-esp32c6/homecontrol.bin` (Playwright: click the button, `browser_file_upload`,
+accept the confirm dialog), then wait for the status line "<version> (<build>) läuft"; the serial
+capture shows `hc.updater` writing the image and `hc.ota ... completed (uploaded from the browser)`.
+About 40 s all in, the stored image and the Zigbee database stay in place, and the page shows the
+build id to compare with `hc_generated/hc_build_id.h`. USB (`esptool.py ... write_flash`) stays for
+the updater (`0x10000 hc_updater.bin`), the bootloader, the partition table, and the UI image
+`storage.bin` (which wipes the stored runtime image and persisted values: redeploy afterwards).
 Only the C6 at `/dev/ttyACM1` is flashed; the S3 at `/dev/ttyACM0` is another project's board.
 Tell the user the commit hash and what to try. Never leave a broken build on the board — it is the
 shared reference for bug reports.
