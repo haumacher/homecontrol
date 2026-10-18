@@ -16,6 +16,7 @@
 #include "hc/rules/parameter_store.h"
 #include "hc/rules/rule_set.h"
 #include "hc/rules/value.h"
+#include "hc/technology.h"
 
 namespace hc::rules {
 
@@ -88,15 +89,15 @@ enum class LogCode : uint8_t {
 	state_reset,
 	loop_guard,
 	queue_overflow,
+	read_refused,
 };
 
 /// The spec's name of a code ("conditionNoValue", ...).
 const char* log_code_name(LogCode code);
 
-/// Observes what the engine does, besides its log lines (tag hc.rule). For the corpus runner, the
-/// UI's live feed (#14) and later a mirror of the parameters as datapoints (decision ticket #28:
-/// parameter_changed is the hook). Called on the event loop's thread; must not call back into the
-/// engine.
+/// Observes what the engine does, besides its log lines (tag hc.rule). For the corpus runner and the
+/// UI's live feed (#14); the parameters are mirrored as datapoints by the engine itself (spec 8.6).
+/// Called on the event loop's thread; must not call back into the engine.
 class EngineObserver {
 public:
 	/// Every log entry with a code of spec 9.2: the rule id ("-" when no rule is concerned), the
@@ -108,6 +109,8 @@ public:
 	virtual void rule_commanded(const char* rule, const Datapoint& datapoint, const Value& value) {
 		(void)rule, (void)datapoint, (void)value;
 	}
+	/// Every read request of a rule that the owning technology accepted (DatapointModel::read()).
+	virtual void rule_read(const char* rule, const Datapoint& datapoint) { (void)rule, (void)datapoint; }
 	/// A parameter's current value changed (UI, API, action, reset, new image).
 	virtual void parameter_changed(const char* rule, const char* parameter, const Val& value) {
 		(void)rule, (void)parameter, (void)value;
@@ -144,10 +147,10 @@ struct RuleDiagnostics {
 	uint64_t last_trigger_ms = 0;        ///< Monotonic cascade time.
 	bool last_trigger_wall_valid = false;
 	DateTime last_trigger_wall;          ///< Local wall time when synchronized.
-	char last_trigger[48] = {};          ///< "datapoint hall.presence", "timer off", "start boot", ...
+	char last_trigger[80] = {};          ///< "datapoint hall.presence", "timer off", "start boot", "silence hall.lux", ...
 	bool has_action = false;
 	uint64_t last_action_ms = 0;
-	char last_action[96] = {};           ///< "write hall.light = true", "restartTimer off 3min", ...
+	char last_action[96] = {};           ///< "write hall.light = true", "restartTimer off 3min", "read hall.lux", ...
 	uint32_t errors = 0;                 ///< Logged errors and warnings (not `log` actions).
 	bool has_error = false;
 	uint64_t last_error_ms = 0;
@@ -167,6 +170,8 @@ struct EngineMemory {
 	size_t per_timer;
 	size_t per_node;
 	size_t per_tracked;
+	size_t per_silence; ///< Per silence trigger.
+	size_t per_action;  ///< Per action (the once-flags of readRefused).
 };
 
 /// The rule interpreter (spec/rules.md section 7, doc/rules.md): owns the loaded RuleSet and its
@@ -182,11 +187,20 @@ struct EngineMemory {
 /// Memory: the RuleSet's block and one runtime block per load, both allocated by load(); the
 /// queues are part of the object. Nothing is allocated while events are processed.
 ///
+/// Parameters as datapoints (spec 8.6): the engine owns the datapoints `rule/<ruleId>/<parameterId>`
+/// that the model holds (the image loader derives them, parameter_datapoints()) through a technology
+/// of its own named "rules". It publishes each parameter's value there whenever it changes, and a
+/// command on such a datapoint sets the parameter like the API (adjustable, valid; refused with
+/// parameterRefused otherwise). Silence triggers (spec 7.11) are slots allocated at load.
+///
 /// Threading: every method on the event loop's thread.
 class Engine : public DatapointListener {
 public:
 	/// External events waiting for their cascade.
 	static constexpr size_t kInboundCapacity = 64;
+
+	/// The name of the technology that owns the parameter datapoints.
+	static constexpr const char* kTechnologyName = "rules";
 
 	Engine(EventLoop& loop, DatapointModel& model, const Clock& clock, Settings& settings, const TimeSource& time);
 	~Engine();
@@ -229,6 +243,17 @@ public:
 	/// Processes the queued external events now (call before reloading the datapoint model).
 	void flush();
 
+	/// Binds the parameter datapoints of the loaded rules that the model holds to the engine and
+	/// publishes the parameters' values where the datapoints differ (spec 8.6). load() does it; call
+	/// it again after the model was reloaded without a rule load (the load drops every binding).
+	/// The publishes are not events for the rules.
+	void bind_parameters();
+
+	/// The technology that owns the parameter datapoints (named kTechnologyName).
+	const Technology& technology() const { return technology_; }
+	/// The rule and parameter index behind a parameter datapoint; false for another datapoint.
+	bool parameter_of(uint16_t datapoint, size_t& rule, size_t& index) const;
+
 	/// How long a changed rule state waits before it is written (spec 8.4, 8.5: writes are delayed
 	/// by up to 10 s and coalesced to protect the flash).
 	static constexpr uint32_t kStatePersistDelayMs = 10000;
@@ -257,6 +282,19 @@ public:
 	void datapoint_updated(const DatapointUpdate& update) override;
 
 private:
+	/// The technology of the parameter datapoints: their commands go to parameter_command().
+	class ParameterTechnology : public Technology {
+	public:
+		explicit ParameterTechnology(Engine& engine) : engine_(engine) {}
+		const char* name() const override { return kTechnologyName; }
+		bool command(const Datapoint& datapoint, const Value& value) override {
+			return engine_.parameter_command(datapoint, value);
+		}
+
+	private:
+		Engine& engine_;
+	};
+
 	struct Event {
 		uint8_t kind;
 		uint8_t flags;
@@ -269,6 +307,7 @@ private:
 	struct ParamRuntime;
 	struct TimerRuntime;
 	struct ChangeRecord;
+	struct SilenceRuntime;
 	struct Eval;
 	struct Runtime;
 
@@ -296,12 +335,22 @@ private:
 	void action_timer(size_t rule, const Action& action);
 	void action_set_parameter(size_t rule, const Action& action);
 	void action_log(size_t rule, const Action& action);
+	void action_read(size_t rule, const Action& action);
 	void stop_timers(size_t rule);
+	void enable_changed(size_t rule, bool enabled);
+
+	// Silence triggers (spec 7.11).
+	void arm_silence(size_t index, uint64_t base);
+	void rearm_silences(size_t rule);
+	void start_silences();
 	void record_action(size_t rule, ActionKind kind, uint16_t target, const Val& value);
 
 	// Parameters.
 	bool parameter_valid(const Parameter& declaration, const Val& value) const;
-	void apply_parameter(size_t rule, size_t index, const Val& value, bool derived);
+	/// `publish`: tell the parameter's datapoint (not when the change came as its command).
+	void apply_parameter(size_t rule, size_t index, const Val& value, bool derived, bool publish = true);
+	void publish_parameter(size_t rule, size_t index);
+	bool parameter_command(const Datapoint& datapoint, const Value& value);
 	ParameterStatus find_adjustable(const char* rule, const char* parameter, int& r, int& p, const char*& reason);
 	void refuse_parameter(const char* rule, const char* parameter, const char* reason);
 
@@ -335,6 +384,9 @@ private:
 	const TimeSource& time_;
 	EngineObserver* observer_ = nullptr;
 	bool listening_ = false;
+	ParameterTechnology technology_{*this};
+	bool quiet_ = false;          ///< Publishing at load: no events.
+	uint64_t boot_start_ms_ = 0;  ///< When the rules started at boot (silence counts from it).
 
 	RuleSet set_;
 	Runtime* runtime_ = nullptr;

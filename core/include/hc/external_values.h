@@ -117,7 +117,10 @@ bool external_extract(const JsonSpan& root, const char* path, JsonSpan& out, con
 /// wrong kind) is logged when its reason changes; after kStaleAfterFailures consecutive failures the
 /// source's datapoints become stale; the next success makes them good again (logged).
 ///
-/// Commands to these datapoints are refused ("an external value").
+/// Commands to these datapoints are refused ("an external value"). A read (read(), a rule's `read`
+/// action) fetches the datapoint's source again at its next opportunity: at once, or when the rate
+/// limit of fetch_now() (kManualSpacingMs since its last attempt) allows; it is refused while the
+/// source is blocked (network down, wall clock not synchronized, no location for its URL).
 ///
 /// Memory: configure() allocates one table for the sources and bindings (11,216 bytes at the
 /// capacities below on the ESP32) and frees the previous one; nothing is allocated afterwards.
@@ -201,6 +204,7 @@ public:
 	// Technology
 	const char* name() const override { return "external"; }
 	bool command(const Datapoint& datapoint, const Value& value) override;
+	bool read(const Datapoint& datapoint) override;
 
 	// FetchReceiver
 	void fetch_done(const FetchResult& result) override;

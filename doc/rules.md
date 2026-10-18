@@ -75,6 +75,7 @@ during the load. The block holds flat arrays with 16-bit indices instead of poin
 | constants | 40 | literals that do not fit a node (strings, raw, date-times), and the values of parameter declarations |
 | strings | as needed | NUL-terminated |
 | schedules, tracked datapoints, match triggers | 4, 2, 4 | lookup tables for the event paths |
+| silence triggers | 8 | trigger, datapoint, the root of `after`, rule |
 
 A node is 16 bytes: kind, operator or function, static type, argument count, the first child
 (`a`), the subtree size, and an 8-byte literal union. Expressions are stored in pre-order, and the
@@ -89,12 +90,14 @@ children of a node are contiguous at `a .. a+argc-1`. So an expression is the co
 | per rule | 120 | state, firing counters, the last trigger, action and error |
 | per parameter | 48 | current value and the override flag |
 | per timer | 16 | deadline, sequence, rule, running |
+| per silence trigger | 32 | base, deadline, sequence, armed, fired, the "once" flag of `timerRefused` |
+| per action | 1 | the "once" flag of `readRefused` |
 | per node | 1 | the "once" flags of an expression root, the match memory |
 | per tracked datapoint | 16 | the time of the last change (for `sinceChange`, `changedWithin`) |
 | per datapoint of the model | 1 bit | interest: referenced by a trigger or a match condition |
 
-The `Engine` object holds the queues: 64 inbound and 128 cascade events of 8 bytes each. It is
-1984 bytes on the host.
+The `Engine` object holds the queues: 64 inbound and 128 cascade events of 8 bytes each, and the
+parameter datapoints' technology. It is 2048 bytes on the host.
 
 Nothing is allocated while events are processed; a test counts the allocations to check it.
 A swap allocates the new blocks before it frees the old ones.
@@ -103,9 +106,9 @@ Measured for a typical 50-rule image (`RulesEngine memory accounting`). Each rul
 parameters plus `enabled`, a timer, and two reactions (a condition, two writes, a `restartTimer`);
 in all 400 nodes:
 
-- rule set block: 27,600 bytes, of which nodes 6,400, constants 10,000 and strings 3,091;
-- runtime block: 14,520 bytes;
-- total: about 42 KB, within the 64 KB the spec allows.
+- rule set block: 28,400 bytes, of which nodes 6,400, constants 10,000 and strings 3,091;
+- runtime block: 14,696 bytes;
+- total: about 43 KB, within the 64 KB the spec allows.
 
 The constant pool dominates. Default, min and max of a parameter are full 40-byte values, which
 makes a parameter cost about 190 bytes in all, against the spec's estimate of 48.
@@ -152,8 +155,16 @@ All functions of spec 4.7 are implemented; none is cut.
   They wait in an inbound ring of 64 events (`queueOverflow` beyond). A posted callback processes
   them one cascade each, in arrival order.
 - **Timers**: before each event, every rule timer that is due runs its own cascade, in (deadline,
-  sequence) order (7.8). One event-loop timer covers all rule timers and is rescheduled to the
-  earliest deadline after each cascade.
+  sequence) order (7.8). One event-loop timer covers all rule timers and silence periods and is
+  rescheduled to the earliest deadline after each cascade.
+- **Silence triggers** (7.11) have a slot each, allocated at load: base, deadline, a sequence from
+  the timers' counter (so equal deadlines keep the order they were armed in), and the flags
+  `armed` and `fired`. The model listener re-arms the datapoint's slots on every update that is not
+  stale, before the event is queued; an ended period runs its own cascade from the timer loop and
+  sets `fired` until the next update. `start()` arms every slot from max(last update, boot start);
+  the boot start is the clock when the boot's start event is processed, so a swap keeps it and a
+  reboot renews it. A disabled rule's slots are disarmed; enabling arms them from max(base, now).
+  A parameter change re-arms the slots that have not fired, with the base kept.
 - **Derived events** are updates caused by a rule's command and `setParameter` actions. They are
   recognised by arriving while a cascade runs, and go into the cascade queue (128 events,
   `queueOverflow` once per cascade).
@@ -176,7 +187,16 @@ All functions of spec 4.7 are implemented; none is cut.
   (entry actions) unless its state was preserved by the swap or restored at boot; then the `start`
   trigger fires.
 - **Enabling** a rule runs start(`enable`) inside the cascade of the parameter change.
-- **Disabling** stops the rule's timers at once.
+- **Disabling** stops the rule's timers and disarms its silence triggers at once.
+- **Read** (7.12): `DatapointModel::read(id)` calls `Technology::read()` (default: refused). The
+  engine records an accepted read in the diagnostics (`read hall.temp`) and tells the observer
+  (`rule_read`); a refusal logs `readRefused` once per action site, until a read of that site is
+  accepted. The technologies: the KNX adapter marks the entry `read_wanted` and sends it through the
+  read-on-start queue (one GroupValueRead per 100 ms, the cursor wrapping around; a waiting read is
+  not queued twice; the flags are dropped when the tunnel goes down, and a read is refused while it
+  is down); the Zigbee adapter calls `ZigbeeDriver::read_attributes` for the point's attribute
+  (refused for points without read-on-start, a device that has not joined or has left); external
+  values move the source's next fetch to now, or to one minute after its last attempt.
 
 ## Parameters and persistence
 
@@ -197,6 +217,20 @@ Parameter 0 of every rule is the implicit `enabled`:
    action.
 
 `reset_parameter()` removes the override.
+
+**Parameter datapoints** (spec 8.6). The image loader appends `rule/<ruleId>/<parameterId>` for
+every parameter (`rules::parameter_datapoints()`, the same derivation the tests use), unbound. The
+engine's `install()` calls `bind_parameters()`: it finds each name in the model, checks the type,
+binds its nested `ParameterTechnology` (name `rules`) and publishes the value. The image service
+calls `bind_parameters()` again after a provider reload rebuilt the model. These first publishes
+run with `quiet_` set: the model listener only tracks changes, so they are no rule events. After
+that `apply_parameter()` publishes every change (origin `publish`) after it queued the parameter
+event, so the datapoint's update follows the parameter's event as it does for a command. A command
+(`ParameterTechnology::command`) converts the value (unsigned ms for a duration), refuses a
+parameter that is not adjustable or an invalid value through `parameterRefused`, and otherwise
+applies it without a publish (the model stores the commanded value). A value that does not fit the
+datapoint (an integer beyond 32 bits) is logged and not mirrored. The loader refuses a rule's
+reference to its own parameter datapoints (`forbidden`) and a `read` of any (`notReadable`).
 
 **Key mapping.** NVS keys hold at most 15 characters, and `<ruleId>/<parameterId>` takes up to 57.
 An override is therefore stored under
@@ -291,6 +325,7 @@ The swap is by id (7.6):
 - **Change records** carry over by datapoint id. A newly tracked datapoint starts from the model's
   update time.
 - **Removed rules** lose their timers, and their overrides are deleted.
+- **Silence triggers** are armed anew by the start, from the datapoint's last update.
 
 ## Diagnostics
 
@@ -332,8 +367,10 @@ Points the spec leaves open, decided here (E-Home's interpreter should agree):
 
 ## Tests
 
-- **`rules_corpus_test.cpp`** runs the 41 corpus cases in the README's procedure. Time 0 is
-  monotonic 1,000,000 ms. A reboot rebuilds the model and the engine, and keeps the settings. The
+- **`rules_corpus_test.cpp`** runs the 53 corpus cases in the README's procedure. Time 0 is
+  monotonic 1,000,000 ms. The model holds the case's datapoints and the parameter datapoints of the
+  rules; an image step loads it again with the values kept and hands the engine the previous ids,
+  as the image service does. A reboot rebuilds the model and the engine, and keeps the settings. The
   wall clock is the device's `RulesClock` over a fake time service whose zone evaluates the case's
   POSIX TZ string itself (`PosixRuleZone` in `rules_test_support.h`), never the host's zone.
 - **`rules_unit_test.cpp`**:
@@ -345,6 +382,8 @@ Points the spec leaves open, decided here (E-Home's interpreter should agree):
   - the memory accounting of the 50-rule image;
   - no allocation while events are processed;
   - a self-triggering rule ending in `loopGuard`;
+  - `readRefused` once per action until a read is accepted; a silence period outside the timer
+    limits; the silence trigger in the diagnostics;
   - the diagnostics texts;
   - the four normalized shapes, the label resolution chain, the collision refusal of
     `RuleSet::load`, delayed and coalesced state writes without allocation;

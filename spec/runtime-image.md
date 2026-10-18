@@ -141,6 +141,15 @@ The KNX binding:
 A KNX datapoint needs at least one address. A datapoint without `knx`, `zigbee` and `virtual` is a
 plain application value too; a schedule may own it as its `output`.
 
+Implied datapoints of the rules (`spec/rules.md` 8.6): the loader adds one datapoint per rule
+parameter, the enable switch included, named `rule/<ruleId>/<parameterId>`, behind the image's own
+datapoints and the time master's, in rule order (per rule `enabled` first, then the parameters in
+their order). Its type follows the parameter's (`duration` as `unsigned` milliseconds); it is
+writable exactly when the parameter is adjustable, not persisted by the datapoint model (the rule
+engine's parameter store keeps the overrides) and without history; the rule engine owns it. Ids
+starting with `rule/` are reserved: a declared one refuses the image. Functions, schedules and
+the UI may name these datapoints like any other.
+
 The Zigbee binding (issue #29; the bindings, the checks and their refusals in `spec/zigbee.md`
 "Bindings"): the datapoint stands for one function of one endpoint of a joined (or not yet joined)
 device, and a device with a binding gets only its bound datapoints.

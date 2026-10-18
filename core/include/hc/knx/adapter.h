@@ -59,6 +59,10 @@ struct KnxMapping {
 ///   address take the value too, as the bus devices do.
 /// - Tunnel down: every datapoint becomes stale. Tunnel up: the read-on-start datapoints are read,
 ///   one every kReadSpacingMs, so a hundred reads do not burst onto the bus.
+/// - A read the application asks for (read(), a rule's `read` action) joins the same queue: a group
+///   read of the address read-on-start uses (`send`, else the first listening address), with the
+///   same spacing; a read already waiting is not queued twice. Refused while the tunnel is down and
+///   for a transmit-only datapoint (its owner publishes it; nothing on the bus answers for it).
 /// - Every group telegram (received, and sent once confirmed) goes into the TelegramLog, if given.
 ///
 /// Memory: configure() allocates the tables once (two blocks); nothing is allocated afterwards.
@@ -105,7 +109,7 @@ public:
 	/// that a component can refuse an address another datapoint already sends on; empty if none.
 	std::optional<uint16_t> sender_of(GroupAddress address) const;
 
-	/// Reads still to be sent from the last tunnel up.
+	/// Reads still to be sent: from the last tunnel up and those the application asked for.
 	size_t reads_pending() const;
 
 	/// The tunnel and the telegram log (nullptr if none) it was given (the monitor stream sends and
@@ -116,6 +120,7 @@ public:
 	// Technology
 	const char* name() const override { return "knx"; }
 	bool command(const Datapoint& datapoint, const Value& value) override;
+	bool read(const Datapoint& datapoint) override;
 
 	// KnxTunnelListener
 	void tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previous) override;
@@ -130,6 +135,7 @@ private:
 		GroupAddress send;
 		GroupAddress first_listen;
 		bool transmit_only;
+		bool read_wanted; ///< A group read waits in the queue.
 	};
 
 	struct Listen {
@@ -150,6 +156,8 @@ private:
 	void log_telegram(TelegramRecord::Direction direction, const LData& frame, const GroupData& data);
 	void schedule_read();
 	void read_due();
+	/// Queues a group read of every read-on-start datapoint (tunnel up, new mapping).
+	void want_reads_on_start();
 	void free_tables();
 
 	EventLoop& loop_;
@@ -162,7 +170,7 @@ private:
 	size_t count_ = 0;
 	Listen* listens_ = nullptr;  ///< Sorted by address.
 	size_t listen_count_ = 0;
-	size_t read_cursor_ = 0;     ///< Next entry to consider for a read (count_: done).
+	size_t read_cursor_ = 0;     ///< Next entry to consider for a read (count_: none waits).
 	TimerHandle read_timer_;
 	PendingSend pending_[kPendingCapacity] = {};
 	size_t pending_count_ = 0;

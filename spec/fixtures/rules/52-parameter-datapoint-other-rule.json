@@ -1,0 +1,61 @@
+{
+	"title": "Another rule reads a parameter datapoint, triggers on it and writes it; a rule's write sets the parameter as a derived event",
+	"description": "guard compares the room temperature with heat's setpoint and reacts to its changes. At 5000 the schedule makes guard write 20.0 to the datapoint: a command of the rule engine that sets heat's parameter (adjustable required, as from the API); heat's parameter trigger and then guard's own trigger on the datapoint see it in the same cascade: the parameter's event comes first, the datapoint's update after it (spec 8.6).",
+	"datapoints": [{"name": "room.temp", "type": "real"}, {"name": "fan", "type": "boolean"}, {"name": "heat.target", "type": "real"}],
+	"schedules": ["reset"],
+	"rules": [
+		{
+			"id": "heat",
+			"name": "Heating",
+			"parameters": [{"id": "setpoint", "label": "Setpoint", "type": "real", "default": 21.0, "min": 15.0, "max": 25.0}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "parameter", "parameter": "setpoint"}],
+					"actions": [{"kind": "write", "datapoint": "heat.target", "value": {"kind": "parameter", "id": "setpoint"}}]
+				}
+			]
+		},
+		{
+			"id": "guard",
+			"name": "Guard",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "room.temp"}],
+					"condition": {"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "room.temp"}, "right": {"kind": "binary", "op": "+", "left": {"kind": "datapoint", "name": "rule/heat/setpoint"}, "right": {"kind": "literal", "type": "real", "value": 2.0}}},
+					"actions": [{"kind": "write", "datapoint": "fan", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "rule/heat/setpoint"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["setpoint now ", {"kind": "datapoint", "name": "rule/heat/setpoint"}]}]
+				},
+				{
+					"triggers": [{"kind": "schedule", "schedule": "reset"}],
+					"actions": [{"kind": "write", "datapoint": "rule/heat/setpoint", "value": {"kind": "literal", "type": "real", "value": 20.0}}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "room.temp", "value": 22.0}},
+		{"at": 2000, "report": {"datapoint": "room.temp", "value": 24.0}},
+		{"at": 3000, "setParameter": {"rule": "heat", "parameter": "setpoint", "value": 23.0}},
+		{"at": 4000, "report": {"datapoint": "room.temp", "value": 24.5}},
+		{"at": 5000, "schedule": "reset"},
+		{"at": 6000, "report": {"datapoint": "room.temp", "value": 22.5}}
+	],
+	"end": 7000,
+	"expected": {
+		"commands": [
+			{"at": 2000, "rule": "guard", "datapoint": "fan", "value": true},
+			{"at": 3000, "rule": "heat", "datapoint": "heat.target", "value": 23.0},
+			{"at": 5000, "rule": "guard", "datapoint": "rule/heat/setpoint", "value": 20.0},
+			{"at": 5000, "rule": "heat", "datapoint": "heat.target", "value": 20.0},
+			{"at": 6000, "rule": "guard", "datapoint": "fan", "value": true}
+		],
+		"logs": [
+			{"at": 3000, "rule": "guard", "code": "log", "level": "info", "message": "setpoint now 23"},
+			{"at": 5000, "rule": "guard", "code": "log", "level": "info", "message": "setpoint now 20"}
+		],
+		"final": {"parameters": {"heat/setpoint": 20.0}, "datapoints": {"rule/heat/setpoint": 20.0}, "persisted": {"heat/setpoint": 20.0}}
+	}
+}

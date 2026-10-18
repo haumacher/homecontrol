@@ -1,0 +1,67 @@
+{
+	"title": "The enable switch as a datapoint: a command disables and enables the rule, another rule follows it, a fixed switch is not writable",
+	"description": "rule/auto/enabled is a boolean datapoint. The command at 1000 disables auto (stored as an override); the motion at 2000 does nothing; the command at 3000 enables it again (the default: the override goes) and starts it with the reason enable. panel mirrors the switch on a status LED, also for the API's change at 5000. The switch of fixed is not adjustable: its datapoint is not writable.",
+	"datapoints": [{"name": "m.motion", "type": "boolean"}, {"name": "m.light", "type": "boolean"}, {"name": "status.led", "type": "boolean"}],
+	"schedules": ["never"],
+	"rules": [
+		{
+			"id": "auto",
+			"name": "Auto light",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "m.motion", "on": "update"}],
+					"actions": [{"kind": "write", "datapoint": "m.light", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				},
+				{
+					"triggers": [{"kind": "start", "reasons": ["enable"]}],
+					"actions": [{"kind": "log", "level": "info", "message": ["enabled again"]}]
+				}
+			]
+		},
+		{
+			"id": "fixed",
+			"name": "Fixed",
+			"enabledAdjustable": false,
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "never"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["never"]}]
+				}
+			]
+		},
+		{
+			"id": "panel",
+			"name": "Panel",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "rule/auto/enabled"}],
+					"actions": [{"kind": "write", "datapoint": "status.led", "value": {"kind": "datapoint", "name": "rule/auto/enabled"}}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "command": {"datapoint": "rule/auto/enabled", "value": false}},
+		{"at": 1000, "check": {"parameters": {"auto/enabled": false}, "persisted": {"auto/enabled": false}}},
+		{"at": 2000, "report": {"datapoint": "m.motion", "value": true}},
+		{"at": 3000, "command": {"datapoint": "rule/auto/enabled", "value": true}},
+		{"at": 4000, "command": {"datapoint": "rule/fixed/enabled", "value": false, "refused": true}},
+		{"at": 5000, "setParameter": {"rule": "auto", "parameter": "enabled", "value": false}}
+	],
+	"end": 6000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "panel", "datapoint": "status.led", "value": false},
+			{"at": 3000, "rule": "panel", "datapoint": "status.led", "value": true},
+			{"at": 5000, "rule": "panel", "datapoint": "status.led", "value": false}
+		],
+		"logs": [
+			{"at": 3000, "rule": "auto", "code": "log", "level": "info", "message": "enabled again"}
+		],
+		"final": {
+			"datapoints": {"rule/auto/enabled": false, "rule/fixed/enabled": true, "m.light": null},
+			"parameters": {"auto/enabled": false, "fixed/enabled": true},
+			"persisted": {"auto/enabled": false}
+		}
+	}
+}

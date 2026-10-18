@@ -1,0 +1,44 @@
+{
+	"title": "The silence trigger: fires once when a datapoint stays without an update for the period; each update re-arms it; a stale report is no sign of life",
+	"description": "The period is 10 minutes, counted from the last update (the initial value at 0). The report at 300000 re-arms it to 900000; the stale report at 500000 does not. After firing at 900000 the trigger waits for the next update: the following 800000 ms without one fire nothing. The report at 1700000 ends the silence (the other reaction clears the alarm) and re-arms it to 2300000, after the end.",
+	"datapoints": [{"name": "sensor.temp", "type": "real"}, {"name": "alarm", "type": "boolean"}],
+	"initial": {"sensor.temp": 20.0, "alarm": false},
+	"rules": [
+		{
+			"id": "watch",
+			"name": "Watch the sensor",
+			"reactions": [
+				{
+					"triggers": [{"kind": "silence", "datapoint": "sensor.temp", "after": {"kind": "literal", "type": "duration", "value": 600000}}],
+					"actions": [
+						{"kind": "write", "datapoint": "alarm", "value": {"kind": "literal", "type": "boolean", "value": true}},
+						{"kind": "log", "level": "warning", "message": ["sensor silent"]}
+					]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "sensor.temp", "on": "update", "origin": "report"}],
+					"condition": {"kind": "datapoint", "name": "alarm"},
+					"actions": [
+						{"kind": "write", "datapoint": "alarm", "value": {"kind": "literal", "type": "boolean", "value": false}}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 300000, "report": {"datapoint": "sensor.temp", "value": 20.5}},
+		{"at": 500000, "stale": "sensor.temp"},
+		{"at": 1700000, "report": {"datapoint": "sensor.temp", "value": 21.0}}
+	],
+	"end": 2000000,
+	"expected": {
+		"commands": [
+			{"at": 900000, "rule": "watch", "datapoint": "alarm", "value": true},
+			{"at": 1700000, "rule": "watch", "datapoint": "alarm", "value": false}
+		],
+		"logs": [
+			{"at": 900000, "rule": "watch", "code": "log", "level": "warning", "message": "sensor silent"}
+		],
+		"final": {"datapoints": {"alarm": false}}
+	}
+}

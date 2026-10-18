@@ -77,7 +77,11 @@ identifier     = ( letter | "_" ) , { letter | digit | "_" } ;           (* lexi
 datapoint name = identifier , { "." , ( letter | digit | "_" ) , { letter | digit | "_" } } ;
                                                                            (* lexical; a datapoint name
                                                                               that does not match is
-                                                                              written as a string *)
+                                                                              written as a string:
+                                                                              the datapoint of another
+                                                                              rule's parameter is
+                                                                              @"rule/heat/setpoint"
+                                                                              (spec/rules.md 8.6) *)
 
 integer literal = digit , { digit } ;                                      (* lexical; no sign; at most
                                                                               9007199254740991 *)

@@ -207,3 +207,35 @@ TEST_CASE("MQTT probe: mqtt.password is a write-only setting of the web API, mqt
 		}
 	}
 }
+
+TEST_CASE("MQTT probe: a rule parameter's datapoint has a state and takes /set as a parameter change") {
+	ServiceFixture f;
+	std::string text = kImage;
+	size_t at = text.find(",\n \"mqtt\"");
+	REQUIRE(at != std::string::npos);
+	text.insert(at, R"(,
+ "rules": [{"id": "hall", "name": "Hall", "parameters": [{"id": "level", "label": "Level", "type": "integer", "default": 2,
+   "min": 0, "max": 5}], "reactions": [{"triggers": [{"kind": "parameter", "parameter": "level"}],
+   "actions": [{"kind": "write", "datapoint": "hall.light", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}])");
+	REQUIRE_MESSAGE(f.image.load(text.data(), text.size(), hc::image::Source::api, true), f.refusals());
+	f.run();
+	f.client.accept();
+	f.run();
+	REQUIRE(f.mqtt.state() == hc::MqttState::connected);
+	auto states = f.client.to("probe/house/dp/rule%2Fhall%2Flevel/state");
+	REQUIRE_FALSE(states.empty());
+	CHECK(states.back().payload.find("\"value\":2") != std::string::npos);
+	CHECK_FALSE(f.client.to("probe/house/dp/rule%2Fhall%2Fenabled/state").empty());
+	// /set: the parameter changes, its trigger fires, the new value is the state.
+	f.client.deliver("probe/house/dp/rule%2Fhall%2Flevel/set", "4");
+	f.run();
+	CHECK(f.image.engine().parameter_value(0, 1).u.i == 4);
+	CHECK(f.model.find("hall.light")->value() == Value::of_bool(true));
+	states = f.client.to("probe/house/dp/rule%2Fhall%2Flevel/state");
+	CHECK(states.back().payload.find("\"value\":4") != std::string::npos);
+	// Outside min..max: refused, published as an error.
+	f.client.deliver("probe/house/dp/rule%2Fhall%2Flevel/set", "9");
+	f.run();
+	CHECK(f.image.engine().parameter_value(0, 1).u.i == 4);
+	CHECK_FALSE(f.client.to("probe/house/dp/rule%2Fhall%2Flevel/error").empty());
+}

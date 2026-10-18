@@ -1,0 +1,48 @@
+{
+	"title": "A read the technology refuses: readRefused once per action until a read is accepted; later actions still run",
+	"description": "The technology owning hall.temp refuses every read (a disconnected gateway, a device that has not joined). The refusal is logged at the first attempt only; the other read and the write after it run every time.",
+	"datapoints": [
+		{"name": "hall.temp", "type": "real", "refuseReads": true},
+		{"name": "out.temp", "type": "real"},
+		{"name": "polled", "type": "boolean"}
+	],
+	"schedules": ["poll"],
+	"rules": [
+		{
+			"id": "poll",
+			"name": "Poll",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "poll"}],
+					"actions": [
+						{"kind": "read", "datapoint": "hall.temp"},
+						{"kind": "read", "datapoint": "out.temp"},
+						{"kind": "write", "datapoint": "polled", "value": {"kind": "literal", "type": "boolean", "value": true}}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "schedule": "poll"},
+		{"at": 2000, "schedule": "poll"},
+		{"at": 3000, "schedule": "poll"}
+	],
+	"end": 4000,
+	"expected": {
+		"reads": [
+			{"at": 1000, "rule": "poll", "datapoint": "out.temp"},
+			{"at": 2000, "rule": "poll", "datapoint": "out.temp"},
+			{"at": 3000, "rule": "poll", "datapoint": "out.temp"}
+		],
+		"commands": [
+			{"at": 1000, "rule": "poll", "datapoint": "polled", "value": true},
+			{"at": 2000, "rule": "poll", "datapoint": "polled", "value": true},
+			{"at": 3000, "rule": "poll", "datapoint": "polled", "value": true}
+		],
+		"logs": [
+			{"at": 1000, "rule": "poll", "code": "readRefused"}
+		],
+		"final": {"firings": {"poll": 3}}
+	}
+}

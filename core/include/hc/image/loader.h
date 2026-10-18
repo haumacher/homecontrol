@@ -67,6 +67,7 @@ enum class Binding : uint8_t {
 	schedule,    ///< A schedule entry's output.
 	time_master, ///< The KNX time master (the datapoints its `knx.timeMaster` implies).
 	zigbee,      ///< The Zigbee adapter (its `zigbee` member, spec/zigbee.md), through the provider interface.
+	rule,        ///< The rule engine: a datapoint mirroring a rule parameter (`rule/<ruleId>/<parameterId>`, spec/rules.md 8.6).
 };
 
 /// A validated image, ready to apply: the specs the components take, in tables of the arena. The
@@ -120,6 +121,11 @@ struct Plan {
 	/// Whether `datapoint` is the `output` of a schedule entry: the scheduler owns it, a rule may
 	/// not write it (spec/rules.md 10.1, notWritable).
 	bool schedule_owns_output(const char* datapoint) const;
+	/// Whether a technology that can fetch values owns `datapoint`: a KNX or Zigbee binding, or a
+	/// binding of an `external` source. False for an application value, a schedule output, the time
+	/// master's and the rule parameters' datapoints (a rule's `read` of them is refused at load,
+	/// spec/rules.md 10.1 notReadable); true for a name that is not the image's.
+	bool technology_reads(const char* datapoint) const;
 };
 
 /// Parses and validates a runtime image (spec/runtime-image.md) into a Plan, without changing

@@ -402,6 +402,39 @@ TEST_CASE("WebApi.Model of the example house: rooms, functions with roles, label
 	CHECK(datapoints[4]["binding"]["knx"]["dpt"].text == "9.001");
 	CHECK(datapoints[1]["label"]["en"].text == "Living room light (state)");
 	CHECK(datapoints[13]["technology"].text == "scheduler");
+	// The rule parameters' datapoints (spec/rules.md 8.6): the parameter's label and unit, the enable
+	// switch the rule's name, the technology `rules`.
+	CHECK(datapoints[17]["name"].text == "rule/hall-presence-light/enabled");
+	CHECK(datapoints[17]["technology"].text == "rules");
+	CHECK(datapoints[17]["label"].text == "Hall light by presence");
+	CHECK(datapoints[17]["parameter"]["rule"].text == "hall-presence-light");
+	CHECK(datapoints[17]["parameter"]["parameter"].text == "enabled");
+	CHECK(datapoints[17]["writable"].boolean);
+	CHECK(datapoints[18]["label"].text == "Switch-off delay");
+	CHECK(datapoints[18]["type"].text == "unsigned");
+	CHECK(datapoints[18]["unit"].text == "ms");
+	CHECK(datapoints[19]["unit"].text == "lx");
+	CHECK(datapoints[19]["parameter"]["parameter"].text == "darkBelow");
+	CHECK(datapoints[4]["parameter"].kind == hc_test::Json::Kind::null);
+	// Their values and a command, which sets the parameter as PUT /api/rules/.../parameters/... does.
+	auto value = f.get("/api/datapoints/19", f.cookie);
+	REQUIRE(value.status == 200);
+	CHECK(value.json["technology"].text == "rules");
+	CHECK(value.json["value"].number == 80.0);
+	CHECK(value.json["quality"].text == "good");
+	auto command = f.request(HttpMethod::post, "/api/datapoints/19/command", "{\"value\": 120.5}", f.cookie);
+	REQUIRE_MESSAGE(command.status == 200, command.body);
+	auto rules = f.get("/api/rules", f.cookie);
+	REQUIRE(rules.status == 200);
+	CHECK(rules.json["rules"].items[0]["parameters"].items[1]["value"].number == 120.5);
+	CHECK(rules.json["rules"].items[0]["parameters"].items[1]["overridden"].boolean);
+	CHECK(f.request(HttpMethod::post, "/api/datapoints/19/command", "{\"value\": 5000}", f.cookie).status != 200);
+	CHECK(f.get("/api/datapoints/19", f.cookie).json["value"].number == 120.5);
+	auto put = f.request(HttpMethod::put, "/api/rules/hall-presence-light/parameters/darkBelow", "{\"value\": 60}", f.cookie);
+	REQUIRE_MESSAGE(put.status == 200, put.body);
+	f.controller.run_once();
+	CHECK(f.get("/api/datapoints/19", f.cookie).json["value"].number == 60.0);
+	r = f.get("/api/model", f.cookie);
 
 	// Paging: one index space over locations, functions, datapoints.
 	r = f.get("/api/model?from=5", f.cookie);

@@ -677,3 +677,52 @@ TEST_CASE("DatapointModel.PublishRefusals") {
 	CHECK(f.model.publish(f.owner, 0, Value::of_time(hc::TimeOfDay{1, 1, 1, 1})) == DatapointStatus::ok);
 	CHECK(f.capture.sink.contains("refusing publish from a datapoint listener"));
 }
+
+namespace {
+
+/// A technology that records the reads it is asked for and accepts them unless `accept` is false.
+struct ReadingTechnology : hc::Technology {
+	explicit ReadingTechnology(DatapointModel& model_) : model(model_) {}
+	const char* name() const override { return "reading"; }
+	bool command(const Datapoint&, const Value&) override { return true; }
+	bool read(const Datapoint& datapoint) override {
+		reads.push_back(datapoint.id());
+		// The model refuses re-entry while the technology handles the read (the answer comes later).
+		reentry = model.report(*this, datapoint.id(), Value::of_real(1));
+		return accept;
+	}
+	DatapointModel& model;
+	std::vector<uint16_t> reads;
+	bool accept = true;
+	DatapointStatus reentry = DatapointStatus::ok;
+};
+
+} // namespace
+
+TEST_CASE("DatapointModel.ReadGoesToTheOwningTechnology") {
+	Fixture f;
+	ReadingTechnology reading(f.model);
+	REQUIRE(f.model.bind(4, reading) == DatapointStatus::ok);
+	CHECK(f.model.read(4) == DatapointStatus::ok);
+	CHECK(reading.reads == std::vector<uint16_t>{4});
+	CHECK(reading.reentry == DatapointStatus::busy);
+	CHECK(f.model.get(4)->quality() == Quality::unknown); // the read itself changes nothing
+	reading.accept = false;
+	CHECK(f.model.read(4) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("read of 'Status.Text' refused by reading"));
+	// The default of a technology: no reads.
+	CHECK(f.model.read(0) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("read of 'Kitchen.Light' refused by loopback"));
+	// No technology, no datapoint.
+	CHECK(f.model.read(3) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("refusing read of 'Rule.Enabled': no technology owns it"));
+	CHECK(f.model.read(99) == DatapointStatus::unknown_id);
+	// Not from within a listener.
+	RecordingListener listener("l");
+	DatapointStatus from_listener = DatapointStatus::ok;
+	listener.action = [&](const DatapointUpdate&) { from_listener = f.model.read(4); };
+	f.model.add_listener(listener);
+	CHECK(f.knx.receive(0, Value::of_bool(true)) == DatapointStatus::ok);
+	CHECK(from_listener == DatapointStatus::busy);
+	CHECK(reading.reads.size() == 2);
+}

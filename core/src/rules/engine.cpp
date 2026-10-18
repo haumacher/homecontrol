@@ -22,9 +22,9 @@ namespace {
 constexpr const char* kTag = "hc.rule";
 
 constexpr const char* kLogCodeNames[] = {"log", "conditionNoValue", "valueNoValue", "evalError", "writeRefused",
-	"timerRefused", "parameterRefused", "parameterReset", "stateReset", "loopGuard", "queueOverflow"};
+	"timerRefused", "parameterRefused", "parameterReset", "stateReset", "loopGuard", "queueOverflow", "readRefused"};
 
-enum EventKind : uint8_t { kDatapoint, kSchedule, kTimer, kStart, kParameter, kStartAll };
+enum EventKind : uint8_t { kDatapoint, kSchedule, kTimer, kStart, kParameter, kStartAll, kSilence };
 
 /// Event flags.
 constexpr uint8_t kChanged = 0x01;   ///< datapoint: value or quality changed.
@@ -37,6 +37,9 @@ constexpr uint8_t kMatchMemory = 0x04;
 constexpr uint8_t kMatched = 0x08;
 
 constexpr uint8_t kNoKind = 0xFF;
+
+/// Per-action flags.
+constexpr uint8_t kReadRefusedLogged = 0x01;
 
 uint8_t reason_flag(StartReason reason) {
 	switch (reason) {
@@ -191,6 +194,7 @@ struct Engine::RuleRuntime {
 struct Engine::ParamRuntime {
 	Val value;
 	bool overridden = false;
+	uint16_t datapoint = kNone; ///< The parameter datapoint bound to the engine (spec 8.6).
 };
 
 struct Engine::TimerRuntime {
@@ -205,6 +209,15 @@ struct Engine::ChangeRecord {
 	bool known = false;
 };
 
+struct Engine::SilenceRuntime {
+	uint64_t base = 0;     ///< Monotonic time the silent period counts from.
+	uint64_t deadline = 0;
+	uint32_t sequence = 0; ///< Arming order, for equal deadlines.
+	bool armed = false;
+	bool fired = false;    ///< Fired for this period: armed again by the next update.
+	bool refused_logged = false;
+};
+
 struct Engine::Runtime {
 	size_t bytes = 0;
 	RuleRuntime* rules = nullptr;
@@ -215,7 +228,9 @@ struct Engine::Runtime {
 	uint8_t* interest = nullptr; ///< Bit per datapoint id: referenced by a trigger or a match condition.
 	size_t interest_bits = 0;
 	uint16_t* matched = nullptr; ///< Match roots that matched the current event.
-	size_t rule_count = 0, param_count = 0, timer_count = 0;
+	SilenceRuntime* silences = nullptr;
+	uint8_t* action_flags = nullptr;
+	size_t rule_count = 0, param_count = 0, timer_count = 0, silence_count = 0;
 };
 
 struct Engine::Eval {
@@ -358,6 +373,8 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	size_t nodes = next.node_count();
 	size_t tracked = next.tracked_count();
 	size_t matches = next.match_count();
+	size_t silences = next.silence_count();
+	size_t actions = next.action_count();
 	size_t interest_bits = model_.size();
 	auto align = [](size_t n) { return (n + 7) & ~static_cast<size_t>(7); };
 	size_t offset = align(sizeof(Runtime));
@@ -371,6 +388,10 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	offset = align(offset + tracked * sizeof(ChangeRecord));
 	size_t o_matched = offset;
 	offset = align(offset + matches * sizeof(uint16_t));
+	size_t o_silences = offset;
+	offset = align(offset + silences * sizeof(SilenceRuntime));
+	size_t o_actions = offset;
+	offset = align(offset + actions);
 	size_t o_flags = offset;
 	offset = align(offset + nodes);
 	size_t o_interest = offset;
@@ -392,6 +413,9 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	rt->timers = reinterpret_cast<TimerRuntime*>(base + o_timers);
 	rt->changes = reinterpret_cast<ChangeRecord*>(base + o_changes);
 	rt->matched = reinterpret_cast<uint16_t*>(base + o_matched);
+	rt->silences = reinterpret_cast<SilenceRuntime*>(base + o_silences);
+	rt->action_flags = reinterpret_cast<uint8_t*>(base + o_actions);
+	rt->silence_count = silences;
 	rt->node_flags = reinterpret_cast<uint8_t*>(base + o_flags);
 	rt->interest = reinterpret_cast<uint8_t*>(base + o_interest);
 	rt->interest_bits = interest_bits;
@@ -409,6 +433,9 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	}
 	for (size_t i = 0; i < tracked; ++i) {
 		new (&rt->changes[i]) ChangeRecord();
+	}
+	for (size_t i = 0; i < silences; ++i) {
+		new (&rt->silences[i]) SilenceRuntime();
 	}
 
 	Runtime* old = runtime_;
@@ -451,7 +478,8 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 						nr.last_trigger_kind = kNoKind;
 					}
 				}
-				if (orr.last_action_kind == static_cast<uint8_t>(ActionKind::write)) {
+				if (orr.last_action_kind == static_cast<uint8_t>(ActionKind::write) ||
+					orr.last_action_kind == static_cast<uint8_t>(ActionKind::read)) {
 					nr.last_action_target = follow(orr.last_action_target, found);
 					if (!found) {
 						nr.last_action_kind = kNoKind;
@@ -466,6 +494,7 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 				nr.last_trigger_kind = kNoKind; // timer/parameter/schedule indices of the old set
 			}
 			if (orr.last_action_kind != kNoKind && orr.last_action_kind != static_cast<uint8_t>(ActionKind::write) &&
+				orr.last_action_kind != static_cast<uint8_t>(ActionKind::read) &&
 				orr.last_action_kind != static_cast<uint8_t>(ActionKind::log)) {
 				nr.last_action_kind = kNoKind;
 			}
@@ -644,6 +673,7 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	Keeper keeper{*this};
 	KeepOverrides<Keeper> visitor(keeper);
 	store_.prune(visitor);
+	bind_parameters();
 	if (observer_) {
 		for (size_t r = 0; r < set_.rule_count(); ++r) {
 			const Rule& rule = set_.rule(r);
@@ -730,6 +760,10 @@ void Engine::drain() {
 			}
 			end_cascade();
 			StartReason reason = event.flags == TriggerFlags::kBoot ? StartReason::boot : StartReason::image;
+			if (reason == StartReason::boot) {
+				boot_start_ms_ = clock_.monotonic_ms();
+			}
+			start_silences(); // after the start cascades, overdue ones fire (spec 7.11)
 			for (size_t r = 0; r < set_.rule_count(); ++r) {
 				begin_cascade();
 				run_start(r, reason);
@@ -758,18 +792,42 @@ void Engine::process_due_timers() {
 	for (;;) {
 		uint64_t now = clock_.monotonic_ms();
 		size_t best = SIZE_MAX;
+		uint64_t best_deadline = 0;
+		uint32_t best_sequence = 0;
 		for (size_t i = 0; i < runtime_->timer_count; ++i) {
 			const TimerRuntime& t = runtime_->timers[i];
 			if (!t.running || t.deadline > now) {
 				continue;
 			}
-			if (best == SIZE_MAX || t.deadline < runtime_->timers[best].deadline ||
-				(t.deadline == runtime_->timers[best].deadline && t.sequence < runtime_->timers[best].sequence)) {
+			if (best == SIZE_MAX || t.deadline < best_deadline || (t.deadline == best_deadline && t.sequence < best_sequence)) {
 				best = i;
+				best_deadline = t.deadline;
+				best_sequence = t.sequence;
+			}
+		}
+		// Silence triggers take part in the same order (spec 7.11): a best index at or beyond the
+		// timer count names a silence slot.
+		for (size_t i = 0; i < runtime_->silence_count; ++i) {
+			const SilenceRuntime& s = runtime_->silences[i];
+			if (!s.armed || s.deadline > now) {
+				continue;
+			}
+			if (best == SIZE_MAX || s.deadline < best_deadline || (s.deadline == best_deadline && s.sequence < best_sequence)) {
+				best = runtime_->timer_count + i;
+				best_deadline = s.deadline;
+				best_sequence = s.sequence;
 			}
 		}
 		if (best == SIZE_MAX) {
 			return;
+		}
+		if (best >= runtime_->timer_count) {
+			size_t index = best - runtime_->timer_count;
+			SilenceRuntime& s = runtime_->silences[index];
+			s.armed = false;
+			s.fired = true; // once per silent period
+			run_cascade(Event{kSilence, 0, static_cast<uint16_t>(index), 0, 0});
+			continue;
 		}
 		TimerRuntime& t = runtime_->timers[best];
 		t.running = false; // stopped before its event is processed (7.8)
@@ -786,6 +844,11 @@ void Engine::reschedule() {
 		for (size_t i = 0; i < runtime_->timer_count; ++i) {
 			if (runtime_->timers[i].running && runtime_->timers[i].deadline < earliest) {
 				earliest = runtime_->timers[i].deadline;
+			}
+		}
+		for (size_t i = 0; i < runtime_->silence_count; ++i) {
+			if (runtime_->silences[i].armed && runtime_->silences[i].deadline < earliest) {
+				earliest = runtime_->silences[i].deadline;
 			}
 		}
 	}
@@ -851,6 +914,26 @@ void Engine::datapoint_updated(const DatapointUpdate& update) {
 		if (index != kNone) {
 			runtime_->changes[index].time = clock_.monotonic_ms();
 			runtime_->changes[index].known = true;
+		}
+	}
+	if (quiet_) {
+		return; // the parameter datapoints take their values at load: not an event (spec 8.6)
+	}
+	if (update.origin != UpdateOrigin::stale && runtime_->silence_count > 0) {
+		// A sign of life re-arms the silence triggers of the datapoint (spec 7.11); a stale report is none.
+		bool armed = false;
+		uint64_t now = clock_.monotonic_ms();
+		for (size_t i = 0; i < runtime_->silence_count; ++i) {
+			if (set_.silence(i).datapoint == id) {
+				SilenceRuntime& s = runtime_->silences[i];
+				s.base = now;
+				s.fired = false;
+				arm_silence(i, now);
+				armed = true;
+			}
+		}
+		if (armed && !in_cascade_) {
+			reschedule();
 		}
 	}
 	if (id >= runtime_->interest_bits || (runtime_->interest[id / 8] & (1u << (id % 8))) == 0) {
@@ -962,8 +1045,11 @@ ParameterStatus Engine::reset_parameter(const char* rule, const char* parameter,
 		if (observer_) {
 			observer_->parameter_changed(set_.str(rr.id), set_.str(d.id), pr.value);
 		}
-		if (p == 0 && !pr.value.u.b) {
-			stop_timers(static_cast<size_t>(r));
+		publish_parameter(static_cast<size_t>(r), static_cast<size_t>(p));
+		if (p == 0) {
+			enable_changed(static_cast<size_t>(r), pr.value.u.b);
+		} else {
+			rearm_silences(static_cast<size_t>(r));
 		}
 		if (push_inbound(Event{kParameter, 0, static_cast<uint16_t>(r), static_cast<uint16_t>(p), 0})) {
 			post_drain();
@@ -972,7 +1058,7 @@ ParameterStatus Engine::reset_parameter(const char* rule, const char* parameter,
 	return ParameterStatus::ok;
 }
 
-void Engine::apply_parameter(size_t rule, size_t index, const Val& value, bool derived) {
+void Engine::apply_parameter(size_t rule, size_t index, const Val& value, bool derived, bool publish) {
 	const Rule& r = set_.rule(rule);
 	const Parameter& d = set_.parameter(r.first_parameter + index);
 	ParamRuntime& pr = runtime_->params[r.first_parameter + index];
@@ -997,14 +1083,21 @@ void Engine::apply_parameter(size_t rule, size_t index, const Val& value, bool d
 	if (observer_) {
 		observer_->parameter_changed(set_.str(r.id), set_.str(d.id), value);
 	}
-	if (index == 0 && !value.u.b) {
-		stop_timers(rule); // disabling cancels the running timers (7.9)
+	if (index == 0) {
+		enable_changed(rule, value.u.b); // disabling cancels the running timers (7.9)
+	} else {
+		rearm_silences(rule); // a duration may depend on the parameter
 	}
 	Event event{kParameter, 0, static_cast<uint16_t>(rule), static_cast<uint16_t>(index), 0};
 	if (derived) {
 		push_cascade(event, rule);
 	} else if (push_inbound(event)) {
 		post_drain();
+	}
+	// The datapoint's update follows the parameter's event (spec 8.6), as for a command, where the
+	// model stores the value after the rule engine took it.
+	if (publish) {
+		publish_parameter(rule, index);
 	}
 }
 
@@ -1062,9 +1155,224 @@ void Engine::stop_timers(size_t rule) {
 	for (size_t t = 0; t < r.timer_count; ++t) {
 		runtime_->timers[r.first_timer + t].running = false;
 	}
+	for (size_t i = 0; i < runtime_->silence_count; ++i) {
+		if (set_.silence(i).rule == rule) {
+			runtime_->silences[i].armed = false;
+		}
+	}
 	if (!in_cascade_) {
 		reschedule();
 	}
+}
+
+void Engine::enable_changed(size_t rule, bool enabled) {
+	if (!enabled) {
+		stop_timers(rule);
+		return;
+	}
+	// Enabling arms the silence triggers anew: the period counts from the later of the last update
+	// and the enabling (spec 7.11).
+	uint64_t now = clock_.monotonic_ms();
+	for (size_t i = 0; i < runtime_->silence_count; ++i) {
+		if (set_.silence(i).rule == rule) {
+			SilenceRuntime& s = runtime_->silences[i];
+			s.base = s.base > now ? s.base : now;
+			s.fired = false;
+			arm_silence(i, s.base);
+		}
+	}
+	if (!in_cascade_) {
+		reschedule();
+	}
+}
+
+// ------------------------------------------------------------------------------------------
+// Silence triggers
+
+void Engine::arm_silence(size_t index, uint64_t base) {
+	const SilenceRef& ref = set_.silence(index);
+	SilenceRuntime& s = runtime_->silences[index];
+	s.armed = false;
+	if (!enabled(ref.rule)) {
+		return;
+	}
+	bool error = false;
+	Val d = evaluate(ref.after, ref.rule, error);
+	const Datapoint* dp = model_.get(ref.datapoint);
+	const char* name = dp ? dp->name() : "?";
+	if (!d.has() || d.u.i < Limits::kTimerMinMs || d.u.i > Limits::kTimerMaxMs) {
+		if (!s.refused_logged) {
+			s.refused_logged = true;
+			char text[48];
+			if (d.has()) {
+				duration_text(d.u.i, text, sizeof(text));
+			} else {
+				std::snprintf(text, sizeof(text), "none");
+			}
+			log_rule(ref.rule, LogCode::timer_refused, LogLevel::error, "silence duration has no value or lies outside 100ms..30d",
+				"silence trigger of '%s' not armed: the duration %s is not in 100ms..30d", name, text);
+		}
+		return;
+	}
+	s.refused_logged = false;
+	s.armed = true;
+	s.deadline = base + static_cast<uint64_t>(d.u.i);
+	s.sequence = ++timer_sequence_;
+}
+
+void Engine::rearm_silences(size_t rule) {
+	bool any = false;
+	for (size_t i = 0; i < runtime_->silence_count; ++i) {
+		SilenceRuntime& s = runtime_->silences[i];
+		if (set_.silence(i).rule == rule && !s.fired) {
+			arm_silence(i, s.base);
+			any = true;
+		}
+	}
+	if (any && !in_cascade_) {
+		reschedule();
+	}
+}
+
+void Engine::start_silences() {
+	for (size_t i = 0; i < runtime_->silence_count; ++i) {
+		const Datapoint* dp = model_.get(set_.silence(i).datapoint);
+		uint64_t updated = dp != nullptr ? dp->updated_ms() : 0;
+		SilenceRuntime& s = runtime_->silences[i];
+		s.base = updated > boot_start_ms_ ? updated : boot_start_ms_;
+		s.fired = false;
+		arm_silence(i, s.base);
+	}
+}
+
+// ------------------------------------------------------------------------------------------
+// Parameters as datapoints
+
+void Engine::bind_parameters() {
+	if (runtime_ == nullptr) {
+		return;
+	}
+	size_t mirrored = 0;
+	size_t missing = 0;
+	quiet_ = true;
+	for (size_t r = 0; r < set_.rule_count(); ++r) {
+		const Rule& rule = set_.rule(r);
+		for (size_t p = 0; p < rule.parameter_count; ++p) {
+			const Parameter& decl = set_.parameter(rule.first_parameter + p);
+			ParamRuntime& pr = runtime_->params[rule.first_parameter + p];
+			pr.datapoint = kNone;
+			char name[Datapoint::kMaxName + 1];
+			if (!parameter_datapoint_name(set_.str(rule.id), set_.str(decl.id), name, sizeof(name))) {
+				continue;
+			}
+			const Datapoint* dp = model_.find(name);
+			if (dp == nullptr) {
+				++missing;
+				continue;
+			}
+			if (dp->type() != parameter_datapoint_type(decl.type)) {
+				Log::error(kTag, "datapoint '%s' is %s, the parameter needs %s: not mirrored", name,
+					value_type_name(dp->type()), value_type_name(parameter_datapoint_type(decl.type)));
+				continue;
+			}
+			if (model_.bind(dp->id(), technology_) != DatapointStatus::ok) {
+				Log::error(kTag, "datapoint '%s' is owned by another technology: the parameter is not mirrored", name);
+				continue;
+			}
+			pr.datapoint = dp->id();
+			++mirrored;
+			publish_parameter(r, p);
+		}
+	}
+	quiet_ = false;
+	if (missing > 0) {
+		Log::debug(kTag, "%u parameter(s) without a datapoint in the model: not mirrored", static_cast<unsigned>(missing));
+	}
+	(void)mirrored;
+}
+
+bool Engine::parameter_of(uint16_t datapoint, size_t& rule, size_t& index) const {
+	if (runtime_ == nullptr || datapoint == kNone) {
+		return false;
+	}
+	for (size_t r = 0; r < set_.rule_count(); ++r) {
+		const Rule& rr = set_.rule(r);
+		for (size_t p = 0; p < rr.parameter_count; ++p) {
+			if (runtime_->params[rr.first_parameter + p].datapoint == datapoint) {
+				rule = r;
+				index = p;
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void Engine::publish_parameter(size_t rule, size_t index) {
+	const Rule& r = set_.rule(rule);
+	const ParamRuntime& pr = runtime_->params[r.first_parameter + index];
+	const Datapoint* dp = pr.datapoint != kNone ? model_.get(pr.datapoint) : nullptr;
+	if (dp == nullptr) {
+		return;
+	}
+	std::optional<Value> value;
+	if (pr.value.type == Type::duration) {
+		if (pr.value.u.i >= 0 && pr.value.u.i <= static_cast<int64_t>(UINT32_MAX)) {
+			value = Value::of_unsigned(static_cast<uint32_t>(pr.value.u.i));
+		}
+	} else {
+		value = convert_for_datapoint(pr.value, dp->type());
+	}
+	if (!value) {
+		char text[64];
+		format_val(pr.value, text, sizeof(text));
+		Log::error(kTag, "%s: the value %s does not fit the %s datapoint; it keeps its previous value", dp->name(), text,
+			value_type_name(dp->type()));
+		return;
+	}
+	if (dp->quality() == Quality::good && dp->value() == *value) {
+		return;
+	}
+	DatapointStatus status = model_.publish(technology_, pr.datapoint, *value);
+	if (status != DatapointStatus::ok) {
+		Log::error(kTag, "%s: the parameter's value was not published: %s", dp->name(), datapoint_status_name(status));
+	}
+}
+
+bool Engine::parameter_command(const Datapoint& datapoint, const Value& value) {
+	size_t r = 0, p = 0;
+	if (!parameter_of(datapoint.id(), r, p)) {
+		Log::error(kTag, "command to '%s' refused: no rule parameter behind it in the loaded rules", datapoint.name());
+		return false;
+	}
+	const Rule& rule = set_.rule(r);
+	const Parameter& d = set_.parameter(rule.first_parameter + p);
+	const char* rule_id = set_.str(rule.id);
+	const char* param_id = set_.str(d.id);
+	const char* reason = nullptr;
+	Val v;
+	if (!d.adjustable) {
+		reason = "not adjustable";
+	} else if (d.type == Type::duration) {
+		if (value.type() == ValueType::unsigned_int) {
+			v = Val::of_duration(value.as_unsigned());
+		} else {
+			reason = "not a value of the parameter's type";
+		}
+	} else if (!convert_for_parameter(val_from_datapoint(value), d.type, v)) {
+		reason = "not a value of the parameter's type";
+	}
+	if (reason == nullptr && !parameter_valid(d, v)) {
+		reason = d.choice_count > 0 ? "not one of the choices" : "outside min..max";
+	}
+	if (reason != nullptr) {
+		refuse_parameter(rule_id, param_id, reason);
+		return false;
+	}
+	// The model stores the commanded value itself: no publish. Within a cascade (a rule's write) the
+	// parameter change is a derived event.
+	apply_parameter(r, p, v, in_cascade_, false);
+	return true;
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1154,6 +1462,7 @@ bool Engine::trigger_matches(const Trigger& t, size_t rule, const Event& e) cons
 		case TriggerKind::timer: return e.kind == kTimer && e.a == rule && e.b == t.ref;
 		case TriggerKind::start: return e.kind == kStart && e.a == rule && (t.flags & e.flags) != 0;
 		case TriggerKind::parameter: return e.kind == kParameter && e.a == rule && e.b == t.ref;
+		case TriggerKind::silence: return e.kind == kSilence && e.a == t.ref;
 	}
 	return false;
 }
@@ -1333,7 +1642,39 @@ void Engine::run_action(size_t rule, const Action& action) {
 		case ActionKind::cancel_timer: action_timer(rule, action); break;
 		case ActionKind::set_parameter: action_set_parameter(rule, action); break;
 		case ActionKind::log: action_log(rule, action); break;
+		case ActionKind::read: action_read(rule, action); break;
 	}
+}
+
+void Engine::action_read(size_t rule, const Action& action) {
+	uint8_t& flags = runtime_->action_flags[static_cast<size_t>(&action - &set_.action(0))];
+	const Datapoint* dp = model_.get(action.target);
+	const char* reason = nullptr;
+	if (dp == nullptr) {
+		reason = "the datapoint is not in the model";
+	} else if (dp->technology() == nullptr) {
+		reason = "no technology owns it";
+	} else {
+		DatapointStatus status = model_.read(action.target);
+		if (status == DatapointStatus::refused) {
+			reason = "the technology refused (its log says why)";
+		} else if (status != DatapointStatus::ok) {
+			reason = datapoint_status_name(status);
+		}
+	}
+	if (reason != nullptr) {
+		if ((flags & kReadRefusedLogged) == 0) {
+			flags |= kReadRefusedLogged;
+			log_rule(rule, LogCode::read_refused, LogLevel::warn, reason, "read of '%s' refused: %s", dp ? dp->name() : "?",
+				reason);
+		}
+		return;
+	}
+	flags = static_cast<uint8_t>(flags & ~kReadRefusedLogged);
+	if (observer_) {
+		observer_->rule_read(set_.str(set_.rule(rule).id), *dp);
+	}
+	record_action(rule, ActionKind::read, action.target, Val::none());
 }
 
 void Engine::record_action(size_t rule, ActionKind kind, uint16_t target, const Val& value) {
@@ -2198,6 +2539,13 @@ bool Engine::diagnostics(size_t rule, RuleDiagnostics& out) const {
 				std::snprintf(out.last_trigger, sizeof(out.last_trigger), "parameter %s",
 					set_.str(set_.parameter(r.first_parameter + rr.last_trigger_ref).id));
 				break;
+			case TriggerKind::silence: {
+				const Datapoint* dp = rr.last_trigger_ref < set_.silence_count()
+					? model_.get(set_.silence(rr.last_trigger_ref).datapoint)
+					: nullptr;
+				std::snprintf(out.last_trigger, sizeof(out.last_trigger), "silence %s", dp ? dp->name() : "?");
+				break;
+			}
 		}
 	}
 	if (rr.last_action_kind != kNoKind) {
@@ -2226,6 +2574,11 @@ bool Engine::diagnostics(size_t rule, RuleDiagnostics& out) const {
 					set_.str(set_.parameter(r.first_parameter + rr.last_action_target).id), value);
 				break;
 			case ActionKind::log: std::snprintf(out.last_action, sizeof(out.last_action), "log"); break;
+			case ActionKind::read: {
+				const Datapoint* dp = model_.get(rr.last_action_target);
+				std::snprintf(out.last_action, sizeof(out.last_action), "read %s", dp ? dp->name() : "?");
+				break;
+			}
 		}
 	}
 	if (rr.has_error) {
@@ -2246,6 +2599,8 @@ EngineMemory Engine::memory() const {
 	m.per_timer = sizeof(TimerRuntime);
 	m.per_node = 1;
 	m.per_tracked = sizeof(ChangeRecord);
+	m.per_silence = sizeof(SilenceRuntime);
+	m.per_action = 1;
 	return m;
 }
 

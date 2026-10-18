@@ -109,12 +109,14 @@ A datapoint (doc/datapoints.md) in the API:
 
 ```json
 {"id": 0, "name": "Living room light", "type": "boolean", "flags": 3, "writable": true,
- "value": true, "quality": "good", "updated_ms": 51230}
+ "technology": "knx", "value": true, "quality": "good", "updated_ms": 51230}
 ```
 
 `type` is the value type's name (`boolean`, `unsigned`, `signed`, `real`, `enumeration`,
 `string`, `raw`, `time of day`, `date`, `date-time`, `controlled`, `color`; doc/datapoints.md);
-`flags` are the datapoint's flag bits; `quality` is `unknown` (no value yet), `good` or `stale`.
+`flags` are the datapoint's flag bits; `technology` the name of the technology that owns it
+(`knx`, `zigbee`, `external`, `scheduler`, `rules` for a rule parameter's datapoint, ...; `null`
+for an application value); `quality` is `unknown` (no value yet), `good` or `stale`.
 Values in JSON:
 
 | type | JSON |
@@ -145,7 +147,11 @@ One datapoint, 404 `dp.unknown_id`.
 Body `{"value": <JSON value>}`. Hands the value to the datapoint's technology: 200
 `{"ok": true, "datapoint": {...}}`. Refusals: 400 `dp.value_missing`, 404 `dp.unknown_id`, 409
 `dp.not_writable`, 422 `dp.wrong_type` (with the reason), 409 `dp.refused` (the technology
-refused; the log says why), 503 `dp.busy`.
+refused; the log says why), 503 `dp.busy`. A command to a rule parameter's datapoint
+(`rule/<ruleId>/<parameterId>`, spec/rules.md 8.6) sets the parameter as
+`PUT /api/rules/<rule>/parameters/<parameter>` does; a value the parameter refuses (range, choices)
+is 409 `dp.refused`, a parameter that is not adjustable 409 `dp.not_writable`. A duration
+parameter's datapoint takes milliseconds.
 
 ## Log
 
@@ -300,6 +306,11 @@ a client builds the dashboard without the image. Without an image: 200 `{"loaded
   `null` for an application value); `binding` the image's technology members verbatim (`knx`,
   `zigbee`, `virtual`); `history` whether it keeps a history ring. `label`, `unit` and `binding`
   are left out when absent.
+- The datapoints of the rule parameters (spec/rules.md 8.6, after the image's own) have the
+  technology `rules` and a member `"parameter": {"rule": "<ruleId>", "parameter": "<parameterId>"}`;
+  their `label` is the parameter's label (the rule's `name` for the enable switch `enabled`), their
+  `unit` the parameter's unit, `ms` for a duration. A client may show them with the rule's
+  controls of `/api/rules` instead of as separate datapoints.
 - `loaded_ms` is when the image was applied (with `source`: deployed when and how).
 - **Paging**: the entries share one index space, the locations first, then the functions, then the
   datapoints; a page holds as many as fit the response buffer (8 KB). Continue with

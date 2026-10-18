@@ -291,7 +291,8 @@ private:
 	Rule start_, end_;
 };
 
-/// A technology that accepts every command (without reporting it back), or refuses all.
+/// A technology that accepts every command (without reporting it back), or refuses all; reads
+/// likewise (a read sends nothing back either).
 class TestTechnology : public hc::Technology {
 public:
 	const char* name() const override { return "test"; }
@@ -304,7 +305,13 @@ public:
 		return true;
 	}
 
+	bool read(const hc::Datapoint& datapoint) override {
+		(void)datapoint;
+		return !refuse_reads;
+	}
+
 	bool refuse = false;
+	bool refuse_reads = false;
 };
 
 } // namespace hc_test

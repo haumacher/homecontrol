@@ -1,0 +1,56 @@
+{
+	"title": "Composition: a silence period from a parameter that another rule sets through the parameter datapoint, a read on silence, re-arming by the answer, the period counted from the boot after a reboot",
+	"description": "Probe of decisions 10 and 12 together. The watch rule's silence period is its duration parameter 'after' (default 10 min). At 100000 the tuner rule writes 300000 to the datapoint rule/watch/after, which is a setParameter: the armed period is recomputed from the last update at 0 and fires at 300000; the rule reads the sensor and logs. The technology's answer at 350000 is an update: alive, re-armed to 650000. The reboot at 500000 keeps the override (the datapoint shows 300000) and counts the period from the boot: it fires at 800000 and reads again.",
+	"datapoints": [{"name": "s", "type": "real"}, {"name": "x.go", "type": "boolean"}],
+	"initial": {"s": 20.0},
+	"rules": [
+		{
+			"id": "watch",
+			"name": "Watch",
+			"parameters": [{"id": "after", "label": "Silence period", "type": "duration", "default": 600000, "min": 60000, "max": 3600000, "unit": "min"}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "silence", "datapoint": "s", "after": {"kind": "parameter", "id": "after"}}],
+					"actions": [{"kind": "read", "datapoint": "s"}, {"kind": "log", "level": "warning", "message": ["silent"]}]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "s", "on": "update", "origin": "report"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["alive"]}]
+				}
+			]
+		},
+		{
+			"id": "tuner",
+			"name": "Tuner",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.go"}],
+					"actions": [{"kind": "write", "datapoint": "rule/watch/after", "value": {"kind": "literal", "type": "integer", "value": 300000}}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 100000, "report": {"datapoint": "x.go", "value": true}},
+		{"at": 100500, "check": {"parameters": {"watch/after": 300000}, "datapoints": {"rule/watch/after": 300000}}},
+		{"at": 350000, "report": {"datapoint": "s", "value": 21.0}},
+		{"at": 500000, "reboot": true},
+		{"at": 500000, "check": {"parameters": {"watch/after": 300000}, "datapoints": {"rule/watch/after": 300000, "s": null}}}
+	],
+	"end": 900000,
+	"expected": {
+		"commands": [
+			{"at": 100000, "rule": "tuner", "datapoint": "rule/watch/after", "value": 300000}
+		],
+		"reads": [
+			{"at": 300000, "rule": "watch", "datapoint": "s"},
+			{"at": 800000, "rule": "watch", "datapoint": "s"}
+		],
+		"logs": [
+			{"at": 300000, "rule": "watch", "code": "log", "level": "warning", "message": "silent"},
+			{"at": 350000, "rule": "watch", "code": "log", "level": "info", "message": "alive"},
+			{"at": 800000, "rule": "watch", "code": "log", "level": "warning", "message": "silent"}
+		],
+		"final": {"parameters": {"watch/after": 300000}, "persisted": {"watch/after": 300000}}
+	}
+}

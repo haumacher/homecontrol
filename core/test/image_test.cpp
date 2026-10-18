@@ -34,6 +34,8 @@
 #include "test_support.h"
 #include "web_test_support.h"
 
+using hc::DatapointFlags;
+using hc::ValueType;
 using hc::image::ImageService;
 using hc::image::ImageStore;
 using hc::image::Loader;
@@ -269,7 +271,7 @@ TEST_CASE("Image.ExampleAndMinimalLoad") {
 	REQUIRE_MESSAGE(parse(fixture("example.json"), plan, report), describe(report));
 	CHECK(std::string(plan.info.project_id) == "example-house");
 	CHECK(plan.info.revision == 7);
-	CHECK(plan.datapoint_count == 17); // 15 and the time master's knx.time, knx.date
+	CHECK(plan.datapoint_count == 21); // 15, the time master's knx.time, knx.date, four rule parameters (spec/rules.md 8.6)
 	CHECK(plan.info.knx_datapoints == 13);
 	CHECK(plan.info.rules == 2);
 	CHECK(plan.info.schedules == 2);
@@ -303,7 +305,7 @@ TEST_CASE("Image.TestSystemTemplate") {
 	CHECK(addresses.size() == 16); // six keys, four channels with state, the temperature, the time
 	Plan plan;
 	REQUIRE_MESSAGE(parse(filled, plan, report), describe(report));
-	CHECK(plan.datapoint_count == 16); // 15 and knx.time
+	CHECK(plan.datapoint_count == 19); // 15, knx.time and three rules' enable switches
 	CHECK(plan.info.functions == 11);
 	CHECK(plan.info.rules == 3);
 	CHECK(plan.info.schedules == 1);
@@ -490,7 +492,7 @@ TEST_CASE("Image.ServiceAppliesStoresAndReloads") {
 	REQUIRE_MESSAGE(f.load(example), describe(f.service.report()));
 	CHECK(f.service.loaded());
 	CHECK(f.service.stored_ok());
-	CHECK(f.model.size() == 17);
+	CHECK(f.model.size() == 21);
 	CHECK(f.model.find("knx.time") != nullptr);
 	CHECK(f.service.engine().rules().rule_count() == 2);
 	CHECK(f.service.scheduler().size() == 2);
@@ -505,7 +507,7 @@ TEST_CASE("Image.ServiceAppliesStoresAndReloads") {
 	CHECK(f.service.loaded());
 	CHECK(f.service.info().revision == 7);
 	CHECK(f.service.report().kind == Report::Kind::invalid);
-	CHECK(f.model.size() == 17);
+	CHECK(f.model.size() == 21);
 
 	// After a restart, the stored image loads at boot and equals the pushed one.
 	ServiceFixture h(&f.blobs.blobs);
@@ -513,7 +515,7 @@ TEST_CASE("Image.ServiceAppliesStoresAndReloads") {
 	CHECK(h.service.info().revision == 7);
 	CHECK(h.service.info().bytes == example.size());
 	CHECK(h.service.source() == Source::boot);
-	CHECK(h.model.size() == 17);
+	CHECK(h.model.size() == 21);
 	CHECK(h.service.stored_ok());
 	CHECK(h.p.sink.contains("loaded from boot"));
 }
@@ -702,7 +704,7 @@ TEST_CASE("Image.ApiPutGetDeleteStatus") {
 	CHECK(r.json["ok"].boolean);
 	CHECK(r.json["image"]["projectId"].text == "example-house");
 	CHECK(r.json["image"]["revision"].number == 7);
-	CHECK(r.json["counts"]["datapoints"].number == 17);
+	CHECK(r.json["counts"]["datapoints"].number == 21);
 	CHECK(r.json["counts"]["rules"].number == 2);
 	CHECK(r.json["stored"].boolean);
 	CHECK(r.json["source"].text == "api");
@@ -764,12 +766,12 @@ TEST_CASE("Image.SwapResyncsTheLiveFeed") {
 	auto status = transport.messages(1, "status");
 	REQUIRE(status.size() >= 1);
 	CHECK(status.back()["image"]["revision"].number == 7);
-	CHECK(status.back()["datapoints"].number == 17);
+	CHECK(status.back()["datapoints"].number == 21);
 	auto snapshots = transport.messages(1, "datapoints");
 	REQUIRE(snapshots.size() >= 1);
 	CHECK(snapshots[0]["snapshot"].boolean);
 	CHECK(snapshots[0]["from"].number == 0);
-	CHECK(snapshots[0]["count"].number == 17);
+	CHECK(snapshots[0]["count"].number == 21);
 	// The status with the image's longest names still fits one WebSocket message.
 	std::string longest = fixture("minimal.json");
 	longest = replace(longest, "\"projectId\": \"minimal\"", "\"projectId\": \"" + std::string(63, 'p') +
@@ -817,3 +819,78 @@ TEST_CASE("Image.MemoryFootprint") {
 	}
 }
 #endif
+
+TEST_CASE("Image.ParameterDatapoints") {
+	// Each rule parameter, the enable switch first, is a datapoint after the time master's
+	// (spec/rules.md 8.6, spec/runtime-image.md 3.3).
+	Plan plan;
+	Report report;
+	REQUIRE_MESSAGE(parse(fixture("example.json"), plan, report), describe(report));
+	REQUIRE(plan.datapoint_count == 21);
+	struct Expected {
+		const char* name;
+		ValueType type;
+	};
+	const Expected expected[] = {
+		{"rule/hall-presence-light/enabled", ValueType::boolean},
+		{"rule/hall-presence-light/timeout", ValueType::unsigned_int},
+		{"rule/hall-presence-light/darkBelow", ValueType::real},
+		{"rule/morning-light/enabled", ValueType::boolean},
+	};
+	for (size_t i = 0; i < 4; ++i) {
+		const hc::DatapointSpec& spec = plan.datapoints[17 + i];
+		CAPTURE(expected[i].name);
+		CHECK(std::string(spec.name) == expected[i].name);
+		CHECK(spec.type == expected[i].type);
+		CHECK((spec.flags & DatapointFlags::kWritable) != 0);
+		CHECK((spec.flags & DatapointFlags::kPersist) == 0); // the parameter store keeps them
+		CHECK_FALSE(plan.technology_reads(spec.name));
+	}
+	CHECK(plan.technology_reads("living.temperature"));
+	CHECK_FALSE(plan.technology_reads("away"));
+	CHECK_FALSE(plan.technology_reads("knx.time"));
+	CHECK(plan.technology_reads("not.in.the.image"));
+	// A parameter that is not adjustable: its datapoint is read-only.
+	Plan fixed;
+	REQUIRE_MESSAGE(parse(replace(fixture("example.json"), "\"unit\": \"lx\"}", "\"unit\": \"lx\", \"adjustable\": false}"),
+						fixed, report),
+		describe(report));
+	CHECK(std::string(fixed.datapoints[19].name) == "rule/hall-presence-light/darkBelow");
+	CHECK((fixed.datapoints[19].flags & DatapointFlags::kWritable) == 0);
+}
+
+TEST_CASE("Image.ParameterDatapointRefusals") {
+	auto refused = [](const std::string& text, const char* path, const char* reason) {
+		Plan plan;
+		Report report;
+		CHECK_FALSE(parse(text, plan, report));
+		bool found = false;
+		for (size_t i = 0; i < report.count && !found; ++i) {
+			found = std::string(report.refusals[i].path) == path && std::strstr(report.refusals[i].reason, reason) != nullptr;
+		}
+		CHECK_MESSAGE(found, "expected " << path << ": ..." << reason << "...\n" << describe(report));
+	};
+	// The prefix is reserved.
+	refused(replace(fixture("example.json"), "\"id\": \"away\"", "\"id\": \"rule/away\""), "datapoints[14].id",
+		"the prefix 'rule/' is reserved for the datapoints of rule parameters");
+	// A read of a datapoint no technology can be asked for: the virtual one, a parameter's.
+	const std::string timer_action = "\"actions\": [{\"kind\": \"restartTimer\", \"timer\": \"off\"}]";
+	refused(replace(fixture("example.json"), timer_action,
+				"\"actions\": [{\"kind\": \"restartTimer\", \"timer\": \"off\"}, {\"kind\": \"read\", \"datapoint\": \"away\"}]"),
+		"rules[0].reactions[1].actions[1].datapoint", "notReadable");
+	refused(replace(fixture("example.json"), timer_action,
+				"\"actions\": [{\"kind\": \"read\", \"datapoint\": \"rule/morning-light/enabled\"}]"),
+		"rules[0].reactions[1].actions[0].datapoint", "notReadable");
+	// A rule's own parameter datapoint: it has the parameter.
+	refused(replace(fixture("example.json"), timer_action,
+				"\"actions\": [{\"kind\": \"write\", \"datapoint\": \"rule/hall-presence-light/darkBelow\", "
+				"\"value\": {\"kind\": \"literal\", \"type\": \"real\", \"value\": 10.0}}]"),
+		"rules[0].reactions[1].actions[0].datapoint", "forbidden");
+	// A read of a KNX datapoint loads.
+	Plan plan;
+	Report report;
+	CHECK_MESSAGE(parse(replace(fixture("example.json"), timer_action,
+						  "\"actions\": [{\"kind\": \"read\", \"datapoint\": \"living.temperature\"}]"),
+					  plan, report),
+		describe(report));
+}

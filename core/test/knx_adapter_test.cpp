@@ -451,3 +451,65 @@ TEST_CASE("KnxAdapter.TransmitOnlyRefusals") {
 	m.transmit_only = false;
 	refused(&m, 1, "the datapoint belongs to another technology");
 }
+
+TEST_CASE("KnxAdapter.ReadOnRequest") {
+	AdapterFixture f;
+	// The tunnel is down: refused.
+	CHECK(f.model.read(0) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("refusing read of 'light': the KNX tunnel is"));
+	f.connect(7);
+	f.run_for(1000);
+	while (f.adapter.reads_pending() > 0 || f.tunnel.queued() > 0) {
+		f.confirm_last();
+		f.run_for(100);
+	}
+	size_t base = f.socket.count(ip::Service::tunneling_request);
+	// A read of the light goes to its sending address after the read spacing; a second request
+	// while it waits is the same read.
+	uint64_t asked = f.clock.now_ms;
+	CHECK(f.model.read(0) == DatapointStatus::ok);
+	CHECK(f.model.read(0) == DatapointStatus::ok);
+	CHECK(f.adapter.reads_pending() == 1);
+	f.run_until(asked + 99);
+	CHECK(f.socket.count(ip::Service::tunneling_request) == base);
+	f.run_until(asked + 100);
+	REQUIRE(f.socket.count(ip::Service::tunneling_request) == base + 1);
+	CHECK(f.last_telegram() == "08 01 01 00 00");
+	CHECK(f.adapter.reads_pending() == 0);
+	f.confirm_last();
+	// Two datapoints, the later one asked for first: both are read, one spacing apart.
+	CHECK(f.model.read(4) == DatapointStatus::ok);
+	CHECK(f.model.read(1) == DatapointStatus::ok);
+	f.run_for(100);
+	CHECK(f.last_telegram() == "10 01 01 00 00"); // setpoint: its first listening address
+	f.confirm_last();
+	f.run_for(100);
+	CHECK(f.last_telegram() == "0A 03 01 00 00"); // temperature
+	f.confirm_last();
+	f.run_for(1000);
+	CHECK(f.socket.count(ip::Service::tunneling_request) == base + 3);
+	// The answer reports.
+	f.receive(0x0A03, "00 40 0C 1A");
+	CHECK(f.dp(1).value().as_real() == doctest::Approx(21.0));
+	// The tunnel goes down: the waiting reads go with it.
+	CHECK(f.model.read(2) == DatapointStatus::ok);
+	f.socket.inject(hc_test::disconnect_request(7));
+	CHECK(f.adapter.reads_pending() == 0);
+}
+
+TEST_CASE("KnxAdapter.ReadRefusals") {
+	TransmitFixture f;
+	f.up();
+	// The transmit-only clock belongs to its owner, which cannot be read: the model asks the owner.
+	CHECK(f.model.read(0) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("read of 'clock' refused by owner"));
+	// A datapoint of the adapter's that is not mapped.
+	DatapointSpec specs[] = {{"a", ValueType::boolean, kReadWrite}, {"b", ValueType::boolean, kReadWrite}};
+	REQUIRE(f.model.load(specs, 2) == DatapointStatus::ok);
+	KnxMapping m = AdapterFixture::mapping(0, Dpt{1, 1}, GroupAddress::of(3, 0, 1), nullptr, 0);
+	REQUIRE(f.adapter.configure(&m, 1));
+	REQUIRE(f.model.bind(1, f.adapter) == DatapointStatus::ok);
+	CHECK(f.model.read(1) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("refusing read of 'b': not mapped to a group address"));
+	CHECK(f.model.read(0) == DatapointStatus::ok);
+}

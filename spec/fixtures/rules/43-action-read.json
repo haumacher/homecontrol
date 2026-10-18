@@ -1,0 +1,51 @@
+{
+	"title": "The read action: a read at the start and on a schedule; the read itself changes no value",
+	"description": "The technology is asked for the current value (spec 7.12); here it sends nothing back, so the datapoint stays unknown. A read is not a command: it appears in the expected reads, not in the commands.",
+	"datapoints": [{"name": "hall.temp", "type": "real"}, {"name": "hall.light", "type": "boolean"}],
+	"schedules": ["poll"],
+	"rules": [
+		{
+			"id": "poll",
+			"name": "Poll",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start", "reasons": ["boot"]}, {"kind": "schedule", "schedule": "poll"}],
+					"actions": [{"kind": "read", "datapoint": "hall.temp"}]
+				}
+			]
+		},
+		{
+			"id": "both",
+			"name": "Both",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "poll"}],
+					"actions": [
+						{"kind": "read", "datapoint": "hall.light"},
+						{"kind": "write", "datapoint": "hall.light", "value": {"kind": "literal", "type": "boolean", "value": true}}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "schedule": "poll"},
+		{"at": 2000, "schedule": "poll"}
+	],
+	"end": 3000,
+	"expected": {
+		"reads": [
+			{"at": 0, "rule": "poll", "datapoint": "hall.temp"},
+			{"at": 1000, "rule": "poll", "datapoint": "hall.temp"},
+			{"at": 1000, "rule": "both", "datapoint": "hall.light"},
+			{"at": 2000, "rule": "poll", "datapoint": "hall.temp"},
+			{"at": 2000, "rule": "both", "datapoint": "hall.light"}
+		],
+		"commands": [
+			{"at": 1000, "rule": "both", "datapoint": "hall.light", "value": true},
+			{"at": 2000, "rule": "both", "datapoint": "hall.light", "value": true}
+		],
+		"logs": [],
+		"final": {"datapoints": {"hall.temp": null, "hall.light": true}, "firings": {"poll": 3, "both": 2}}
+	}
+}

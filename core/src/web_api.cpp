@@ -649,6 +649,12 @@ void WebApi::write_datapoint(JsonWriter& json, const Datapoint& dp) {
 		.member("type", value_type_name(dp.type()))
 		.member("flags", static_cast<uint32_t>(dp.flags()))
 		.member("writable", dp.writable());
+	json.key("technology");
+	if (dp.technology() != nullptr) {
+		json.string(dp.technology()->name());
+	} else {
+		json.null();
+	}
 	json.key("value");
 	write_value_json(json, dp.value());
 	json.member("quality", quality_name(dp.quality()))
@@ -1263,6 +1269,12 @@ bool parse_ids(const char* query, uint16_t* ids, size_t max, size_t& count) {
 
 } // namespace
 
+namespace {
+
+void write_label(JsonWriter& json, const rules::RuleSet& set, const char* key, uint32_t text, uint32_t map);
+
+} // namespace
+
 void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 	const image::ModelView& view = image_->view();
 	JsonWriter json(response.body, response.capacity);
@@ -1358,11 +1370,32 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		if (dp != nullptr) {
 			json.member("type", value_type_name(dp->type())).member("writable", dp->writable());
 		}
+		// A rule parameter's datapoint (spec/rules.md 8.6) takes the parameter's label and unit; the
+		// enable switch the rule's name.
+		const rules::Engine& engine = image_->engine();
+		size_t param_rule = 0, param_index = 0;
+		bool parameter = dp != nullptr && engine.parameter_of(dp->id(), param_rule, param_index);
+		const rules::RuleSet& set = engine.rules();
 		if (d.label != nullptr) {
 			json.key("label").raw(d.label, std::strlen(d.label));
+		} else if (parameter) {
+			const rules::Rule& rule = set.rule(param_rule);
+			const rules::Parameter& decl = set.parameter(rule.first_parameter + param_index);
+			if (param_index == 0) {
+				write_label(json, set, "label", rule.name, rule.name_json);
+			} else {
+				write_label(json, set, "label", decl.label, decl.label_json);
+			}
 		}
 		if (d.unit != nullptr) {
 			json.member("unit", d.unit);
+		} else if (parameter) {
+			const rules::Parameter& decl = set.parameter(set.rule(param_rule).first_parameter + param_index);
+			if (decl.type == rules::Type::duration) {
+				json.member("unit", "ms");
+			} else if (set.str(decl.unit)[0] != '\0') {
+				json.member("unit", set.str(decl.unit));
+			}
 		}
 		json.key("technology");
 		if (dp != nullptr && dp->technology() != nullptr) {
@@ -1372,6 +1405,14 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		}
 		if (d.binding != nullptr) {
 			json.key("binding").raw(d.binding, std::strlen(d.binding));
+		}
+		if (parameter) {
+			const rules::Rule& rule = set.rule(param_rule);
+			json.key("parameter")
+				.begin_object()
+				.member("rule", set.str(rule.id))
+				.member("parameter", set.str(set.parameter(rule.first_parameter + param_index).id))
+				.end_object();
 		}
 		json.member("history", dp != nullptr && dp->has_history());
 		json.end_object();

@@ -1,0 +1,39 @@
+{
+	"title": "A command to a parameter datapoint sets the parameter as the API does; an invalid value is refused, a fixed parameter's datapoint is not writable",
+	"description": "The command at 1000 sets setpoint (an external change: the parameter trigger fires, the override is stored). 30.0 lies outside min..max: parameterRefused, the parameter and its datapoint keep 23.0. The datapoint of the parameter that is not adjustable is not writable: the model refuses the command before the rule engine sees it, nothing in the rule log.",
+	"datapoints": [{"name": "x.go", "type": "boolean"}],
+	"rules": [
+		{
+			"id": "heat",
+			"name": "Heating",
+			"parameters": [
+				{"id": "setpoint", "label": "Setpoint", "type": "real", "default": 21.0, "min": 15.0, "max": 25.0},
+				{"id": "level", "label": "Level", "type": "integer", "default": 1, "adjustable": false}
+			],
+			"reactions": [
+				{
+					"triggers": [{"kind": "parameter", "parameter": "setpoint"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["setpoint ", {"kind": "parameter", "id": "setpoint"}]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "command": {"datapoint": "rule/heat/setpoint", "value": 23.0}},
+		{"at": 2000, "command": {"datapoint": "rule/heat/setpoint", "value": 30.0, "refused": true}},
+		{"at": 3000, "command": {"datapoint": "rule/heat/level", "value": 5, "refused": true}}
+	],
+	"end": 4000,
+	"expected": {
+		"commands": [],
+		"logs": [
+			{"at": 1000, "rule": "heat", "code": "log", "level": "info", "message": "setpoint 23"},
+			{"at": 2000, "rule": "heat", "code": "parameterRefused"}
+		],
+		"final": {
+			"datapoints": {"rule/heat/setpoint": 23.0, "rule/heat/level": 1},
+			"parameters": {"heat/setpoint": 23.0, "heat/level": 1},
+			"persisted": {"heat/setpoint": 23.0}
+		}
+	}
+}

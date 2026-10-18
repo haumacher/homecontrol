@@ -15,7 +15,7 @@ the next free number; a number is never reused.
 | `title` | string | One line: what the case pins. |
 | `description` | string, optional | More explanation for people. |
 | `note` | string, optional | A point for review: a judgment call, an assumption, or the decision of `spec/rules.md` section 12 the case pins. |
-| `datapoints` | array | The datapoints of the image: `{"name", "type"}` with a datapoint value type of `spec/rules.md` 3.1, optional `"writable": false` (default `true`) and `"refuseCommands": true` (the owning technology refuses every command). |
+| `datapoints` | array | The datapoints of the image: `{"name", "type"}` with a datapoint value type of `spec/rules.md` 3.1, optional `"writable": false` (default `true`), `"refuseCommands": true` (the owning technology refuses every command), `"readable": false` (no technology can be asked for its value: a `read` of it is refused at load, `notReadable`; default `true`) and `"refuseReads": true` (the owning technology refuses every read, `readRefused`). The parameter datapoints `rule/<ruleId>/<parameterId>` (`spec/rules.md` 8.6) are not listed: the runner derives them from `rules` (and from each `image` step's rules). |
 | `schedules` | array, optional | Schedule entries that exist in the image (for `schedule` triggers): each an id, or `{"id", "output"}` with the name of the datapoint the entry writes (a rule may not write it, `spec/rules.md` 10.1). |
 | `clock` | object, optional | `{"start": "YYYY-MM-DDTHH:MM:SS", "synchronized": bool, "zone": "<POSIX TZ>"}`: the local wall time at time 0 (a time that occurs twice is its first occurrence), whether it is synchronized (default `true`) and the time zone as a POSIX TZ string (`"CET-1CEST,M3.5.0,M10.5.0/3"`; absent: UTC). Without `clock` the wall clock is not synchronized. A runner applies the zone through its own evaluation of the string, never the host's time zone. |
 | `ui` | object, optional | `{"lang": "<tag>"}`: the device's UI language (the setting `ui.lang`, default `en`), in which labels are resolved (`spec/rules.md` 2.2). |
@@ -51,7 +51,7 @@ Each step has `at` and exactly one of:
 |---|---|
 | `report` | `{"datapoint", "value"}`: the owning technology reports the value (origin report). |
 | `stale` | datapoint name: the technology reports the datapoint stale (an update only when its quality was good). |
-| `command` | `{"datapoint", "value"}`: a command from the UI or API (origin command), an external event; it is not listed in the expected commands. |
+| `command` | `{"datapoint", "value"}`: a command from the UI or API (origin command), an external event; it is not listed in the expected commands. With `"refused": true` the model or the owning technology must refuse it (a parameter datapoint with an invalid value, or of a parameter that is not adjustable). |
 | `schedule` | schedule id: the scheduler fires the entry. |
 | `setParameter` | `{"rule", "parameter", "value"}`: the UI or API sets a parameter (`spec/rules.md` 8.2). |
 | `clockSync` | boolean: the wall clock becomes synchronized or not. |
@@ -62,23 +62,27 @@ Each step has `at` and exactly one of:
 ## Running a case
 
 1. Build the datapoint model from `datapoints`. Every datapoint is owned by a test technology that
-   accepts every command (and does not report it back) unless `refuseCommands` is set; a
-   datapoint is writable and transmitting unless `writable` is `false`. Store the `initial` values.
-   Load the `persisted` overrides and states into the parameter store. Set the `ui` language.
+   accepts every command and every read (and reports neither back) unless `refuseCommands` or
+   `refuseReads` is set; a datapoint is writable and transmitting unless `writable` is `false`.
+   Append the parameter datapoints of `rules` (`spec/rules.md` 8.6), owned by the rule engine.
+   Store the `initial` values. Load the `persisted` overrides and states into the parameter store.
+   Set the `ui` language. An `image` step loads the model again in the same way for its rules,
+   keeping the values of the datapoints that stay (`spec/rules.md` 7.6).
 2. At time 0 load `rules`. If `expected.loadRefused` is given, the load must be refused with that
    reason (`spec/rules.md` 10.1) and the case ends. Otherwise every rule starts with the reason
    `boot` (`spec/rules.md` 7.5).
-3. For each timeline step in order: first process the expiries of all rule timers with a deadline
-   up to the step's `at`, each as a cascade at its own deadline, in the order of `spec/rules.md`
-   7.8; then apply the step at its `at`. Steps with the same `at` are applied in the listed order,
-   each its own cascade.
-4. After the last step, process the timer expiries up to `end`, then compare `expected.final`.
+3. For each timeline step in order: first process the expiries of all rule timers and silence
+   periods with a deadline up to the step's `at`, each as a cascade at its own deadline, in the
+   order of `spec/rules.md` 7.8; then apply the step at its `at`. Steps with the same `at` are
+   applied in the listed order, each its own cascade.
+4. After the last step, process the expiries up to `end`, then compare `expected.final`.
 
 ## Expected outputs
 
 | Member | Compared |
 |---|---|
 | `commands` | Every successful `DatapointModel::command()` call made by the rule engine, in order: `at`, `rule`, `datapoint`, `value`. A command refused by the technology is not a command; it appears as a `writeRefused` log entry. |
+| `reads` | Optional (absent: none). Every `read` action the technology accepted (`spec/rules.md` 7.12), in order: `at`, `rule`, `datapoint`. A refused read is not listed; it appears as a `readRefused` log entry. |
 | `logs` | Every log entry of the rule engine with a code of `spec/rules.md` 9.2, in order: `at`, `rule`, `code`; for the code `log` also `level` and `message` (exact); for `loopGuard` optionally `culprit` (rule id) and `firings` (its derived firings in the cascade). Other members and the free text after the code are not compared. |
 | `final` | Optional; each section compares only the keys it lists: `datapoints` (current value, `null` for unknown), `states` (rule id → state id), `parameters` (`"<ruleId>/<parameterId>"` → current value), `timers` (`"<ruleId>/<timerId>"` → remaining ms, `null` when stopped), `firings` (rule id → the diagnostics counter), `names` (rule id → the resolved name), `labels` (`"<ruleId>/<parameterId>"` → the resolved label), `persisted` (the complete set of stored overrides and states, as the store holds them after its delayed writes: `"<ruleId>/<parameterId>"` → value, `"<ruleId>/.state"` → state id). |
 
@@ -129,6 +133,18 @@ Reals compare with a relative tolerance of 1e-9; everything else compares exactl
 | `39-load-refused-schedule-output` | Load refusal `notWritable`: a write to a schedule entry's output datapoint. |
 | `40-labels-language` | Labels as strings and language maps resolved from `ui.lang`: exact tag, base language, `en`, first entry (decision 11). |
 | `41-canonical-normalization` | Normalized trees: folded minus, enumeration literals by partner, the controlled literal as a call, `mon 07:30` (decision 6). |
+| `42-state-override-fold-labels` | Decisions 3, 7, 11 and 15 together: a `setParameter` action to the default removes the override, the state persists across a reboot, date-time subtraction across the end of summer time, a regional label falls back to its base language. |
+| `43-action-read` | The `read` action at the start and on a schedule; the read changes no value; reads are not commands (decision 12). |
+| `44-action-read-refused` | A read the technology refuses: `readRefused` once per action; the following actions still run. |
+| `45-load-refused-not-readable` | Load refusal `notReadable`: a read of a datapoint no technology can be asked for. |
+| `46-trigger-silence` | The `silence` trigger: once per silent period, re-armed by a report, a stale report is no sign of life (decision 12). |
+| `47-silence-enable-parameter` | Silence and the enable switch (disarmed, then counted from the enabling); the period from a parameter, re-armed on its change. |
+| `48-silence-image-swap` | Silence across an image swap: counted from the last update; a period that ended before the swap fires right after it. |
+| `49-silence-reboot` | Silence after a reboot: counted from the start, also for a datapoint that never reports. |
+| `50-parameter-datapoint-change` | Parameters as datapoints `rule/<ruleId>/<parameterId>`: values at the start, after API changes, an action and a reset; a duration in ms (decision 10). |
+| `51-parameter-datapoint-command` | A command to a parameter datapoint sets the parameter; an invalid value is refused; a fixed parameter's datapoint is not writable. |
+| `52-parameter-datapoint-other-rule` | Another rule reads, triggers on and writes a parameter datapoint; the parameter's event comes before the datapoint's update. |
+| `53-parameter-datapoint-enabled` | The enable switch as a datapoint: commands disable and enable the rule, another rule follows it, a fixed switch is not writable. |
 
 The expected outputs were computed by hand and cross-checked against a throw-away executable model of
 the specification; a `note` starting with "Review:" contains a judgment call the author should

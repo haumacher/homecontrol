@@ -1,0 +1,21 @@
+{
+	"title": "Load refusal notReadable: a read of a datapoint whose technology cannot ask for its value",
+	"description": "calc.sum is a value no technology can be asked for (in an image: a datapoint without a KNX, Zigbee or external binding, a schedule entry's output, the time master's datapoints, a rule parameter's datapoint; spec 10.1).",
+	"datapoints": [{"name": "calc.sum", "type": "real", "readable": false}],
+	"schedules": ["poll"],
+	"rules": [
+		{
+			"id": "poll",
+			"name": "Poll",
+			"reactions": [
+				{
+					"triggers": [{"kind": "schedule", "schedule": "poll"}],
+					"actions": [{"kind": "read", "datapoint": "calc.sum"}]
+				}
+			]
+		}
+	],
+	"timeline": [],
+	"end": 0,
+	"expected": {"loadRefused": "notReadable"}
+}

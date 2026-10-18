@@ -117,6 +117,12 @@ struct CommandEntry {
 	Val value;
 };
 
+struct ReadEntry {
+	uint64_t at;
+	std::string rule;
+	std::string datapoint;
+};
+
 class Recorder : public hc::rules::EngineObserver {
 public:
 	explicit Recorder(const hc_test::FakeClock& clock) : clock_(clock) {}
@@ -138,8 +144,13 @@ public:
 		commands.push_back(CommandEntry{clock_.now_ms - kBase, rule, datapoint.name(), hc::rules::val_from_datapoint(value)});
 	}
 
+	void rule_read(const char* rule, const hc::Datapoint& datapoint) override {
+		reads.push_back(ReadEntry{clock_.now_ms - kBase, rule, datapoint.name()});
+	}
+
 	std::vector<LogEntry> logs;
 	std::vector<CommandEntry> commands;
+	std::vector<ReadEntry> reads;
 
 private:
 	const hc_test::FakeClock& clock_;
@@ -175,7 +186,11 @@ bool same(const Val& actual, const Val& expected) {
 
 class CaseRunner {
 public:
-	explicit CaseRunner(const Json& json) : case_(json) { refusing_.refuse = true; }
+	explicit CaseRunner(const Json& json) : case_(json) {
+		// Index: 1 refuses commands, 2 refuses reads.
+		technologies_[1].refuse = technologies_[3].refuse = true;
+		technologies_[2].refuse_reads = technologies_[3].refuse_reads = true;
+	}
 
 	void run() {
 		time_.wall.clock = &clock_;
@@ -217,7 +232,12 @@ public:
 				schedules_.ids.push_back(s.text);
 			}
 		}
-		load_model();
+		for (const Json& dp : case_["datapoints"].items) {
+			if (dp.has("readable") && !dp["readable"].boolean) {
+				schedules_.unreadable.push_back(dp["name"].text);
+			}
+		}
+		load_model(case_["rules"]);
 		for (const auto& entry : case_["persisted"].members) {
 			size_t slash = entry.first.find('/');
 			REQUIRE(slash != std::string::npos);
@@ -273,30 +293,49 @@ private:
 		bool owns_output(const char* datapoint) const override {
 			return std::find(outputs.begin(), outputs.end(), std::string(datapoint)) != outputs.end();
 		}
+		bool technology_reads(const char* datapoint) const override {
+			return std::find(unreadable.begin(), unreadable.end(), std::string(datapoint)) == unreadable.end();
+		}
 		std::vector<std::string> ids;
 		std::vector<std::string> outputs;
+		std::vector<std::string> unreadable; ///< "readable": false
 	};
 
-	void load_model() {
+	/// The case's datapoints, owned by the test technologies, then the parameter datapoints of
+	/// `rules` (spec/rules.md 8.6) as the image loader derives them, unbound: the engine binds them.
+	void load_model(const Json& rules, bool keep_values = false) {
 		names_.clear();
 		specs_.clear();
+		std::vector<hc::ValueType> types;
+		std::vector<uint8_t> flags;
 		for (const Json& dp : case_["datapoints"].items) {
 			names_.push_back(dp["name"].text);
-		}
-		for (size_t i = 0; i < names_.size(); ++i) {
-			const Json& dp = case_["datapoints"].items[i];
 			hc::ValueType type = hc::rules::datapoint_type_from_name(dp["type"].text.c_str());
 			REQUIRE_MESSAGE(type != hc::ValueType::none, "datapoint type " << dp["type"].text);
 			bool writable = !dp.has("writable") || dp["writable"].boolean;
-			uint8_t flags = hc::DatapointFlags::kReadable |
-				(writable ? hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit : 0);
-			specs_.push_back(DatapointSpec{names_[i].c_str(), type, flags});
+			types.push_back(type);
+			flags.push_back(static_cast<uint8_t>(hc::DatapointFlags::kReadable |
+				(writable ? hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit : 0)));
 		}
-		REQUIRE(model_.load(specs_.data(), specs_.size()) == hc::DatapointStatus::ok);
+		size_t own = names_.size();
+		std::vector<hc::rules::ParameterDatapoint> derived(256);
+		size_t count = hc::rules::parameter_datapoints(tree_.value(rules), derived.data(), derived.size());
+		REQUIRE(count <= derived.size());
+		for (size_t i = 0; i < count; ++i) {
+			names_.push_back(derived[i].name);
+			types.push_back(derived[i].type);
+			flags.push_back(derived[i].flags);
+		}
 		for (size_t i = 0; i < names_.size(); ++i) {
+			specs_.push_back(DatapointSpec{names_[i].c_str(), types[i], flags[i]});
+		}
+		REQUIRE(model_.load(specs_.data(), specs_.size(), keep_values) == hc::DatapointStatus::ok);
+		for (size_t i = 0; i < own; ++i) {
 			const Json& dp = case_["datapoints"].items[i];
 			bool refuse = dp.has("refuseCommands") && dp["refuseCommands"].boolean;
-			REQUIRE(model_.bind(static_cast<uint16_t>(i), refuse ? refusing_ : accepting_) == hc::DatapointStatus::ok);
+			bool refuse_reads = dp.has("refuseReads") && dp["refuseReads"].boolean;
+			REQUIRE(model_.bind(static_cast<uint16_t>(i), technologies_[(refuse ? 1 : 0) + (refuse_reads ? 2 : 0)]) ==
+				hc::DatapointStatus::ok);
 		}
 	}
 
@@ -371,7 +410,13 @@ private:
 			REQUIRE(model_.report_stale(*dp.technology(), dp.id()) == hc::DatapointStatus::ok);
 		} else if (step.has("command")) {
 			const hc::Datapoint& dp = datapoint(step["command"]["datapoint"].text);
-			REQUIRE(model_.command(dp.id(), datapoint_value(dp, step["command"]["value"])) == hc::DatapointStatus::ok);
+			hc::DatapointStatus status = model_.command(dp.id(), datapoint_value(dp, step["command"]["value"]));
+			if (step["command"].has("refused") && step["command"]["refused"].boolean) {
+				CHECK_MESSAGE(status != hc::DatapointStatus::ok, "the command at " << at << " must be refused");
+			} else {
+				REQUIRE_MESSAGE(status == hc::DatapointStatus::ok, "the command at " << at << " was refused: "
+					<< hc::datapoint_status_name(status));
+			}
 		} else if (step.has("schedule")) {
 			engine_->schedule_fired(step["schedule"].text.c_str());
 		} else if (step.has("setParameter")) {
@@ -380,14 +425,28 @@ private:
 		} else if (step.has("clockSync")) {
 			time_.wall.synchronized = step["clockSync"].boolean;
 		} else if (step.has("image")) {
-			LoadResult result = engine_->load(tree_.value(step["image"]["rules"]), &schedules_);
+			// As the image service swaps (doc/image.md): the rules' queued events go, the model is
+			// loaded again with the values kept (the parameter datapoints follow the new rules), the
+			// rules follow the datapoints by their previous ids.
+			engine_->flush();
+			std::vector<std::string> old_names;
+			for (size_t i = 0; i < model_.size(); ++i) {
+				old_names.push_back(model_.get(static_cast<uint16_t>(i))->name());
+			}
+			load_model(step["image"]["rules"], true);
+			std::vector<uint16_t> previous;
+			for (size_t i = 0; i < model_.size(); ++i) {
+				auto it = std::find(old_names.begin(), old_names.end(), std::string(model_.get(static_cast<uint16_t>(i))->name()));
+				previous.push_back(it == old_names.end() ? hc::rules::kNone : static_cast<uint16_t>(it - old_names.begin()));
+			}
+			LoadResult result = engine_->load(tree_.value(step["image"]["rules"]), &schedules_, previous.data());
 			REQUIRE_MESSAGE(result.ok(), "image at " << at << " refused: " << std::string(hc::rules::load_error_name(result.error))
 				<< " rule " << std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
 			image_ = &step["image"]["rules"];
 			engine_->start(StartReason::image);
 		} else if (step.has("reboot")) {
 			engine_.reset();
-			load_model();
+			load_model(*image_);
 			engine_ = std::make_unique<Engine>(loop_, model_, clock_, settings_, time_);
 			engine_->set_observer(&recorder_);
 			LoadResult result = engine_->load(tree_.value(*image_), &schedules_);
@@ -522,6 +581,22 @@ private:
 		}
 		CHECK_MESSAGE(commands_ok, "commands differ\nexpected:\n" << want_commands << "actual:\n" << have_commands);
 
+		std::string have_reads, want_reads;
+		for (const ReadEntry& r : recorder_.reads) {
+			have_reads += std::to_string(r.at) + " " + r.rule + " " + r.datapoint + "\n";
+		}
+		bool reads_ok = recorder_.reads.size() == expected["reads"].items.size();
+		for (size_t i = 0; i < expected["reads"].items.size(); ++i) {
+			const Json& r = expected["reads"].items[i];
+			want_reads += r["at"].text + " " + r["rule"].text + " " + r["datapoint"].text + "\n";
+			if (reads_ok) {
+				const ReadEntry& h = recorder_.reads[i];
+				reads_ok = h.at == static_cast<uint64_t>(r["at"].number) && h.rule == r["rule"].text &&
+					h.datapoint == r["datapoint"].text;
+			}
+		}
+		CHECK_MESSAGE(reads_ok, "reads differ\nexpected:\n" << want_reads << "actual:\n" << have_reads);
+
 		std::string have_logs, want_logs;
 		for (const LogEntry& l : recorder_.logs) {
 			have_logs += std::to_string(l.at) + " " + l.rule + " " + l.code;
@@ -561,8 +636,7 @@ private:
 	CaseTime time_;
 	EventLoop loop_;
 	DatapointModel model_{clock_};
-	hc_test::TestTechnology accepting_;
-	hc_test::TestTechnology refusing_;
+	hc_test::TestTechnology technologies_[4];
 	Schedules schedules_;
 	Recorder recorder_{clock_};
 	std::vector<std::string> names_;
@@ -634,8 +708,20 @@ HC_RULE_CASE("38", "date-time-across-dst")
 HC_RULE_CASE("39", "load-refused-schedule-output")
 HC_RULE_CASE("40", "labels-language")
 HC_RULE_CASE("41", "canonical-normalization")
+HC_RULE_CASE("42", "state-override-fold-labels")
+HC_RULE_CASE("43", "action-read")
+HC_RULE_CASE("44", "action-read-refused")
+HC_RULE_CASE("45", "load-refused-not-readable")
+HC_RULE_CASE("46", "trigger-silence")
+HC_RULE_CASE("47", "silence-enable-parameter")
+HC_RULE_CASE("48", "silence-image-swap")
+HC_RULE_CASE("49", "silence-reboot")
+HC_RULE_CASE("50", "parameter-datapoint-change")
+HC_RULE_CASE("51", "parameter-datapoint-command")
+HC_RULE_CASE("52", "parameter-datapoint-other-rule")
+HC_RULE_CASE("53", "parameter-datapoint-enabled")
 
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
-	CHECK(files.size() == 42);
+	CHECK(files.size() == 54);
 }

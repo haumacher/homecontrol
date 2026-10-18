@@ -844,3 +844,45 @@ TEST_CASE("ExternalValues: fetch now, its refusals, and a reconfiguration while 
 	CHECK_FALSE(f.ext.fetch_now("pv", &error));
 	CHECK(std::string(error) == "no external sources configured");
 }
+
+TEST_CASE("ExternalValues: a read fetches the source again, within the rate limit of fetch now") {
+	Fixture f;
+	// An hourly source after its first regular fetch: the next one is an hour away.
+	REQUIRE(f.configure_pv(kPvPower, 1, "http://pv.example/status", 3600));
+	f.run_for(ExternalValues::kStartDelayMs);
+	REQUIRE(f.fetcher.requests.size() == 1);
+	f.fetcher.ok(kPvBody);
+	f.run_for(60000);
+	size_t base = f.fetcher.requests.size();
+	const char* error = nullptr;
+	uint64_t t0 = f.clock.now_ms;
+	REQUIRE(f.ext.fetch_now("pv", &error));
+	REQUIRE(f.fetcher.requests.size() == base + 1);
+	uint16_t power = f.dp("pv.power").id();
+	// In flight: the answer is on its way.
+	CHECK(f.model.read(power) == DatapointStatus::ok);
+	f.fetcher.ok(kPvBody);
+	f.run_for(0);
+	CHECK(f.fetcher.requests.size() == base + 1);
+	// Half a minute later: the fetch waits for the rate limit; a second read joins it.
+	f.clock.advance(30000);
+	CHECK(f.model.read(power) == DatapointStatus::ok);
+	CHECK(f.capture.sink.contains("source 'pv': fetch requested by a read of 'pv.power'"));
+	CHECK(f.model.read(power) == DatapointStatus::ok);
+	f.run_until(t0 + 59999);
+	CHECK(f.fetcher.requests.size() == base + 1);
+	f.run_until(t0 + 60000);
+	REQUIRE(f.fetcher.requests.size() == base + 2);
+	CHECK(f.fetcher.requests.back().at == t0 + 60000);
+	f.fetcher.ok(kPvBody);
+	f.run_for(0);
+	// Refusals: no network; a datapoint no source feeds.
+	f.clock.advance(120000);
+	f.connectivity.link_down("test");
+	CHECK(f.model.read(power) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("refusing read of 'pv.power' (source 'pv'): not fetched: the network is down"));
+	f.connectivity.link_up("192.0.2.100");
+	REQUIRE(f.model.bind(f.dp("pv.count").id(), f.ext) == DatapointStatus::ok);
+	CHECK(f.model.read(f.dp("pv.count").id()) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("refusing read of 'pv.count': no source feeds it"));
+}
