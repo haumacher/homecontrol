@@ -198,6 +198,13 @@ delivery (this list grows; add every trap you fall into):
 - **Verify a wiring claim on the hardware by its log line, not by the build growing.** The core
   links in whether or not a platform service uses it; only the service's own log line (or its
   console command) proves it runs.
+- **Diagnose a stall from the API, not from the serial port.** `GET /api/system/diagnostics` gives
+  `loop.missed` and `loop.longest_turn_ms` (sample deltas over 30 s: the idle rate is a miss every
+  few seconds), `console.queued/dropped`, and per task `stack_free` (the high-water mark) and
+  `cpu_permille` (cumulative since boot: a short burst barely moves it, read it as a delta against
+  the uptime). A loop that misses periods with short turns and an idle CPU is not running: an
+  interrupt storm or a blocked wait, not work. Attach a serial reader only as the experiment's
+  variable, and resolve the C6's node by id each time (CLAUDE.md).
 - **A gate whose output goes through `tail` or `grep` has the exit code of the filter, not of
   `ctest`.** Read the `N% tests passed` line, never the shell's exit code of a pipeline. And
   `BuildId.FollowsGitDescribe` compares the test binary's build id with `git describe`: a binary
