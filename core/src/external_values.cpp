@@ -879,6 +879,46 @@ bool ExternalValues::command(const Datapoint& datapoint, const Value&) {
 	return false;
 }
 
+bool ExternalValues::read(const Datapoint& datapoint) {
+	Source* source = nullptr;
+	if (table_ != nullptr) {
+		for (size_t i = 0; i < table_->source_count && source == nullptr; ++i) {
+			Source& s = table_->sources[i];
+			for (size_t b = s.first; b < s.first + s.count; ++b) {
+				if (table_->bindings[b].datapoint == datapoint.id()) {
+					source = &s;
+				}
+			}
+		}
+	}
+	if (source == nullptr) {
+		Log::warn(kTag, "refusing read of '%s': no source feeds it", datapoint.name());
+		return false;
+	}
+	uint64_t now = time_.monotonic_ms();
+	const char* blocked = source_blocked(*source, now);
+	if (blocked != nullptr) {
+		Log::warn(kTag, "refusing read of '%s' (source '%s'): %s", datapoint.name(), source->id, blocked);
+		return false;
+	}
+	if (in_flight_ && in_flight_generation_ == generation_ && table_->sources + in_flight_source_ == source) {
+		return true; // the answer is on its way
+	}
+	// The whole source is fetched again at its next opportunity: now, or when the rate limit of
+	// fetch_now() allows; reads that come meanwhile join that fetch.
+	uint64_t at = now;
+	if (source->attempted && now - source->last_attempt < kManualSpacingMs) {
+		at = source->last_attempt + kManualSpacingMs;
+	}
+	if (at < source->due) {
+		Log::info(kTag, "source '%s': fetch requested by a read of '%s'", source->id, datapoint.name());
+		source->due = at;
+		source->waiting = false;
+		arm();
+	}
+	return true;
+}
+
 // ---- Scheduling -----------------------------------------------------------------------------
 
 uint64_t ExternalValues::next_grid(const Source& source, uint64_t now) const {

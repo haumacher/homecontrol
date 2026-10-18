@@ -1,0 +1,56 @@
+{
+	"title": "Silence across an image swap: counted from the datapoint's last update, not from the swap; an overdue period fires right after the swap",
+	"description": "The last update is at 50000. After the swap at 100000 the kept rule's 1 min period still ends at 110000; the new rule's 30 s period ended at 80000, before the swap: it fires at the swap, after the start cascades.",
+	"datapoints": [{"name": "sensor.temp", "type": "real"}],
+	"initial": {"sensor.temp": 20.0},
+	"rules": [
+		{
+			"id": "watch",
+			"name": "Watch",
+			"reactions": [
+				{
+					"triggers": [{"kind": "silence", "datapoint": "sensor.temp", "after": {"kind": "literal", "type": "duration", "value": 60000}}],
+					"actions": [{"kind": "log", "level": "warning", "message": ["silent v1"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 50000, "report": {"datapoint": "sensor.temp", "value": 20.5}},
+		{"at": 100000, "image": {"rules": [
+			{
+				"id": "watch",
+				"name": "Watch",
+				"reactions": [
+					{
+						"triggers": [{"kind": "silence", "datapoint": "sensor.temp", "after": {"kind": "literal", "type": "duration", "value": 60000}}],
+						"actions": [{"kind": "log", "level": "warning", "message": ["silent v2"]}]
+					}
+				]
+			},
+			{
+				"id": "late",
+				"name": "Late",
+				"reactions": [
+					{
+						"triggers": [{"kind": "start", "reasons": ["image"]}],
+						"actions": [{"kind": "log", "level": "info", "message": ["started"]}]
+					},
+					{
+						"triggers": [{"kind": "silence", "datapoint": "sensor.temp", "after": {"kind": "literal", "type": "duration", "value": 30000}}],
+						"actions": [{"kind": "log", "level": "warning", "message": ["late silent"]}]
+					}
+				]
+			}
+		]}}
+	],
+	"end": 200000,
+	"expected": {
+		"commands": [],
+		"logs": [
+			{"at": 100000, "rule": "late", "code": "log", "level": "info", "message": "started"},
+			{"at": 100000, "rule": "late", "code": "log", "level": "warning", "message": "late silent"},
+			{"at": 110000, "rule": "watch", "code": "log", "level": "warning", "message": "silent v2"}
+		]
+	}
+}

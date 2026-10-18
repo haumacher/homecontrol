@@ -150,7 +150,9 @@ kind `datapoint` and an expression node of kind `datapoint` are different things
 | schedule id | the id of a schedule entry of the image (issue #10), same form as a rule id | the image |
 | datapoint name | as in the datapoint model: 1..63 printable bytes | the image |
 
-The parameter id `enabled` is reserved for the enable switch (section 8.3).
+The parameter id `enabled` is reserved for the enable switch (section 8.3). Datapoint names that
+start with `rule/` are reserved for the datapoints of the rule parameters (section 8.6); the image
+declares none.
 
 ### 2.2 Rule
 
@@ -190,10 +192,13 @@ A trigger is an object with a `kind`:
 | `timer` | `timer` (timer id of this rule) | The timer expired. |
 | `start` | `reasons`: array of `boot`, `image`, `enable` (default: all three) | The rule starts: after a boot, after an image swap (every rule of the new image), when the rule is enabled. |
 | `parameter` | `parameter` (parameter id of this rule) | The parameter's value changed (from the UI or API, or by a `setParameter` action). |
+| `silence` | `datapoint` (name); `after` (expression of type duration) | The datapoint has had no update for the duration `after`: once per silent period, until the next update re-arms it. Section 7.11. |
 
 A `match` condition may reference datapoints, parameters of the rule, literals and the pure
 functions of section 4.7 (no time, history, timer or state functions; refused at load), because it
-is evaluated only when one of its inputs changes.
+is evaluated only when one of its inputs changes. The `after` of a `silence` trigger may reference
+parameters of the rule, literals and the pure functions (no datapoints and no time, history, timer
+or state functions; refused at load), because it is evaluated when the period is armed.
 
 ### 2.4 Reaction
 
@@ -249,6 +254,7 @@ An action is an object with a `kind`:
 | `restartTimer` | `timer` (id); `duration` (expression, optional) | Starts the timer, or restarts a running one with a new deadline. |
 | `cancelTimer` | `timer` (id) | Stops the timer; no effect if it is stopped. The timer does not fire. |
 | `setParameter` | `parameter` (id of this rule); `value` (expression) | Sets the parameter like the UI does (validated, persisted, a parameter-changed event when the value differs). |
+| `read` | `datapoint` (name) | Asks the technology owning the datapoint for its current value (section 7.12). The answer arrives later as an ordinary update of the datapoint; the action itself changes no value. |
 | `log` | `level`: `info`, `warning` or `error`; `message`: array of strings and expressions | Writes a log line: the strings verbatim and each expression formatted (section 4.9), concatenated. |
 
 Actions of one list run in order; each sees the effects of the previous ones (a written value, a
@@ -387,7 +393,8 @@ always puts spaces around binary operators), `30min` is a duration, `30 min` an 
 | `state()`, `state("stairs")` | The current state id of this rule, or of the rule with the given id (a literal; that rule must have states). | string |
 
 Parameters, timers and states are always those of the rule the expression belongs to; another
-rule's state is readable by its id, nothing else of another rule is.
+rule's state is readable by its id, and another rule's parameters through their datapoints
+(`@"rule/heat/setpoint"`, 8.6); nothing else of another rule is.
 
 ### 4.4 Operators
 
@@ -634,8 +641,8 @@ The rule engine runs on the event loop's thread and processes one *cascade* at a
 
 1. An external event arrives: the datapoint model reports an update not caused by a rule action (a
    telegram, a device report, a stale report, a command from the UI or API), the scheduler fires an
-   entry, a timer of a rule expires, a rule starts (7.5), or a parameter is changed from the UI or
-   API.
+   entry, a timer of a rule expires, the period of a `silence` trigger ends (7.11), a rule starts
+   (7.5), or a parameter is changed from the UI or API.
 2. The engine puts it into an empty FIFO *event queue* and fixes the *cascade time*: the monotonic
    time and the wall time at which the cascade starts. Every expression in the cascade sees this
    time (`now()`, `sinceChange`, timer deadlines).
@@ -644,8 +651,8 @@ The rule engine runs on the event loop's thread and processes one *cascade* at a
    *derived events*; they are appended to the queue in the order they happen.
 
 A cascade completes before the next external event is taken; nothing runs recursively. Before an
-external event with time `t` is processed, the engine processes the expiries of its timers with
-deadlines up to `t` (each a cascade, in the order of 7.8).
+external event with time `t` is processed, the engine processes the expiries of its timers and
+silence periods with deadlines up to `t` (each a cascade, in the order of 7.8).
 
 ### 7.2 Processing an event
 
@@ -758,14 +765,16 @@ Starting a timer evaluates the action's `duration`, or the timer's declared `dur
 action has none, and sets the deadline to cascade time + duration. Expiries are processed in the
 order of their deadlines; equal deadlines in the order the timers were (re)started. The expiry
 stops the timer before the timer event is processed, so `running(t)` is `false` and `remaining(t)`
-has no value in the reactions that handle it. The event loop needs only one platform timer for all
-rule timers: the engine keeps its own deadline list.
+has no value in the reactions that handle it. The ends of silence periods (7.11) take part in the
+same order. The event loop needs only one platform timer for all rule timers and silence periods:
+the engine keeps its own deadline list.
 
 ### 7.9 Enabling and disabling
 
 The enable switch is the parameter `enabled` (8.3). When it changes to `false`, the rule's running
-timers are cancelled and it stops firing; its state and parameters stay. When it changes to `true`,
-the rule starts with the reason `enable` (7.5), in the cascade of the parameter change.
+timers are cancelled, its silence triggers disarmed, and it stops firing; its state and parameters
+stay. When it changes to `true`, the rule's silence triggers are armed anew (7.11) and the rule
+starts with the reason `enable` (7.5), in the cascade of the parameter change.
 
 ### 7.10 Reboot
 
@@ -781,6 +790,52 @@ overrides and rule states (8.5) survive (decision 3). After the image is loaded 
 
 Timers do not resume. A rule that needs its timer after a reboot restarts it from a reaction to
 the `start` trigger with the reason `boot` and `from` the state (corpus case 37).
+
+### 7.11 Silence
+
+A `silence` trigger watches one datapoint for signs of life: it matches once when the datapoint has
+had no update for the duration `after`. Its state is a *period* with a *base* time:
+
+1. **Signs of life.** Every update of the datapoint that is not a change to stale (a report, also of
+   the same value, a command, a publish) sets the base to the time of the update and arms the
+   period anew. A change to stale is no sign of life: a technology reports it when it lost the
+   device, which is the silence the trigger is for.
+2. **Arming.** Arming evaluates `after` and sets the deadline to base + `after`. A duration that
+   has no value or lies outside 100 ms .. 30 d (the limits of a timer) arms nothing and logs
+   `timerRefused` (once, until it arms again). A change of a parameter of the rule re-arms the
+   periods of its silence triggers that have not ended from their base, with the new duration.
+3. **The end.** When the deadline passes, the period ends: the trigger's event is processed as an
+   external event (its own cascade, ordered with the timer expiries by deadline, 7.8). The trigger
+   then waits for the next sign of life; a datapoint that stays silent fires it once.
+4. **Starting.** When the rules start (boot and image swap) every silence trigger is armed with the
+   base the later of the datapoint's last update and the boot: after an image swap the period
+   counts from the datapoint's last update (a period that ended before the swap ends at once, after
+   the start cascades); after a reboot, which loses the update times, it counts from the boot, also
+   for a datapoint that never reported.
+5. **Enabling.** A disabled rule's silence triggers are not armed; updates meanwhile only move the
+   base. Enabling arms them with the base the later of the last update and the enabling.
+
+The event identifies the trigger, not the datapoint: a `datapoint` trigger does not match it. The
+diagnostics record it as `silence <datapoint>` (9.1).
+
+### 7.12 Read
+
+The `read` action asks the technology that owns the datapoint for its current value
+(`DatapointModel::read()`): KNX sends a GroupValueRead to the datapoint's sending address (else its
+first listening address) through the same queue and spacing as the reads on start; Zigbee reads the
+attribute behind the datapoint from the device; an external source (`spec/external-values.md`) is
+fetched again at its next opportunity (at once, or when one minute after its last attempt has
+passed; reads meanwhile join that fetch). The answer arrives later as an ordinary update of the
+datapoint (origin `report`), processed as an external event; the action itself changes no value
+and is not a derived event. Repeated reads of a datapoint whose read is still waiting are one
+read.
+
+A technology that cannot read now refuses the read: KNX while the tunnel is not up, Zigbee a device
+that has not joined or has left, a button's or a multistate input's datapoint (no attribute value),
+an external source that cannot be fetched (no network, no synchronized clock, no location). A
+refused read logs `readRefused` (once per action, until a read of that action is accepted) and the
+following actions still run. A read of a datapoint no technology can read at all is refused at load
+(`notReadable`, 10.1).
 
 ## 8. Adjustable parameters
 
@@ -819,7 +874,7 @@ not valid (or has no value) logs `parameterRefused`; the change is a derived eve
 Every rule has the boolean parameter `enabled`, default the rule's `enabled` member, adjustable
 unless the rule says `enabledAdjustable: false` (then it is fixed by the image). It is persisted
 like any parameter. Expressions, triggers and actions cannot reference it (refused at load); its
-effects are those of 7.9.
+effects are those of 7.9. Other rules see it as the datapoint `rule/<ruleId>/enabled` (8.6).
 
 ### 8.4 Persistence and image swaps
 
@@ -855,6 +910,50 @@ At boot the persisted state is restored as section 7.10 describes. When a new im
 state; otherwise it is deleted (with the `stateReset` of 7.6 or 7.10 when the rule still exists).
 After a swap that reset the state, the rule's new state is persisted like any change.
 
+### 8.6 Parameters as datapoints
+
+Every parameter of every rule, the enable switch included, is also a datapoint of the device: its
+name is `rule/<ruleId>/<parameterId>` (`rule/hall-presence-light/timeout`,
+`rule/hall-presence-light/enabled`). The device derives these datapoints from the `rules` member
+when it loads the image, after the image's own datapoints and the time master's, in rule order and
+within a rule the enable switch first, then the parameters in their order; the image declares none
+(the prefix `rule/` is reserved, 2.1). Their value types:
+
+| Parameter type | Datapoint type |
+|---|---|
+| `boolean` | `boolean` |
+| `integer` | `signed` |
+| `real` | `real` |
+| `string` | `string` |
+| `duration` | `unsigned` (milliseconds) |
+| `timeOfDay` | `timeOfDay` |
+| `enumeration` | `enumeration` |
+| `color` | `color` |
+
+The rule engine owns them (technology `rules`):
+
+1. **Value.** The datapoint always carries the parameter's current value, quality good: from the
+   start of the rules (the default or the persisted override), and after every change (UI or API,
+   a `setParameter` action, a reset, a new image). A change updates the datapoint as an event of
+   its own after the parameter-changed event (origin `publish`); taking the values when the rules
+   start is no event.
+2. **Commands.** A parameter datapoint is writable exactly when the parameter is adjustable. A
+   command to it (the UI, the API, MQTT, another rule's `write`) is a parameter change from the UI or
+   API (8.2): an invalid value is refused (`parameterRefused`) and the datapoint keeps its value; a
+   valid one becomes the parameter's value (an override, or none when it equals the default), and
+   the model stores it as the commanded value. From a rule's `write` the parameter change is a
+   derived event of the cascade, followed by the datapoint's update.
+3. **Other rules** read a parameter datapoint, trigger on it and write it like any datapoint (in the
+   text form `@"rule/heat/setpoint"`, 4.3). A rule cannot reference its own parameter datapoints
+   (refused at load, `forbidden`): it has the parameters themselves. A `read` of a parameter
+   datapoint is refused at load (`notReadable`): there is nothing to fetch.
+4. **Persistence.** The parameter store (8.4) keeps the overrides; the datapoints are not persisted
+   by the datapoint model and have no history.
+
+A value the datapoint type cannot hold (an integer beyond the signed 32-bit range, a negative
+duration or one beyond 2^32-1 ms) is not mirrored: the datapoint keeps its previous value and the
+device logs it. E-Home's simulation shows the same datapoints.
+
 ## 9. Diagnostics
 
 ### 9.1 Per-rule state
@@ -866,8 +965,8 @@ and #14; E-Home: the simulation view):
 |---|---|
 | `id`, `name`, `enabled` | |
 | `firings` | Number of firings since the rules started at boot. |
-| `lastTriggerAt`, `lastTrigger` | Cascade time of the last firing (wall time when synchronized, uptime always) and what matched: `datapoint hall.presence`, `match`, `schedule evening`, `timer off`, `start boot`, `parameter timeout`. |
-| `lastActionAt`, `lastAction` | The last action that took effect: `write hall.light = true`, `restartTimer off 3min`, `setParameter comfort = 21.5`, `log`. |
+| `lastTriggerAt`, `lastTrigger` | Cascade time of the last firing (wall time when synchronized, uptime always) and what matched: `datapoint hall.presence`, `match`, `schedule evening`, `timer off`, `start boot`, `parameter timeout`, `silence hall.temp`. |
+| `lastActionAt`, `lastAction` | The last action that took effect: `write hall.light = true`, `restartTimer off 3min`, `setParameter comfort = 21.5`, `read hall.temp`, `log`. |
 | `errors`, `lastErrorAt`, `lastError` | Number of logged errors and warnings of the rule, the last one's time, code (9.2) and text. |
 | `state` | The current state id (rules with states). |
 | `timers` | For each timer: `id`, `running`, `remaining`. |
@@ -885,7 +984,8 @@ contract (the corpus compares them); the text after the code is free.
 | `valueNoValue` | warning | a `write` value has no value (not by an evaluation error) | once per action, again only after it had a value |
 | `evalError` | error | an evaluation error in any expression (the text names it) | once per expression, again only after it evaluated without error |
 | `writeRefused` | error | conversion not exact, or the model refused the command | every time |
-| `timerRefused` | error | a timer duration has no value or lies outside 100 ms .. 30 d | every time |
+| `timerRefused` | error | a timer duration or the period of a `silence` trigger has no value or lies outside 100 ms .. 30 d | every time for a timer; once per silence trigger, again only after it armed (7.11) |
+| `readRefused` | warning | the technology refused a `read` (7.12) | once per action, again only after a read of it was accepted |
 | `parameterRefused` | warning | a parameter value was refused (UI, API or action) | every time |
 | `parameterReset` | warning | an override was deleted by a new image because it no longer fits (8.4) | every time |
 | `stateReset` | warning | a new image does not have the rule's current state (7.6); at boot, the persisted state is not declared or the rule has no states (7.10) | every time |
@@ -910,8 +1010,9 @@ failure refuses the whole image with the rule id, the JSON path and one of these
 | `typeError` | operand or argument types (4.4–4.7), a condition that is not boolean, a write value that does not convert to the datapoint type (3.2), a timer duration that is not a duration |
 | `invalidLiteral` | a literal value out of its range (`25:00`, a color level of 256, a string longer than 28 bytes, an integer beyond 2^53-1, a date or date-time outside the years 1900..2155) |
 | `invalidParameter` | a default that is not valid, `min > max`, `choices` on a type without them |
-| `notWritable` | a `write` to a datapoint without the writable flag; a `write` to the output datapoint of a schedule entry (the scheduler owns it) |
-| `forbidden` | a time, history, timer or state function in a `match` condition; a reference to `enabled`; `from` or `to` in a rule without states; `elseActions` together with `to`; a `timer` node outside `running`/`remaining`; `state()` arguments other than one string literal |
+| `notWritable` | a `write` to a datapoint without the writable flag (also the datapoint of a parameter that is not adjustable, 8.6); a `write` to the output datapoint of a schedule entry (the scheduler owns it) |
+| `notReadable` | a `read` of a datapoint no technology can be asked for: one without a KNX, Zigbee or external-values binding (a virtual datapoint), the output of a schedule entry, a datapoint of the time master, a rule parameter's datapoint (8.6) |
+| `forbidden` | a time, history, timer or state function in a `match` condition; a datapoint, or a time, history, timer or state function, in the `after` of a `silence` trigger; a reference to `enabled`; a reference to the rule's own parameter datapoints (8.6); `from` or `to` in a rule without states; `elseActions` together with `to`; a `timer` node outside `running`/`remaining`; `state()` arguments other than one string literal |
 | `limitExceeded` | a limit of 10.2; two persistence keys of the image (8.4, 8.5) that collide in the device's storage (the device's mapping, `doc/rules.md`; practically never, but checked) |
 
 Every check belongs to loading the rule set itself, so every loader (the image service, a checker
@@ -941,7 +1042,7 @@ interpreters refuse beyond them (load refusal `limitExceeded`, or the run-time l
 | Nodes in all expressions of an image | 4096 |
 | Derived firings per cascade | 32 (`loopGuard`) |
 | Events waiting in the queue | 128 (`queueOverflow`) |
-| Timer duration | 100 ms .. 30 d (`timerRefused`) |
+| Timer duration, period of a `silence` trigger | 100 ms .. 30 d (`timerRefused`) |
 | String value | 28 bytes |
 | Formatted log message | 200 bytes (cut, 4.9) |
 
@@ -955,7 +1056,9 @@ of at most 12 frames of values (12 × 32 bytes).
 
 Each example is shown as an outline (a notation of this document only: E-Home edits rules in forms
 and only expressions as text) and as the JSON of the image. Each is also a corpus case that runs it
-against a timeline.
+against a timeline. The outline writes a `silence` trigger as `when silence hall.temp after 30min`
+and a `read` action as `read hall.temp`; a datapoint name that is not an identifier with
+dot-separated parts is quoted as in the text syntax (`write @"rule/heat/setpoint" := 20.0`).
 
 ### 11.1 Presence light with a switch-off delay
 
@@ -1376,18 +1479,21 @@ corpus cases named and both interpreters.
    firings in the cascade, and their number (9.2). Case 24.
 9. **`between` is inclusive, `inWindow` half-open with `from == until` empty.** Confirmed as
    specified (2026-10-18, #25). Cases 11 and 17.
-10. **Rule parameters become datapoints.** Adopted (2026-10-18, #28), implemented in the next round:
-    each parameter is mirrored as an application datapoint `rule/<ruleId>/<parameterId>`, so the
-    UI, the log and MQTT treat it uniformly; the validation, persistence and swap rules of section 8
-    still apply. Until then this specification and the corpus do not contain these datapoints.
+10. **Rule parameters become datapoints.** Adopted (2026-10-18, #28), implemented: each parameter,
+    the enable switch included, is mirrored as a datapoint `rule/<ruleId>/<parameterId>` the device
+    derives from the rules, owned by the rule engine (technology `rules`), so the UI, the API and
+    MQTT treat it uniformly; a command to it is a parameter change of 8.2; the validation,
+    persistence and swap rules of section 8 still apply (2.1, 8.6, 10.1). Cases 50 to 53.
 11. **Labels may be language maps.** Decided (2026-10-18, #28): a rule's `name`, a parameter's
     `label` and a choice's `label` are labels (2.2): a string or an object from language tags to
     strings, resolved once at load from the setting `ui.lang` (exact tag, base language, `en`, the
     first entry); the API passes the label through. Case 40.
-12. **A `read` action and a `silence` trigger.** Adopted (2026-10-18, #27), implemented in the next
-    round: a `read` action asks the technology for a datapoint's value (KNX GroupValueRead), and a
-    `silence` trigger fires when a datapoint has not been updated for a given duration. Until then
-    this specification and the corpus do not contain them.
+12. **A `read` action and a `silence` trigger.** Adopted (2026-10-18, #27), implemented: a `read`
+    action asks the technology for a datapoint's value (KNX GroupValueRead, a Zigbee attribute
+    read, a new fetch of an external source; `readRefused`, load refusal `notReadable`), and a
+    `silence` trigger fires once when a datapoint has had no update for a given duration, counted
+    from its last update (from the boot after a reboot) and re-armed by the next one (2.3, 2.7,
+    7.11, 7.12). Cases 43 to 49.
 13. **A `match` condition may not use time.** Confirmed as specified (2026-10-18, #25); schedules
     cover the time-based cases. Case 32.
 14. **Timer durations are limited to 100 ms .. 30 d.** Confirmed as specified (2026-10-18, #27).

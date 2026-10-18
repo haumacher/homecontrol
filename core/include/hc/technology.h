@@ -30,6 +30,17 @@ public:
 	/// model synchronously (post() to report later).
 	virtual bool command(const Datapoint& datapoint, const Value& value) = 0;
 
+	/// The application asks for the current value of a datapoint this technology owns (a rule's
+	/// `read` action, spec/rules.md 7.12): the technology fetches it from its side (KNX: a
+	/// GroupValueRead) and the answer arrives later as an ordinary report. Return true when the
+	/// request is accepted (sent or queued), false to refuse (log the reason). The default refuses:
+	/// a technology that cannot fetch a value. Like command(), it must not call back into the model
+	/// synchronously.
+	virtual bool read(const Datapoint& datapoint) {
+		(void)datapoint;
+		return false;
+	}
+
 protected:
 	~Technology() = default;
 };

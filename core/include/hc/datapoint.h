@@ -433,6 +433,13 @@ public:
 	/// refuses); then stored and announced like a report.
 	DatapointStatus command(uint16_t id, const Value& value);
 
+	/// The application asks the owning technology to fetch the datapoint's current value
+	/// (Technology::read(); a rule's `read` action). `ok` when the request went out (or was queued);
+	/// the value arrives later as a report. Refused (logged) with `refused` when no technology owns
+	/// the datapoint or the owner refuses (it logs why), `busy` while listeners run. Changes nothing
+	/// in the model.
+	DatapointStatus read(uint16_t id);
+
 	/// Registers a listener (refused when full, for a duplicate and while listeners run).
 	DatapointStatus add_listener(DatapointListener& listener);
 

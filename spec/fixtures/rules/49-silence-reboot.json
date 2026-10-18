@@ -1,0 +1,35 @@
+{
+	"title": "Silence after a reboot: the period counts from the start, also for a datapoint that never reports",
+	"description": "Before the reboot the period would end at 110000 (the update at 50000). The reboot at 100000 loses the update time: the period counts from the start and ends at 160000. The second datapoint never reports: its period ends 1 min after each start, at 60000 and again at 160000.",
+	"datapoints": [{"name": "sensor.temp", "type": "real"}, {"name": "sensor.never", "type": "real"}],
+	"initial": {"sensor.temp": 20.0},
+	"rules": [
+		{
+			"id": "watch",
+			"name": "Watch",
+			"reactions": [
+				{
+					"triggers": [{"kind": "silence", "datapoint": "sensor.temp", "after": {"kind": "literal", "type": "duration", "value": 60000}}],
+					"actions": [{"kind": "log", "level": "warning", "message": ["temp silent"]}]
+				},
+				{
+					"triggers": [{"kind": "silence", "datapoint": "sensor.never", "after": {"kind": "literal", "type": "duration", "value": 60000}}],
+					"actions": [{"kind": "log", "level": "warning", "message": ["never silent"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 50000, "report": {"datapoint": "sensor.temp", "value": 20.5}},
+		{"at": 100000, "reboot": true}
+	],
+	"end": 200000,
+	"expected": {
+		"commands": [],
+		"logs": [
+			{"at": 60000, "rule": "watch", "code": "log", "level": "warning", "message": "never silent"},
+			{"at": 160000, "rule": "watch", "code": "log", "level": "warning", "message": "temp silent"},
+			{"at": 160000, "rule": "watch", "code": "log", "level": "warning", "message": "never silent"}
+		]
+	}
+}

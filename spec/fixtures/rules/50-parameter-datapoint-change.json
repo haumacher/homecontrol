@@ -1,0 +1,43 @@
+{
+	"title": "Parameters as datapoints: every parameter and the enable switch are datapoints rule/<ruleId>/<parameterId> that follow the parameter's value",
+	"description": "At the start the datapoints carry the current values (the persisted override of level, the defaults otherwise); a change from the API, from an action and back to the default shows on the datapoint. A duration parameter is an unsigned datapoint in milliseconds (spec 8.6).",
+	"datapoints": [{"name": "x.go", "type": "boolean"}],
+	"persisted": {"heat/level": {"type": "integer", "value": 3}},
+	"rules": [
+		{
+			"id": "heat",
+			"name": "Heating",
+			"parameters": [
+				{"id": "setpoint", "label": "Setpoint", "type": "real", "default": 21.0, "min": 15.0, "max": 25.0},
+				{"id": "level", "label": "Level", "type": "integer", "default": 1, "min": 0, "max": 5},
+				{"id": "hold", "label": "Hold", "type": "duration", "default": 600000},
+				{"id": "fixed", "label": "Fixed", "type": "string", "default": "eco", "adjustable": false}
+			],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.go"}],
+					"actions": [{"kind": "setParameter", "parameter": "setpoint", "value": {"kind": "literal", "type": "real", "value": 19.5}}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 0, "check": {"datapoints": {"rule/heat/enabled": true, "rule/heat/setpoint": 21.0, "rule/heat/level": 3, "rule/heat/hold": 600000, "rule/heat/fixed": "eco"}}},
+		{"at": 1000, "setParameter": {"rule": "heat", "parameter": "setpoint", "value": 22.5}},
+		{"at": 1000, "check": {"datapoints": {"rule/heat/setpoint": 22.5}}},
+		{"at": 2000, "report": {"datapoint": "x.go", "value": true}},
+		{"at": 2000, "check": {"datapoints": {"rule/heat/setpoint": 19.5}}},
+		{"at": 3000, "setParameter": {"rule": "heat", "parameter": "level", "value": 1}},
+		{"at": 4000, "setParameter": {"rule": "heat", "parameter": "hold", "value": 90000}},
+		{"at": 5000, "setParameter": {"rule": "heat", "parameter": "enabled", "value": false}}
+	],
+	"end": 6000,
+	"expected": {
+		"commands": [],
+		"logs": [],
+		"final": {
+			"datapoints": {"rule/heat/enabled": false, "rule/heat/setpoint": 19.5, "rule/heat/level": 1, "rule/heat/hold": 90000, "rule/heat/fixed": "eco"},
+			"persisted": {"heat/setpoint": 19.5, "heat/hold": 90000, "heat/enabled": false}
+		}
+	}
+}

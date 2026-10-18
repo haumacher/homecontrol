@@ -130,8 +130,8 @@ bool KnxAdapter::configure(const KnxMapping* mappings, size_t count, const char*
 	}
 	for (size_t i = 0; i < count; ++i) {
 		const KnxMapping& m = mappings[i];
-		entries[i] =
-			Entry{m.datapoint, m.dpt, m.has_send, m.send, m.listen_count > 0 ? m.listen[0] : m.send, m.transmit_only};
+		entries[i] = Entry{m.datapoint, m.dpt, m.has_send, m.send, m.listen_count > 0 ? m.listen[0] : m.send,
+			m.transmit_only, false};
 	}
 	std::sort(entries, entries + count, [](const Entry& a, const Entry& b) { return a.datapoint < b.datapoint; });
 	size_t n = 0;
@@ -179,10 +179,20 @@ bool KnxAdapter::configure(const KnxMapping* mappings, size_t count, const char*
 	Log::info(kTag, "knx mapping: %u datapoints on %u group addresses", static_cast<unsigned>(count_),
 		static_cast<unsigned>(listen_count_));
 	if (tunnel_.is_up()) {
-		read_cursor_ = 0;
-		schedule_read();
+		want_reads_on_start();
 	}
 	return true;
+}
+
+void KnxAdapter::want_reads_on_start() {
+	for (size_t i = 0; i < count_; ++i) {
+		const Datapoint* dp = model_.get(entries_[i].datapoint);
+		if (dp != nullptr && dp->read_on_start() && !entries_[i].transmit_only) {
+			entries_[i].read_wanted = true;
+		}
+	}
+	read_cursor_ = 0;
+	schedule_read();
 }
 
 void KnxAdapter::clear() {
@@ -198,13 +208,36 @@ void KnxAdapter::clear() {
 
 size_t KnxAdapter::reads_pending() const {
 	size_t result = 0;
-	for (size_t i = read_cursor_; i < count_; ++i) {
-		const Datapoint* dp = model_.get(entries_[i].datapoint);
-		if (dp != nullptr && dp->read_on_start() && !entries_[i].transmit_only) {
-			++result;
-		}
+	for (size_t i = 0; i < count_; ++i) {
+		result += entries_[i].read_wanted ? 1 : 0;
 	}
 	return result;
+}
+
+bool KnxAdapter::read(const Datapoint& datapoint) {
+	const Entry* entry = entry_of(datapoint.id());
+	if (entry == nullptr) {
+		Log::warn(kTag, "refusing read of '%s': not mapped to a group address", datapoint.name());
+		return false;
+	}
+	if (entry->transmit_only) {
+		Log::warn(kTag, "refusing read of '%s': the adapter only transmits it for its owner", datapoint.name());
+		return false;
+	}
+	if (!tunnel_.is_up()) {
+		Log::warn(kTag, "refusing read of '%s': the KNX tunnel is %s (%s)", datapoint.name(),
+			tunnel_state_name(tunnel_.state()), tunnel_.reason());
+		return false;
+	}
+	size_t index = static_cast<size_t>(entry - entries_);
+	if (!entries_[index].read_wanted) {
+		entries_[index].read_wanted = true;
+		if (read_cursor_ >= count_) {
+			read_cursor_ = index;
+		}
+		schedule_read();
+	}
+	return true;
 }
 
 const KnxAdapter::Entry* KnxAdapter::entry_of(uint16_t datapoint) const {
@@ -271,14 +304,16 @@ bool KnxAdapter::command(const Datapoint& datapoint, const Value& value) {
 void KnxAdapter::tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previous) {
 	(void) previous;
 	if (tunnel.state() == TunnelState::up) {
-		read_cursor_ = 0;
-		schedule_read();
+		want_reads_on_start();
 		return;
 	}
 	if (tunnel.state() == TunnelState::down) {
 		loop_.cancel(read_timer_);
 		read_timer_ = TimerHandle();
 		read_cursor_ = count_;
+		for (size_t i = 0; i < count_; ++i) {
+			entries_[i].read_wanted = false;
+		}
 		pending_count_ = 0;
 		for (size_t i = 0; i < count_; ++i) {
 			if (!entries_[i].transmit_only) {
@@ -289,14 +324,21 @@ void KnxAdapter::tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previ
 }
 
 void KnxAdapter::schedule_read() {
-	while (read_cursor_ < count_) {
-		const Datapoint* dp = model_.get(entries_[read_cursor_].datapoint);
-		if (dp != nullptr && dp->read_on_start() && !entries_[read_cursor_].transmit_only) {
-			break;
-		}
-		++read_cursor_;
+	if (read_timer_.valid()) {
+		return;
 	}
-	if (read_cursor_ >= count_ || read_timer_.valid()) {
+	// The next waiting read from the cursor on, around the end once (a read asked for behind the
+	// cursor waits for its turn).
+	size_t start = read_cursor_ < count_ ? read_cursor_ : 0;
+	size_t found = count_;
+	for (size_t k = 0; k < count_ && found == count_; ++k) {
+		size_t i = (start + k) % count_;
+		if (entries_[i].read_wanted) {
+			found = i;
+		}
+	}
+	read_cursor_ = found;
+	if (found >= count_) {
 		return;
 	}
 	read_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kReadSpacingMs,
@@ -308,10 +350,11 @@ void KnxAdapter::read_due() {
 	if (read_cursor_ >= count_ || !tunnel_.is_up()) {
 		return;
 	}
-	const Entry& entry = entries_[read_cursor_];
+	Entry& entry = entries_[read_cursor_];
 	LData frame;
 	make_group_read(frame, entry.has_send ? entry.send : entry.first_listen);
 	if (tunnel_.send(frame) != 0) {
+		entry.read_wanted = false;
 		++read_cursor_;
 	}
 	// A full queue: the same read is tried again after the spacing.

@@ -4,6 +4,7 @@
 // Unit tests of the rule interpreter beyond the conformance corpus: the canonical printer (round
 // trip through a text parser for every corpus expression), the load checks and limits of spec
 // section 10, the parameter key mapping, the memory accounting and the loop guard.
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cinttypes>
@@ -590,6 +591,23 @@ TEST_CASE("RulesPrinter round trip of every corpus expression") {
 			d.add(p["name"].text, hc::rules::datapoint_type_from_name(p["type"].text.c_str()),
 				!p.has("writable") || p["writable"].boolean);
 		}
+		std::vector<const Json*> images{&json["rules"]};
+		for (const Json& step : json["timeline"].items) {
+			if (step.has("image")) {
+				images.push_back(&step["image"]["rules"]);
+			}
+		}
+		JsonTree tree;
+		// The parameter datapoints of every image of the case (spec/rules.md 8.6).
+		for (const Json* rules : images) {
+			hc::rules::ParameterDatapoint derived[128];
+			size_t count = hc::rules::parameter_datapoints(tree.value(*rules), derived, 128);
+			for (size_t i = 0; i < count && i < 128; ++i) {
+				if (std::find(d.names.begin(), d.names.end(), std::string(derived[i].name)) == d.names.end()) {
+					d.add(derived[i].name, derived[i].type, (derived[i].flags & hc::DatapointFlags::kWritable) != 0);
+				}
+			}
+		}
 		d.load(model);
 		struct Schedules : hc::rules::ScheduleDirectory {
 			const Json* ids;
@@ -603,13 +621,6 @@ TEST_CASE("RulesPrinter round trip of every corpus expression") {
 			}
 		} schedules;
 		schedules.ids = &json["schedules"];
-		std::vector<const Json*> images{&json["rules"]};
-		for (const Json& step : json["timeline"].items) {
-			if (step.has("image")) {
-				images.push_back(&step["image"]["rules"]);
-			}
-		}
-		JsonTree tree;
 		for (const Json* rules : images) {
 			RuleSet set;
 			LoadResult result = set.load(tree.value(*rules), model, &schedules);
@@ -1283,6 +1294,69 @@ TEST_CASE("RulesEngine a self-triggering rule ends with loopGuard naming it") {
 	CHECK(bench.logs.size() == 2);
 }
 
+TEST_CASE("RulesEngine readRefused is logged once per action until a read is accepted") {
+	EngineBench bench;
+	Datapoints d;
+	d.add("go", hc::ValueType::boolean);
+	d.add("t", hc::ValueType::real);
+	std::string rules = image(rule_json(
+		R"({"triggers": [{"kind": "datapoint", "datapoint": "go", "on": "update"}], "actions": [{"kind": "read", "datapoint": "t"}]})"));
+	hc_test::ScopedCapture capture(hc::LogLevel::error);
+	bench.setup(d, rules);
+	bench.technology.refuse_reads = true;
+	bench.report("go", hc::Value::of_bool(true));
+	bench.report("go", hc::Value::of_bool(true));
+	REQUIRE(bench.logs.size() == 1);
+	CHECK(bench.logs[0].find("x readRefused") == 0);
+	bench.technology.refuse_reads = false;
+	bench.report("go", hc::Value::of_bool(true));
+	CHECK(bench.logs.size() == 1);
+	hc::rules::RuleDiagnostics diagnostics;
+	REQUIRE(bench.engine->diagnostics(0, diagnostics));
+	CHECK(std::string(diagnostics.last_action) == "read t");
+	bench.technology.refuse_reads = true;
+	bench.report("go", hc::Value::of_bool(true));
+	CHECK(bench.logs.size() == 2);
+}
+
+TEST_CASE("RulesEngine a silence period outside the timer limits is timerRefused once") {
+	EngineBench bench;
+	Datapoints d;
+	d.add("t", hc::ValueType::real);
+	std::string rules = image(rule_json(
+		R"({"triggers": [{"kind": "silence", "datapoint": "t", "after": {"kind": "literal", "type": "duration", "value": 50}}], "actions": []})"));
+	hc_test::ScopedCapture capture(hc::LogLevel::error);
+	bench.setup(d, rules);
+	REQUIRE(bench.logs.size() == 1);
+	CHECK(bench.logs[0].find("x timerRefused") == 0);
+	bench.report("t", hc::Value::of_real(1));
+	bench.advance(1000);
+	CHECK(bench.logs.size() == 1);
+	hc::rules::RuleDiagnostics diagnostics;
+	REQUIRE(bench.engine->diagnostics(0, diagnostics));
+	CHECK(diagnostics.firings == 0);
+}
+
+TEST_CASE("RulesEngine the silence trigger in the diagnostics") {
+	EngineBench bench;
+	Datapoints d;
+	d.add("t", hc::ValueType::real);
+	std::string rules = image(rule_json(
+		R"({"triggers": [{"kind": "silence", "datapoint": "t", "after": {"kind": "literal", "type": "duration", "value": 1000}}], "actions": []})"));
+	bench.setup(d, rules);
+	bench.advance(999);
+	hc::rules::RuleDiagnostics diagnostics;
+	REQUIRE(bench.engine->diagnostics(0, diagnostics));
+	CHECK(diagnostics.firings == 0);
+	bench.advance(1);
+	REQUIRE(bench.engine->diagnostics(0, diagnostics));
+	CHECK(diagnostics.firings == 1);
+	CHECK(std::string(diagnostics.last_trigger) == "silence t");
+	bench.advance(10000);
+	REQUIRE(bench.engine->diagnostics(0, diagnostics));
+	CHECK(diagnostics.firings == 1);
+}
+
 namespace {
 
 /// A typical image: `count` rules of a presence light (a parameter, a timer, two reactions).
@@ -1328,11 +1402,12 @@ TEST_CASE("RulesEngine memory accounting of a 50-rule image") {
 	CHECK(sizeof(hc::rules::Node) == 16);
 	CHECK(m.nodes == set.node_count() * sizeof(hc::rules::Node));
 	size_t sections = m.rules + m.reactions + m.triggers + m.actions + m.log_parts + m.parameters + m.choices + m.timers +
-		m.states + m.nodes + m.constants + m.schedules + m.tracked + m.matches + m.strings;
+		m.states + m.nodes + m.constants + m.schedules + m.tracked + m.matches + m.silences + m.strings;
 	CHECK(m.block >= sections);
 	CHECK(m.block <= sections + 16 * 8); // alignment padding only
 	size_t runtime = e.per_rule * set.rule_count() + e.per_parameter * set.parameter_count() +
-		e.per_timer * set.timer_count() + e.per_node * set.node_count() + e.per_tracked * set.tracked_count();
+		e.per_timer * set.timer_count() + e.per_node * set.node_count() + e.per_tracked * set.tracked_count() +
+		e.per_silence * set.silence_count() + e.per_action * set.action_count();
 	CHECK(e.runtime >= runtime);
 	CHECK(e.runtime <= runtime + 64 + bench.model.size() / 8 + 8 * 8 + 2 * set.match_count() + 64);
 	MESSAGE("50 rules, " << set.node_count() << " nodes, " << set.parameter_count() << " parameters, "

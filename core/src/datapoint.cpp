@@ -649,6 +649,28 @@ DatapointStatus DatapointModel::command(uint16_t id, const Value& value) {
 	return DatapointStatus::ok;
 }
 
+DatapointStatus DatapointModel::read(uint16_t id) {
+	if (refuse_busy("read")) {
+		return DatapointStatus::busy;
+	}
+	Datapoint* dp = lookup(id, "read");
+	if (dp == nullptr) {
+		return DatapointStatus::unknown_id;
+	}
+	if (dp->technology_ == nullptr) {
+		Log::warn(kTag, "refusing read of '%s': no technology owns it", dp->name_);
+		return DatapointStatus::refused;
+	}
+	commanding_ = true;
+	bool accepted = dp->technology_->read(*dp);
+	commanding_ = false;
+	if (!accepted) {
+		Log::warn(kTag, "read of '%s' refused by %s", dp->name_, dp->technology_->name());
+		return DatapointStatus::refused;
+	}
+	return DatapointStatus::ok;
+}
+
 void DatapointModel::store(Datapoint& datapoint, const Value& value, UpdateOrigin origin) {
 	Value old_value = datapoint.value_;
 	Quality old_quality = datapoint.quality_;

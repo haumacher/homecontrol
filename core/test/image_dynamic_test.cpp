@@ -239,7 +239,7 @@ TEST_CASE("Image.DynamicJoinWhileImageLoaded") {
 	f.connect();
 	REQUIRE_MESSAGE(f.load(fixture("example.json")), describe(f.service.report()));
 	f.pump();
-	CHECK(f.model.size() == 17);
+	CHECK(f.model.size() == 21);
 	CHECK(f.service.dynamic_datapoints() == 0);
 	f.receive(0x0902, "00 81"); // 1/1/2 living.light.state on
 	f.receive(0x0C02, "00 80 03 E8"); // 1/4/2 hall.lux 10 lx: dark
@@ -258,15 +258,15 @@ TEST_CASE("Image.DynamicJoinWhileImageLoaded") {
 	f.provider.set({"fake.a", "fake.b"});
 	f.provider.set({"fake.a", "fake.b"});
 	CHECK(f.service.reload_pending());
-	CHECK(f.model.size() == 17); // never within the notification
+	CHECK(f.model.size() == 21); // never within the notification
 	f.run_for(0);
 	CHECK(f.service.dynamic_reloads() == reloads + 1);
-	REQUIRE(f.model.size() == 19);
+	REQUIRE(f.model.size() == 23);
 	CHECK(f.service.dynamic_datapoints() == 2);
-	CHECK(f.dp("fake.a").id() == 17);
+	CHECK(f.dp("fake.a").id() == 21);
 	CHECK(f.dp("fake.a").technology() == &f.provider);
 	CHECK(f.provider.loaded == loaded + 1);
-	CHECK(f.p.sink.contains("model reloaded (a provider's datapoints changed): 17 datapoint(s) of the image, 2 of "
+	CHECK(f.p.sink.contains("model reloaded (a provider's datapoints changed): 21 datapoint(s) of the image, 2 of "
 		"the providers"));
 	// The image's datapoints keep their ids and values.
 	CHECK(f.dp("living.light.state").id() == 1);
@@ -293,12 +293,12 @@ TEST_CASE("Image.DynamicJoinWhileImageLoaded") {
 	// The device leaves: the model shrinks (one second after the last reload at the earliest).
 	f.provider.set({"fake.b"});
 	f.run_for(999);
-	CHECK(f.model.size() == 17 + 1);
+	CHECK(f.model.size() == 21 + 1);
 	CHECK(f.model.find("fake.a") == nullptr);
-	CHECK(f.dp("fake.b").id() == 17);
+	CHECK(f.dp("fake.b").id() == 21);
 	f.provider.set({});
 	f.run_for(1000);
-	CHECK(f.model.size() == 17);
+	CHECK(f.model.size() == 21);
 	CHECK(f.service.dynamic_datapoints() == 0);
 	CHECK(f.service.loaded());
 	CHECK(f.dp("living.light.state").value() == Value::of_bool(false));
@@ -309,13 +309,13 @@ TEST_CASE("Image.DynamicDuplicateNamesAreRefused") {
 	REQUIRE_MESSAGE(f.load(fixture("example.json")), describe(f.service.report()));
 	f.provider.set({"fake.a"});
 	f.run_for(999); // a second after the image's model load
-	CHECK(f.model.size() == 17);
+	CHECK(f.model.size() == 21);
 	f.run_for(1);
-	REQUIRE(f.model.size() == 18);
+	REQUIRE(f.model.size() == 22);
 	// A provider's name that the image has: the reload is refused, the old model stays.
 	f.provider.set({"fake.a", "hall.light"});
 	f.run_for(2000);
-	CHECK(f.model.size() == 18);
+	CHECK(f.model.size() == 22);
 	CHECK(f.model.find("fake.a") != nullptr);
 	REQUIRE(f.service.dynamic_refusal() != nullptr);
 	CHECK(std::string(f.service.dynamic_refusal()->path) == "datapoints[8].id");
@@ -327,7 +327,7 @@ TEST_CASE("Image.DynamicDuplicateNamesAreRefused") {
 	CHECK(f.service.report().kind == Report::Kind::invalid);
 	CHECK(has_refusal(f.service.report(), "datapoints[0].id", "'fake.a' is also a datapoint of the provider 'fake'"));
 	CHECK(f.service.info().revision == 7);
-	CHECK(f.model.size() == 18);
+	CHECK(f.model.size() == 22);
 	// Two providers that need the same name.
 	FakeProvider other("other");
 	other.names = {"fake.a"};
@@ -338,15 +338,15 @@ TEST_CASE("Image.DynamicDuplicateNamesAreRefused") {
 	CHECK(std::string(f.service.dynamic_refusal()->path).empty());
 	CHECK(std::string(f.service.dynamic_refusal()->reason) ==
 		"'fake.a' is a datapoint of the provider 'fake' and of the provider 'other'");
-	CHECK(f.model.size() == 18);
+	CHECK(f.model.size() == 22);
 	other.set({"other.a"});
 	f.run_for(2000);
 	CHECK(f.service.dynamic_refusal() == nullptr);
-	CHECK(f.model.size() == 19);
+	CHECK(f.model.size() == 23);
 	CHECK(f.dp("other.a").technology() == &other);
 	REQUIRE(f.service.remove_provider(other));
 	CHECK(other.cleared == 1);
-	CHECK(f.model.size() == 18);
+	CHECK(f.model.size() == 22);
 	CHECK(f.model.find("other.a") == nullptr);
 	// A provider that cannot build its specs refuses the reload.
 	f.provider.refuse = true;
@@ -355,7 +355,7 @@ TEST_CASE("Image.DynamicDuplicateNamesAreRefused") {
 	REQUIRE(f.service.dynamic_refusal() != nullptr);
 	CHECK(std::string(f.service.dynamic_refusal()->reason) ==
 		"the provider 'fake' cannot build its datapoints: refused by the test");
-	CHECK(f.model.size() == 18);
+	CHECK(f.model.size() == 22);
 }
 
 TEST_CASE("Image.DynamicWithoutImage") {
@@ -377,10 +377,10 @@ TEST_CASE("Image.DynamicWithoutImage") {
 	CHECK_FALSE(f.service.loaded());
 	// An image joins them: its datapoints first, the providers' values kept.
 	REQUIRE_MESSAGE(f.load(fixture("example.json")), describe(f.service.report()));
-	CHECK(f.model.size() == 19);
-	CHECK(f.dp("fake.a").id() == 17);
+	CHECK(f.model.size() == 23);
+	CHECK(f.dp("fake.a").id() == 21);
 	CHECK(f.dp("fake.a").value() == Value::of_unsigned(3));
-	CHECK(f.service.info().datapoints == 17);
+	CHECK(f.service.info().datapoints == 21);
 	// Removing the image leaves the providers' datapoints.
 	const char* error = nullptr;
 	REQUIRE(f.service.unload(&error));
@@ -420,16 +420,16 @@ TEST_CASE("Image.DynamicReloadRateLimit") {
 	f.p.clock.now_ms = first + 999;
 	f.run_for(0);
 	CHECK(f.service.dynamic_reloads() == base + 1);
-	CHECK(f.model.size() == 18);
+	CHECK(f.model.size() == 22);
 	f.run_for(1);
 	CHECK(f.service.dynamic_reloads() == base + 2);
-	CHECK(f.model.size() == 21);
+	CHECK(f.model.size() == 25);
 	// An image load composes the providers itself: a pending reload is dropped.
 	f.provider.set({"a"});
 	CHECK(f.service.reload_pending());
 	REQUIRE(f.load(fixture("example.json")));
 	CHECK_FALSE(f.service.reload_pending());
-	CHECK(f.model.size() == 18);
+	CHECK(f.model.size() == 22);
 	f.run_for(5000);
 	CHECK(f.service.dynamic_reloads() == base + 2);
 }
@@ -593,11 +593,13 @@ TEST_CASE("Image.ZigbeeAdapterAsProvider") {
 		"{\"kind\": \"datapoint\", \"name\": \"living.ceiling\"}}]}]}]");
 	REQUIRE_MESSAGE(f.load(image), describe(f.service.report()));
 	f.run_for(10);
-	// The image's two datapoints, then the sensor's generic ones with their values.
-	REQUIRE(f.model.size() == 5);
+	// The image's two datapoints and the rule's enable switch (spec/rules.md 8.6), then the sensor's
+	// generic ones with their values.
+	REQUIRE(f.model.size() == 6);
 	CHECK(f.dp("living.ceiling")->id() == 0);
 	CHECK(f.dp("living.ceiling")->technology() == &f.zigbee);
-	CHECK(f.dp(kSensorTemperature)->id() == 2);
+	CHECK(f.dp("rule/copy/enabled")->id() == 2);
+	CHECK(f.dp(kSensorTemperature)->id() == 3);
 	CHECK(f.dp(kSensorTemperature)->value() == Value::of_real(21.5));
 
 	// The bound bulb joins: its datapoint is the image's, no generic ones, no reload.
@@ -619,7 +621,11 @@ TEST_CASE("Image.ZigbeeAdapterAsProvider") {
 	f.run_for(1000);
 	CHECK(f.service.dynamic_reloads() == reloads + 1);
 	REQUIRE(f.dp("zigbee.00158d00090a0b0c.1.contact") != nullptr);
-	CHECK(f.model.size() == 7);
+	CHECK(f.model.size() == 8);
+	// The provider's reload kept the rule engine's binding of the parameter datapoint.
+	CHECK(f.dp("rule/copy/enabled")->technology() != nullptr);
+	CHECK(std::string(f.dp("rule/copy/enabled")->technology()->name()) == "rules");
+	CHECK(f.dp("rule/copy/enabled")->value() == Value::of_bool(true));
 	CHECK(f.dp("living.ceiling")->id() == 0);
 	f.device.report(hc_test::kBulbShort, 11, cluster::kOnOff, attribute::kOnOff, zcl_type::kBool, 1);
 	f.run_for(10);

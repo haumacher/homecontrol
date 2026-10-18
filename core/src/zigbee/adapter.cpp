@@ -1536,6 +1536,37 @@ bool ZigbeeAdapter::command(const Datapoint& datapoint, const Value& value) {
 	return true;
 }
 
+bool ZigbeeAdapter::read(const Datapoint& datapoint) {
+	long index = index_of(datapoint.id());
+	if (index < 0) {
+		Log::error(kTag, "read of '%s' refused: not a Zigbee datapoint", datapoint.name());
+		return false;
+	}
+	const ZigbeePoint& point = points_[index];
+	if ((point.flags() & DatapointFlags::kReadOnStart) == 0) {
+		// Client commands (buttons) have no attribute; a multistate input reports events, which a read
+		// would repeat (the adapter does not read it on start either).
+		Log::warn(kTag, "read of '%s' refused: %s has no attribute value to read", datapoint.name(),
+			function_info(point.function).key);
+		return false;
+	}
+	const ZigbeeDevice* device = database_.find(point.ieee);
+	if (device == nullptr || device->short_addr == kNoShortAddress) {
+		Log::warn(kTag, "read of '%s' refused: the device has not joined", datapoint.name());
+		return false;
+	}
+	if (device->left) {
+		Log::warn(kTag, "read of '%s' refused: the device left the network", datapoint.name());
+		return false;
+	}
+	uint16_t attribute = point.attribute();
+	if (!driver_.read_attributes(device->ieee, device->short_addr, point.endpoint, point.cluster(), &attribute, 1)) {
+		Log::warn(kTag, "read of '%s' refused: the Zigbee stack did not take it", datapoint.name());
+		return false;
+	}
+	return true;
+}
+
 // ---- JSON -----------------------------------------------------------------------------------
 
 void ZigbeeAdapter::write_json(JsonWriter& json) const {

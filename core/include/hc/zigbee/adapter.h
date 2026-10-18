@@ -111,7 +111,10 @@ protected:
 ///   for a device not heard since. Any frame of a stale device ends it; its datapoints are read
 ///   again.
 /// - **Reads.** After start() and after a silence, the server attributes of each device are read,
-///   one device every kRefreshSpacingMs.
+///   one device every kRefreshSpacingMs. A read the application asks for (read(), a rule's `read`
+///   action) sends a Read Attributes of the datapoint's attribute at once; refused for a point the
+///   adapter does not read on start either (a client command of a button, a multistate input's
+///   events) and while the device has not joined.
 ///
 /// Memory: start(), configure() and the reload allocate the point table, the device database is
 /// static (DeviceDatabase::kMaxDevices); reports, commands and the stale check allocate nothing.
@@ -219,6 +222,7 @@ public:
 	// Technology
 	const char* name() const override { return "zigbee"; }
 	bool command(const Datapoint& datapoint, const Value& value) override;
+	bool read(const Datapoint& datapoint) override;
 
 	// image::DynamicSpecProvider (with the image service, doc/image.md "Dynamic datapoints")
 	const char* provider_name() const override { return "zigbee"; }

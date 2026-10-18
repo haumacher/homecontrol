@@ -29,6 +29,7 @@ struct PlanSchedules : rules::ScheduleDirectory {
 	explicit PlanSchedules(const Plan& p) : plan(p) {}
 	bool has_schedule(const char* id) const override { return plan.has_schedule(id); }
 	bool owns_output(const char* datapoint) const override { return plan.schedule_owns_output(datapoint); }
+	bool technology_reads(const char* datapoint) const override { return plan.technology_reads(datapoint); }
 	const Plan& plan;
 };
 
@@ -608,6 +609,8 @@ bool ImageService::reload_dynamic(const char* why) {
 		return false;
 	}
 	bind_providers(plan, composed);
+	// The load dropped the rule engine's binding of the parameter datapoints (spec/rules.md 8.6).
+	engine_.bind_parameters();
 	dynamic_refused_ = false;
 	++dynamic_reloads_;
 	// The image's datapoints are at their positions: the rules' ids stay valid. Every component that

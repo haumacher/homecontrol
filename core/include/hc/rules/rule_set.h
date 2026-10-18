@@ -89,7 +89,7 @@ struct Node {
 	} lit;
 };
 
-enum class TriggerKind : uint8_t { datapoint, match, schedule, timer, start, parameter };
+enum class TriggerKind : uint8_t { datapoint, match, schedule, timer, start, parameter, silence };
 
 /// Trigger flags.
 struct TriggerFlags {
@@ -104,10 +104,20 @@ struct TriggerFlags {
 struct Trigger {
 	TriggerKind kind;
 	uint8_t flags;
-	uint16_t ref; ///< Datapoint id, schedule index, timer index, parameter index, or the match condition root.
+	/// Datapoint id, schedule index, timer index, parameter index, the match condition root, or the
+	/// index of a silence trigger in RuleSet::silence().
+	uint16_t ref;
 };
 
-enum class ActionKind : uint8_t { write, start_timer, restart_timer, cancel_timer, set_parameter, log };
+/// A silence trigger (spec/rules.md 2.3, 7.11): its datapoint and the root of its `after` duration.
+struct SilenceRef {
+	uint16_t trigger;   ///< Index in the trigger array.
+	uint16_t datapoint; ///< Datapoint id.
+	uint16_t after;     ///< Root node of the duration (constant within the rule: literals, parameters).
+	uint8_t rule;
+};
+
+enum class ActionKind : uint8_t { write, start_timer, restart_timer, cancel_timer, set_parameter, log, read };
 
 /// Log levels of a log action.
 enum class LogActionLevel : uint8_t { info, warning, error };
@@ -115,7 +125,7 @@ enum class LogActionLevel : uint8_t { info, warning, error };
 struct Action {
 	ActionKind kind;
 	uint8_t flags;   ///< write: 1 = onlyOnChange; log: LogActionLevel.
-	uint16_t target; ///< Datapoint id, timer index, parameter index, first log part.
+	uint16_t target; ///< Datapoint id (write, read), timer index, parameter index, first log part.
 	uint16_t expr;   ///< Value or duration root (kNone: none); log: the part count.
 };
 
@@ -207,6 +217,7 @@ enum class LoadError : uint8_t {
 	invalid_literal,
 	invalid_parameter,
 	not_writable,
+	not_readable,
 	forbidden,
 	limit_exceeded,
 	out_of_memory, ///< Not a spec reason: the block could not be allocated.
@@ -236,6 +247,14 @@ public:
 		(void)datapoint;
 		return false;
 	}
+	/// Whether a technology owns `datapoint` that can be asked for its value (a KNX group object, a
+	/// Zigbee attribute, an external source): a rule's `read` of a datapoint the image binds to no
+	/// such technology is refused at load (notReadable, spec/rules.md 10.1). True when the directory
+	/// cannot tell; the technology's refusal at run time (readRefused) speaks then.
+	virtual bool technology_reads(const char* datapoint) const {
+		(void)datapoint;
+		return true;
+	}
 
 protected:
 	~ScheduleDirectory() = default;
@@ -245,8 +264,36 @@ protected:
 struct RuleSetMemory {
 	size_t block;     ///< The one allocation, all of the below.
 	size_t rules, reactions, triggers, actions, log_parts, parameters, choices, timers, states, nodes, constants,
-		schedules, tracked, matches, strings;
+		schedules, tracked, matches, silences, strings;
 };
+
+/// The prefix of the datapoints that mirror rule parameters (spec/rules.md 8.6):
+/// `rule/<ruleId>/<parameterId>`. A declared datapoint of the image may not start with it.
+constexpr const char* kParameterDatapointPrefix = "rule/";
+
+/// Writes `rule/<rule>/<parameter>` into `out`; false if it does not fit (`size` at least
+/// Datapoint::kMaxName + 1 always fits valid ids: 5 + 32 + 1 + 24 bytes).
+bool parameter_datapoint_name(const char* rule, const char* parameter, char* out, size_t size);
+
+/// The datapoint value type that mirrors a parameter of `type` (spec 8.6): boolean, signed (integer),
+/// real, string, unsigned (duration in ms), time of day, enumeration, color; none for another type.
+ValueType parameter_datapoint_type(Type type);
+
+/// A datapoint mirroring a rule parameter, as the image loader and the tests derive it from the
+/// `rules` member: the name, the value type, and the flags kWritable | kTransmit when the parameter
+/// is adjustable (a command is a setParameter from the API), none otherwise. Never kPersist: the
+/// parameter store keeps the overrides (spec 8.4).
+struct ParameterDatapoint {
+	char name[Datapoint::kMaxName + 1];
+	ValueType type;
+	uint8_t flags;
+};
+
+/// The parameter datapoints of `rules` (spec 8.6), in rule order, `enabled` first in each rule;
+/// writes up to `capacity` to `out` (which may be nullptr) and returns how many there are. Lenient:
+/// a rule or parameter that is not well-formed (an invalid or repeated id, an unknown type) is
+/// skipped, since RuleSet::load() refuses it with the precise reason.
+size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, size_t capacity);
 
 /// The `rules` member of an image, compiled: flat arrays in one allocation, indices instead of
 /// pointers. Built by load(); read-only afterwards. Movable, not copyable.
@@ -289,6 +336,7 @@ public:
 
 	size_t reaction_count() const { return reaction_count_; }
 	size_t trigger_count() const { return trigger_count_; }
+	size_t action_count() const { return action_count_; }
 	size_t parameter_count() const { return parameter_count_; }
 	size_t timer_count() const { return timer_count_; }
 	size_t state_count() const { return state_count_; }
@@ -307,6 +355,10 @@ public:
 
 	size_t match_count() const { return match_count_; }
 	const MatchRef& match(size_t i) const { return matches_[i]; }
+
+	/// The silence triggers (spec 2.3), in trigger order.
+	size_t silence_count() const { return silence_count_; }
+	const SilenceRef& silence(size_t i) const { return silences_[i]; }
 
 	/// Index of the rule with `id`; -1 if there is none.
 	int find_rule(const char* id) const;
@@ -336,10 +388,12 @@ private:
 	uint32_t* schedules_ = nullptr;
 	uint16_t* tracked_ = nullptr;
 	MatchRef* matches_ = nullptr;
+	SilenceRef* silences_ = nullptr;
 	char* strings_ = nullptr;
 	size_t rule_count_ = 0, reaction_count_ = 0, trigger_count_ = 0, action_count_ = 0, log_part_count_ = 0,
 		   parameter_count_ = 0, choice_count_ = 0, timer_count_ = 0, state_count_ = 0, node_count_ = 0,
-		   constant_count_ = 0, schedule_count_ = 0, tracked_count_ = 0, match_count_ = 0, string_bytes_ = 0;
+		   constant_count_ = 0, schedule_count_ = 0, tracked_count_ = 0, match_count_ = 0, silence_count_ = 0,
+		   string_bytes_ = 0;
 };
 
 } // namespace hc::rules

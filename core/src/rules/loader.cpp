@@ -38,7 +38,7 @@ constexpr const char* kOperatorTexts[] = {"-", "not", "or", "and", "==", "!=", "
 	"/", "%"};
 
 constexpr const char* kLoadErrorNames[] = {"ok", "malformed", "duplicateId", "unknownReference", "typeError",
-	"invalidLiteral", "invalidParameter", "notWritable", "forbidden", "limitExceeded", "outOfMemory"};
+	"invalidLiteral", "invalidParameter", "notWritable", "notReadable", "forbidden", "limitExceeded", "outOfMemory"};
 
 bool is_time_function(Fn fn) { return fn >= Fn::now && fn <= Fn::dusk; }
 bool is_history_function(Fn fn) { return fn >= Fn::since_update && fn <= Fn::quality; }
@@ -258,7 +258,7 @@ public:
 
 	size_t n_rules = 0, n_reactions = 0, n_triggers = 0, n_actions = 0, n_parts = 0, n_parameters = 0,
 		   n_choices = 0, n_timers = 0, n_states = 0, n_nodes = 0, n_constants = 0, n_schedules = 0, n_tracked = 0,
-		   n_matches = 0, n_strings = 0;
+		   n_matches = 0, n_silences = 0, n_strings = 0;
 
 private:
 	struct PathScope {
@@ -289,8 +289,14 @@ private:
 	/// Context of one expression.
 	struct ExprScope {
 		bool match = false;     ///< A match condition: pure functions only.
+		/// A silence trigger's duration: pure functions only and no datapoints (it depends on the
+		/// rule's parameters alone).
+		bool constant = false;
 		size_t nodes = 0;       ///< Nodes of this expression so far.
 	};
+
+	/// How an expression root may be used (root()).
+	enum class RootKind : uint8_t { normal, match, constant };
 
 	bool fail(LoadError error, const char* fmt, ...) HC_PRINTF_FORMAT(3, 4);
 
@@ -320,7 +326,16 @@ private:
 
 	/// Compiles the expression `json` into a new root; `type` receives its static type, `out` (if
 	/// given) the root node.
-	bool root(const JsonValue& json, bool match, uint16_t& index, Type& type, Node* out = nullptr);
+	bool root(const JsonValue& json, bool match, uint16_t& index, Type& type, Node* out = nullptr) {
+		return root_of(json, match ? RootKind::match : RootKind::normal, index, type, out);
+	}
+	bool root_of(const JsonValue& json, RootKind kind, uint16_t& index, Type& type, Node* out = nullptr);
+	/// Whether `name` is a parameter datapoint of the rule being compiled (`rule/<its id>/...`):
+	/// the rule names its own parameters with `$id` (spec 8.6).
+	bool own_parameter_datapoint(const char* name) const;
+	/// Looks up the datapoint member `name` of an action or trigger (unknownReference, and forbidden
+	/// for the rule's own parameter datapoint); nullptr after a refusal.
+	const Datapoint* datapoint_member(const JsonValue& json, char* name, size_t size);
 	bool expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16_t slot, bool timer_allowed, Type& type,
 		uint16_t& size, Node* out = nullptr);
 	bool folded_negation(const JsonValue& operand, ExprScope& scope, size_t depth, uint16_t slot, Type& type,
@@ -688,7 +703,7 @@ bool Builder::prescan(const JsonValue& rules) {
 bool Builder::run(const JsonValue& rules, RuleSet* set) {
 	set_ = set;
 	n_rules = n_reactions = n_triggers = n_actions = n_parts = n_parameters = n_choices = n_timers = n_states = 0;
-	n_nodes = n_constants = n_schedules = n_tracked = n_matches = n_strings = 0;
+	n_nodes = n_constants = n_schedules = n_tracked = n_matches = n_silences = n_strings = 0;
 	path_[0] = '\0';
 	rs_ = RuleScope{};
 	rs_.index = Limits::kRules; // no rule yet
@@ -1210,13 +1225,9 @@ bool Builder::action(const JsonValue& json, Action* out) {
 			return false;
 		}
 		char name[Datapoint::kMaxName + 1];
-		if (!string_member(json, "datapoint", true, name, sizeof(name), 1, Datapoint::kMaxName, present)) {
-			return false;
-		}
-		const Datapoint* dp = model_.find(name);
+		const Datapoint* dp = datapoint_member(json, name, sizeof(name));
 		if (dp == nullptr) {
-			PathScope scope(*this, ".datapoint");
-			return fail(LoadError::unknown_reference, "no datapoint '%s'", name);
+			return false;
 		}
 		if (!dp->writable()) {
 			PathScope scope(*this, ".datapoint");
@@ -1246,6 +1257,27 @@ bool Builder::action(const JsonValue& json, Action* out) {
 		}
 		a.kind = ActionKind::write;
 		a.flags = only_on_change ? 1 : 0;
+		a.target = dp->id();
+	} else if (std::strcmp(kind, "read") == 0) {
+		static const char* const kMembers[] = {"kind", "datapoint", nullptr};
+		if (!only(json, kMembers)) {
+			return false;
+		}
+		char name[Datapoint::kMaxName + 1];
+		const Datapoint* dp = datapoint_member(json, name, sizeof(name));
+		if (dp == nullptr) {
+			return false;
+		}
+		if (std::strncmp(name, kParameterDatapointPrefix, std::strlen(kParameterDatapointPrefix)) == 0) {
+			PathScope scope(*this, ".datapoint");
+			return fail(LoadError::not_readable, "datapoint '%s' mirrors a rule parameter: no technology reads it",
+				name);
+		}
+		if (schedules_ != nullptr && (schedules_->owns_output(name) || !schedules_->technology_reads(name))) {
+			PathScope scope(*this, ".datapoint");
+			return fail(LoadError::not_readable, "datapoint '%s' is bound to no technology that reads values", name);
+		}
+		a.kind = ActionKind::read;
 		a.target = dp->id();
 	} else if (std::strcmp(kind, "startTimer") == 0 || std::strcmp(kind, "restartTimer") == 0 ||
 		std::strcmp(kind, "cancelTimer") == 0) {
@@ -1401,13 +1433,9 @@ bool Builder::trigger(const JsonValue& json, Trigger* out) {
 			return false;
 		}
 		char name[Datapoint::kMaxName + 1];
-		if (!string_member(json, "datapoint", true, name, sizeof(name), 1, Datapoint::kMaxName, present)) {
-			return false;
-		}
-		const Datapoint* dp = model_.find(name);
+		const Datapoint* dp = datapoint_member(json, name, sizeof(name));
 		if (dp == nullptr) {
-			PathScope scope(*this, ".datapoint");
-			return fail(LoadError::unknown_reference, "no datapoint '%s'", name);
+			return false;
 		}
 		char on[16];
 		char origin[16];
@@ -1541,6 +1569,40 @@ bool Builder::trigger(const JsonValue& json, Trigger* out) {
 		}
 		t.kind = TriggerKind::parameter;
 		t.ref = static_cast<uint16_t>(p);
+	} else if (std::strcmp(kind, "silence") == 0) {
+		static const char* const kMembers[] = {"kind", "datapoint", "after", nullptr};
+		if (!only(json, kMembers)) {
+			return false;
+		}
+		char name[Datapoint::kMaxName + 1];
+		const Datapoint* dp = datapoint_member(json, name, sizeof(name));
+		if (dp == nullptr) {
+			return false;
+		}
+		JsonValue after;
+		if (!json.member("after", after)) {
+			return fail(LoadError::malformed, "member 'after' missing");
+		}
+		SilenceRef s{};
+		{
+			PathScope scope(*this, ".after");
+			Type type = Type::invalid;
+			if (!root_of(after, RootKind::constant, s.after, type)) {
+				return false;
+			}
+			if (type != Type::duration) {
+				return fail(LoadError::type_error, "a silence duration must be a duration, not %s", type_name(type));
+			}
+		}
+		s.trigger = static_cast<uint16_t>(n_triggers);
+		s.datapoint = dp->id();
+		s.rule = static_cast<uint8_t>(rs_.index);
+		if (set_) {
+			set_->silences_[n_silences] = s;
+		}
+		t.kind = TriggerKind::silence;
+		t.ref = static_cast<uint16_t>(n_silences);
+		++n_silences;
 	} else {
 		PathScope scope(*this, ".kind");
 		return fail(LoadError::malformed, "unknown trigger kind '%s'", kind);
@@ -1670,9 +1732,38 @@ bool Builder::reaction(const JsonValue& json, Reaction* out) {
 	return true;
 }
 
-bool Builder::root(const JsonValue& json, bool match, uint16_t& index, Type& type, Node* out) {
+bool Builder::own_parameter_datapoint(const char* name) const {
+	size_t prefix = std::strlen(kParameterDatapointPrefix);
+	if (rs_.index >= rule_ids_count_ || std::strncmp(name, kParameterDatapointPrefix, prefix) != 0) {
+		return false;
+	}
+	const char* id = rule_ids_[rs_.index];
+	size_t n = std::strlen(id);
+	return std::strncmp(name + prefix, id, n) == 0 && name[prefix + n] == '/';
+}
+
+const Datapoint* Builder::datapoint_member(const JsonValue& json, char* name, size_t size) {
+	bool present = false;
+	if (!string_member(json, "datapoint", true, name, size, 1, Datapoint::kMaxName, present)) {
+		return nullptr;
+	}
+	PathScope scope(*this, ".datapoint");
+	const Datapoint* dp = model_.find(name);
+	if (dp == nullptr) {
+		fail(LoadError::unknown_reference, "no datapoint '%s'", name);
+		return nullptr;
+	}
+	if (own_parameter_datapoint(name)) {
+		fail(LoadError::forbidden, "'%s' is a parameter of this rule: use the parameter (setParameter, $id)", name);
+		return nullptr;
+	}
+	return dp;
+}
+
+bool Builder::root_of(const JsonValue& json, RootKind kind, uint16_t& index, Type& type, Node* out) {
 	ExprScope scope;
-	scope.match = match;
+	scope.match = kind == RootKind::match;
+	scope.constant = kind == RootKind::constant;
 	uint16_t slot = 0;
 	if (!alloc_nodes(scope, 1, slot)) {
 		return false;
@@ -1840,10 +1931,18 @@ bool Builder::expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 		if (!string_member(json, "name", true, name, sizeof(name), 1, Datapoint::kMaxName, present)) {
 			return false;
 		}
+		if (scope.constant) {
+			return fail(LoadError::forbidden, "a datapoint in a silence duration (it may use the rule's parameters)");
+		}
 		const Datapoint* dp = model_.find(name);
 		if (dp == nullptr) {
 			PathScope p(*this, ".name");
 			return fail(LoadError::unknown_reference, "no datapoint '%s'", name);
+		}
+		if (own_parameter_datapoint(name)) {
+			PathScope p(*this, ".name");
+			return fail(LoadError::forbidden, "'%s' is a parameter of this rule: reference it as a parameter ($id)",
+				name);
 		}
 		node.kind = NodeKind::datapoint;
 		node.type = type_of_datapoint(dp->type());
@@ -2114,9 +2213,9 @@ bool Builder::call(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 		return fail(LoadError::malformed, "unknown function '%s'", name);
 	}
 	Fn fn = static_cast<Fn>(fn_index);
-	if (scope.match && (is_time_function(fn) || is_history_function(fn) || fn == Fn::running || fn == Fn::remaining ||
-		fn == Fn::state)) {
-		return fail(LoadError::forbidden, "%s() in a match condition", name);
+	if ((scope.match || scope.constant) && (is_time_function(fn) || is_history_function(fn) || fn == Fn::running ||
+		fn == Fn::remaining || fn == Fn::state)) {
+		return fail(LoadError::forbidden, "%s() in a %s", name, scope.match ? "match condition" : "silence duration");
 	}
 	JsonValue args;
 	if (!array_member(json, "args", true, args, present)) {
@@ -2523,6 +2622,7 @@ LoadResult RuleSet::load(const JsonValue& rules, const DatapointModel& model, co
 	Section s_schedules = section(builder->n_schedules * sizeof(uint32_t));
 	Section s_tracked = section(builder->n_tracked * sizeof(uint16_t));
 	Section s_matches = section(builder->n_matches * sizeof(MatchRef));
+	Section s_silences = section(builder->n_silences * sizeof(SilenceRef));
 	Section s_strings = section(builder->n_strings);
 	size_t total = offset;
 	void* block = total > 0 ? ::operator new(total, std::nothrow) : nullptr;
@@ -2550,6 +2650,7 @@ LoadResult RuleSet::load(const JsonValue& rules, const DatapointModel& model, co
 	next.schedules_ = reinterpret_cast<uint32_t*>(base + s_schedules.offset);
 	next.tracked_ = reinterpret_cast<uint16_t*>(base + s_tracked.offset);
 	next.matches_ = reinterpret_cast<MatchRef*>(base + s_matches.offset);
+	next.silences_ = reinterpret_cast<SilenceRef*>(base + s_silences.offset);
 	next.strings_ = base + s_strings.offset;
 	for (size_t i = 0; i < builder->n_constants; ++i) {
 		new (&next.constants_[i]) Val();
@@ -2578,6 +2679,7 @@ LoadResult RuleSet::load(const JsonValue& rules, const DatapointModel& model, co
 	next.schedule_count_ = builder->n_schedules;
 	next.tracked_count_ = builder->n_tracked;
 	next.match_count_ = builder->n_matches;
+	next.silence_count_ = builder->n_silences;
 	next.string_bytes_ = builder->n_strings;
 	delete builder;
 	if (!check_storage_keys(next, result)) {
@@ -2646,6 +2748,108 @@ int RuleSet::find_state(size_t rule, const char* id) const {
 	return -1;
 }
 
+// ------------------------------------------------------------------------------------------
+// Parameter datapoints (spec 8.6)
+
+bool parameter_datapoint_name(const char* rule, const char* parameter, char* out, size_t size) {
+	int n = std::snprintf(out, size, "%s%s/%s", kParameterDatapointPrefix, rule, parameter);
+	return n > 0 && static_cast<size_t>(n) < size && static_cast<size_t>(n) <= Datapoint::kMaxName;
+}
+
+ValueType parameter_datapoint_type(Type type) {
+	switch (type) {
+		case Type::boolean: return ValueType::boolean;
+		case Type::integer: return ValueType::signed_int;
+		case Type::real: return ValueType::real;
+		case Type::string: return ValueType::string;
+		case Type::duration: return ValueType::unsigned_int;
+		case Type::time_of_day: return ValueType::time_of_day;
+		case Type::enumeration: return ValueType::enumeration;
+		case Type::color: return ValueType::color;
+		default: return ValueType::none;
+	}
+}
+
+size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, size_t capacity) {
+	if (!rules.is(JsonKind::array)) {
+		return 0;
+	}
+	size_t rule_count = 0;
+	size_t count = 0;
+	// Whether an earlier rule has the id: a scan of the JSON again (no memory needed; load time only).
+	auto earlier = [&rules](size_t end, const char* id) {
+		size_t position = 0;
+		JsonValue other;
+		JsonValue member;
+		char other_id[33];
+		for (size_t i = 0; i < end && rules.next_item(position, other); ++i) {
+			if (other.is(JsonKind::object) && other.member("id", member) && member.get_string(other_id, sizeof(other_id)) &&
+				std::strcmp(other_id, id) == 0) {
+				return true;
+			}
+		}
+		return false;
+	};
+	auto add = [&](const char* rule, const char* parameter, ValueType type, bool adjustable) {
+		if (out != nullptr && count < capacity) {
+			ParameterDatapoint& d = out[count];
+			parameter_datapoint_name(rule, parameter, d.name, sizeof(d.name));
+			d.type = type;
+			d.flags = adjustable ? (DatapointFlags::kWritable | DatapointFlags::kTransmit) : 0;
+		}
+		++count;
+	};
+	size_t position = 0;
+	JsonValue item;
+	for (size_t index = 0; rules.next_item(position, item) && rule_count < Limits::kRules; ++index) {
+		JsonValue member;
+		char id[33];
+		if (!item.is(JsonKind::object) || !item.member("id", member) || !member.get_string(id, sizeof(id)) ||
+			!valid_rule_id(id) || earlier(index, id)) {
+			continue;
+		}
+		++rule_count;
+		bool adjustable = true;
+		if (item.member("enabledAdjustable", member) && !member.get_bool(adjustable)) {
+			adjustable = true;
+		}
+		add(id, "enabled", ValueType::boolean, adjustable);
+		JsonValue parameters;
+		if (!item.member("parameters", parameters) || !parameters.is(JsonKind::array)) {
+			continue;
+		}
+		char seen[Limits::kParameters][25];
+		size_t parameter_count = 0;
+		size_t p_position = 0;
+		JsonValue p;
+		while (parameters.next_item(p_position, p) && parameter_count + 1 < Limits::kParameters) {
+			char pid[25];
+			char type_text[24];
+			if (!p.is(JsonKind::object) || !p.member("id", member) || !member.get_string(pid, sizeof(pid)) ||
+				!valid_identifier(pid) || std::strcmp(pid, "enabled") == 0 || !p.member("type", member) ||
+				!member.get_string(type_text, sizeof(type_text))) {
+				continue;
+			}
+			Type type = type_from_name(type_text);
+			ValueType value_type = is_parameter_type(type) ? parameter_datapoint_type(type) : ValueType::none;
+			bool duplicate = false;
+			for (size_t i = 0; i < parameter_count && !duplicate; ++i) {
+				duplicate = std::strcmp(seen[i], pid) == 0;
+			}
+			if (value_type == ValueType::none || duplicate) {
+				continue;
+			}
+			std::memcpy(seen[parameter_count++], pid, sizeof(pid));
+			bool p_adjustable = true;
+			if (p.member("adjustable", member) && !member.get_bool(p_adjustable)) {
+				p_adjustable = true;
+			}
+			add(id, pid, value_type, p_adjustable);
+		}
+	}
+	return count;
+}
+
 RuleSetMemory RuleSet::memory() const {
 	RuleSetMemory m{};
 	m.block = block_size_;
@@ -2663,6 +2867,7 @@ RuleSetMemory RuleSet::memory() const {
 	m.schedules = schedule_count_ * sizeof(uint32_t);
 	m.tracked = tracked_count_ * sizeof(uint16_t);
 	m.matches = match_count_ * sizeof(MatchRef);
+	m.silences = silence_count_ * sizeof(SilenceRef);
 	m.strings = string_bytes_;
 	return m;
 }

@@ -1,0 +1,35 @@
+{
+	"title": "Silence and the enable switch: disabling disarms it, enabling counts from the enabling; a parameter as the period, changed while armed",
+	"description": "Period 1 min from the parameter quiet. Disabled at 30000, the trigger does not fire at 60000; the update at 80000 while disabled arms nothing; enabling at 100000 counts from the enabling (the later of the last update and the enabling): it fires at 160000. The update at 200000 arms it for 260000; setting quiet to 90 s at 210000 re-arms it from the same update: 290000.",
+	"datapoints": [{"name": "sensor.temp", "type": "real"}],
+	"initial": {"sensor.temp": 20.0},
+	"rules": [
+		{
+			"id": "watch",
+			"name": "Watch",
+			"parameters": [{"id": "quiet", "label": "Quiet period", "type": "duration", "default": 60000, "min": 10000, "max": 3600000}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "silence", "datapoint": "sensor.temp", "after": {"kind": "parameter", "id": "quiet"}}],
+					"actions": [{"kind": "log", "level": "warning", "message": ["silent"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 30000, "setParameter": {"rule": "watch", "parameter": "enabled", "value": false}},
+		{"at": 80000, "report": {"datapoint": "sensor.temp", "value": 20.5}},
+		{"at": 100000, "setParameter": {"rule": "watch", "parameter": "enabled", "value": true}},
+		{"at": 200000, "report": {"datapoint": "sensor.temp", "value": 21.0}},
+		{"at": 210000, "setParameter": {"rule": "watch", "parameter": "quiet", "value": 90000}}
+	],
+	"end": 400000,
+	"expected": {
+		"commands": [],
+		"logs": [
+			{"at": 160000, "rule": "watch", "code": "log", "level": "warning", "message": "silent"},
+			{"at": 290000, "rule": "watch", "code": "log", "level": "warning", "message": "silent"}
+		],
+		"final": {"parameters": {"watch/enabled": true, "watch/quiet": 90000}, "persisted": {"watch/quiet": 90000}, "firings": {"watch": 2}}
+	}
+}

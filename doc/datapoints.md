@@ -101,6 +101,26 @@ from inside `command()` (refused as `busy`); it reports later through the event 
 does not see its own telegram again, so the model's optimistic store is the bus state; a Zigbee
 adapter's attribute report later confirms or corrects it.
 
+### Reading
+
+`read(id)` asks the owning technology for the current value (a rule's `read` action,
+spec/rules.md 7.12): `Technology::read()` returns true when it sent or queued the request, false
+to refuse (the default for a technology that cannot read). The answer arrives later as an ordinary
+`report()`; `read()` itself stores nothing and tells no listener. Refused with `refused` when no
+technology owns the datapoint or the technology refuses (both logged), `busy` from a listener or
+from inside a technology's call, `unknown_id`. The flags play no part: `kReadable` is about others
+reading the device's value (KNX: answering a GroupValueRead), `kReadOnStart` about the technology
+reading by itself after a start. The adapters: KNX sends a GroupValueRead through its read-on-start
+queue, Zigbee reads the attribute, external values fetch the source again (`doc/rules.md` "Read").
+
+### Rule parameters
+
+The datapoints `rule/<ruleId>/<parameterId>` (spec/rules.md 8.6) are owned by the rule engine's
+technology `rules`. They are writable when the parameter is adjustable and transmit, so a command
+goes to the engine first, which applies it as a parameter change or refuses it; the engine
+publishes every other change of the parameter. They have neither `kPersist` (the parameter store
+keeps the overrides) nor a history.
+
 ### Restored values
 
 `restore(id, value)` is the value store's way back in (`doc/persistence.md`): right after `load()`
@@ -131,8 +151,9 @@ Every refusal returns a `DatapointStatus` and logs the reason with the tag `hc.d
 
 ## Technology adapters
 
-`hc::Technology` is the interface an adapter implements: `name()` for the log and `command()` for
-the commands of its transmitting datapoints. It reports with `DatapointModel::report()` and
+`hc::Technology` is the interface an adapter implements: `name()` for the log, `command()` for
+the commands of its transmitting datapoints and, optionally, `read()` for a request of the current
+value (default: refused). It reports with `DatapointModel::report()` and
 `report_stale()`. The KNX adapter (issue #7) decodes a received group write with `hc::decode()` and
 reports it, and encodes a commanded value with `hc::encode()`. The tests use a `LoopbackTechnology`
 (`core/test/datapoint_test.cpp`) whose commands come back as reports.

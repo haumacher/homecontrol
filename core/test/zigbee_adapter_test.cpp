@@ -707,3 +707,31 @@ TEST_CASE("ZigbeeAdapter: as a provider of the image service it states its datap
 	f.report(kBulbShort, 11, cluster::kOnOff, attribute::kOnOff, zcl_type::kBool, 0);
 	CHECK(f.dp("living.ceiling")->value() == Value::of_bool(false)); // the command's value, unchanged
 }
+
+TEST_CASE("ZigbeeAdapter: a read asks the device for the attribute behind the datapoint") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.start_network();
+	f.join_bulb();
+	f.join_button();
+	CHECK(f.model.read(f.dp(kBulbOn)->id()) == DatapointStatus::ok);
+	CHECK(f.driver.calls.back() == "read 0x1a2b 11 0x0006 0");
+	CHECK(f.model.read(f.dp(kBulbLevel)->id()) == DatapointStatus::ok);
+	CHECK(f.driver.calls.back() == "read 0x1a2b 11 0x0008 0");
+	// A button's action has no attribute.
+	size_t calls = f.driver.calls.size();
+	CHECK(f.model.read(f.dp(kButtonAction)->id()) == DatapointStatus::refused);
+	CHECK(capture.sink.contains("read of 'zigbee.000b57fffe112233.1.action' refused:"));
+	CHECK(f.driver.calls.size() == calls);
+	// The stack refuses.
+	f.driver.accept = false;
+	CHECK(f.model.read(f.dp(kBulbOn)->id()) == DatapointStatus::refused);
+	CHECK(capture.sink.contains("read of 'zigbee.00124b0001020304.11.on' refused: the Zigbee stack did not take it"));
+	f.driver.accept = true;
+	// A device that left.
+	f.adapter.device_left(ZigbeeFixture::node(kBulb, kBulbShort));
+	calls = f.driver.calls.size();
+	CHECK(f.model.read(f.dp(kBulbOn)->id()) == DatapointStatus::refused);
+	CHECK(capture.sink.contains("read of 'zigbee.00124b0001020304.11.on' refused: the device left the network"));
+	CHECK(f.driver.calls.size() == calls);
+}

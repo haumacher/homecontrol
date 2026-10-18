@@ -125,6 +125,46 @@ bool Plan::schedule_owns_output(const char* datapoint) const {
 	return false;
 }
 
+bool Plan::technology_reads(const char* datapoint) const {
+	for (size_t i = 0; i < datapoint_count; ++i) {
+		if (datapoints[i].name == nullptr || std::strcmp(datapoints[i].name, datapoint) != 0) {
+			continue;
+		}
+		if (bindings[i] == Binding::knx || bindings[i] == Binding::zigbee) {
+			return true;
+		}
+		if (bindings[i] != Binding::none || !has_external) {
+			return false;
+		}
+		// A datapoint of an external source (spec/external-values.md): `external.sources[].bindings[].datapoint`.
+		JsonSpan sources;
+		if (!json_member(external, "sources", sources) || sources.kind != JsonSpan::Kind::array) {
+			return false;
+		}
+		size_t position = 0;
+		JsonSpan source;
+		while (json_next_item(sources, position, source)) {
+			JsonSpan list;
+			if (source.kind != JsonSpan::Kind::object || !json_member(source, "bindings", list) ||
+				list.kind != JsonSpan::Kind::array) {
+				continue;
+			}
+			size_t b_position = 0;
+			JsonSpan binding;
+			while (json_next_item(list, b_position, binding)) {
+				JsonSpan name;
+				char text[Datapoint::kMaxName + 1];
+				if (binding.kind == JsonSpan::Kind::object && json_member(binding, "datapoint", name) &&
+					json_string(name, text, sizeof(text)) && std::strcmp(text, datapoint) == 0) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+	return true; // not a datapoint of the image (a provider's): the technology answers at run time
+}
+
 // ---- Value types -------------------------------------------------------------------------------
 
 namespace {
@@ -843,6 +883,11 @@ void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, 
 				plan.has_time_master) {
 				c.refuse("id '%s' is reserved for the datapoints of knx.timeMaster", spec.name);
 				spec.name = nullptr; // refused once, not again as a duplicate of the time master's
+			} else if (spec.name != nullptr && std::strncmp(spec.name, rules::kParameterDatapointPrefix,
+				std::strlen(rules::kParameterDatapointPrefix)) == 0) {
+				c.refuse("id '%s': the prefix '%s' is reserved for the datapoints of rule parameters", spec.name,
+					rules::kParameterDatapointPrefix);
+				spec.name = nullptr; // refused once, not again as a duplicate of a parameter's
 			}
 		}
 	}
@@ -1040,7 +1085,21 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 	if (plan.has_time_master) {
 		implied = (tm.time.enabled ? 1 : 0) + (tm.date.enabled ? 1 : 0) + (tm.date_time.enabled ? 1 : 0);
 	}
-	size_t total = declared + implied;
+	// The datapoints mirroring the rule parameters (spec/rules.md 8.6), after the time master's.
+	JsonSpan rules_member;
+	JsonSpanDocument rules_document;
+	size_t parameters = 0;
+	rules::ParameterDatapoint* parameter_list = nullptr;
+	if (c.member(root, "rules", rules_member)) {
+		parameters = rules::parameter_datapoints(rules_document.value(rules_member), nullptr, 0);
+		parameter_list = plan.arena.array<rules::ParameterDatapoint>(parameters);
+		if (parameters > 0 && parameter_list == nullptr) {
+			c.no_memory("the datapoints of the rule parameters");
+			return;
+		}
+		rules::parameter_datapoints(rules_document.value(rules_member), parameter_list, parameters);
+	}
+	size_t total = declared + implied + parameters;
 	plan.datapoints = plan.arena.array<DatapointSpec>(total);
 	plan.bindings = plan.arena.array<Binding>(total);
 	KnxDraft* drafts = plan.arena.array<KnxDraft>(declared);
@@ -1085,6 +1144,13 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 				++at;
 			}
 		}
+	}
+	for (size_t i = 0; i < parameters; ++i) {
+		plan.datapoints[at].name = parameter_list[i].name;
+		plan.datapoints[at].type = parameter_list[i].type;
+		plan.datapoints[at].flags = parameter_list[i].flags;
+		plan.bindings[at] = Binding::rule;
+		++at;
 	}
 	if (c.stopped()) {
 		return;
@@ -1775,6 +1841,7 @@ void parse_schedule(Ctx& c, const JsonSpan& item, ScheduleSpec& spec, const Inde
 					c.plan.bindings[dp] == Binding::knx ? "the KNX adapter"
 					: c.plan.bindings[dp] == Binding::schedule ? "another schedule entry"
 					: c.plan.bindings[dp] == Binding::zigbee ? "the Zigbee adapter"
+					: c.plan.bindings[dp] == Binding::rule ? "the rule engine (a rule parameter)"
 					: "the time master");
 			} else {
 				c.plan.bindings[dp] = Binding::schedule;
@@ -2057,6 +2124,7 @@ struct PlanSchedules : rules::ScheduleDirectory {
 	explicit PlanSchedules(const Plan& p) : plan(p) {}
 	bool has_schedule(const char* id) const override { return plan.has_schedule(id); }
 	bool owns_output(const char* datapoint) const override { return plan.schedule_owns_output(datapoint); }
+	bool technology_reads(const char* datapoint) const override { return plan.technology_reads(datapoint); }
 	const Plan& plan;
 };
 
