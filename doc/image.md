@@ -17,7 +17,13 @@ describes how the controller loads, applies and keeps an image (`hc::image`,
 | `WebApi` | `PUT`/`GET`/`DELETE /api/image`, the `image` member of the status; a load or unload resyncs the live feed (every client gets a fresh snapshot, ids changed). |
 
 Everything runs on the event loop. The loader allocates its tables from an arena freed after the
-apply; the components allocate their tables at load and free them at the next load or unload.
+apply; the components allocate their tables at load and free them at the next load or unload. An
+arena takes blocks of 1 KB, and a table larger than a quarter of that a block of exactly its size;
+the load's summary line gives the bytes used against those allocated ("load tables <used> of <allocated>
+bytes used", the same for the UI model). The refusals of a failed load (GET /api/image lists them)
+are kept with the first inline and the room for the others (12, about 3 KB) allocated with the
+second and freed by the next load; without the heap for it only the first is kept and the others
+counted (issue #44).
 
 ## Mechanisms
 

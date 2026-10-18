@@ -29,7 +29,9 @@ namespace esp {
 /// kInboundSlots slots (topic up to MqttClient::kMaxTopic, payload up to kMaxInboundPayload: a
 /// longer one is delivered truncated, its later chunks skipped). When every slot is taken the
 /// esp-mqtt task waits for one up to kSlotWaitMs (backpressure on the broker), then drops the
-/// message and counts it.
+/// message and counts it. The slots (about 3 KB) are allocated by connect() and freed by
+/// disconnect() once no message waits in them: a device without a broker configured does not pay
+/// for them (issue #44).
 class EspMqttClient : public MqttClient {
 public:
 	/// Bytes esp-mqtt's outbox may hold before publish() refuses. A state message costs about 150
@@ -76,6 +78,8 @@ private:
 	void handle(void* event);
 	void post_state(int32_t number, const char* what);
 	void destroy();
+	/// Frees the slots when no session runs and none is waiting for the loop (loop thread).
+	void release_slots_if_idle();
 
 	LoopQueue& queue_;
 	MqttClientListener* listener_ = nullptr;
@@ -87,7 +91,8 @@ private:
 	char reason_[96] = {};
 	bool skipping_ = false; ///< The later chunks of a message that did not fit are skipped.
 
-	Slot slots_[kInboundSlots];
+	Slot* slots_ = nullptr; ///< kInboundSlots, allocated by connect().
+
 	std::atomic<bool> slot_busy_[kInboundSlots];
 	SemaphoreHandle_t free_slots_ = nullptr;
 	StaticSemaphore_t free_slots_storage_;

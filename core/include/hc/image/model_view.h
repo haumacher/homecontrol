@@ -90,6 +90,8 @@ public:
 
 	/// Heap bytes of the view.
 	size_t bytes() const { return arena_.bytes(); }
+	/// Of those, the bytes the tables use.
+	size_t used() const { return arena_.used(); }
 
 private:
 	Arena arena_;

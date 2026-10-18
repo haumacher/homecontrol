@@ -199,11 +199,21 @@ void EspUdpSocket::retire_closed() {
 }
 
 void EspUdpSocket::receive(int fd) {
-	uint8_t buffer[kMaxDatagram + 1];
 	char error[bsd::kMaxError];
 	for (int i = 0; i < static_cast<int>(kRing); ++i) {
+		// Claim the tail slot: only this task writes slots, and the loop reads a slot only after
+		// ring_count_ covers it, so the datagram is received into it outside the mutex.
+		Slot* slot = nullptr;
+		xSemaphoreTake(mutex_, portMAX_DELAY);
+		if (ring_count_ < kRing) {
+			slot = &ring_[(ring_head_ + ring_count_) % kRing];
+		}
+		xSemaphoreGive(mutex_);
 		Ipv4Endpoint from;
-		int length = bsd::udp_receive(fd, buffer, sizeof(buffer), from, error, sizeof(error));
+		uint8_t discard[1];
+		int length = slot != nullptr
+			? bsd::udp_receive(fd, slot->data, sizeof(slot->data), from, error, sizeof(error))
+			: bsd::udp_receive(fd, discard, sizeof(discard), from, error, sizeof(error)); // ring full: drop it
 		if (length == 0) {
 			return;
 		}
@@ -211,28 +221,24 @@ void EspUdpSocket::receive(int fd) {
 			queue_.post(&handle_error, this, 0, error, "UDP receive error");
 			return;
 		}
-		if (static_cast<size_t>(length) > kMaxDatagram) {
-			ESP_LOGW(kTag, "dropping a datagram longer than %u octets", static_cast<unsigned>(kMaxDatagram));
-			continue;
-		}
-		bool stored = false;
-		xSemaphoreTake(mutex_, portMAX_DELAY);
-		if (ring_count_ < kRing) {
-			Slot& slot = ring_[(ring_head_ + ring_count_) % kRing];
-			slot.generation = generation_.load();
-			slot.from = from;
-			slot.length = static_cast<uint16_t>(length);
-			std::memcpy(slot.data, buffer, static_cast<size_t>(length));
-			++ring_count_;
-			stored = true;
-		}
-		xSemaphoreGive(mutex_);
-		if (!stored) {
+		if (slot == nullptr) {
 			uint32_t dropped = dropped_.fetch_add(1) + 1;
 			ESP_LOGW(kTag, "datagram ring full (%u slots): dropped (%u since boot)", static_cast<unsigned>(kRing),
 				static_cast<unsigned>(dropped));
 			continue;
 		}
+		if (static_cast<size_t>(length) > kMaxDatagram) {
+			uint32_t oversized = oversized_.fetch_add(1) + 1;
+			ESP_LOGW(kTag, "dropping a datagram longer than %u octets (%u since boot)", static_cast<unsigned>(kMaxDatagram),
+				static_cast<unsigned>(oversized));
+			continue;
+		}
+		xSemaphoreTake(mutex_, portMAX_DELAY);
+		slot->generation = generation_.load();
+		slot->from = from;
+		slot->length = static_cast<uint16_t>(length);
+		++ring_count_;
+		xSemaphoreGive(mutex_);
 		if (!drain_posted_.exchange(true)) {
 			if (!queue_.post(&handle_datagrams, this, 0, nullptr, "UDP datagrams")) {
 				drain_posted_.store(false); // posted again with the next datagram

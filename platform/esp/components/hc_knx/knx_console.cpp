@@ -50,9 +50,9 @@ int status(KnxService& service) {
 	}
 	std::printf("datapoints %u mapped, %u reads pending\n", static_cast<unsigned>(service.adapter().size()),
 		static_cast<unsigned>(service.adapter().reads_pending()));
-	std::printf("telegrams %llu seen (last %u kept: knx log), %u datagrams dropped\n",
+	std::printf("telegrams %llu seen (last %u kept: knx log), %u datagrams dropped (ring full), %u too long\n",
 		static_cast<unsigned long long>(service.telegrams().total()), static_cast<unsigned>(service.telegrams().size()),
-		static_cast<unsigned>(service.socket().dropped()));
+		static_cast<unsigned>(service.socket().dropped()), static_cast<unsigned>(service.socket().oversized()));
 	return 0;
 }
 

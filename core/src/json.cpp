@@ -24,6 +24,10 @@ void JsonWriter::put(char c) {
 	if (overflow_) {
 		return;
 	}
+	if (buffer_ == nullptr) {
+		++length_;
+		return;
+	}
 	if (length_ + 1 >= size_) {
 		overflow_ = true;
 		return;
@@ -34,6 +38,10 @@ void JsonWriter::put(char c) {
 
 void JsonWriter::put(const char* text, size_t length) {
 	if (overflow_) {
+		return;
+	}
+	if (buffer_ == nullptr) {
+		length_ += length;
 		return;
 	}
 	if (length_ + length >= size_) {
@@ -290,7 +298,7 @@ void JsonWriter::reset(const Mark& mark) {
 	need_comma_ = mark.need_comma;
 	after_key_ = false;
 	overflow_ = false;
-	if (size_ > 0) {
+	if (size_ > 0 && buffer_ != nullptr) {
 		buffer_[length_] = '\0';
 	}
 }

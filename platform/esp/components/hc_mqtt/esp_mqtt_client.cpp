@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 #include "esp_crt_bundle.h"
 #include "esp_err.h"
@@ -37,7 +38,23 @@ EspMqttClient::EspMqttClient(LoopQueue& queue) : queue_(queue) {
 	free_slots_ = xSemaphoreCreateCountingStatic(kInboundSlots, kInboundSlots, &free_slots_storage_);
 }
 
-EspMqttClient::~EspMqttClient() { destroy(); }
+EspMqttClient::~EspMqttClient() {
+	destroy();
+	delete[] slots_;
+}
+
+void EspMqttClient::release_slots_if_idle() {
+	if (handle_ != nullptr || slots_ == nullptr) {
+		return;
+	}
+	for (auto& busy : slot_busy_) {
+		if (busy.load()) {
+			return; // its message is still queued for the loop, which frees the slots after it
+		}
+	}
+	delete[] slots_;
+	slots_ = nullptr;
+}
 
 void EspMqttClient::destroy() {
 	if (handle_ == nullptr) {
@@ -60,6 +77,13 @@ bool EspMqttClient::connect(const MqttConnectOptions& options, MqttClientListene
 	if (!mqtt::parse_broker(options.broker, broker, &reason)) {
 		*error = reason;
 		return false;
+	}
+	if (slots_ == nullptr) {
+		slots_ = new (std::nothrow) Slot[kInboundSlots];
+		if (slots_ == nullptr) {
+			*error = "no memory for the inbound message slots";
+			return false;
+		}
 	}
 	esp_mqtt_client_config_t config = {};
 	config.broker.address.uri = options.broker;
@@ -92,6 +116,7 @@ bool EspMqttClient::connect(const MqttConnectOptions& options, MqttClientListene
 	esp_mqtt_client_handle_t client = esp_mqtt_client_init(&config);
 	if (client == nullptr) {
 		*error = "esp-mqtt: no memory for the client";
+		release_slots_if_idle();
 		return false;
 	}
 	esp_err_t err = esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, &EspMqttClient::on_event, this);
@@ -102,6 +127,7 @@ bool EspMqttClient::connect(const MqttConnectOptions& options, MqttClientListene
 		esp_mqtt_client_destroy(client);
 		*error = "esp-mqtt: cannot start the client task";
 		Log::error(kTag, "esp_mqtt_client_start: %s", esp_err_to_name(err));
+		release_slots_if_idle();
 		return false;
 	}
 	handle_ = client;
@@ -111,7 +137,8 @@ bool EspMqttClient::connect(const MqttConnectOptions& options, MqttClientListene
 void EspMqttClient::disconnect() {
 	generation_.fetch_add(1);
 	connected_ = false;
-	destroy();
+	destroy(); // the esp-mqtt task has ended: no slot is claimed any more
+	release_slots_if_idle();
 }
 
 bool EspMqttClient::publish(const char* topic, const char* payload, size_t length, bool retain, uint8_t qos,
@@ -242,7 +269,7 @@ void EspMqttClient::handle(void* data) {
 				dropped_.fetch_add(1);
 				break;
 			}
-			Slot& slot = slots_[index];
+			Slot& slot = slots_[index]; // allocated before the task started; freed only after it ended
 			slot.generation = generation;
 			slot.retained = event->retain;
 			std::memcpy(slot.topic, event->topic, static_cast<size_t>(event->topic_len));
@@ -288,7 +315,7 @@ void EspMqttClient::on_loop_event(void* context, const LoopMessage& message) {
 			}
 			break;
 		case kMessage: {
-			if (value >= kInboundSlots) {
+			if (value >= kInboundSlots || self->slots_ == nullptr) {
 				break;
 			}
 			Slot& slot = self->slots_[value];
@@ -298,6 +325,7 @@ void EspMqttClient::on_loop_event(void* context, const LoopMessage& message) {
 			}
 			self->slot_busy_[value].store(false);
 			xSemaphoreGive(self->free_slots_);
+			self->release_slots_if_idle();
 			break;
 		}
 		default:

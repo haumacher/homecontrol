@@ -16,6 +16,7 @@
 #include <malloc.h>
 #endif
 
+#include "allocation_counter.h"
 #include "doctest.h"
 #include "fake_blob_store.h"
 #include "hc/controller.h"
@@ -284,11 +285,68 @@ TEST_CASE("Image.ExampleAndMinimalLoad") {
 	MESSAGE("example.json: " << fixture("example.json").size() << " bytes, Plan " << sizeof(Plan) << ", Report " << sizeof(Report) << ", load tables " << plan.arena.bytes()
 		<< " bytes");
 
+	// Issue #44: the arena's blocks follow the content (1 KB blocks, a block of its own for a large
+	// table), not 4 KB per arena whatever it holds.
+	CHECK(plan.arena.used() <= plan.arena.bytes());
+	CHECK(plan.arena.bytes() - plan.arena.used() < 2 * hc::image::Arena::kBlockSize);
+
 	Plan minimal;
 	REQUIRE_MESSAGE(parse(fixture("minimal.json"), minimal, report), describe(report));
 	CHECK(minimal.datapoint_count == 0);
+	CHECK(minimal.arena.bytes() < 2048);
 	CHECK_FALSE(minimal.has_rules);
 	CHECK_FALSE(minimal.has_time_master);
+}
+
+TEST_CASE("Image.ArenaSmallPlanAndLargeTables") {
+	// A small plan allocates under 2 KB.
+	Plan plan;
+	Report report;
+	std::string small = R"({"image": {"schemaVersion": "1.0", "projectId": "p", "revision": 1}, )"
+		R"("datapoints": [{"id": "a", "type": "boolean"}, {"id": "b", "type": "real"}]})";
+	REQUIRE_MESSAGE(parse(small, plan, report), describe(report));
+	CHECK(plan.datapoint_count == 2);
+	CHECK(plan.arena.bytes() < 2048);
+	MESSAGE("small plan: " << plan.arena.used() << " of " << plan.arena.bytes() << " bytes used");
+
+	// A large table gets a block of its own; the small ones keep filling the shared block.
+	hc::image::Arena arena;
+	CHECK(arena.allocate(100) != nullptr);
+	size_t one = arena.bytes();
+	CHECK(arena.allocate(5000) != nullptr);
+	CHECK(arena.allocate(100) != nullptr); // still in the first shared block
+	CHECK(arena.bytes() - one < 5000 + 64);
+	CHECK(arena.used() == 104 + 5000 + 104);
+	arena.release();
+	CHECK(arena.bytes() == 0);
+	CHECK(arena.used() == 0);
+}
+
+TEST_CASE("Image.ReportHoldsOneRefusalInlineAndAllocatesTheRestOnDemand") {
+	// Issue #44: the service keeps its report for GET /api/image; without refusals it costs one.
+	static_assert(sizeof(Report) < 2 * sizeof(Report::Refusal), "the room for twelve refusals is not inline");
+	hc_test::AllocationScope counting;
+	{
+		Report report;
+		report.add(Report::Kind::invalid, "a", "first %d", 1);
+		CHECK(counting.count() == 0); // the first is inline
+		for (int i = 2; i <= 14; ++i) {
+			report.add(Report::Kind::apply, "b", "refusal %d", i);
+		}
+		CHECK(report.kind == Report::Kind::invalid);
+		CHECK(report.count == Report::kMaxRefusals);
+		CHECK(report.total == 14);
+		CHECK(std::string(report.refusals[0].reason) == "first 1");
+		CHECK(std::string(report.refusals[11].reason) == "refusal 12");
+		CHECK(counting.live() == Report::kMaxRefusals * sizeof(Report::Refusal));
+		report.clear(); // the next load: the room goes
+		CHECK(counting.live() == 0);
+		CHECK(report.count == 0);
+		report.add(Report::Kind::syntax, "", "again");
+		CHECK(std::string(report.refusals[0].reason) == "again");
+		CHECK(counting.live() == 0);
+	}
+	CHECK(counting.live() == 0);
 }
 
 TEST_CASE("Image.TestSystemTemplate") {
@@ -430,6 +488,24 @@ TEST_CASE("Image.StoreChunksGenerationsAndCrc") {
 	CHECK(blobs.blobs.count("image.a.0") == 0);
 	CHECK(blobs.blobs.count("image.a.7") == 0);
 	CHECK(blobs.blobs.count("image.b.1") == 1);
+	// More orphans than one pass collects (issue #44: a few names per pass, not a static table of all).
+	for (int i = 0; i < 25; ++i) {
+		blobs.blobs["image.a." + std::to_string(i)] = std::vector<uint8_t>(10, 0);
+	}
+	blobs.blobs["image.b.9"] = std::vector<uint8_t>(10, 0); // beyond the stored image's chunk count
+	blobs.blobs["values.x"] = std::vector<uint8_t>(10, 0);  // not the image's
+	store.collect_garbage();
+	CHECK(blobs.blobs.count("image.a.24") == 0);
+	CHECK(blobs.blobs.count("image.b.9") == 0);
+	CHECK(blobs.blobs.count("image.b.0") == 1);
+	CHECK(blobs.blobs.count("image.b.1") == 1);
+	CHECK(blobs.blobs.count("values.x") == 1);
+	blobs.blobs.erase("values.x");
+	size_t image_blobs = 0;
+	for (const auto& blob : blobs.blobs) {
+		image_blobs += blob.first.rfind("image.", 0) == 0 ? 1 : 0;
+	}
+	CHECK(image_blobs == 3); // the manifest and the two chunks
 
 	// A corrupted chunk fails the CRC.
 	blobs.blobs["image.b.1"][5] ^= 1;

@@ -100,10 +100,11 @@ masks the password.
 
 The component `hc_mqtt` runs esp-mqtt (part of ESP-IDF, TLS through the certificate bundle) in its
 own task; its events reach the event loop through the loop queue, the core's `hc::Mqtt` decides
-everything. Cost on the ESP32-C6: about 15 KB of flash, about 3 KB of static buffers in the core
-plus esp-mqtt's task stack and buffers (about 8 KB) while connected; an image's configuration
-allocates one arena for the functions and the per-datapoint table (a few hundred bytes for a small
-house). The POSIX build speaks MQTT 3.1.1 over TCP with a client of its own (`hc_posix_web`),
+everything. Cost on the ESP32-C6: about 15 KB of flash; nothing else without an `mqtt` member in the
+image (issue #44). An image's configuration allocates the core's payload and history buffers (about
+3.6 KB) and one arena for the functions and the per-datapoint table (a few hundred bytes for a
+small house), the first connect the four inbound slots (about 3 KB) and esp-mqtt's task stack and
+buffers (about 8 KB); an image without `mqtt` frees them again. The POSIX build speaks MQTT 3.1.1 over TCP with a client of its own (`hc_posix_web`),
 without TLS; the SBC fallback talks to a broker on the LAN exactly like the device.
 
 ## Limits

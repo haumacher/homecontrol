@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "allocation_counter.h"
 #include "doctest.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
@@ -30,40 +31,6 @@
 #include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "test_support.h"
-
-// ------------------------------------------------------------------------------------------
-// Allocation counting (for the steady-state check): replaces the global allocation functions of
-// the test binary; counts only while enabled.
-
-namespace {
-std::atomic<bool> g_counting{false};
-std::atomic<size_t> g_allocations{0};
-} // namespace
-
-void* operator new(size_t size) {
-	if (g_counting) {
-		++g_allocations;
-	}
-	void* p = std::malloc(size ? size : 1);
-	if (p == nullptr) {
-		std::abort();
-	}
-	return p;
-}
-void* operator new[](size_t size) { return operator new(size); }
-void* operator new(size_t size, const std::nothrow_t&) noexcept {
-	if (g_counting) {
-		++g_allocations;
-	}
-	return std::malloc(size ? size : 1);
-}
-void* operator new[](size_t size, const std::nothrow_t& tag) noexcept { return operator new(size, tag); }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, size_t) noexcept { std::free(p); }
-void operator delete[](void* p, size_t) noexcept { std::free(p); }
-void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
-void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
 
 using hc::rules::Engine;
 using hc::rules::LoadResult;
@@ -1424,15 +1391,17 @@ TEST_CASE("RulesEngine allocates nothing while processing events") {
 	Datapoints d = typical_datapoints(10);
 	bench.setup(d, typical_image(10));
 	bench.report("lux3", hc::Value::of_real(10.0));
-	g_allocations = 0;
-	g_counting = true;
-	for (int round = 0; round < 3; ++round) {
-		bench.report("in3", hc::Value::of_bool(true));
-		bench.report("in3", hc::Value::of_bool(false));
-		bench.advance(200000); // the timer expires
+	size_t allocations = 0;
+	{
+		hc_test::AllocationScope counting;
+		for (int round = 0; round < 3; ++round) {
+			bench.report("in3", hc::Value::of_bool(true));
+			bench.report("in3", hc::Value::of_bool(false));
+			bench.advance(200000); // the timer expires
+		}
+		allocations = counting.count();
 	}
-	g_counting = false;
-	CHECK(g_allocations == 0);
+	CHECK(allocations == 0);
 	CHECK(bench.commands >= 6);
 }
 
@@ -1455,14 +1424,16 @@ TEST_CASE("RulesEngine state changes allocate nothing; their write is delayed an
 	bench.advance(hc::rules::Engine::kStatePersistDelayMs);
 	REQUIRE(bench.settings.entries.count(key) == 1);
 	CHECK(bench.settings.entries[key].text == "stairs/.state=s:6f6666");
-	g_allocations = 0;
-	g_counting = true;
-	for (int round = 0; round < 3; ++round) {
-		bench.report("button", hc::Value::of_bool(true));
-		bench.advance(3000); // on, then off when the timer expires: within the delay, no write
+	size_t allocations = 0;
+	{
+		hc_test::AllocationScope counting;
+		for (int round = 0; round < 3; ++round) {
+			bench.report("button", hc::Value::of_bool(true));
+			bench.advance(3000); // on, then off when the timer expires: within the delay, no write
+		}
+		allocations = counting.count();
 	}
-	g_counting = false;
-	CHECK(g_allocations == 0);
+	CHECK(allocations == 0);
 	CHECK(bench.settings.entries[key].text == "stairs/.state=s:6f6666");
 	bench.report("button", hc::Value::of_bool(true));
 	bench.engine->persist_now();

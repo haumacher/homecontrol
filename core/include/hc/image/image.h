@@ -72,7 +72,10 @@ struct ImageInfo {
 };
 
 /// The outcome of a validation or load: every refusal with its JSON path and reason, up to
-/// kMaxRefusals (`total` counts all; the validation stops at kMaxTotal).
+/// kMaxRefusals (`total` counts all; the validation stops at kMaxTotal). The first refusal is held
+/// inline; the room for the others (kMaxRefusals, about 3 KB) is allocated with the second and freed
+/// by clear(), so a report without refusals (every successful load) costs one refusal. Without the
+/// heap for the others only the first is kept and the others are counted.
 struct Report {
 	static constexpr size_t kMaxRefusals = 12;
 	static constexpr size_t kMaxTotal = 100;
@@ -88,20 +91,34 @@ struct Report {
 	/// content is invalid, the device cannot hold it (memory), or applying it failed.
 	enum class Kind : uint8_t { none, syntax, version, invalid, too_large, no_memory, apply };
 
+	Report() = default;
+	~Report() { delete[] more_; }
+	Report(const Report&) = delete;
+	Report& operator=(const Report&) = delete;
+
 	Kind kind = Kind::none;
-	Refusal refusals[kMaxRefusals];
+	/// The `count` refusals kept (the inline one or the allocated room).
+	const Refusal* refusals = &first_;
 	size_t count = 0;
 	size_t total = 0;
 
 	bool ok() const { return kind == Kind::none; }
+	/// Empties the report and frees the room of the further refusals.
 	void clear() {
 		kind = Kind::none;
 		count = 0;
 		total = 0;
+		delete[] more_;
+		more_ = nullptr;
+		refusals = &first_;
 	}
 	/// Adds a refusal (kept if there is room; counted always) and sets `kind` if none is set.
 	void add(Kind failure, const char* path, const char* format, ...) HC_PRINTF_FORMAT(4, 5);
 	bool full() const { return total >= kMaxTotal; }
+
+private:
+	Refusal first_ = {};
+	Refusal* more_ = nullptr;
 };
 
 /// "none", "syntax", "version", "invalid", "too large", "no memory", "apply".

@@ -47,6 +47,13 @@ public:
 
 	/// Bytes taken from the heap (blocks with their headers).
 	size_t bytes() const { return bytes_; }
+	/// Bytes handed out (with their alignment): bytes() less the headers and the unused tails.
+	size_t used() const { return used_; }
+
+	/// The block size: small tables share blocks of this size; an allocation larger than a quarter
+	/// of it gets a block of exactly its size, so a small arena (the plan of a small image, the MQTT
+	/// table) takes about 1 KB rather than 4, and a large table wastes no block tail (issue #44).
+	static constexpr size_t kBlockSize = 1024;
 
 private:
 	struct Block {
@@ -54,10 +61,10 @@ private:
 		size_t size;
 		size_t used;
 	};
-	static constexpr size_t kBlockSize = 4096;
 
 	Block* head_ = nullptr;
 	size_t bytes_ = 0;
+	size_t used_ = 0;
 };
 
 /// Who owns a datapoint of the image.

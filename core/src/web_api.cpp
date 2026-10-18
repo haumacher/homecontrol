@@ -195,7 +195,7 @@ bool query_uint(const char* query, const char* name, uint32_t& out) {
 }
 
 WebApi::WebApi(Controller& controller, DatapointModel& model, Auth& auth, WebHost& host)
-	: controller_(controller), model_(model), auth_(auth), host_(host), log_copy_(nullptr) {}
+	: controller_(controller), model_(model), auth_(auth), host_(host) {}
 
 void WebApi::refuse(WebResponse& response, int status, const char* code, const char* text) {
 	response.status = status;
@@ -938,24 +938,31 @@ struct LogWriter : LogLineVisitor {
 void WebApi::log(const WebRequest& request, WebResponse& response) {
 	uint32_t after = 0;
 	query_uint(request.query, "after", after);
-	bool copied = false;
-	for (int attempt = 0; attempt < 8 && !copied; ++attempt) {
-		copied = controller_.log_ring().copy_to(log_copy_);
+	// Read in place under the ring's busy flag (no copy of the ring): lines other threads log while
+	// the response is written are dropped and counted, as during the console's copy.
+	const LogRing& ring = controller_.log_ring();
+	uint64_t now_ms = controller_.clock().monotonic_ms();
+	JsonWriter json(response.body, response.capacity);
+	json.reserve(kClosingReserve);
+	LogWriter writer(json);
+	bool held = false;
+	for (int attempt = 0; attempt < 8 && !held; ++attempt) {
+		LogRing::ReadLock lock(ring);
+		held = lock.held();
+		if (held) {
+			json.begin_object()
+				.member("now_ms", now_ms)
+				.member("first", ring.first_seq())
+				.member("last_seq", ring.last_seq())
+				.member("dropped", ring.dropped());
+			json.key("lines").begin_array();
+			ring.read(after, writer);
+		}
 	}
-	if (!copied) {
+	if (!held) {
 		refuse(response, 503, "log.busy", "the log is being written: try again");
 		return;
 	}
-	JsonWriter json(response.body, response.capacity);
-	json.reserve(kClosingReserve);
-	json.begin_object()
-		.member("now_ms", controller_.clock().monotonic_ms())
-		.member("first", log_copy_.first_seq())
-		.member("last_seq", log_copy_.last_seq())
-		.member("dropped", log_copy_.dropped());
-	json.key("lines").begin_array();
-	LogWriter writer(json);
-	log_copy_.read(after, writer);
 	json.release();
 	json.end_array();
 	json.member("more", writer.more);

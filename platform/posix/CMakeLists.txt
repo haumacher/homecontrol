@@ -144,6 +144,7 @@ target_sources(hc_tests PRIVATE
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/rules_corpus_test.cpp"
 	"${HC_REPO_DIR}/core/test/rules_unit_test.cpp"
+	"${HC_REPO_DIR}/core/test/allocation_counter.cpp"
 	"${HC_REPO_DIR}/core/test/rules_probe_test.cpp"
 )
 # The runtime image (issue #8, spec/runtime-image.md; the fixtures spec/fixtures/images are read at run time).
@@ -227,4 +228,5 @@ target_sources(hc_posix PRIVATE src/posix_system_info.cpp)
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/web_diagnostics_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/web_diagnostics_probe_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/streaming_probe_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/memory_probe_test.cpp")
 target_sources(hc_tests PRIVATE test/posix_system_info_test.cpp)

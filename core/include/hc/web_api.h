@@ -277,8 +277,6 @@ private:
 	enum class Pending : uint8_t { none, restart, factory_reset, wifi, upload };
 	Pending pending_ = Pending::none;
 	TimerHandle action_timer_;
-	/// A consistent copy of the controller's log ring for GET /api/log.
-	LogRing log_copy_;
 };
 
 /// The API's error code of a datapoint refusal ("dp.not_writable", ...).

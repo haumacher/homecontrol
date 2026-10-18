@@ -17,6 +17,10 @@ class JsonWriter {
 public:
 	JsonWriter(char* buffer, size_t size);
 
+	/// A writer without a buffer that only counts: length() is the length the text would have
+	/// (a buffer of length() + 1 bytes holds it with its NUL). Lets a caller allocate exactly.
+	static JsonWriter counter() { return JsonWriter(); }
+
 	JsonWriter& begin_object();
 	JsonWriter& end_object();
 	JsonWriter& begin_array();
@@ -52,6 +56,8 @@ public:
 	void release();
 
 	bool overflowed() const { return overflow_; }
+	/// Whether this is a counter() (data() is nullptr then).
+	bool counting() const { return buffer_ == nullptr; }
 	size_t length() const { return length_; }
 	const char* data() const { return buffer_; }
 
@@ -66,6 +72,8 @@ public:
 
 private:
 	static constexpr size_t kMaxDepth = 16;
+
+	JsonWriter() : buffer_(nullptr), size_(0) {}
 
 	void separate();
 	void put(char c);
