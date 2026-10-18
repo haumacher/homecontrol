@@ -212,31 +212,44 @@ void ImageStore::collect_garbage() {
 	if (!has && !missing) {
 		return; // a damaged manifest: keep the chunks for inspection
 	}
-	// Names first (the visitor must not modify the store), then remove.
+	// The stale names first (the visitor must not modify the store), then remove them; a few per
+	// pass on the stack (no static collector of every name), repeated until a pass finds no more.
+	constexpr size_t kBatch = 8;
 	struct Collector : BlobVisitor {
-		char names[2 * kMaxChunks + 4][BlobStore::kMaxNameLength + 1] = {};
+		const Manifest* manifest = nullptr;
+		char names[kBatch][BlobStore::kMaxNameLength + 1];
 		size_t count = 0;
+		bool more = false;
 		void blob(const char* name, size_t) override {
-			if (std::strncmp(name, "image.", 6) != 0 || std::strcmp(name, kManifest) == 0 ||
-				count >= sizeof(names) / sizeof(names[0])) {
+			if (std::strncmp(name, "image.", 6) != 0 || std::strcmp(name, kManifest) == 0) {
 				return;
 			}
-			std::snprintf(names[count++], sizeof(names[0]), "%s", name);
+			if (manifest != nullptr && name[6] == manifest->generation && name[7] == '.') {
+				char* end = nullptr;
+				unsigned long index = std::strtoul(name + 8, &end, 10);
+				if (end != name + 8 && *end == '\0' && index < manifest->chunks) {
+					return; // a chunk of the stored image
+				}
+			}
+			if (count < kBatch) {
+				std::snprintf(names[count++], sizeof(names[0]), "%s", name);
+			} else {
+				more = true;
+			}
 		}
 	};
-	static Collector collector; // ~1 KB: kept off the loop's stack
-	collector.count = 0;
-	store_.visit(collector);
-	for (size_t i = 0; i < collector.count; ++i) {
-		const char* name = collector.names[i];
-		bool keep = false;
-		if (has && name[6] == manifest.generation && name[7] == '.') {
-			char* end = nullptr;
-			unsigned long index = std::strtoul(name + 8, &end, 10);
-			keep = end != name + 8 && *end == '\0' && index < manifest.chunks;
+	for (;;) {
+		Collector collector;
+		collector.manifest = has ? &manifest : nullptr;
+		store_.visit(collector);
+		size_t removed = 0;
+		for (size_t i = 0; i < collector.count; ++i) {
+			if (store_.remove(collector.names[i]) == BlobStatus::ok) {
+				++removed;
+			}
 		}
-		if (!keep) {
-			store_.remove(name);
+		if (!collector.more || removed == 0) {
+			return; // done, or the store refuses (logged by it): no endless loop
 		}
 	}
 }

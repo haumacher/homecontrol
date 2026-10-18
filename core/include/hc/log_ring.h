@@ -40,7 +40,8 @@ protected:
 /// Threading: append() may run on any thread. A writer that finds the ring busy (another thread
 /// appending, or a reader copying) drops its line and counts it (dropped()) instead of waiting, so
 /// a low-priority task holding the ring can never block a higher-priority one. Readers take a
-/// consistent copy with copy_to() and read the copy.
+/// consistent copy with copy_to() and read the copy, or hold the ring with a ReadLock and read it in
+/// place (GET /api/log: no second ring of kCapacity bytes; writers drop and count meanwhile).
 class LogRing {
 public:
 	static constexpr size_t kCapacity = 4096;
@@ -57,8 +58,30 @@ public:
 	/// busy; try again.
 	bool copy_to(LogRing& out) const;
 
+	/// Holds the ring for reading in place: while held(), read(), read_tail() and the counters are
+	/// consistent, and every append() drops its line and counts it. Hold it briefly (one response)
+	/// and do not log from the thread holding it in between (that line is dropped too).
+	class ReadLock {
+	public:
+		explicit ReadLock(const LogRing& ring) : ring_(ring), held_(!ring.busy_.test_and_set(std::memory_order_acquire)) {}
+		~ReadLock() {
+			if (held_) {
+				ring_.busy_.clear(std::memory_order_release);
+			}
+		}
+		ReadLock(const ReadLock&) = delete;
+		ReadLock& operator=(const ReadLock&) = delete;
+
+		/// False if the ring was busy (a writer appending): try again.
+		bool held() const { return held_; }
+
+	private:
+		const LogRing& ring_;
+		bool held_;
+	};
+
 	/// Calls `visitor` for the lines with seq > `after`, oldest first. Returns the number visited.
-	/// Not thread-safe: use it on a copy (or on the thread that alone appends).
+	/// Not thread-safe: use it on a copy, under a ReadLock (or on the thread that alone appends).
 	size_t read(uint32_t after, LogLineVisitor& visitor) const;
 
 	/// Calls `visitor` for the newest `n` lines (all if fewer are held), oldest first: the console's

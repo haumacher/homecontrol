@@ -82,7 +82,7 @@ for (;;) {
 ```
 
 POSIX sleeps with `nanosleep` (interrupted by SIGINT/SIGTERM, which stop the loop); the ESP build
-runs the loop in the FreeRTOS task `hc_loop` (8 KB stack, priority 5) and sleeps in
+runs the loop in the FreeRTOS task `hc_loop` (12 KB stack, priority 5) and sleeps in
 `LoopQueue::dispatch()`, a `xQueueReceive` with the timeout rounded up to the tick (10 ms at the
 default 100 Hz), so a message from another task wakes it at once. The 1 s cap is a safety net
 for a missed wakeup, not part of the timing contract.

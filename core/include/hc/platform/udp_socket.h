@@ -37,8 +37,10 @@ protected:
 /// to a reason (valid until the next call), which the caller logs.
 class UdpSocket {
 public:
-	/// Longest datagram delivered; longer ones are dropped by the platform (logged).
-	static constexpr size_t kMaxDatagram = 512;
+	/// Longest datagram delivered; longer ones are dropped by the platform (logged and counted, never
+	/// truncated). KNXnet/IP tunnelling frames are at most about 60 octets, search and description
+	/// responses well under 256; the ESP's receive ring holds slots of this size (issue #44).
+	static constexpr size_t kMaxDatagram = 256;
 
 	/// Opens the socket on an ephemeral port of all local IPv4 addresses (closing it first if it
 	/// is open); its datagrams and errors go to `receiver`.

@@ -19,8 +19,8 @@ namespace hc {
 namespace esp {
 
 /// hc::UdpSocket over lwIP's BSD sockets. The event loop opens, sends and closes; the reader task
-/// `hc_udp` waits on the socket (select, 100 ms), copies each datagram into a ring of kRing slots
-/// and posts one message through the LoopQueue, whose handler hands the ring's datagrams to the
+/// `hc_udp` waits on the socket (select, 100 ms), receives each datagram straight into the next
+/// free one of a ring of kRing slots of kMaxDatagram octets and posts one message through the LoopQueue, whose handler hands the ring's datagrams to the
 /// receiver on the loop's thread. It also runs resolve()'s getaddrinfo, so the loop never blocks on
 /// the name server. The reader closes descriptors the loop retires (never one it may be waiting on);
 /// datagrams of a closed socket are discarded by a generation count. Statically allocated.
@@ -46,6 +46,8 @@ public:
 
 	/// Datagrams dropped because the ring was full, since boot.
 	uint32_t dropped() const { return dropped_.load(); }
+	/// Datagrams dropped because they were longer than kMaxDatagram, since boot.
+	uint32_t oversized() const { return oversized_.load(); }
 
 private:
 	static constexpr size_t kRetire = 4;
@@ -56,7 +58,9 @@ private:
 		uint32_t generation;
 		Ipv4Endpoint from;
 		uint16_t length;
-		uint8_t data[kMaxDatagram];
+		/// One octet more than a datagram may have: the reader receives straight into the slot, and
+		/// a datagram that fills it was longer (dropped, not truncated).
+		uint8_t data[kMaxDatagram + 1];
 	};
 
 	static void task_main(void* self);
@@ -87,7 +91,8 @@ private:
 	std::atomic<int> retire_[kRetire];
 	std::atomic<bool> drain_posted_{false};
 	std::atomic<uint32_t> dropped_{0};
-	Slot ring_[kRing];          ///< Guarded by mutex_.
+	std::atomic<uint32_t> oversized_{0};
+	Slot ring_[kRing];          ///< Guarded by mutex_ (the reader fills the claimed tail slot outside it).
 	size_t ring_head_ = 0;       ///< Guarded by mutex_.
 	size_t ring_count_ = 0;      ///< Guarded by mutex_.
 

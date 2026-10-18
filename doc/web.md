@@ -360,7 +360,9 @@ When the heap is exhausted the image still runs and `GET /api/model` refuses wit
 - The `web` console command: `web status`, `web token create|list|revoke`, `web password clear`,
   `web demo` (the demo datapoints until the next restart).
 - Static RAM of this package on the C6 (`idf.py size`, .bss): +38 KB, of which the web server object
-  (API, feed, auth, the API's log copy) 7.7 KB, the send pool 11 KB, the response buffer 8 KB, the
-  job slot 3.3 KB, the file chunk 1.4 KB, the controller's log ring 4 KB. The heap the server takes
+  (API, feed, auth) 3.6 KB, the send pool 11 KB, the response buffer 8 KB (files are sent in
+  chunks from its front), the job slot 2.3 KB (the API body and the WebSocket text share it), the
+  controller's log ring 4 KB. `GET /api/log` reads that ring in place under its busy flag (no copy;
+  lines other tasks log meanwhile are dropped and counted in `dropped`); issue #44. The heap the server takes
   at run time (httpd task stack, sockets, lwIP buffers) is logged by the firmware: `free heap` lines
   before and after the start and on every WebSocket connect and disconnect (tag `hc.web`).

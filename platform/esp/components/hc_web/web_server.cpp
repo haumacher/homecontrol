@@ -230,7 +230,12 @@ struct WebServer::Job {
 	char authorization[kMaxAuthorization] = {};
 	char requested_with[kMaxRequestedWith] = {};
 	char source[Auth::kMaxSource] = {};
-	char body[WebApi::kMaxBody + 1] = {};
+	// The request body of an api job and the text of a ws_message job share their storage: the
+	// slot holds one job at a time (the httpd task waits for it), and the kinds exclude each other.
+	union {
+		char body[WebApi::kMaxBody + 1];
+		char text[kMaxIncoming + 1];
+	};
 
 	// api_stream: the piece at `offset` of the streamed document `token`, into g_response
 	uint32_t stream_token = 0;
@@ -245,7 +250,6 @@ struct WebServer::Job {
 	bool has_host = false;
 	char origin[kMaxOrigin] = {};
 	char host[kMaxOrigin] = {};
-	char text[kMaxIncoming + 1] = {};
 	size_t text_length = 0;
 };
 
@@ -258,10 +262,14 @@ struct WebServer::SendBuffer {
 
 namespace {
 
-/// Static storage: the job, the API's response body, the file chunk and the send pool live in
-/// .bss, not on the heap (doc/core.md: no heap in steady state).
+/// Static storage: the job, the API's response body and the send pool live in .bss, not on the heap
+/// (doc/core.md: no heap in steady state).
 char g_response[WebServer::kResponseBuffer];
-char g_file_chunk[kFileChunk];
+/// The chunk a file is sent in: the front of g_response. The httpd task serves one request at a
+/// time, and handle_file() first waits for a job of an earlier request that timed out and may still
+/// write g_response on the loop (wait_job()); the WebSocket feed sends from its own buffers.
+static_assert(kFileChunk <= WebServer::kResponseBuffer, "the file chunk aliases the response buffer");
+char (&g_file_chunk)[kFileChunk] = *reinterpret_cast<char (*)[kFileChunk]>(g_response);
 
 } // namespace
 
@@ -988,6 +996,7 @@ esp_err_t WebServer::handle_file(httpd_req_t* req) {
 		httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 		return httpd_resp_send(req, kMissing, sizeof(kMissing) - 1);
 	}
+	wait_job(); // g_file_chunk is g_response: a timed-out job may still write it on the loop
 	static char path[kMaxPath + 32];
 	static char uri[kMaxPath];
 	std::snprintf(uri, sizeof(uri), "%s", req->uri);

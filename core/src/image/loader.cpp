@@ -50,8 +50,24 @@ void Report::add(Kind failure, const char* path, const char* format, ...) {
 	if (kind == Kind::none) {
 		kind = failure;
 	}
-	if (count < kMaxRefusals) {
-		Refusal& r = refusals[count++];
+	Refusal* slot = nullptr;
+	if (count == 0) {
+		slot = &first_;
+	} else if (count < kMaxRefusals) {
+		if (more_ == nullptr) {
+			more_ = new (std::nothrow) Refusal[kMaxRefusals];
+			if (more_ != nullptr) {
+				more_[0] = first_;
+				refusals = more_;
+			}
+		}
+		if (more_ != nullptr) {
+			slot = &more_[count];
+		}
+	}
+	if (slot != nullptr) {
+		++count;
+		Refusal& r = *slot;
 		std::snprintf(r.path, sizeof(r.path), "%s", path != nullptr ? path : "");
 		va_list args;
 		va_start(args, format);
@@ -68,23 +84,32 @@ void* Arena::allocate(size_t size) {
 	if (size == 0) {
 		size = 8;
 	}
-	if (head_ == nullptr || head_->size - head_->used < size) {
-		size_t header = (sizeof(Block) + 7) & ~static_cast<size_t>(7);
-		size_t capacity = size > kBlockSize ? size : kBlockSize;
-		void* memory = ::operator new(header + capacity, std::nothrow);
+	constexpr size_t kHeader = (sizeof(Block) + 7) & ~static_cast<size_t>(7);
+	Block* block = head_;
+	if (block == nullptr || block->size - block->used < size) {
+		// A large table gets a block of its own behind the head, which keeps filling with the small
+		// ones; a small one starts a new shared block.
+		bool own = size > kBlockSize / 4;
+		size_t capacity = own ? size : kBlockSize;
+		void* memory = ::operator new(kHeader + capacity, std::nothrow);
 		if (memory == nullptr) {
 			return nullptr;
 		}
-		Block* block = static_cast<Block*>(memory);
-		block->next = head_;
+		block = static_cast<Block*>(memory);
 		block->size = capacity;
 		block->used = 0;
-		head_ = block;
-		bytes_ += header + capacity;
+		if (own && head_ != nullptr) {
+			block->next = head_->next;
+			head_->next = block;
+		} else {
+			block->next = head_;
+			head_ = block;
+		}
+		bytes_ += kHeader + capacity;
 	}
-	size_t header = (sizeof(Block) + 7) & ~static_cast<size_t>(7);
-	char* base = reinterpret_cast<char*>(head_) + header + head_->used;
-	head_->used += size;
+	char* base = reinterpret_cast<char*>(block) + kHeader + block->used;
+	block->used += size;
+	used_ += size;
 	std::memset(base, 0, size);
 	return base;
 }
@@ -105,6 +130,7 @@ void Arena::release() {
 		head_ = next;
 	}
 	bytes_ = 0;
+	used_ = 0;
 }
 
 bool Plan::has_schedule(const char* id) const {

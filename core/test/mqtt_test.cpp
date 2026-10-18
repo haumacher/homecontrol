@@ -245,6 +245,40 @@ TEST_CASE("MqttConnectsWithTheConfigurationAndAnnouncesItself") {
 	CHECK(f.capture.sink.contains("connected to mqtt://broker.example:1883"));
 }
 
+TEST_CASE("MqttUnconfiguredOwnsNoPayloadOrPointTable") {
+	// Issue #44: an installation without MQTT pays for the object alone, not for the 2 KB payload
+	// and the 1.5 KB history batch.
+	static_assert(sizeof(Mqtt) < 1024, "the message buffers are not part of the object");
+	Fixture f;
+	CHECK_FALSE(f.mqtt->has_buffers());
+	f.load(example()); // no mqtt member
+	CHECK_FALSE(f.mqtt->has_buffers());
+
+	// Configured: allocated; connected and retired by an image without mqtt: freed again.
+	f.load(example(), kMember);
+	CHECK(f.mqtt->has_buffers());
+	f.connect();
+	CHECK(f.mqtt->state() == MqttState::connected);
+	f.load(example());
+	CHECK(f.mqtt->state() == MqttState::retiring);
+	CHECK(f.mqtt->has_buffers()); // the retirement still publishes
+	f.run_for(Mqtt::kRetireMs + 1000);
+	CHECK(f.mqtt->state() == MqttState::disabled);
+	CHECK_FALSE(f.mqtt->has_buffers());
+
+	// Configured but never connected, then cleared: freed at once.
+	f.load(example(), kMember);
+	CHECK(f.mqtt->has_buffers());
+	f.mqtt->clear();
+	CHECK_FALSE(f.mqtt->has_buffers());
+
+	// A refused first configuration leaves nothing behind.
+	const char* error = nullptr;
+	const char* bad = R"({"broker": "ftp://x"})";
+	CHECK_FALSE(f.mqtt->configure_json(bad, std::strlen(bad), &error));
+	CHECK_FALSE(f.mqtt->has_buffers());
+}
+
 TEST_CASE("MqttDefaultBaseTopicAndUserFromTheSettings") {
 	Fixture f;
 	f.settings.set_string("mqtt.user", "ha-user");

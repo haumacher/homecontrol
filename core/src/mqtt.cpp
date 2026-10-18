@@ -357,6 +357,11 @@ struct Mqtt::Point {
 	bool dirty;
 };
 
+struct Mqtt::Buffers {
+	char payload[kMaxPayload];
+	HistoryPoint points[kHistoryBatch];
+};
+
 struct Mqtt::Table {
 	image::Arena arena;
 	MemberConfig config;
@@ -401,6 +406,24 @@ Mqtt::~Mqtt() {
 	// the last will (offline).
 	delete table_;
 	delete next_;
+	delete buffers_;
+}
+
+bool Mqtt::ensure_buffers(const char** error) {
+	if (buffers_ == nullptr) {
+		buffers_ = new (std::nothrow) Buffers;
+		if (buffers_ == nullptr) {
+			return refuse(error, "no memory for the message buffers (%u bytes)", static_cast<unsigned>(sizeof(Buffers)));
+		}
+	}
+	return true;
+}
+
+void Mqtt::release_buffers_if_idle() {
+	if (table_ == nullptr && next_ == nullptr) {
+		delete buffers_;
+		buffers_ = nullptr;
+	}
 }
 
 bool Mqtt::refuse(const char** error, const char* fmt, ...) {
@@ -602,15 +625,22 @@ bool Mqtt::configure(const MqttImage& image, const char** error) {
 		clear();
 		return true;
 	}
+	if (!ensure_buffers(error)) {
+		return false;
+	}
 	Table* table = new (std::nothrow) Table();
 	if (table == nullptr) {
+		release_buffers_if_idle();
 		return refuse(error, "no memory for the configuration");
 	}
 	if (!build(*table, image, error)) {
 		delete table;
+		release_buffers_if_idle();
 		return false;
 	}
-	return commit(table, error);
+	bool ok = commit(table, error);
+	release_buffers_if_idle(); // a refused first configuration
+	return ok;
 }
 
 bool Mqtt::model_reloaded(const char** error) {
@@ -618,7 +648,7 @@ bool Mqtt::model_reloaded(const char** error) {
 	if (current == nullptr) {
 		return true;
 	}
-	Table* table = new Table;
+	Table* table = new (std::nothrow) Table;
 	if (table == nullptr) {
 		return refuse(error, "no memory for the datapoint table");
 	}
@@ -783,6 +813,7 @@ void Mqtt::clear() {
 	}
 	delete table_;
 	table_ = nullptr;
+	release_buffers_if_idle();
 	if (listening_) {
 		model_.remove_listener(*this);
 		listening_ = false;
@@ -1101,6 +1132,7 @@ void Mqtt::finish_retire() {
 	sweep_end_ = 0;
 	set_state(MqttState::disabled);
 	if (table_ == nullptr) {
+		release_buffers_if_idle();
 		if (listening_) {
 			model_.remove_listener(*this);
 			listening_ = false;
@@ -1295,7 +1327,7 @@ Mqtt::Step Mqtt::pump_discovery(size_t& budget) {
 			++discovery_next_;
 			continue;
 		}
-		if (!send(topic_, payload_, std::strlen(payload_), true, 1)) {
+		if (!send(topic_, buffers_->payload, std::strlen(buffers_->payload), true, 1)) {
 			return Step::blocked;
 		}
 		++discovery_next_;
@@ -1333,7 +1365,7 @@ Mqtt::Step Mqtt::pump_states(size_t& budget) {
 			--dirty_;
 			continue;
 		}
-		if (!send(topic_, payload_, std::strlen(payload_), table_->config.retain, 0)) {
+		if (!send(topic_, buffers_->payload, std::strlen(buffers_->payload), table_->config.retain, 0)) {
 			return Step::blocked;
 		}
 		point.dirty = false;
@@ -1393,7 +1425,7 @@ Mqtt::Step Mqtt::pump_history(size_t& budget) {
 		}
 		++queries;
 		size_t count = 0;
-		HistoryStatus status = history_->range(dp->id(), from, to, points_, kHistoryBatch, count);
+		HistoryStatus status = history_->range(dp->id(), from, to, buffers_->points, kHistoryBatch, count);
 		if (status != HistoryStatus::ok) {
 			Log::warn(kTag, "history of '%s' not exported: %s", dp->name(), history_status_name(status));
 			++export_index_;
@@ -1403,10 +1435,10 @@ Mqtt::Step Mqtt::pump_history(size_t& budget) {
 			point.cursor = to - 1;
 			continue;
 		}
-		JsonWriter json(payload_, sizeof(payload_));
+		JsonWriter json(buffers_->payload, kMaxPayload);
 		json.begin_array();
 		for (size_t i = 0; i < count; ++i) {
-			const HistoryPoint& p = points_[i];
+			const HistoryPoint& p = buffers_->points[i];
 			json.begin_array().number(p.last_t);
 			switch (dp->type()) {
 				case ValueType::boolean: json.boolean(p.last != 0); break;
@@ -1429,11 +1461,11 @@ Mqtt::Step Mqtt::pump_history(size_t& budget) {
 			++export_index_;
 			continue;
 		}
-		payload_[json.length() < sizeof(payload_) ? json.length() : sizeof(payload_) - 1] = '\0';
-		if (!send(topic_, payload_, json.length(), false, 0)) {
+		buffers_->payload[json.length() < kMaxPayload ? json.length() : kMaxPayload - 1] = '\0';
+		if (!send(topic_, buffers_->payload, json.length(), false, 0)) {
 			return Step::blocked;
 		}
-		point.cursor = points_[count - 1].last_t;
+		point.cursor = buffers_->points[count - 1].last_t;
 		++history_messages_;
 		--budget;
 	}
@@ -1468,7 +1500,7 @@ bool Mqtt::write_state(const Datapoint& datapoint) {
 	if (point_topic(topic_, sizeof(topic_), datapoint.name(), "state") == 0) {
 		return false;
 	}
-	JsonWriter json(payload_, sizeof(payload_) - 1);
+	JsonWriter json(buffers_->payload, kMaxPayload - 1);
 	json.begin_object().key("value");
 	write_value_json(json, datapoint.value());
 	json.member("quality", quality_name(datapoint.quality()));
@@ -1482,7 +1514,7 @@ bool Mqtt::write_state(const Datapoint& datapoint) {
 	if (json.overflowed()) {
 		return false;
 	}
-	payload_[json.length()] = '\0';
+	buffers_->payload[json.length()] = '\0';
 	return true;
 }
 
@@ -1559,7 +1591,7 @@ bool Mqtt::write_config(const Function& function) {
 		return false;
 	}
 	const MemberConfig& c = table_->config;
-	JsonWriter json(payload_, sizeof(payload_) - 1);
+	JsonWriter json(buffers_->payload, kMaxPayload - 1);
 	ConfigWriter w(json, model_);
 	char unique[kMaxNodeId + kMaxFunctionId + 2];
 	std::snprintf(unique, sizeof(unique), "%s_%s", node_id_, function.id);
@@ -1728,7 +1760,7 @@ bool Mqtt::write_config(const Function& function) {
 	if (json.overflowed() || w.failed()) {
 		return false;
 	}
-	payload_[json.length()] = '\0';
+	buffers_->payload[json.length()] = '\0';
 	return true;
 }
 
@@ -1821,12 +1853,12 @@ void Mqtt::publish_error(const char* level, const char* name, const char* reason
 		return;
 	}
 	std::strcpy(topic_ + length, "/error");
-	JsonWriter json(payload_, sizeof(payload_) - 1);
+	JsonWriter json(buffers_->payload, kMaxPayload - 1);
 	json.begin_object().member("error", reason).key("payload").string(shown, n).end_object();
 	if (json.overflowed()) {
 		return;
 	}
-	send(topic_, payload_, json.length(), false, 0);
+	send(topic_, buffers_->payload, json.length(), false, 0);
 }
 
 void Mqtt::handle_command(const char* name, const MqttMessage& message) {

@@ -156,7 +156,8 @@ public:
 	bool reload_pending() const { return reload_pending_; }
 	/// Why the last reload for a provider change was refused (its first refusal: the path of the
 	/// image's datapoint, or "", and the reason); nullptr when the last one succeeded.
-	const Report::Refusal* dynamic_refusal() const { return dynamic_refused_ ? &dynamic_refusal_ : nullptr; }
+	/// Held on the heap while the refusal stands (with no heap for it: a fixed "no memory" refusal).
+	const Report::Refusal* dynamic_refusal() const;
 
 	// LedInput
 	bool image_loaded() const override { return loaded_; }
@@ -195,6 +196,10 @@ private:
 	// DynamicSpecListener
 	void dynamic_specs_changed(DynamicSpecProvider& provider) override;
 	bool fail_applied(Source source, const char* path, const char* format, ...) HC_PRINTF_FORMAT(4, 5);
+	/// Records why a reload for a provider change was refused (dynamic_refusal()).
+	void refuse_dynamic(const char* path, const char* format, ...) HC_PRINTF_FORMAT(3, 4);
+	/// The last reload succeeded: the refusal goes.
+	void accept_dynamic();
 	void tear_down();
 	void apply_settings(const Plan& plan);
 
@@ -239,7 +244,7 @@ private:
 	bool model_loaded_once_ = false;
 	TimerHandle reload_timer_;
 	bool dynamic_refused_ = false;
-	Report::Refusal dynamic_refusal_ = {};
+	Report::Refusal* dynamic_refusal_ = nullptr;
 	Callback ntp_changed_;
 	Callback changed_;
 };

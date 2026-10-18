@@ -111,8 +111,10 @@ struct MqttStatus {
 ///   per message; the cursor (per datapoint, by name across image swaps, not across reboots)
 ///   advances only with an accepted message.
 ///
-/// Memory: configure() allocates one arena (the functions, the per-datapoint table); the object
-/// holds its buffers (about 3 KB). Nothing is allocated in steady state. One event-loop timer, one
+/// Memory: configure() allocates one arena (the functions, the per-datapoint table) and, with the
+/// first configuration, the payload and history buffers (about 3.6 KB), which go when the
+/// configuration does (an image without `mqtt` costs nothing beyond the object, issue #44). A
+/// configuration without the memory for them is refused. Nothing is allocated in steady state. One event-loop timer, one
 /// datapoint listener (while configured). Threading: the event loop's thread.
 class Mqtt : public DatapointListener, public MqttClientListener {
 public:
@@ -196,6 +198,8 @@ public:
 	bool publish_discovery(const char** error = nullptr);
 
 	MqttState state() const { return state_; }
+	/// Whether the payload and history buffers are allocated (only while configured or retiring).
+	bool has_buffers() const { return buffers_ != nullptr; }
 	void status(MqttStatus& out) const;
 	/// The base topic in effect ("" when not configured).
 	const char* base_topic() const;
@@ -213,7 +217,12 @@ private:
 	struct Function;
 	struct Point;
 
+	struct Buffers;
+
 	bool build(Table& table, const MqttImage& image, const char** error);
+	bool ensure_buffers(const char** error);
+	/// Frees the buffers when neither a configuration nor a retiring one is left.
+	void release_buffers_if_idle();
 	bool commit(Table* table, const char** error);
 	bool refuse(const char** error, const char* fmt, ...) HC_PRINTF_FORMAT(3, 4);
 
@@ -303,8 +312,9 @@ private:
 	char error_[160] = {};
 
 	char topic_[MqttClient::kMaxTopic + 1] = {};
-	char payload_[kMaxPayload] = {};
-	HistoryPoint points_[kHistoryBatch];
+	/// The payload of the message being written and the samples of a history export: allocated with
+	/// the configuration (nullptr while there is none).
+	Buffers* buffers_ = nullptr;
 };
 
 } // namespace hc

@@ -87,3 +87,25 @@ TEST_CASE("LogRing copy is consistent and the controller mirrors hc::Log into it
 	CHECK(lines.ms.back() == fake.clock.now_ms);
 	CHECK(copy.dropped() == 0);
 }
+
+TEST_CASE("LogRing read lock: writers drop and count while a reader holds the ring in place") {
+	hc_test::FakeClock clock;
+	hc::LogRing ring(&clock);
+	ring.append(hc::LogLevel::info, "hc.a", "before");
+	{
+		hc::LogRing::ReadLock lock(ring);
+		REQUIRE(lock.held());
+		hc::LogRing::ReadLock second(ring); // one holder at a time
+		CHECK_FALSE(second.held());
+		ring.append(hc::LogLevel::info, "hc.a", "while held");
+		CHECK(ring.dropped() == 1);
+		Collector all;
+		CHECK(ring.read(0, all) == 1);
+		CHECK(all.texts == std::vector<std::string>{"I hc.a: before"});
+	}
+	ring.append(hc::LogLevel::info, "hc.a", "after");
+	Collector all;
+	CHECK(ring.read(0, all) == 2);
+	CHECK(all.seqs == std::vector<uint32_t>{1, 2});
+	CHECK(ring.dropped() == 1);
+}

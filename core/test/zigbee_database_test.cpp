@@ -3,10 +3,12 @@
  */
 // The Zigbee device database, the IEEE address text form and the ZCL value decoder.
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include "allocation_counter.h"
 #include "doctest.h"
 #include "fake_blob_store.h"
 #include "hc/json.h"
@@ -179,6 +181,103 @@ TEST_CASE("ZigbeeDatabase: save and load through the blob store") {
 	const char* error = nullptr;
 	CHECK_FALSE(database.save(&error));
 	CHECK(std::string(error) == "storage error");
+}
+
+/// A database blob written by the code before the save measured its text (commit b173023): four
+/// devices covering an absent short address, an empty interview, escapes in a label, the full
+/// cluster lists and four endpoints. The persisted format is frozen (spec/zigbee.md): this must load
+/// unchanged, and a save of what it loaded must write it back byte for byte.
+const char* const kOldBlob =
+	R"json({"format":1,"devices":[{"ieee":"00124b0001020304","short":6699,"manufacturer":"IKEA of Sweden","model":"TRADFRI bulb E27 WS 806lm","label":"Küche \"Decke\"","interviewed":true,"last_seen":1760000000,"endpoints":[{"id":11,"profile":260,"device":268,"in":[0,3,6,8,768],"out":[25]}])json"
+	R"json(},{"ieee":"00158d00090a0b0c","short":24175,"manufacturer":"","model":"","label":"","interviewed":true,"endpoints":[{"id":1,"profile":260,"device":1026,"in":[0,1,1280],"out":[],"zone_type":21},{"id":2,"profile":49246,"device":0,"in":[],"out":[]}])json"
+	R"json(},{"ieee":"a4c1380000000001","manufacturer":"","model":"","label":"","interviewed":false,"endpoints":[])json"
+	R"json(},{"ieee":"0017880100aabbcc","short":1,"manufacturer":"Signify Netherlands B.V.","model":"RWL022","label":"Flur\t/ Tür","interviewed":true,"last_seen":1,"endpoints":[{"id":1,"profile":260,"device":2080,"in":[0,1,3,6,8,768,1026,1029,1030,1024,1280,18],"out":[1026,1029,1030,1024,1280,18,64512,65535]},{"id":2,"profile":260,"device":2081,"in":[0],"out":[]},{"id":3,"profile":260,"device":2082,"in":[0,1],"out":[]},{"id":240,"profile":260,"device":2083,"in":[0,1,3],"out":[]}]}]})json";
+
+TEST_CASE("ZigbeeDatabase: a blob of the previous code loads and is written back byte for byte") {
+	hc_test::FakeBlobStore store;
+	store.blobs["zigbee-devices.json"].assign(kOldBlob, kOldBlob + std::strlen(kOldBlob));
+	DeviceDatabase database(&store);
+	const char* error = nullptr;
+	REQUIRE_MESSAGE(database.load(&error), error);
+	REQUIRE(database.size() == 4);
+	const ZigbeeDevice* fresh = database.find(0xa4c1380000000001ull);
+	REQUIRE(fresh != nullptr);
+	CHECK(fresh->short_addr == hc::zigbee::kNoShortAddress);
+	CHECK_FALSE(fresh->interviewed);
+	const ZigbeeDevice* remote = database.find(0x0017880100aabbccull);
+	REQUIRE(remote != nullptr);
+	CHECK(std::string(remote->label) == "Flur\t/ T\xc3\xbcr");
+	REQUIRE(remote->endpoint_count == 4);
+	CHECK(remote->endpoints[0].in_count == 12);
+	CHECK(remote->endpoints[0].out_count == 8);
+	CHECK(remote->endpoints[3].id == 240);
+
+	store.blobs.clear();
+	REQUIRE(database.save());
+	const std::vector<uint8_t>& blob = store.blobs["zigbee-devices.json"];
+	CHECK(std::string(blob.begin(), blob.end()) == std::string(kOldBlob));
+}
+
+TEST_CASE("ZigbeeDatabase: a save of 30 devices needs no block larger than its JSON") {
+	hc_test::FakeBlobStore store;
+	DeviceDatabase database(&store);
+	uint16_t clusters[] = {0x0000, 0x0001, 0x0003, 0x0004, 0x0005, 0x0006, 0x0008, 0x0300, 0x0402, 0x0405, 0x0b05, 0x1000};
+	for (int i = 0; i < 30; ++i) {
+		ZigbeeDevice* device = database.add(0x00124b0000000100ull + static_cast<Ieee>(i), static_cast<uint16_t>(0x100 + i));
+		REQUIRE(device != nullptr);
+		std::strcpy(device->manufacturer, "A manufacturer of 32 characters!");
+		std::strcpy(device->model, "A model name with 32 characters!");
+		std::snprintf(device->label, sizeof(device->label), "Device number %d of thirty", i);
+		device->interviewed = true;
+		device->last_seen_s = 1760000000 + i;
+		device->endpoint_count = 2;
+		for (size_t e = 0; e < 2; ++e) {
+			device->endpoints[e].id = static_cast<uint8_t>(e + 1);
+			device->endpoints[e].profile = 0x0104;
+			device->endpoints[e].device = 0x0100;
+			device->endpoints[e].set_clusters(clusters, 12, clusters, 12);
+		}
+	}
+	size_t json = write(database).size();
+	// Between 12 and 20 KB: the old save needed a 20 KB block for it besides the copies.
+	REQUIRE(json > 12000);
+	REQUIRE(json < hc::BlobStore::kMaxBlobSize);
+	size_t largest = 0;
+	{
+		hc_test::AllocationScope counting;
+		REQUIRE(database.save());
+		largest = counting.largest();
+	}
+	// The fake store copies the content into its map (a vector of exactly the blob's size).
+	CHECK(largest <= json + 1);
+	CHECK(store.blobs["zigbee-devices.json"].size() == json);
+
+	DeviceDatabase copy(&store);
+	{
+		hc_test::AllocationScope counting;
+		REQUIRE(copy.load());
+		largest = counting.largest();
+		// One buffer of the blob (and the fake store's std::string of the name), no temporary
+		// table of 32 devices (12 KB before).
+		CHECK(counting.peak() <= json + 1 + 64);
+	}
+	CHECK(largest <= json + 1);
+	CHECK(copy.size() == 30);
+	CHECK((write(copy) == write(database)));
+}
+
+TEST_CASE("ZigbeeDatabase: a refusal in the second half of the devices keeps the loaded content") {
+	DeviceDatabase database(nullptr);
+	fill(database);
+	std::string before = write(database);
+	std::string text = before;
+	// A third device, valid, and a fourth repeating the first's address.
+	std::string extra = R"(,{"ieee":"a4c1380000000001"},{"ieee":"00124b0001020304"}]})";
+	text.replace(text.size() - 2, 2, extra);
+	const char* error = nullptr;
+	CHECK_FALSE(database.read_json(text.data(), text.size(), &error));
+	CHECK(std::string(error) == "a device is listed twice");
+	CHECK(write(database) == before);
 }
 
 TEST_CASE("ZigbeeDatabase: a refused document changes nothing") {

@@ -85,6 +85,7 @@ ImageService::~ImageService() {
 		providers_[i]->set_spec_listener(nullptr);
 	}
 	delete plan_;
+	delete dynamic_refusal_;
 	if (started_) {
 		controller_.set_led_input(nullptr);
 		controller_.time().remove_listener(scheduler_);
@@ -172,6 +173,7 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		return false;
 	}
 	size_t arena = plan->arena.bytes();
+	size_t arena_used = plan->arena.used();
 	bool ok = apply(*plan, source);
 	if (plan != plan_) {
 		delete plan; // not kept for the providers' reloads
@@ -204,15 +206,17 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		std::snprintf(store_error_, sizeof(store_error_), "not stored");
 	}
 	Log::info(kTag, "image '%s' revision %u (%s, schema %s) loaded from %s in %u ms: %u datapoints (%u KNX), %u rules, "
-		"%u schedules, %u functions, %u locations, %u history rings%s; %u bytes, load tables %u bytes%s",
+		"%u schedules, %u functions, %u locations, %u history rings%s; %u bytes, load tables %u of %u bytes used%s, "
+		"UI model %u of %u bytes used",
 		info_.project_id, static_cast<unsigned>(info_.revision), info_.name[0] != '\0' ? info_.name : "unnamed",
 		info_.schema_version, source_name(source), static_cast<unsigned>(controller_.clock().monotonic_ms() - begin),
 		static_cast<unsigned>(info_.datapoints), static_cast<unsigned>(info_.knx_datapoints),
 		static_cast<unsigned>(info_.rules), static_cast<unsigned>(info_.schedules),
 		static_cast<unsigned>(info_.functions), static_cast<unsigned>(info_.locations),
 		static_cast<unsigned>(info_.history_rings), info_.time_master ? ", time master" : "",
-		static_cast<unsigned>(length), static_cast<unsigned>(arena),
-		plan_ != nullptr ? " (kept for the providers' reloads)" : "");
+		static_cast<unsigned>(length), static_cast<unsigned>(arena_used), static_cast<unsigned>(arena),
+		plan_ != nullptr ? " (kept for the providers' reloads)" : "", static_cast<unsigned>(view_.used()),
+		static_cast<unsigned>(view_.bytes()));
 	if (info_.zigbee_datapoints > 0 || dynamic_count_ > 0) {
 		Log::info(kTag, "  %u Zigbee binding(s); %u datapoint(s) of the providers", static_cast<unsigned>(info_.zigbee_datapoints),
 			static_cast<unsigned>(dynamic_count_));
@@ -539,7 +543,7 @@ bool ImageService::apply(Plan& plan, Source source) {
 	loaded_ = true;
 	has_knx_ = plan.mapping_count > 0 || plan.has_time_master;
 	loaded_ms_ = controller_.clock().monotonic_ms();
-	dynamic_refused_ = false;
+	accept_dynamic();
 	rules::StartReason reason = rules_started_ ? rules::StartReason::image : rules::StartReason::boot;
 	rules_started_ = true;
 	engine_.start(reason);
@@ -561,6 +565,35 @@ void ImageService::drop_plan() {
 	plan_ = nullptr;
 }
 
+const Report::Refusal* ImageService::dynamic_refusal() const {
+	static const Report::Refusal kNoMemory = {"", "no memory to keep the reason of the refused reload"};
+	if (!dynamic_refused_) {
+		return nullptr;
+	}
+	return dynamic_refusal_ != nullptr ? dynamic_refusal_ : &kNoMemory;
+}
+
+void ImageService::refuse_dynamic(const char* path, const char* format, ...) {
+	dynamic_refused_ = true;
+	if (dynamic_refusal_ == nullptr) {
+		dynamic_refusal_ = new (std::nothrow) Report::Refusal;
+		if (dynamic_refusal_ == nullptr) {
+			return;
+		}
+	}
+	std::snprintf(dynamic_refusal_->path, sizeof(dynamic_refusal_->path), "%s", path);
+	va_list args;
+	va_start(args, format);
+	std::vsnprintf(dynamic_refusal_->reason, sizeof(dynamic_refusal_->reason), format, args);
+	va_end(args);
+}
+
+void ImageService::accept_dynamic() {
+	dynamic_refused_ = false;
+	delete dynamic_refusal_;
+	dynamic_refusal_ = nullptr;
+}
+
 bool ImageService::reload_dynamic(const char* why) {
 	if (model_.notifying()) {
 		Log::error(kTag, "model reload (%s) refused from a datapoint listener", why);
@@ -568,12 +601,9 @@ bool ImageService::reload_dynamic(const char* why) {
 	}
 	const Plan* plan = loaded_ ? plan_ : nullptr;
 	if (loaded_ && plan == nullptr) {
-		dynamic_refused_ = true;
-		std::snprintf(dynamic_refusal_.path, sizeof(dynamic_refusal_.path), "%s", "");
-		std::snprintf(dynamic_refusal_.reason, sizeof(dynamic_refusal_.reason),
-			"the loaded image's tables were not kept (no provider when it was applied): the providers' datapoints "
-			"join with the next image load");
-		Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal_.reason);
+		refuse_dynamic("", "the loaded image's tables were not kept (no provider when it was applied): the providers' "
+			"datapoints join with the next image load");
+		Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
 		return false;
 	}
 	Report* report = new (std::nothrow) Report();
@@ -583,9 +613,10 @@ bool ImageService::reload_dynamic(const char* why) {
 	}
 	Composed composed;
 	if (!compose(plan, composed, *report)) {
-		dynamic_refused_ = true;
 		if (report->count > 0) {
-			dynamic_refusal_ = report->refusals[0];
+			refuse_dynamic(report->refusals[0].path, "%s", report->refusals[0].reason);
+		} else {
+			refuse_dynamic("", "the datapoints do not compose");
 		}
 		Log::warn(kTag, "model not reloaded (%s): the datapoints do not compose; the model stays as it is", why);
 		for (size_t i = 0; i < report->count; ++i) {
@@ -601,17 +632,14 @@ bool ImageService::reload_dynamic(const char* why) {
 	}
 	DatapointStatus status = model_.load(composed.specs, composed.count, true);
 	if (status != DatapointStatus::ok) {
-		dynamic_refused_ = true;
-		std::snprintf(dynamic_refusal_.path, sizeof(dynamic_refusal_.path), "%s", "");
-		std::snprintf(dynamic_refusal_.reason, sizeof(dynamic_refusal_.reason),
-			"the datapoint model refused the reload: %s", datapoint_status_name(status));
-		Log::error(kTag, "model not reloaded (%s): %s; the model stays as it is", why, dynamic_refusal_.reason);
+		refuse_dynamic("", "the datapoint model refused the reload: %s", datapoint_status_name(status));
+		Log::error(kTag, "model not reloaded (%s): %s; the model stays as it is", why, dynamic_refusal()->reason);
 		return false;
 	}
 	bind_providers(plan, composed);
 	// The load dropped the rule engine's binding of the parameter datapoints (spec/rules.md 8.6).
 	engine_.bind_parameters();
-	dynamic_refused_ = false;
+	accept_dynamic();
 	++dynamic_reloads_;
 	// The image's datapoints are at their positions: the rules' ids stay valid. Every component that
 	// binds or indexes datapoints takes the new model, as in a swap (the bindings were dropped).
