@@ -11,4 +11,4 @@ idf_component_register(
 
 # The same strictness as on the host (the IDF adds its own warning set on top).
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
-target_compile_definitions(${COMPONENT_LIB} PRIVATE HC_BUILD_ID="${HC_CORE_BUILD_ID}")
+hc_core_add_build_id(${COMPONENT_LIB})

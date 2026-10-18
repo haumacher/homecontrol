@@ -210,8 +210,9 @@ Open like the UI files; the strings are display text and untrusted input (doc/i1
   committed packs (`de.json`); a flat JSON object of key to string. 404 for a language the bundle
   does not carry.
 - `GET /i18n/<code>.json` — the pack the device downloaded for its release (the same format,
-  `Content-Encoding: gzip`, `Cache-Control: no-store`); 404 when there is none (always on the POSIX
-  build). The UI takes its keys in preference to the bundled pack's.
+  `Content-Encoding: gzip`, `Cache-Control: no-store`); 204 No Content when there is none (an
+  expected state, so the browser console stays clean). The UI takes its keys in preference to the
+  bundled pack's.
 
 ## Runtime image
 

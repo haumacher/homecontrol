@@ -3,7 +3,7 @@
  */
 // The controller as a host executable: the simulator and the single-board-computer fallback.
 //
-//   homecontrol [--settings <file>] [--image <file>] [--http <port>] [--www <dir>] [--demo]
+//   homecontrol [--settings <file>] [--image <file>] [--http <port>] [--www <dir>] [--demo] [--version]
 //
 // Runs the controller until SIGINT or SIGTERM. The settings (time zone, ...) live in a text file,
 // by default homecontrol.settings in the working directory (format in doc/network.md). The web
@@ -110,7 +110,7 @@ void mqtt_node_id(char* out, size_t size) {
 }
 
 void print_usage(const char* program) {
-	std::fprintf(stderr, "usage: %s [--settings <file>] [--image <file>] [--http <port>] [--www <dir>] [--demo]\n",
+	std::fprintf(stderr, "usage: %s [--settings <file>] [--image <file>] [--http <port>] [--www <dir>] [--demo] [--version]\n",
 		program);
 }
 
@@ -212,6 +212,11 @@ int main(int argc, char** argv) {
 		}
 		if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
 			print_usage(argv[0]);
+			return 0;
+		}
+		if (std::strcmp(argv[i], "--version") == 0) {
+			// The same words as the controller's first log line and the device's /api/status.
+			std::printf("homecontrol %s (build %s)\n", hc::kVersion, hc::build_id());
 			return 0;
 		}
 		hc::Log::error(kTag, "unknown argument: %s", argv[i]);

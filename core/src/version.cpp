@@ -3,9 +3,8 @@
  */
 #include "hc/version.h"
 
-#ifndef HC_BUILD_ID
-#define HC_BUILD_ID "unknown"
-#endif
+// Generated at build time from `git describe --always --dirty` (core/cmake/build_id.cmake, #36).
+#include "hc_build_id.h"
 
 namespace hc {
 

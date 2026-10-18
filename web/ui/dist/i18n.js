@@ -38,7 +38,8 @@ function strings(pack) {
 async function loadPack(url) {
 	try {
 		const response = await fetch(url, { credentials: "same-origin" });
-		return response.ok ? strings(await response.json()) : null;
+		// 204: the device has no downloaded pack for this language (not an error).
+		return response.ok && response.status !== 204 ? strings(await response.json()) : null;
 	} catch (e) {
 		return null;
 	}

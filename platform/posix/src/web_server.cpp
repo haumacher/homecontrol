@@ -383,23 +383,22 @@ bool WebServer::start() {
 	});
 	// A language pack the device downloaded for its release (doc/i18n.md): the blob
 	// i18n.<lang>.json.gz of the LanguagePacks, sent as stored (gzip). The blob store replaces a
-	// pack atomically, so this thread reads the old or the new one. 404 without one: the UI then
-	// uses its bundled pack, or English.
+	// pack atomically, so this thread reads the old or the new one. 204 without one (an expected
+	// state, not an error the browser console should show): the UI then uses its bundled pack, or
+	// English.
 	http.Get(R"(/i18n/([A-Za-z-]{2,5})\.json)", [this](const httplib::Request& req, httplib::Response& res) {
 		res.set_header("Cache-Control", "no-store");
 		char name[BlobStore::kMaxNameLength + 1];
 		size_t size = 0;
 		if (packs_store_ == nullptr || !LanguagePacks::blob_name(req.matches[1].str().c_str(), name, sizeof(name)) ||
 			packs_store_->size(name, size) != BlobStatus::ok) {
-			res.status = 404;
-			res.set_content("no downloaded language pack\n", "text/plain; charset=utf-8");
+			res.status = 204; // no downloaded language pack
 			return;
 		}
 		std::string content(size, '\0');
 		size_t length = 0;
 		if (packs_store_->read(name, 0, content.data(), content.size(), length) != BlobStatus::ok) {
-			res.status = 404;
-			res.set_content("no downloaded language pack\n", "text/plain; charset=utf-8");
+			res.status = 204; // no downloaded language pack
 			return;
 		}
 		content.resize(length);

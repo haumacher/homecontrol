@@ -850,8 +850,9 @@ esp_err_t WebServer::file_handler(httpd_req_t* req) {
 /// A language pack the device downloaded for its release (doc/i18n.md): GET /i18n/<lang>.json is
 /// the blob `i18n.<lang>.json.gz` of the LanguagePacks, sent as stored (gzip). Read straight from
 /// the blob store's directory (LittleFS serializes the access; the blob is replaced atomically by a
-/// rename, so a reader sees the old or the new pack). 404 when there is none: the UI then uses the
-/// pack bundled with it, or English. Not cached: a new pack can arrive at any time.
+/// rename, so a reader sees the old or the new pack). 204 when there is none (an expected state,
+/// not an error for the browser console): the UI then uses the pack bundled with it, or English.
+/// Not cached: a new pack can arrive at any time.
 static esp_err_t send_language_pack(httpd_req_t* req, const char* uri) {
 	static constexpr const char kPrefix[] = "/i18n/";
 	char lang[setting::kMaxUiLangLength + 1] = {};
@@ -869,10 +870,9 @@ static esp_err_t send_language_pack(httpd_req_t* req, const char* uri) {
 		}
 	}
 	if (file == nullptr) {
-		httpd_resp_set_status(req, status_line(404));
-		httpd_resp_set_type(req, "text/plain; charset=utf-8");
+		httpd_resp_set_status(req, status_line(204)); // no downloaded language pack
 		httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-		return httpd_resp_sendstr(req, "no downloaded language pack\n");
+		return httpd_resp_send(req, nullptr, 0);
 	}
 	httpd_resp_set_type(req, "application/json");
 	httpd_resp_set_hdr(req, "Content-Encoding", "gzip");

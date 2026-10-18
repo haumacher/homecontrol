@@ -92,6 +92,11 @@ target_compile_definitions(hc_tests PRIVATE HC_SPEC_DIR="${HC_REPO_DIR}/spec")
 
 include("${HC_REPO_DIR}/third_party/doctest/cmake/doctest.cmake")
 doctest_discover_tests(hc_tests)
+# The build id follows the checkout at build time, not at configure time (#36): the controller's
+# --version must report what `git describe --always --dirty` says now.
+add_test(NAME BuildId.FollowsGitDescribe
+	COMMAND "${CMAKE_COMMAND}" "-DHC_GIT_DIR=${HC_REPO_DIR}" "-DHC_PROGRAM=$<TARGET_FILE:homecontrol>"
+		-P "${HC_REPO_DIR}/platform/posix/test/check_build_id.cmake")
 
 # KNXnet/IP tunnelling (issue #7, doc/knx.md): the UDP socket on BSD sockets (the socket calls are
 # shared with the ESP build in platform/common), the diagnostic tool `knxtool` and the KNX tests.

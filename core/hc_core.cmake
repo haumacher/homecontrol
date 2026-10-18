@@ -4,7 +4,7 @@
 # the ESP-IDF component (platform/esp/components/hc_core/CMakeLists.txt). Defines:
 #   HC_CORE_SOURCES      absolute paths of the core's sources
 #   HC_CORE_INCLUDE_DIR  the public include directory
-#   HC_CORE_BUILD_ID     `git describe --always --dirty` of the checkout, or "unknown"
+#   hc_core_add_build_id(<target>)  adds the build-time generated build id (git describe) to the target
 
 set(HC_CORE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 set(HC_CORE_INCLUDE_DIR "${HC_CORE_DIR}/include")
@@ -41,21 +41,22 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/scheduler.cpp"
 )
 
-# The build id is taken at configure time; reconfigure to refresh it after a commit.
-set(HC_CORE_BUILD_ID "unknown")
-find_package(Git QUIET)
-if(GIT_FOUND)
-	execute_process(
-		COMMAND "${GIT_EXECUTABLE}" describe --always --dirty
-		WORKING_DIRECTORY "${HC_CORE_DIR}"
-		OUTPUT_VARIABLE _hc_git_describe
-		OUTPUT_STRIP_TRAILING_WHITESPACE
-		RESULT_VARIABLE _hc_git_result
-		ERROR_QUIET)
-	if(_hc_git_result EQUAL 0 AND NOT _hc_git_describe STREQUAL "")
-		set(HC_CORE_BUILD_ID "${_hc_git_describe}")
-	endif()
-endif()
+# The build id (`git describe --always --dirty`) is generated at build time (#36): the custom target
+# hc_build_id runs core/cmake/build_id.cmake on every build and rewrites <binary dir>/hc_generated/
+# hc_build_id.h only when the id changed, so an incremental build after a commit carries the new id
+# without a reconfigure and an unchanged id recompiles nothing. Call for the core's library target.
+function(hc_core_add_build_id target)
+	set(_hc_gen_dir "${CMAKE_BINARY_DIR}/hc_generated")
+	file(MAKE_DIRECTORY "${_hc_gen_dir}")
+	add_custom_target(hc_build_id ALL
+		BYPRODUCTS "${_hc_gen_dir}/hc_build_id.h"
+		COMMAND "${CMAKE_COMMAND}" "-DHC_GIT_DIR=${HC_CORE_DIR}" "-DHC_OUTPUT=${_hc_gen_dir}/hc_build_id.h"
+			-P "${HC_CORE_DIR}/cmake/build_id.cmake"
+		COMMENT "Build id (git describe)"
+		VERBATIM)
+	add_dependencies(${target} hc_build_id)
+	target_include_directories(${target} PRIVATE "${_hc_gen_dir}")
+endfunction()
 
 # KNXnet/IP tunnelling and the KNX adapter (issue #7, doc/knx.md).
 list(APPEND HC_CORE_SOURCES
