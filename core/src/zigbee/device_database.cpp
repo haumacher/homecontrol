@@ -148,6 +148,34 @@ bool read_endpoint(const JsonSpan& span, ZigbeeEndpoint& out, const char** error
 	return true;
 }
 
+/// The `missing` object of an incomplete device: {"endpoints": [ids], "names": bool}, both optional.
+bool read_missing(const JsonSpan& span, ZigbeeDevice& out) {
+	if (span.kind != JsonSpan::Kind::object) {
+		return false;
+	}
+	JsonSpan member;
+	if (json_member(span, "names", member) && !json_bool(member, out.missing_names)) {
+		return false;
+	}
+	if (!json_member(span, "endpoints", member)) {
+		return true;
+	}
+	if (member.kind != JsonSpan::Kind::array) {
+		return false;
+	}
+	size_t position = 0;
+	JsonSpan item;
+	while (json_next_item(member, position, item)) {
+		double number = 0;
+		if (!json_number(item, number) || number < 1 || number > 240 || std::floor(number) != number ||
+			out.missing_count >= ZigbeeDevice::kMaxMissing) {
+			return false;
+		}
+		out.missing[out.missing_count++] = static_cast<uint8_t>(number);
+	}
+	return true;
+}
+
 bool read_device(const JsonSpan& span, ZigbeeDevice& out, const char** error) {
 	if (span.kind != JsonSpan::Kind::object) {
 		fail(error, "a device is not an object");
@@ -183,6 +211,12 @@ bool read_device(const JsonSpan& span, ZigbeeDevice& out, const char** error) {
 		}
 		out.last_seen_s = static_cast<int64_t>(seconds);
 	}
+	JsonSpan missing;
+	bool has_missing = json_member(span, "missing", missing);
+	if (has_missing && !read_missing(missing, out)) {
+		fail(error, "device missing is not an object of endpoints (ids 1..240, at most 8) and names (a boolean)");
+		return false;
+	}
 	if (json_member(span, "endpoints", member)) {
 		if (member.kind != JsonSpan::Kind::array) {
 			fail(error, "device endpoints is not an array");
@@ -205,6 +239,11 @@ bool read_device(const JsonSpan& span, ZigbeeDevice& out, const char** error) {
 			}
 			++out.endpoint_count;
 		}
+	}
+	if (!out.incomplete()) {
+		// Only an incomplete interview's partial result has something missing.
+		out.missing_count = 0;
+		out.missing_names = false;
 	}
 	return true;
 }
@@ -365,9 +404,23 @@ void DeviceDatabase::write_json(JsonWriter& json) const {
 			json.end_object();
 		}
 		json.end_array();
+		if (device.incomplete()) {
+			write_missing_json(json, device);
+		}
 		json.end_object();
 	}
 	json.end_array();
+	json.end_object();
+}
+
+void write_missing_json(JsonWriter& json, const ZigbeeDevice& device) {
+	json.key("missing").begin_object();
+	json.key("endpoints").begin_array();
+	for (size_t i = 0; i < device.missing_count; ++i) {
+		json.number(static_cast<uint32_t>(device.missing[i]));
+	}
+	json.end_array();
+	json.member("names", device.missing_names);
 	json.end_object();
 }
 

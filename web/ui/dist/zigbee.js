@@ -15,12 +15,28 @@ function deviceTitle(d) {
 	return d.label || d.model || d.ieee;
 }
 
+/// What an incomplete interview did not get (spec/zigbee.md "Adapter view": `missing`), in the UI's
+/// language; null for a device without it.
+function missingText(d) {
+	if (!d.missing) {
+		return null;
+	}
+	const parts = (d.missing.endpoints || []).map((id) => t("zigbee.missing.endpoint", { id }));
+	if (d.missing.names) {
+		parts.push(t("zigbee.missing.names"));
+	}
+	return parts.join(", ");
+}
+
 function stateBadge(d) {
 	if (d.interviewing) {
 		return h("span", { class: "badge warn" }, t("zigbee.state.interviewing"));
 	}
 	if (d.left) {
 		return h("span", { class: "badge warn" }, t("zigbee.state.left"));
+	}
+	if (d.missing) {
+		return h("span", { class: "badge warn" }, t("zigbee.state.incomplete"));
 	}
 	if (!d.interviewed) {
 		return h("span", { class: "badge warn" }, t("zigbee.state.new"));
@@ -74,7 +90,7 @@ export function renderZigbee(content, ctx) {
 		const path = `/api/zigbee/devices/${d.ieee}`;
 		const seen = d.seen_ago_s !== undefined ? formatAgo(d.seen_ago_s * 1000)
 			: d.last_seen ? formatAgo(Date.now() - d.last_seen * 1000) : t("zigbee.never");
-		const identify = h("button", { type: "button", class: "button small secondary", disabled: !d.interviewed,
+		const identify = h("button", { type: "button", class: "button small secondary", disabled: !d.interviewed && !d.missing,
 			onclick: () => act(identify, "POST", `${path}/identify`) }, t("zigbee.identify"));
 		const rename = h("button", { type: "button", class: "button small secondary", onclick: () => {
 			const label = window.prompt(t("zigbee.rename.prompt"), d.label || "");
@@ -93,11 +109,14 @@ export function renderZigbee(content, ctx) {
 			const dp = values.get(name);
 			return [name.replace(`zigbee.${d.ieee}.`, ""), dp ? formatValue(dp) : t("value.unknown")];
 		});
+		const missing = missingText(d);
 		return h("section", { class: "card" },
 			h("h2", null, deviceTitle(d), " ", stateBadge(d)),
 			h("dl", { class: "rows" },
 				[[t("zigbee.device"), `${d.manufacturer || "?"} / ${d.model || "?"}`], [t("zigbee.ieee"), d.ieee],
+					...(missing ? [[t("zigbee.missing"), missing]] : []),
 					[t("zigbee.seen"), seen], ...points].map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
+			missing ? h("p", { class: "hint" }, t("zigbee.missing.hint")) : null,
 			h("div", { class: "actions" }, identify, rename, interview, remove));
 	}
 

@@ -51,6 +51,8 @@ struct ZigbeeDevice {
 	static constexpr size_t kMaxEndpoints = 4;
 	/// Longest manufacturer, model and label text in bytes.
 	static constexpr size_t kMaxText = 32;
+	/// Endpoints an incomplete interview records as unanswered (the interview asks for at most 8).
+	static constexpr size_t kMaxMissing = 8;
 
 	Ieee ieee = 0;
 	uint16_t short_addr = kNoShortAddress;
@@ -63,6 +65,12 @@ struct ZigbeeDevice {
 	ZigbeeEndpoint endpoints[kMaxEndpoints];
 	/// The interview completed: endpoints, clusters and the Basic cluster's names are known.
 	bool interviewed = false;
+	/// What the last interview asked for without an answer when it ended incomplete (a sleepy device
+	/// fell asleep): the endpoints whose simple descriptor stayed unanswered, and whether the Basic
+	/// cluster (manufacturer, model) did. Kept only while the device is incomplete(); persisted.
+	uint8_t missing[kMaxMissing] = {};
+	uint8_t missing_count = 0;
+	bool missing_names = false;
 	/// Wall-clock seconds of the last frame heard while the clock was synchronized (0: never);
 	/// persisted with the next write of the database, not on every frame.
 	int64_t last_seen_s = 0;
@@ -79,8 +87,18 @@ struct ZigbeeDevice {
 	bool refresh = false;
 	/// An interview is due as soon as none is running.
 	bool interview_pending = false;
-	/// Monotonic time the last interview of it started (0: none since boot).
+	/// The due interview is the retry of an incomplete one: it asks only for what is missing.
+	bool interview_retry = false;
+	/// Monotonic time the last interview of it started, or ended incomplete (0: none since boot); the
+	/// next interview the device's own frames trigger waits kInterviewRetryMs from it.
 	uint64_t interview_ms = 0;
+
+	/// The interview ended incomplete: its partial result (endpoints() is not empty) is kept and
+	/// mapped, the device is not interviewed and is interviewed again when it is next heard.
+	bool incomplete() const { return !interviewed && endpoint_count > 0 && (missing_count > 0 || missing_names); }
+	/// An interview result is in use (interviewed or incomplete): its endpoints are mapped, read and
+	/// configured.
+	bool has_result() const { return interviewed || incomplete(); }
 
 	/// The endpoint with `id`, nullptr if there is none.
 	const ZigbeeEndpoint* endpoint(uint8_t id) const;
@@ -146,6 +164,10 @@ private:
 	ZigbeeDevice devices_[kMaxDevices];
 	size_t count_ = 0;
 };
+
+/// The member "missing": {"endpoints": [ids], "names": bool} of an incomplete() device into an open
+/// object (the database, the adapter view and the export write the same, spec/zigbee.md).
+void write_missing_json(JsonWriter& json, const ZigbeeDevice& device);
 
 /// Copies `text` into a field of `size` bytes, cutting at a UTF-8 character boundary.
 void copy_text(char* field, size_t size, const char* text);

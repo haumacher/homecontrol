@@ -273,3 +273,100 @@ TEST_CASE("ZigbeeDatabase: copy_text cuts at a character boundary") {
 	hc::zigbee::copy_text(field, sizeof(field), nullptr);
 	CHECK(std::string(field).empty());
 }
+
+TEST_CASE("ZigbeeDatabase: an incomplete device round-trips with what is missing") {
+	hc_test::FakeBlobStore store;
+	DeviceDatabase database(&store);
+	fill(database);
+	ZigbeeDevice* sleepy = database.add(0x00158d0005060708ull, 0x3c4d);
+	REQUIRE(sleepy != nullptr);
+	sleepy->endpoint_count = 1;
+	uint16_t in[] = {0x0000, 0x0402};
+	sleepy->endpoints[0].id = 1;
+	sleepy->endpoints[0].profile = 0x0104;
+	sleepy->endpoints[0].set_clusters(in, 2, nullptr, 0);
+	sleepy->missing[0] = 2;
+	sleepy->missing[1] = 3;
+	sleepy->missing_count = 2;
+	sleepy->missing_names = true;
+	REQUIRE(sleepy->incomplete());
+	std::string text = write(database);
+	CHECK(text.find("\"interviewed\":false,\"endpoints\":[{\"id\":1,\"profile\":260,\"device\":0,\"in\":[0,1026],"
+		"\"out\":[]}],\"missing\":{\"endpoints\":[2,3],\"names\":true}") != std::string::npos);
+	// The complete devices write no missing member.
+	CHECK(text.find("\"missing\"") == text.rfind("\"missing\""));
+	REQUIRE(database.save());
+	DeviceDatabase copy(&store);
+	REQUIRE(copy.load());
+	const ZigbeeDevice* loaded = copy.find(0x00158d0005060708ull);
+	REQUIRE(loaded != nullptr);
+	CHECK_FALSE(loaded->interviewed);
+	CHECK(loaded->incomplete());
+	CHECK(loaded->has_result());
+	REQUIRE(loaded->missing_count == 2);
+	CHECK(loaded->missing[0] == 2);
+	CHECK(loaded->missing[1] == 3);
+	CHECK(loaded->missing_names);
+	CHECK(loaded->endpoint_count == 1);
+	CHECK(write(copy) == text);
+}
+
+TEST_CASE("ZigbeeDatabase: a blob of the format before incomplete interviews loads as before") {
+	// Written by the firmware before issue #47: no "missing" member.
+	const std::string blob =
+		"{\"format\":1,\"devices\":["
+		"{\"ieee\":\"00124b0001020304\",\"short\":6699,\"manufacturer\":\"IKEA of Sweden\",\"model\":\"TRADFRI bulb\","
+		"\"label\":\"\",\"interviewed\":true,\"last_seen\":1760000000,\"endpoints\":[{\"id\":11,\"profile\":260,"
+		"\"device\":268,\"in\":[0,3,6,8,768],\"out\":[25]}]},"
+		"{\"ieee\":\"00158d0005060708\",\"short\":15437,\"manufacturer\":\"\",\"model\":\"\",\"label\":\"\","
+		"\"interviewed\":false,\"endpoints\":[]}]}";
+	DeviceDatabase database(nullptr);
+	const char* error = nullptr;
+	REQUIRE_MESSAGE(database.read_json(blob.data(), blob.size(), &error), error);
+	REQUIRE(database.size() == 2);
+	const ZigbeeDevice* bulb = database.find(0x00124b0001020304ull);
+	REQUIRE(bulb != nullptr);
+	CHECK(bulb->interviewed);
+	CHECK(bulb->has_result());
+	CHECK_FALSE(bulb->incomplete());
+	CHECK(bulb->missing_count == 0);
+	const ZigbeeDevice* fresh = database.find(0x00158d0005060708ull);
+	REQUIRE(fresh != nullptr);
+	CHECK_FALSE(fresh->interviewed);
+	CHECK_FALSE(fresh->incomplete());
+	CHECK_FALSE(fresh->has_result());
+	// Written again, it is the same document (nothing added for complete or new devices).
+	CHECK(write(database) == blob);
+}
+
+TEST_CASE("ZigbeeDatabase: the missing member is checked and kept only for an incomplete device") {
+	auto device_with = [](const std::string& members) {
+		return "{\"format\":1,\"devices\":[{\"ieee\":\"00158d0005060708\"," + members + "}]}";
+	};
+	const std::string endpoint = "\"endpoints\":[{\"id\":1,\"profile\":260,\"in\":[0]}]";
+	DeviceDatabase database(nullptr);
+	const char* error = nullptr;
+	// Refused: not an object, an id outside 1..240, more than 8, names not a boolean.
+	for (const std::string& missing : {std::string("\"missing\":[2]"), std::string("\"missing\":{\"endpoints\":[0]}"),
+			 std::string("\"missing\":{\"endpoints\":[241]}"),
+			 std::string("\"missing\":{\"endpoints\":[1,2,3,4,5,6,7,8,9]}"), std::string("\"missing\":{\"names\":1}")}) {
+		std::string text = device_with("\"interviewed\":false," + endpoint + "," + missing);
+		CHECK_FALSE(database.read_json(text.data(), text.size(), &error));
+		CHECK(std::string(error).find("device missing") == 0);
+	}
+	// Dropped: an interviewed device, or one without endpoints, has nothing missing.
+	std::string text = device_with("\"interviewed\":true," + endpoint + ",\"missing\":{\"endpoints\":[2]}");
+	REQUIRE(database.read_json(text.data(), text.size(), &error));
+	CHECK(database.at(0).missing_count == 0);
+	CHECK_FALSE(database.at(0).incomplete());
+	text = device_with("\"interviewed\":false,\"missing\":{\"endpoints\":[2],\"names\":true}");
+	REQUIRE(database.read_json(text.data(), text.size(), &error));
+	CHECK(database.at(0).missing_count == 0);
+	CHECK_FALSE(database.at(0).missing_names);
+	CHECK_FALSE(database.at(0).has_result());
+	// Kept: endpoints learnt, not interviewed.
+	text = device_with("\"interviewed\":false," + endpoint + ",\"missing\":{\"names\":true}");
+	REQUIRE(database.read_json(text.data(), text.size(), &error));
+	CHECK(database.at(0).incomplete());
+	CHECK(database.at(0).missing_names);
+}

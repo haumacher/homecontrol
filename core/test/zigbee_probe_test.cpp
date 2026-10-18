@@ -20,6 +20,8 @@ using hc::ValueType;
 using hc::zigbee::ZigbeeAdapter;
 using hc_test::kBulb;
 using hc_test::kBulbShort;
+using hc_test::kSensor;
+using hc_test::kSensorShort;
 using hc_test::ZigbeeFixture;
 
 namespace {
@@ -127,4 +129,77 @@ TEST_CASE("ZigbeeProbe.AnImageBindingNamesTheBulbAndSurvivesARejoin") {
 	CHECK_FALSE(f.adapter.configure(&bad, 1, &error));
 	CHECK(error != nullptr);
 	CHECK(f.dp("living.bulb") != nullptr); // the previous bindings stay
+}
+
+TEST_CASE("ZigbeeProbe.ABindingToTheMissingEndpointOfAnIncompleteInterviewWorksOnceTheRetryLearnsIt") {
+	// Issue #47 composed with the image's bindings: a sleepy sensor bound by the image misses the
+	// descriptor of its endpoint 2, whose occupancy the image names "hall.motion".
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.start_network();
+	hc::zigbee::ZigbeeOverride overrides[2];
+	overrides[0].name = "hall.motion";
+	overrides[0].ieee = kSensor;
+	overrides[0].endpoint = 2;
+	overrides[0].cluster = hc::zigbee::cluster::kOccupancySensing;
+	overrides[0].attribute = 0x0000;
+	overrides[1].name = "hall.temperature";
+	overrides[1].ieee = kSensor;
+	overrides[1].endpoint = 1;
+	overrides[1].cluster = hc::zigbee::cluster::kTemperatureMeasurement;
+	overrides[1].attribute = 0x0000;
+	const char* error = nullptr;
+	REQUIRE(f.adapter.configure(overrides, 2, &error));
+	f.adapter.device_announced(ZigbeeFixture::node(kSensor, kSensorShort));
+	uint8_t endpoints[] = {2, 1};
+	f.adapter.active_endpoints(ZigbeeFixture::by_short(kSensorShort), 0, endpoints, 2);
+	f.run_for(ZigbeeAdapter::kInterviewAttempts * ZigbeeAdapter::kInterviewTimeoutMs);
+	f.descriptor(kSensorShort, 1, hc::zigbee::kHomeAutomationProfile, 0x0302, {0x0000, 0x0402}, {});
+	f.basic(kSensorShort, 1, "Probe Sensors", "PS-2");
+	REQUIRE(f.adapter.interviewing() == 0);
+	REQUIRE(f.adapter.devices().find(kSensor)->incomplete());
+	// A bound device has exactly its bound datapoints, interviewed or not.
+	CHECK(f.model.size() == 2);
+	const hc::Datapoint* motion = f.dp("hall.motion");
+	const hc::Datapoint* temperature = f.dp("hall.temperature");
+	REQUIRE(motion != nullptr);
+	REQUIRE(temperature != nullptr);
+	f.report(kSensorShort, 1, hc::zigbee::cluster::kTemperatureMeasurement, 0x0000, hc::zigbee::zcl_type::kInt16, 2075);
+	CHECK(temperature->value().as_real() == doctest::Approx(20.75));
+	CHECK(motion->quality() == Quality::unknown);
+	// The export derives the functions from the endpoints learnt: endpoint 2's occupancy is not
+	// among them until the retry, and the export says what is missing.
+	auto exported = [&f]() {
+		std::vector<char> buffer(8192);
+		hc::JsonWriter json(buffer.data(), buffer.size());
+		f.adapter.write_device_export_json(json, 0);
+		REQUIRE_FALSE(json.overflowed());
+		return std::string(json.data(), json.length());
+	};
+	std::string text = exported();
+	CHECK(text.find("\"interviewed\":false,\"missing\":{\"endpoints\":[2],\"names\":false}") != std::string::npos);
+	CHECK(text.find("\"function\":\"occupancy\"") == std::string::npos);
+	CHECK(text.find("\"datapoint\":\"hall.temperature\"") != std::string::npos);
+	// The device wakes on motion after the retry delay: the report is taken (the binding names the
+	// point) and the retry asks for endpoint 2.
+	f.run_for(ZigbeeAdapter::kInterviewRetryMs);
+	f.report(kSensorShort, 2, hc::zigbee::cluster::kOccupancySensing, 0x0000, hc::zigbee::zcl_type::kBitmap8, 1);
+	CHECK(motion->value() == Value::of_bool(true));
+	REQUIRE(f.adapter.interviewing() == kSensor);
+	CHECK(f.driver.calls.back() == "simple 0x3c4d 2");
+	size_t configured = f.driver.count("configure 0x3c4d 2 0x0406");
+	f.descriptor(kSensorShort, 2, hc::zigbee::kHomeAutomationProfile, 0x0107, {0x0000, 0x0001, 0x0406}, {});
+	REQUIRE(f.adapter.interviewing() == 0);
+	CHECK(f.adapter.devices().find(kSensor)->interviewed);
+	// Still the two bound datapoints, with their values; the reporting of endpoint 2 is set up again.
+	CHECK(f.model.size() == 2);
+	CHECK(f.dp("hall.motion")->value() == Value::of_bool(true));
+	CHECK(f.dp("hall.temperature")->value().as_real() == doctest::Approx(20.75));
+	CHECK(f.driver.count("configure 0x3c4d 2 0x0406") == configured + 1);
+	text = exported();
+	CHECK(text.find("\"missing\"") == std::string::npos);
+	CHECK(text.find("\"function\":\"occupancy\",\"endpoint\":2") != std::string::npos);
+	CHECK(text.find("\"datapoint\":\"hall.motion\"") != std::string::npos);
+	f.report(kSensorShort, 2, hc::zigbee::cluster::kOccupancySensing, 0x0000, hc::zigbee::zcl_type::kBitmap8, 0);
+	CHECK(f.dp("hall.motion")->value() == Value::of_bool(false));
 }

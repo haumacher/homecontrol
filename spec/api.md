@@ -455,7 +455,11 @@ Paged by 16 devices: `next` is the `from` of the next page or `null`. `generatio
 changes of the list (every WebSocket `zigbee` event increments it). `datapoints` are the names of
 the device's datapoints (their values come from `/api/datapoints` or the live feed). `left`: the
 device announced its leave (it stays known, rejoining restores it); `stale`: not heard within its
-expected interval; `seen_ago_s` only once heard since the start.
+expected interval; `seen_ago_s` only once heard since the start. An incomplete interview (a sleepy
+device did not answer every request; `interviewed` false, its datapoints in use) adds
+`"missing": {"endpoints": [2], "names": false}` and the English reason
+`"incomplete": "endpoint 2 did not answer"` (spec/zigbee.md "Adapter view"); the export's device
+carries `missing` too.
 
 ### `GET /api/zigbee/export[?from=<n>]`
 
@@ -882,7 +886,9 @@ Client to server:
 
 The `zigbee` events (`hc::zigbee::ZigbeeEvent`): `network` (the network formed or went down),
 `permit` (joining opened, extended or closed), `joined` (a new device), `interviewing`,
-`interviewed`, `interview_failed`, `left` (the device announced its leave), `removed` (forgotten,
+`interviewed`, `interview_failed` (nothing learnt; tried again when the device is heard),
+`interview_incomplete` (what answered is stored and in use, the device is not interviewed; the rest
+is asked for when the device is heard), `left` (the device announced its leave), `removed` (forgotten,
 `DELETE`), `changed` (a new label, gone stale, heard again, back after a leave). A
 client reads `GET /api/zigbee` for the details; a missed event shows as a jump of `generation`.
 
