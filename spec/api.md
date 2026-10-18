@@ -807,8 +807,9 @@ pings every 30 s; a pong missing after 10 s closes the socket and the backoff re
 `ehome.auth_required` (a message before `auth`), `ehome.auth_timeout` (no `auth` within 10 s),
 `ehome.forgotten` (the controller was forgotten in E-Home while connected; the device shows it as
 `failed` with that reason and keeps retrying by backoff until the owner disconnects or enrolls
-again) and `ehome.replaced` (the same controller connected a second time; the older socket is
-closed). The socket URL E-Home hands out at the enrollment is complete, including E-Home's context
+again) and, as the reason of a plain close without a `refused` message, `ehome.replaced` (the same
+controller connected a second time; the older socket is closed, the newer one is the controller's
+own). The socket URL E-Home hands out at the enrollment is complete, including E-Home's context
 path and host as the reverse proxy presents it (`X-Forwarded-Proto`, `X-Forwarded-Host`).
 
 ### Framing details both sides implement
