@@ -35,7 +35,7 @@ constexpr size_t kMaxUiLangLength = 5;
 /// (the radio sleeps between DTIM beacons; coexistence with 802.15.4 gets the air meanwhile) or
 /// maximum modem sleep (the listen interval of the station config).
 enum class WifiPowerSave : uint8_t { none, min, max };
-constexpr WifiPowerSave kDefaultWifiPowerSave = WifiPowerSave::none;
+constexpr WifiPowerSave kDefaultWifiPowerSave = WifiPowerSave::min;
 
 /// Longest SSID in bytes (IEEE 802.11).
 constexpr size_t kMaxSsidLength = 32;

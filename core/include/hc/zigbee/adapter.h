@@ -127,6 +127,8 @@ public:
 	static constexpr uint32_t kInterviewTimeoutMs = 10000;
 	static constexpr uint8_t kInterviewAttempts = 3;
 	static constexpr uint32_t kInterviewRetryMs = 60000;
+	/// An announce heard this shortly before the trust center's join notice belongs to that join.
+	static constexpr uint64_t kAnnounceBeforeJoinMs = 5000;
 	static constexpr uint32_t kCheckPeriodMs = 10000;
 	static constexpr uint32_t kStaleFactor = 3;
 	static constexpr uint32_t kRefreshSpacingMs = 500;
@@ -180,6 +182,10 @@ public:
 	void network_state(bool up, uint16_t pan_id, uint8_t channel, Ieee extended_pan);
 	/// The stack's permit-join state: open for `seconds`, 0 closed.
 	void permit_join_status(uint8_t seconds);
+	/// The trust center accepted a fresh association of the device (an unsecured join, not a
+	/// rejoin): a new device, or a known one after a factory reset, whose bindings and reporting
+	/// configuration are gone; it is interviewed again with the announce that follows.
+	void device_joined(NodeAddress address);
 	void device_announced(NodeAddress address);
 	void device_left(NodeAddress address);
 	void active_endpoints(NodeAddress address, uint8_t status, const uint8_t* endpoints, size_t count);

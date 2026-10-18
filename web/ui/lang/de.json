@@ -220,7 +220,7 @@
 	"settings.wifi.ps.none": "Aus: kürzeste Reaktionszeit",
 	"settings.wifi.ps.min": "Minimal: das Zigbee-Funkmodul bekommt die Luft, während WLAN schläft",
 	"settings.wifi.ps.max": "Maximal: längste Schlafphasen, langsamste Antworten",
-	"settings.wifi.ps.hint": "Wirkt sofort. Aus ist ohne Zigbee-Geräte richtig; minimal, wenn Zigbee-Geräte spät melden oder ausfallen.",
+	"settings.wifi.ps.hint": "Wirkt sofort. Minimal ist der Standard und nötig, damit Zigbee-Geräte verbunden bleiben; aus gibt die kürzeste Reaktionszeit in einem Haus ohne Zigbee-Geräte.",
 	"lang.state.builtin": "Englisch ist in die Weboberfläche eingebaut.",
 	"lang.state.waiting": "Das Herunterladen des Sprachpakets wartet: {detail}",
 	"lang.state.fetching": "Das Sprachpaket wird heruntergeladen…",

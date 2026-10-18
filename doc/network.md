@@ -156,14 +156,14 @@ Rules that keep the driver and the radio from racing each other (the dongle's le
 - The driver never reports from within a call the core made; on the ESP the IDF events reach the
   core through the event-loop queue.
 
-Also taken from the dongle, in the ESP driver: WiFi power save is off by default (the controller
-is mains powered; modem sleep loses ACKs that some access points punish with a disassociation,
-reason 34), and the station scans all channels, so a hidden SSID is found too. The setting
+In the ESP driver the station scans all channels, so a hidden SSID is found too. WiFi power save
+is `min` by default (modem sleep between DTIM beacons, the mode Espressif's coexistence examples
+use): the 802.15.4 radio gets the air while WiFi sleeps, and with power save off a Zigbee battery
+device lost its parent within seconds of joining (doc/zigbee.md, the measurements). The setting
 `wifi.ps` (`none` | `min` | `max`, console `wifi ps`, the Settings page, `PUT /api/settings/wifi.ps`)
-changes it on the running link: `min` (modem sleep between DTIM beacons) is the mode Espressif's
-coexistence examples use, so the 802.15.4 radio gets the air while WiFi sleeps (doc/zigbee.md); the
-measured cost on the C6 (link stalls of seconds against a consumer access point) is in that section
-and is why `none` stays the default.
+changes it on the running link; `none` is the phoneblock dongle's choice (mains powered; modem sleep
+loses ACKs that some access points punish with a disassociation, reason 34) and the right one for a
+household without Zigbee devices that wants the lowest latency.
 
 **Backoff:** 1 s, 2 s, 4 s, 8 s, 16 s, 32 s, 60 s, 60 s, ... after consecutive failures; reset
 when the link comes up and when the workflow changes mode.

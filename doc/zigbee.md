@@ -71,11 +71,19 @@ formation. A changed mask only affects a new formation (after an erase of `zb_st
 
 **Power save.** Espressif's gateway example sets WiFi to `WIFI_PS_MIN_MODEM` with coexistence: the
 802.15.4 radio then also gets the air while WiFi sleeps. The setting `wifi.ps` (doc/network.md)
-chooses: `none` (the default, lowest latency of the web UI and KNX) or `min`; the coordinator logs
-a warning when it finds power save off at network start, naming the setting. Measured on the C6
-over the home LAN (60 requests each, the board idle with KNX, the web server and the coordinator
-up): see the table below. Whether `none` costs Zigbee frames in practice is measured once a device
-is paired (#15 stage two); a household with Zigbee devices that report late sets `min`.
+chooses: `min` (the default since 2026-10-18) or `none` (lowest latency of the web UI and KNX, for
+a household without Zigbee devices); the coordinator logs a warning when it finds power save off at
+network start, naming the setting. Measured on the C6 over the home LAN (60 requests each, the
+board idle with KNX, the web server and the coordinator up): see the table below.
+
+With a paired device (#15 stage two, a Philips Hue motion sensor SML002) the Zigbee side was
+decisive: with `none` the sensor joined and answered the interview, then three of six bindings and
+every read timed out, it announced itself again twice (rejoins after lost polls to its parent) and
+within a minute its LED flashed red on motion (its "no network" signal); nothing it sent reached the
+coordinator. With `min` the same sensor joined, answered every request, and its reports (occupancy
+on motion, temperature, illuminance, battery) arrived. The KNX status reply after a command measured
+217 to 357 ms under `min` in that run (four commands), not the stall of the earlier run, so the
+default moved to `min`.
 
 | `wifi.ps` | ICMP ping avg / max | `GET /api/auth/session` median / p90 / max | KNX status reply after a command |
 |---|---|---|---|
@@ -84,11 +92,11 @@ is paired (#15 stage two); a household with Zigbee devices that report late sets
 | `max` | 65 ms / 151 ms | 81 ms / 190 ms / 2194 ms | 311 ms |
 
 Measured 2026-10-18 on the C6 with firmware of that day against a consumer access point (the
-numbers depend on its DTIM period and on the coexistence arbiter): with `min` the link stalls for
-seconds at a time and the actuator's status telegram did not reach the tunnel within the window,
-which is why `none` is the default and `min` is a per-household choice with its cost named on the
-Settings page. The measurement is repeated with a paired Zigbee device in #15 stage two, to weigh
-the Zigbee side.
+numbers depend on its DTIM period and on the coexistence arbiter): in that run `min` stalled the
+link for seconds at a time and the actuator's status telegram did not reach the tunnel within the
+window; the later run with the paired sensor (above) saw 217 to 357 ms. The stalls are a cost of the
+access point's beacon timing; the lost Zigbee device is a loss of function, so `min` is the default
+and `none` the per-household choice, with both named on the Settings page.
 
 ### Partitions
 
@@ -113,7 +121,11 @@ zigbee permit 120          # opens the network for 120 s (at most 254; 0 closes 
 then reset the device into pairing mode (a bulb: switch it off and on five or six times; a sensor
 or button: hold its reset button until its LED blinks). The stack accepts it with the well-known
 Trust Center link key and sends it the network key; the device announces itself and the adapter
-interviews it:
+interviews it. The trust center does not require the link key exchange after the join: legacy
+devices of the Light Link and Home Automation 1.2 profiles (the Philips Hue motion sensor SML002 is
+one) never request a key, and with the Zigbee 3.0 default the stack removed such a device 22 s
+after the join, which sent it through leave and rejoin until it gave up. Zigbee 3.0 devices still
+exchange the key. The interview:
 
 1. **Active endpoints** (ZDO), then the **simple descriptor** of every endpoint (profile, device
    type, input and output clusters; at most 4 endpoints and 12 clusters each are kept, the known
@@ -131,6 +143,12 @@ After the interview the adapter writes the database, loads the device's datapoin
 mapped server cluster to the coordinator's endpoint 1 (bindings for the buttons' client clusters,
 none for IAS Zone, which reports to its CIE address), configures the reporting of each mapped
 attribute (table below), and reads the current values.
+
+A known device that joins afresh (the trust center reports an unsecured join, not a rejoin) was
+factory-reset: its bindings and reporting configuration are gone, so the adapter interviews it again
+with the announce that follows, while a battery device still listens (a sleepy device answers
+requests only right after its join or when it polls; a manual `zigbee interview` of a resting Hue
+sensor timed out three times). A rejoin after a power cycle changes nothing; the reports continue.
 
 `zigbee devices` lists the devices with their datapoints and values. A device that leaves (without
 rejoin) is kept in the database but marked as left; `zigbee remove <ieee>` asks it to leave and

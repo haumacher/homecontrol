@@ -11,6 +11,7 @@
 #include "esp_partition.h"
 #include "esp_wifi.h"
 #include "esp_zigbee_core.h"
+#include "esp_zigbee_secur.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -49,6 +50,7 @@ constexpr const char* kDatabaseNamespace = "zigbee";
 enum class Kind : uint8_t {
 	network,
 	permit,
+	joined,
 	announce,
 	leave,
 	active_endpoints,
@@ -227,6 +229,9 @@ void deliver(ZigbeeAdapter& adapter, const Event& event) {
 			break;
 		case Kind::permit:
 			adapter.permit_join_status(event.count);
+			break;
+		case Kind::joined:
+			adapter.device_joined(address);
 			break;
 		case Kind::announce:
 			adapter.device_announced(address);
@@ -513,8 +518,8 @@ void network_up(const char* how) {
 		static_cast<unsigned>(esp_zb_get_current_channel()), text);
 	wifi_ps_type_t ps = WIFI_PS_NONE;
 	if (esp_wifi_get_ps(&ps) == ESP_OK && ps == WIFI_PS_NONE) {
-		Log::warn(kTag, "WiFi power save is off: the 802.15.4 radio only gets the air between WiFi frames "
-						"(setting wifi.ps, `wifi ps min`; doc/zigbee.md, coexistence)");
+		Log::warn(kTag, "WiFi power save is off: the 802.15.4 radio only gets the air between WiFi frames, and battery "
+						"devices lose their parent and leave (setting wifi.ps, `wifi ps min`; doc/zigbee.md, coexistence)");
 	}
 	g_state.ready.store(true);
 	push_network(true);
@@ -537,6 +542,12 @@ void zigbee_task(void*) {
 	config.install_code_policy = false;
 	config.nwk_cfg.zczr_cfg.max_children = CONFIG_HC_ZIGBEE_MAX_CHILDREN;
 	esp_zb_init(&config);
+	// Legacy devices (Zigbee Light Link and Home Automation 1.2 profiles, e.g. the Philips Hue motion
+	// sensor SML002) never request the trust-center link key after joining; with the Zigbee 3.0
+	// default the trust center removes such a device after bdbTrustCenterNodeJoinTimeout and it loops
+	// through leave and rejoin (verified on the C6: joined, interviewed, removed 22 s later). Not
+	// requiring the exchange keeps them, as Zigbee2MQTT does; Zigbee 3.0 devices still exchange it.
+	esp_zb_secur_link_key_exchange_required_set(false);
 	esp_zb_set_primary_network_channel_set(CONFIG_HC_ZIGBEE_CHANNEL_MASK);
 	if (CONFIG_HC_ZIGBEE_PAN_ID != 0) {
 		esp_zb_set_pan_id(static_cast<uint16_t>(CONFIG_HC_ZIGBEE_PAN_ID));
@@ -874,6 +885,20 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t* signal) {
 				network_up("formed");
 			}
 			break;
+		case ESP_ZB_ZDO_SIGNAL_DEVICE_UPDATE: {
+			// The trust center's view of a join: an unsecured join is a fresh association (a new device
+			// or a reset one); a secured rejoin is a device that came back with its key (no news).
+			auto* params = static_cast<esp_zb_zdo_signal_device_update_params_t*>(esp_zb_app_signal_get_params(pointer));
+			if (params->status == ESP_ZB_ZDO_STANDARD_DEV_UNSECURED_JOIN) {
+				Event* event = claim(Kind::joined);
+				if (event != nullptr) {
+					event->short_addr = params->short_addr;
+					event->ieee = ieee_of(params->long_addr);
+					commit();
+				}
+			}
+			break;
+		}
 		case ESP_ZB_ZDO_SIGNAL_DEVICE_ANNCE: {
 			auto* params = static_cast<esp_zb_zdo_signal_device_annce_params_t*>(esp_zb_app_signal_get_params(pointer));
 			Event* event = claim(Kind::announce);

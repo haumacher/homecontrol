@@ -581,6 +581,36 @@ TEST_CASE("ZigbeeAdapter: a device that left is stale and interviewed again when
 	CHECK(f.driver.calls.back() == "onoff 0x4444 11 off");
 }
 
+TEST_CASE("ZigbeeAdapter: a known device that joins afresh was reset and is interviewed again") {
+	ZigbeeFixture f;
+	f.start_network();
+	f.join_bulb();
+	size_t calls = f.driver.calls.size();
+	// A secured rejoin (a power cycle) announces only: nothing to do, the reports continue.
+	f.adapter.device_announced(ZigbeeFixture::node(kBulb, kBulbShort));
+	CHECK(f.adapter.interviewing() == 0);
+	CHECK(f.driver.calls.size() == calls);
+	f.run_for(10 * 1000);
+	// The trust center reports an unsecured join: the bindings and the reporting are gone with the
+	// factory reset; the interview waits for the announce, which proves the device holds the key.
+	f.adapter.device_joined(ZigbeeFixture::node(kBulb, kBulbShort));
+	CHECK(f.adapter.interviewing() == 0);
+	f.adapter.device_announced(ZigbeeFixture::node(kBulb, kBulbShort));
+	CHECK(f.adapter.interviewing() == kBulb);
+	CHECK(f.driver.calls.back() == "active 0x1a2b");
+	// The other order (the announce arrived first, within seconds) interviews right away.
+	ZigbeeFixture g;
+	g.start_network();
+	g.join_bulb();
+	g.adapter.device_announced(ZigbeeFixture::node(kBulb, kBulbShort));
+	g.adapter.device_joined(ZigbeeFixture::node(kBulb, kBulbShort));
+	CHECK(g.adapter.interviewing() == kBulb);
+	CHECK(g.driver.calls.back() == "active 0x1a2b");
+	// An unknown device's join notice alone adds nothing: its announce does.
+	g.adapter.device_joined(ZigbeeFixture::node(0x00124b00aaaaaaaaULL, 0x5555));
+	CHECK(g.adapter.devices().find(0x00124b00aaaaaaaaULL) == nullptr);
+}
+
 TEST_CASE("ZigbeeAdapter: the JSON view for the console and E-Home") {
 	ZigbeeFixture f;
 	f.start_network();

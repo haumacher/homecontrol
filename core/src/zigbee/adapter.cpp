@@ -1144,7 +1144,8 @@ void ZigbeeAdapter::setup_reporting(const ZigbeeDevice& device) {
 		}
 	}
 	char text[64];
-	Log::info(kTag, "%s: %u binding(s) to the coordinator, reporting of %u attribute(s) configured",
+	Log::info(kTag, "%s: %u binding(s) to the coordinator and the reporting of %u attribute(s) requested "
+		"(refusals and timeouts are logged as they come back)",
 		device_text(device, text, sizeof(text)), static_cast<unsigned>(bound_count), static_cast<unsigned>(configured));
 }
 
@@ -1200,6 +1201,30 @@ void ZigbeeAdapter::device_announced(NodeAddress address) {
 	device->left = false;
 	touch(*device);
 	start_pending_interview();
+}
+
+void ZigbeeAdapter::device_joined(NodeAddress address) {
+	if (address.ieee == 0) {
+		return;
+	}
+	ZigbeeDevice* device = resolve(address, false);
+	if (device == nullptr) {
+		return; // a new device: the announce that follows adds and interviews it
+	}
+	device->left = false;
+	if (device->interviewed && !device->interview_pending && !(interview_.active && interview_.ieee == device->ieee)) {
+		// A fresh join of a known device means a factory reset: the device forgot the bindings and
+		// the reporting the first interview configured, and a sleepy device listens only now, right
+		// after the join. The interview starts with its announce (it holds the network key then); if
+		// the announce came first, right away.
+		char text[64];
+		Log::info(kTag, "%s joined afresh (short 0x%04x): it was reset, interviewing it again",
+			device_text(*device, text, sizeof(text)), static_cast<unsigned>(address.short_addr));
+		device->interview_pending = true;
+		if (device->seen_ms != 0 && clock_.monotonic_ms() - device->seen_ms < kAnnounceBeforeJoinMs) {
+			start_pending_interview();
+		}
+	}
 }
 
 void ZigbeeAdapter::device_left(NodeAddress address) {

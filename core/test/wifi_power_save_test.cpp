@@ -26,7 +26,7 @@ TEST_CASE("wifi.ps: the three names and nothing else") {
 	CHECK_FALSE(hc::wifi_power_save_valid(""));
 	CHECK_FALSE(hc::wifi_power_save_valid(nullptr));
 	CHECK(std::string(hc::wifi_power_save_name(WifiPowerSave::min)) == "min");
-	CHECK(std::string(hc::wifi_power_save_name(hc::setting::kDefaultWifiPowerSave)) == "none");
+	CHECK(std::string(hc::wifi_power_save_name(hc::setting::kDefaultWifiPowerSave)) == "min");
 }
 
 TEST_CASE("wifi.ps: read falls back to the default for a missing or invalid value, store validates") {
@@ -49,8 +49,8 @@ TEST_CASE("wifi.ps: the web API lists it with the value in use, and a change rea
 	for (const auto& s : list.json["settings"].items) {
 		if (s["key"].text == "wifi.ps") {
 			found = true;
-			CHECK(s["value"].text == "none");
-			CHECK(s["default"].text == "none");
+			CHECK(s["value"].text == "min");
+			CHECK(s["default"].text == "min");
 			CHECK(s["editable"].boolean);
 		}
 	}
@@ -62,13 +62,13 @@ TEST_CASE("wifi.ps: the web API lists it with the value in use, and a change rea
 	CHECK(f.fake.network.power_save_changes == 0);
 	CHECK(f.fake.settings.entries.count("wifi.ps") == 0);
 
-	auto good = f.request(hc::HttpMethod::put, "/api/settings/wifi.ps", "{\"value\":\"min\"}", cookie);
+	auto good = f.request(hc::HttpMethod::put, "/api/settings/wifi.ps", "{\"value\":\"none\"}", cookie);
 	REQUIRE(good.status == 200);
-	CHECK(f.fake.settings.entries["wifi.ps"].text == "min");
+	CHECK(f.fake.settings.entries["wifi.ps"].text == "none");
 	CHECK(f.fake.network.power_save_changes == 1);
 	for (const auto& s : good.json["settings"].items) {
 		if (s["key"].text == "wifi.ps") {
-			CHECK(s["value"].text == "min");
+			CHECK(s["value"].text == "none");
 		}
 	}
 }

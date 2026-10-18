@@ -179,7 +179,7 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
               {"key": "ntp.server", "value": null, "default": "pool.ntp.org", "editable": true},
               {"key": "update.url", "value": null, "default": "", "editable": true},
               {"key": "ui.lang", "value": "de", "default": "en", "editable": true},
-              {"key": "wifi.ps", "value": "none", "default": "none", "editable": true},
+              {"key": "wifi.ps", "value": "min", "default": "min", "editable": true},
               {"key": "mqtt.user", "value": null, "default": "", "editable": true},
               {"key": "mqtt.password", "value": null, "default": "", "editable": true, "secret": true, "stored": true},
               {"key": "wifi.ssid", "value": "...", "default": "", "editable": false}],

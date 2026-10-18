@@ -220,7 +220,7 @@
 	"settings.wifi.ps.none": "Off: lowest latency",
 	"settings.wifi.ps.min": "Minimum: the Zigbee radio gets the air while WiFi sleeps",
 	"settings.wifi.ps.max": "Maximum: longest sleeps, slowest responses",
-	"settings.wifi.ps.hint": "Applied at once. Off is right without Zigbee devices; minimum when Zigbee devices report late or drop out.",
+	"settings.wifi.ps.hint": "Applied at once. Minimum is the default and what Zigbee devices need to stay connected; off gives the lowest latency in a home without Zigbee devices.",
 	"lang.state.builtin": "English is built into the web UI.",
 	"lang.state.waiting": "The language pack download waits: {detail}",
 	"lang.state.fetching": "Downloading the language pack…",

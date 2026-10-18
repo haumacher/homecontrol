@@ -109,6 +109,11 @@ outside world (weather, external services).
   C6 against a consumer access point: minimum modem sleep stalls the link for seconds and the KNX
   tunnel misses status telegrams, so the Zigbee coexistence gain (Espressif's recommendation) does
   not justify it as the default (doc/zigbee.md, the table). Revisited with a paired device (#15).
+- **2026-10-18 — Reversed the same day: WiFi power save `min` is the default.** The first paired
+  device (a Hue motion sensor) lost its parent within seconds under `none`: bindings and reads timed
+  out, it rejoined twice and signalled "no network"; under `min` it stayed and reported, and the KNX
+  status reply measured 217 to 357 ms. A lost device outweighs latency; `none` remains the choice
+  for households without Zigbee (doc/zigbee.md, doc/network.md).
 - **2026-10-18 — MQTT is the integration path to Home Assistant and to long-term storage.** States,
   commands, discovery configs per function and the history rings' export over the broker the image
   names; the broker password is a device setting (never in the image, write-only on the Settings

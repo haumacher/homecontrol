@@ -213,10 +213,11 @@ void WifiDriver::power_save_changed() {
 }
 
 void WifiDriver::apply_power_save() {
-	// The setting wifi.ps (doc/network.md): off is the phoneblock dongle's choice (mains powered;
-	// modem sleep between beacons costs lost ACKs, which some access points answer with a
-	// disassociation, reason 34); minimum modem sleep gives the 802.15.4 radio the air while WiFi
-	// sleeps (doc/zigbee.md, coexistence).
+	// The setting wifi.ps (doc/network.md): minimum modem sleep is the default, because it gives the
+	// 802.15.4 radio the air while WiFi sleeps (doc/zigbee.md, coexistence: with power save off a
+	// Zigbee battery device lost its parent within seconds of joining); off is the phoneblock
+	// dongle's choice (mains powered; modem sleep between beacons costs lost ACKs, which some access
+	// points answer with a disassociation, reason 34) and stays a per-household choice.
 	setting::WifiPowerSave mode = read_wifi_power_save(settings_, kTag);
 	wifi_ps_type_t ps = mode == setting::WifiPowerSave::min ? WIFI_PS_MIN_MODEM
 		: mode == setting::WifiPowerSave::max ? WIFI_PS_MAX_MODEM : WIFI_PS_NONE;
