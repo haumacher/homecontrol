@@ -11,7 +11,9 @@ twice the space on a 4 MB module.
 | Versions, manifest, URL rules, update instruction, the updater's decision table | `core/include/hc/update_check.h` (host-tested) |
 | The application's side: confirmation, periodic check, hand-over to the updater | `platform/esp/components/hc_ota` |
 | Console `update ...` | `platform/esp/components/hc_console` |
-| The updater (a second ESP-IDF project) | `platform/esp/updater/` |
+| The updater (a second ESP-IDF project), its upload server and page | `platform/esp/updater/` |
+| Upload instruction, token check, image header check, the upload rows of the decision table | `core/include/hc/update_check.h` (host-tested) |
+| `POST /api/system/update/upload`, the Settings page's "Install firmware file" | `core/src/web_api_system.cpp`, `web/ui/dist/system.js` |
 | NVS settings shared by both apps | `platform/esp/components/hc_settings` |
 | Partition tables and their generator | `platform/esp/partitions-<size>.csv`, `platform/esp/tools/gen_partitions.py` |
 | Flash size, table selection, app version | `platform/esp/hc_project.cmake` |
@@ -42,6 +44,7 @@ Sizes measured on 2026-10-17 (esp32c6, ESP-IDF 5.3):
 |---|---|---|---|
 | updater (`hc_updater.bin`, -Os, HTTPS) | 794,592 B (0xC1FE0) | 960 KB | 19 % |
 | updater without HTTPS (measured for comparison) | 773,696 B | | |
+| updater with the upload server (esp_http_server, page; 2026-10-18) | 825,712 B (0xC9970), +30,288 B over the 795,424 B before it | 960 KB | 16 % |
 | application (`homecontrol.bin`, with the OTA client) | 1,239,776 B (0x12EAE0) | 2752 KB | 56 % |
 | application before this package (single-app table) | 1,034,576 B | | |
 
@@ -74,10 +77,24 @@ renamed.
 | `update.sha256` | string | application | updater | 64 hex digits of the image |
 | `update.size` | integer | application | updater | image size in bytes |
 | `update.attempts` | integer | application (0), updater (+1 before each download) | updater, application | download attempts for this instruction |
+| `update.image` = `upload` | string | application (written last) | updater | an *upload* instruction: not a URL on purpose (below) |
+| `update.token` | string | application | updater | the upload's one-time token, 32 lower-case hex digits (128 random bits) |
+| `update.uploaded` | string | updater (after the uploaded image verified) | application | version installed from an upload; reported and erased after the confirmed start |
 | `wifi.ssid`, `wifi.psk` | string | provisioning (doc/network.md) | application, updater | WiFi credentials |
 
-The application erases the five `update.*` instruction keys after its next confirmed start
-(`update.image` first). The updater never erases them except when they are unreadable.
+The application erases the instruction keys after its next confirmed start (`update.image` first,
+`update.token` with them). The updater never erases them except when they are unreadable, and after a
+successful upload (which leaves `update.uploaded` for the application's report instead).
+
+**Two kinds of instruction under one key.** `update.image` holds the image URL of a download or the
+marker `upload`. An updater flashed before uploads existed reads `update.image` first and requires
+an `http(s)://` URL: it reports the upload instruction as *corrupt* (`update.image is not a valid
+URL`), erases its five keys and boots the application - it never mistakes an upload for a download.
+It does not know `update.token`, which the application then finds alone after its confirmed start
+and reports as `firmware upload did not start: the updater discarded the request (it predates
+uploads ...)`. In practice the application refuses the request before that (below: the updater's
+version marker); the test `UpdateUpload: an updater that predates uploads reads the upload
+instruction as corrupt` keeps the old reader's logic and checks both instructions against it.
 
 ## The manifest
 
@@ -133,12 +150,13 @@ Console (prompt `hc>`):
 ## The updater
 
 A minimal ESP-IDF application in the factory partition: NVS, plain esp_wifi station with the
-application's credentials (no WPS, no console, no mDNS, no status LED), esp_http_client, the OTA
-API. Log level info, flash at 40 MHz and the transmit power limit come from the application's
+application's credentials (no WPS, no console, no mDNS, no status LED), esp_http_client,
+esp_http_server (only for an upload), the OTA API. Log level info, flash at 40 MHz and the transmit power limit come from the application's
 `sdkconfig.defaults`, which the updater shares. At boot it logs `HomeControl updater <version>`,
 then repeats:
 
-1. Read the instruction (none / pending / corrupt; a corrupt one is logged and erased).
+1. Read the instruction (none / pending / awaiting upload / corrupt; a corrupt one is logged and
+   erased).
 2. Inspect ota_0: *missing* (does not pass `esp_image_verify`), *aborted* (verifies, but the
    bootloader rolled it back: `esp_ota_get_state_partition` says aborted or invalid), else *valid*.
 3. Decide (`hc::decide_updater_step`, the table below), log the decision, wait its delay, act.
@@ -151,6 +169,9 @@ then repeats:
 | pending | 1, 2 | any | download after 10 s (also over an aborted image: the re-download) |
 | pending | ≥ 3 | valid | boot ota_0 (the download failed before it touched the old application) |
 | pending | ≥ 3 | missing or aborted | download every 5 minutes, forever |
+| awaiting upload | | valid | serve the upload for 10 minutes, then boot ota_0 (`hc::decide_upload_expired`) |
+| awaiting upload | | missing or aborted | serve the upload without a limit (the upload is the only way out), reminder in the log every minute |
+| awaiting upload, 10 minutes over | | valid / missing or aborted / an upload is being written | boot ota_0 / serve on without a limit / wait for the upload to end |
 
 **Download.** The attempt counter is stored first. Then WiFi (30 s), the HTTP request (15 s network
 timeout, status must be 200, a `Content-Length` must equal `update.size`), and the first 4 KB are
@@ -174,6 +195,80 @@ itself while it runs, and the application does not write the factory partition. 
 full procedure below (`write_flash @flash_args` includes it) or alone:
 `esptool.py ... write_flash 0x10000 platform/esp/updater/build-esp32c6/hc_updater.bin`.
 
+## Upload from the browser
+
+Issue #39, decided by the author on 2026-10-18 (ROADMAP.md): an installed device has no serial
+console and no update server; its owner downloads a release's `homecontrol.bin` and installs it from
+the device's Settings page. The application cannot receive its own replacement (it runs from
+ota_0), so the hand-over goes through the updater, which has WiFi, NVS and the OTA API anyway.
+
+**Sequence.**
+
+1. Settings → System → Firmware update → *Install firmware file*. The page reads the chosen file's
+   app descriptor (magic `0xE9`, descriptor magic, project name `homecontrol`) and refuses anything
+   else before the device is touched; then it explains (the device restarts into the updater for up
+   to 10 minutes, KNX and Zigbee pause, keep the page open) and asks for confirmation.
+2. `POST /api/system/update/upload` (spec/api.md "System"). The application generates a one-time
+   token (128 bits from the platform's random source, `Crypto::random`, as hex), checks that it runs
+   from ota_0, that no update check or update is under way, and that the updater in the factory
+   partition serves uploads (its app descriptor version carries the build identifier `upload`, e.g.
+   `0.1.0-dev+upload`, set by `updater/CMakeLists.txt`; an older updater is refused with 409
+   instead of restarting into it for nothing), stores the instruction (`update.token`, then
+   `update.image` = `upload`), makes the updater the boot partition and answers
+   `{"ok": true, "url": "http://<its IP>/", "token": "<hex>", "restart_in_ms": 750, "timeout_s": 600}`.
+   It restarts 750 ms later through the API's deferred action (log `restarting into the updater for
+   the firmware upload`).
+3. The page stores the token in `sessionStorage` (key `hc.upload.token`), stops its WebSocket and
+   polls `GET /status` at the same origin: connection errors mean "not yet", an answer with
+   `updater` means the updater serves.
+4. The updater finds the upload instruction, joins WiFi with the application's credentials, logs its
+   address and starts `esp_http_server` on port 80. The page sends the file with
+   `PUT /firmware` (`Authorization: Bearer <token>`, an `XMLHttpRequest` for the progress events) and
+   shows the percentage, then "verifying".
+5. The updater checks the first 4 KB before it touches the flash (`hc::check_app_image`: an ESP image
+   for this chip whose app descriptor names `homecontrol`; the updater's own binary, another
+   project's binary or an error page is refused with 422 and the reason), streams the body into ota_0
+   (`esp_ota_begin/write/end`; `esp_ota_end` verifies the image), stores `update.uploaded` = the
+   image's version, erases the instruction and the token, selects ota_0 for boot, answers
+   `{"ok": true, "version": "<version>"}` and restarts a second later.
+6. The new application confirms itself as after a download (first boot, rollback: "Rollback and power
+   loss" applies unchanged) and logs `update to X completed (uploaded from the browser)`; the page
+   polls the open `GET /api/auth/session` until it answers and shows version and build. Its session
+   is gone with the restart: *Reload* leads to the login.
+
+**The updater's routes** (port 80, one server task: the handlers run one after the other, so a
+`/status` request during an upload waits until the upload ends; refusals are
+`{"error": "<reason>", "code": "<key>"}` and logged under `hc.updater`):
+
+| Route | Answer |
+|---|---|
+| `GET /` | the self-contained page (English, inline CSS and JS) for a browser that arrived by a reload: with the token in `sessionStorage` it offers the file chooser and uploads; without, it says that the upload is started from the application's Settings page and offers *Start the application* |
+| `GET /status` | `{"updater": "<descriptor version>", "state": "awaiting_upload" \| "writing" \| "verifying" \| "done" \| "failed", "received": <bytes>, "expected": <bytes>, "remaining_s": <seconds until the old application boots, null without a limit>, "error": "<last failure>"}` |
+| `PUT /firmware` | the raw image with `Authorization: Bearer <token>` and a `Content-Length`. 200 `{"ok": true, "version": "..."}`; 401 `updater.unauthorized` (missing or wrong token, the flash untouched); 409 `updater.busy` (an upload runs or is done); 411 `updater.length_required`; 413 `updater.too_large` (larger than ota_0); 422 `updater.wrong_image` (the header check, flash untouched) or `updater.verify_failed` (`esp_ota_end`, with the reason); 400 `updater.connection` (the body ended early); 500 `updater.flash` |
+| `POST /abort` | no token needed: it only boots the old application, which the timeout does anyway. 200 `{"ok": true}`; 409 `updater.no_application` (ota_0 missing or rolled back), `updater.busy` |
+
+A failed upload leaves the instruction and the token in place: the page (or the updater's own page)
+can upload again. After an interrupted write ota_0 is *missing* and the updater serves without a
+limit.
+
+**The token** lives only in NVS (`update.token`) and in the browser tab's `sessionStorage`; it is never
+logged, compared in constant time (`hc::upload_authorized`) and erased with the instruction - after
+the upload, by the application after a timeout or a cancel, or as part of a corrupt instruction.
+
+**Same origin.** The hand-over through `sessionStorage` works because the updater answers at the same
+origin as the application: the same IP address and port 80. The updater runs no mDNS (it stays
+small), so a page opened as `http://homecontrol-xxxxxx.local/` could not reach it under that name, and
+`sessionStorage` is per origin: the Settings page offers the installation only when it was opened by
+the device's IP address, and otherwise shows the link `http://<IP>/` (log in there again). The DHCP
+lease survives the restart in practice (same MAC, same host name, a few seconds); if the address
+changes anyway, the page says so and the device is found in the router's list.
+
+**Timeouts.** Without a complete upload within 600 s the updater boots ota_0 if it holds a valid image
+(log `boot application: no firmware upload within 10 minutes ...`); the application then reports
+`firmware upload abandoned: no image was installed` and erases the instruction. With ota_0 missing or
+rolled back it serves without a limit and logs `waiting for the firmware upload at http://<IP>/ (no
+time limit, ...)` every minute. A running upload is never cut off by the timeout.
+
 ## Rollback and power loss
 
 | Interrupted | Next boot | Outcome |
@@ -185,6 +280,9 @@ full procedure below (`write_flash @flash_args` includes it) or alone:
 | after `esp_ota_set_boot_partition(ota_0)` | new application (state new → pending) | confirms after network up or 60 s, reports `completed`, erases the instruction |
 | new application crashes or resets within its first minute | bootloader marks it aborted, boots the updater | instruction still pending: re-download (attempts permitting), else every 5 min |
 | a USB-flashed application resets early | application again (state undefined) | nothing to roll back |
+| while the updater waits for an upload | updater (otadata selects it) | the instruction is still there: it waits again, the 10 minutes start over |
+| during the upload's write | updater | ota_0 *missing*: it waits for an upload without a limit (the token is still valid) |
+| after `update.uploaded` was stored, before ota_0 was selected | updater | no instruction, ota_0 valid: boots it; the application reports the upload |
 
 The bootloader writes otadata with a sequence number and CRC in two alternating sectors, so an
 interrupted otadata write leaves the previous selection.
@@ -220,6 +318,18 @@ cd platform/esp/build-esp32c6 && esptool.py --chip esp32c6 --port /dev/ttyACM1 -
 ```bash
 scripts/update-server.py              # serves platform/esp/build-esp32c6 on port 8070, prints the URLs
 ```
+
+**Upload from the browser instead of USB.** With an updater that serves uploads on the board (flashed
+once over USB with the procedure above), a new application build is installed from the browser:
+open `http://<the board's IP>/` (by address, not by its `.local` name), Settings → System →
+*Install firmware file*, choose `platform/esp/build-esp32c6/homecontrol.bin`. The log shows
+`hc.ota` `firmware upload: instruction stored ...`, then `hc.updater` `waiting for the firmware upload
+at http://<IP>/ ...`, `upload: homecontrol <version>, <n> bytes from the browser`, `upload of <version>
+written and verified; restarting into it`, and after the restart `hc.ota` `update to <version>
+completed (uploaded from the browser)`. A machine does the same with curl:
+`curl -X POST -H 'Authorization: Bearer hct_...' http://<IP>/api/system/update/upload` (note `url`
+and `token`), then after the restart
+`curl -T homecontrol.bin -H 'Authorization: Bearer <token>' <url>firmware`.
 
 On the console: `update now http://<desk>:8070` installs the served build whatever its version;
 `update url set http://<desk>:8070` and `update check` install it only if it is newer (bump

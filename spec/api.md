@@ -46,8 +46,11 @@ with a bearer token need no such header.
 
 ```json
 {"onboarded": true, "authenticated": true, "via": "session", "device": "homecontrol-a1b2c3",
- "version": "0.1.0-dev", "ws_port": 0, "min_password": 8, "lang": "de"}
+ "version": "0.1.0-dev", "build": "g1a2b3c4", "ws_port": 0, "min_password": 8, "lang": "de"}
 ```
+
+`build` is the build id (`git describe`) of the running firmware; with `version` it tells a page that
+waits for a restart (a firmware upload) which firmware came back.
 
 `via` is `"session"`, `"token"` or `null`. `lang` is the UI language `ui.lang` (doc/i18n.md), open
 like the rest of this answer so that the login page speaks it too.
@@ -266,6 +269,40 @@ outcome shows in the log and in the status's `update` member. Refusals: 400 `upd
 (a `url` with `check`), 422 `update.invalid` (not an http(s) URL), 501 `system.unavailable`, 409
 `update.refused` (no update source, a check or an update already running, the network down, the
 application not running from `ota_0`; with the reason).
+
+### `POST /api/system/update/upload`
+
+Starts a firmware upload from the browser (doc/ota.md "Upload from the browser"): no body. The device
+generates a one-time token (128 random bits as 32 hex digits), leaves it with the instruction for the
+OTA updater, makes the updater the boot partition and restarts after the answer:
+
+```json
+{"ok": true, "url": "http://192.0.2.10/", "token": "<32 hex digits>", "restart_in_ms": 750, "timeout_s": 600}
+```
+
+`url` is the device's current address: the updater serves there (port 80) for `timeout_s` and then
+boots the previous application again, unless the application partition holds no bootable image (then
+it waits without a limit). The token is shown only in this answer and never logged. Refusals: 501
+`system.unavailable` (no OTA updater, the POSIX build), 409 `system.busy` (a restart, reset or WiFi
+change is pending, also a second upload request within `restart_in_ms`), 409 `update.refused` (with
+the reason: the application does not run from `ota_0`, an update check or an update is under way,
+the updater in the device predates uploads - it is updated over USB only -, the device has no
+address), 500 `auth.no_random`.
+
+**The updater's own routes** (not under `/api/`, served by the updater while it waits; E-Home may
+drive them the same way as the browser):
+
+- `GET /status`: `{"updater": "<version>", "state": "awaiting_upload"|"writing"|"verifying"|"done"|"failed",
+  "received": <bytes>, "expected": <bytes>, "remaining_s": <n>|null, "error": "<reason>"}`.
+- `PUT /firmware` with `Authorization: Bearer <token>` and the raw `homecontrol.bin` as the body
+  (with a `Content-Length`): 200 `{"ok": true, "version": "<version>"}`, after which the device
+  restarts into the new image. Refusals `{"error", "code"}`: 401 `updater.unauthorized`, 409
+  `updater.busy`, 411 `updater.length_required`, 413 `updater.too_large`, 422 `updater.wrong_image`
+  (not the application for this chip; the flash is untouched), 422 `updater.verify_failed`, 400
+  `updater.connection`, 500 `updater.flash`.
+- `POST /abort` (no token): boots the previous application. 200 `{"ok": true}`; 409
+  `updater.no_application`, `updater.busy`.
+- `GET /`: a small page that finishes an upload after a reload of the browser tab.
 
 ### `GET` and `PUT /api/system/log-level`
 

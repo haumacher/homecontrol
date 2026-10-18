@@ -341,7 +341,7 @@ export function renderSettings(content, ctx) {
 	content.appendChild(h("h2", { class: "section-title" }, t("settings.editable")));
 	content.appendChild(editable);
 	const system = h("div", null, h("p", { class: "muted" }, t("app.loading")));
-	renderSystem(system);
+	renderSystem(system, ctx);
 	content.appendChild(h("h2", { class: "section-title" }, t("system.section")));
 	content.appendChild(system);
 	content.appendChild(logout);

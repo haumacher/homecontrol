@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Bernhard Haumacher
 #
 # The OTA updater: the small factory app of the asymmetric partition layout (doc/ota.md). It
-# downloads the image the application asked for into the application partition (ota_0) and boots
-# it. Its own build directory per target:
+# downloads the image the application asked for into the application partition (ota_0), or takes it
+# from the browser (an upload), and boots it. Its own build directory per target:
 #   idf.py -B build-esp32c6 set-target esp32c6 && idf.py -B build-esp32c6 build
 # It is updated only over USB (doc/ota.md).
 
@@ -15,6 +15,15 @@ set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
 include("${CMAKE_CURRENT_LIST_DIR}/../hc_project.cmake")
 set(SDKCONFIG_DEFAULTS "${HC_ESP_DIR}/sdkconfig.defaults" "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults")
 hc_add_flash_defaults()
+
+# The updater's app descriptor version carries the build identifier "upload": the application reads
+# it from the factory partition and offers firmware uploads only to an updater that serves them
+# (hc::updater_supports_upload, doc/ota.md "Upload from the browser").
+if(PROJECT_VER MATCHES "\\+")
+	set(PROJECT_VER "${PROJECT_VER}.upload")
+else()
+	set(PROJECT_VER "${PROJECT_VER}+upload")
+endif()
 
 # Only what the updater needs: the core (for the update instruction and the decision table) and the
 # NVS settings it shares with the application.

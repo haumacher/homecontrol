@@ -139,3 +139,9 @@ outside world (weather, external services).
 - **2026-10-18 — Function roles follow the KNX inputs E-Home binds.** A dimmer gets the optional
   `step` role for relative dimming (DPT 3.007); the device sends the scene code `scene − 1` (#30,
   #31, from ehome #50).
+- **2026-10-18 — Push updates start with the upload page in the updater app (#39).** The author:
+  start with the upload page in the updater app; there is no E-Home installation with a stable URL
+  yet. The application stores an *await upload* instruction with a one-time token and restarts into
+  the updater, which serves `PUT /firmware` on the device's address and boots the old application
+  after 10 minutes without an upload (doc/ota.md "Upload from the browser"). E-Home as the update
+  server stays possible later through the existing manifest pull.

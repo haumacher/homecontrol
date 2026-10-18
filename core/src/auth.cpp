@@ -528,4 +528,14 @@ const char* Auth::token_name(size_t i) const {
 	return i < kMaxTokens && tokens_[i].used ? tokens_[i].name : nullptr;
 }
 
+bool Auth::random_hex(size_t bytes, char* out) {
+	uint8_t secret[32];
+	if (bytes == 0 || bytes > sizeof(secret) || !crypto_.random(secret, bytes)) {
+		return false;
+	}
+	to_hex(secret, bytes, out);
+	std::memset(secret, 0, sizeof(secret));
+	return true;
+}
+
 } // namespace hc

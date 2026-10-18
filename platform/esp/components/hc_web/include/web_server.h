@@ -116,6 +116,7 @@ public:
 	HostResult system_action_possible(SystemAction action, const char** reason) const override;
 	void system_action(SystemAction action) override;
 	HostResult start_update(bool force, const char* url, const char** reason) override;
+	HostResult start_upload(const char* token, const char** reason) override;
 	HostResult clear_coredump(const char** reason) override;
 	bool set_platform_log_level(const char* tag, LogLevel level) override;
 	bool has_platform_log() const override { return true; }

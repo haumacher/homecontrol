@@ -340,6 +340,10 @@ HostResult WebServer::start_update(bool force, const char* url, const char** rea
 	return ota_.check(force, url, reason) ? HostResult::ok : HostResult::refused;
 }
 
+HostResult WebServer::start_upload(const char* token, const char** reason) {
+	return ota_.start_upload(token, reason) ? HostResult::ok : HostResult::refused;
+}
+
 HostResult WebServer::clear_coredump(const char** reason) {
 	if (diagnostics_ == nullptr) {
 		*reason = "this build has no diagnostics";

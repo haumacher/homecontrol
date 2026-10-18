@@ -85,6 +85,7 @@ TEST_CASE("WebSystem: every new route needs the principal and the CSRF header") 
 		{HttpMethod::post, "/api/system/factory-reset"},
 		{HttpMethod::post, "/api/system/update/check"},
 		{HttpMethod::post, "/api/system/update/now"},
+		{HttpMethod::post, "/api/system/update/upload"},
 		{HttpMethod::put, "/api/system/log-level"},
 		{HttpMethod::put, "/api/system/wifi"},
 		{HttpMethod::del, "/api/coredump"},

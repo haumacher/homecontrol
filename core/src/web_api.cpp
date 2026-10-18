@@ -474,6 +474,7 @@ void WebApi::auth_session(const WebRequest& request, WebResponse& response) {
 	}
 	json.member("device", host_.device_name())
 		.member("version", kVersion)
+		.member("build", build_id())
 		.member("ws_port", static_cast<uint32_t>(host_.websocket_port()))
 		.member("min_password", static_cast<uint32_t>(Auth::kMinPassword));
 	char lang[setting::kMaxUiLangLength + 1];

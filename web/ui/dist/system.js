@@ -1,8 +1,9 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
 // The System section of the Settings page: what an installed device's owner needs of the serial
-// console (issue #38, spec/api.md "System"): the update, restart and factory reset, log levels, the
-// core dump, the API tokens, storage, the connections (KNX, MQTT, external sources, the language
-// pack) and the WiFi credentials. Every refusal shows the device's reason.
+// console (issue #38, spec/api.md "System"): the update (also from a firmware file, issue #39),
+// restart and factory reset, log levels, the core dump, the API tokens, storage, the connections
+// (KNX, MQTT, external sources, the language pack) and the WiFi credentials. Every refusal shows the
+// device's reason.
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
@@ -44,7 +45,7 @@ function feedbackLine() {
 	return h("p", { class: "hint", role: "status" });
 }
 
-function updateCard(status) {
+function updateCard(status, app) {
 	const update = (status && status.update) || {};
 	const feedback = feedbackLine();
 	if (update.available === false) {
@@ -60,7 +61,192 @@ function updateCard(status) {
 				{ done: () => t("system.update.started") }),
 			actionButton(t("system.update.now"), feedback, () => api("POST", "/api/system/update/now"),
 				{ confirm: () => t("system.update.now.confirm"), done: () => t("system.update.started") })),
-		feedback);
+		feedback,
+		uploadSection(status, app));
+}
+
+// ---- Install a firmware file (doc/ota.md "Upload from the browser") -------------------------------
+//
+// The application cannot overwrite itself: it hands over to the updater, which serves PUT /firmware
+// on the same address and port. The one-time token travels in this origin's sessionStorage, where
+// the updater's own page finds it after a reload.
+
+const TOKEN_KEY = "hc.upload.token";
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/// The app descriptor of an ESP image (doc/ota.md): {project, version}, or null if `file` is none.
+async function readImage(file) {
+	const bytes = new Uint8Array(await file.slice(0, 288).arrayBuffer());
+	if (bytes.length < 288 || bytes[0] !== 0xe9 || new DataView(bytes.buffer).getUint32(32, true) !== 0xabcd5432) {
+		return null;
+	}
+	const text = (offset) => new TextDecoder().decode(bytes.subarray(offset, offset + 32)).replace(/\0[\s\S]*$/, "");
+	return { version: text(48), project: text(80) };
+}
+
+/// The JSON at `path`; null for an error status or another kind of answer (the application serves its
+/// page for unknown paths). Rejects when the device does not answer at all.
+async function getJson(path) {
+	const options = { cache: "no-store", credentials: "same-origin" };
+	if (AbortSignal.timeout) {
+		options.signal = AbortSignal.timeout(4000); // a restarting device may leave a request hanging
+	}
+	const response = await fetch(path, options);
+	if (!response.ok) {
+		return null;
+	}
+	try {
+		return await response.json();
+	} catch (e) {
+		return null;
+	}
+}
+
+/// Waits until the updater answers /status (the application's server is gone meanwhile: connection
+/// errors mean "not yet"). "updater", "application" (it came back instead) or "timeout".
+async function waitForUpdater() {
+	let down = false;
+	for (let i = 0; i < 80; i++) {
+		await sleep(1500);
+		try {
+			const s = await getJson("/status");
+			if (s && s.updater) {
+				return "updater";
+			}
+			if (down && await getJson("/api/auth/session")) {
+				return "application";
+			}
+		} catch (e) {
+			down = true;
+		}
+	}
+	return "timeout";
+}
+
+/// Waits until the application answers again; its open session answer names version and build.
+async function waitForApplication() {
+	for (let i = 0; i < 90; i++) {
+		await sleep(2000);
+		try {
+			const s = await getJson("/api/auth/session");
+			if (s && s.version) {
+				return s;
+			}
+		} catch (e) {
+			// still restarting
+		}
+	}
+	return null;
+}
+
+function putFirmware(file, token, onProgress) {
+	return new Promise((resolve) => {
+		const xhr = new XMLHttpRequest(); // fetch() reports no upload progress
+		xhr.open("PUT", "/firmware");
+		xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+		xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((100 * e.loaded) / e.total));
+		xhr.onload = () => {
+			let body = {};
+			try {
+				body = JSON.parse(xhr.responseText);
+			} catch (e) {
+				// not JSON: the status says enough
+			}
+			resolve({ status: xhr.status, body });
+		};
+		xhr.onerror = () => resolve({ status: 0, body: {} });
+		xhr.send(file);
+	});
+}
+
+function uploadSection(status, app) {
+	const ip = (status && status.network && status.network.ip) || "";
+	const url = `http://${ip}/`;
+	const feedback = feedbackLine();
+	const progress = h("progress", { max: "100", value: "0", hidden: true });
+	const input = h("input", { type: "file", accept: ".bin", hidden: true });
+	const button = h("button", { type: "button", class: "button small secondary" }, t("system.upload"));
+	const say = (text, error) => {
+		feedback.className = error ? "error-text" : "hint";
+		replace(feedback, text);
+	};
+	const leaveGuard = (event) => event.preventDefault();
+	if (ip && window.location.hostname !== ip) {
+		// The updater answers by address only (no mDNS) and sessionStorage is per origin.
+		return h("div", null, h("p", { class: "hint" }, t("system.upload.by_address"), " ", h("a", { href: url }, url)));
+	}
+	button.addEventListener("click", () => input.click());
+	input.addEventListener("change", async () => {
+		const file = input.files[0];
+		input.value = "";
+		if (!file) {
+			return;
+		}
+		const image = await readImage(file);
+		if (!image || image.project !== "homecontrol") {
+			say(t("system.upload.not_firmware"), true);
+			return;
+		}
+		if (!window.confirm(t("system.upload.confirm", { version: image.version, file: file.name }))) {
+			return;
+		}
+		button.disabled = true;
+		window.addEventListener("beforeunload", leaveGuard);
+		try {
+			await install(file);
+		} finally {
+			window.removeEventListener("beforeunload", leaveGuard);
+			button.disabled = false;
+		}
+	});
+	async function install(file) {
+		let started;
+		try {
+			started = await api("POST", "/api/system/update/upload");
+		} catch (error) {
+			say(errorText(error), true);
+			return;
+		}
+		sessionStorage.setItem(TOKEN_KEY, started.token);
+		app.live.stop(); // the application goes away; its WebSocket would only report that
+		say(t("system.upload.restarting"));
+		const reached = await waitForUpdater();
+		if (reached !== "updater") {
+			sessionStorage.removeItem(TOKEN_KEY);
+			say(t(reached === "application" ? "system.upload.no_updater" : "system.upload.lost", { url: started.url }), true);
+			return;
+		}
+		progress.hidden = false;
+		const result = await putFirmware(file, started.token, (percent) => {
+			progress.value = percent;
+			say(percent < 100 ? t("system.upload.progress", { percent }) : t("system.upload.verifying"));
+		});
+		progress.hidden = true;
+		if (result.status === 401) {
+			say(t("system.upload.unauthorized", { url: started.url }), true);
+			return;
+		}
+		if (result.status === 0) {
+			say(t("system.upload.network", { url: started.url }), true);
+			return;
+		}
+		if (result.status !== 200) {
+			say(t("system.upload.refused", { reason: result.body.error || `HTTP ${result.status}`, url: started.url }), true);
+			return;
+		}
+		sessionStorage.removeItem(TOKEN_KEY);
+		say(t("system.upload.installed", { version: result.body.version }));
+		const running = await waitForApplication();
+		if (!running) {
+			say(t("system.upload.lost", { url: started.url }), true);
+			return;
+		}
+		say([t("system.upload.done", { version: running.version, build: running.build || "?" }), " ",
+			h("button", { type: "button", class: "button small", onclick: () => window.location.reload() }, t("system.upload.reload"))]);
+	}
+	return h("div", null,
+		h("p", { class: "hint" }, t("system.upload.hint")),
+		h("div", { class: "actions" }, button, input), progress, feedback);
 }
 
 function restartCard(ctx) {
@@ -192,15 +378,17 @@ function wifiCard(ctx) {
 }
 
 /// The System section into `container`, from GET /api/status (the details the live status lacks:
-/// storage, connections). Drawn once: a token shown after its creation stays until the page is left.
-export function renderSystem(container) {
+/// storage, connections). `app` is the application's context: its live connection stops while a
+/// firmware file is installed. Drawn once: a token shown after its creation stays until the page is
+/// left.
+export function renderSystem(container, app) {
 	api("GET", "/api/status").then((status) => {
 		const ctx = { deviceName: (status.device && status.device.name) || status.name || "" };
 		const dump = h("div", null);
 		const drawDump = (s) => replace(dump, coredumpCard(s, () => api("GET", "/api/status").then(drawDump)));
 		drawDump(status);
 		replace(container, h("div", { class: "cards" },
-			updateCard(status), restartCard(ctx), dump, storageCard(status),
+			updateCard(status, app), restartCard(ctx), dump, storageCard(status),
 			connectionsCard(status), logCard(), tokenCard(), wifiCard(ctx)));
 	}).catch((error) => replace(container, h("p", { class: "message error" }, errorText(error))));
 }

@@ -155,6 +155,11 @@ public:
 	/// Name of slot `i` (0..kMaxTokens-1), nullptr if the slot is free.
 	const char* token_name(size_t i) const;
 
+	/// Writes `bytes` (at most 32) secure random bytes as 2 * `bytes` lower-case hex digits and a NUL
+	/// into `out` (e.g. the one-time token of a firmware upload). False if the platform has no
+	/// secure random source or `bytes` is out of range.
+	bool random_hex(size_t bytes, char* out);
+
 	/// Formats and parses the stored password record (exposed for the tests).
 	static bool format_record(const HashParams& params, const uint8_t key[kKeySize], char* out, size_t size);
 	static bool parse_record(const char* text, HashParams& params, uint8_t key[kKeySize]);

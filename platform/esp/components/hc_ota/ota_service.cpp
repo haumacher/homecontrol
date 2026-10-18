@@ -118,6 +118,7 @@ void OtaService::confirm() {
 	}
 
 	Settings& settings = controller_->settings();
+	report_upload(settings);
 	UpdateInstruction instruction;
 	const char* error = nullptr;
 	InstructionStatus status = load_update_instruction(settings, instruction, &error);
@@ -132,11 +133,48 @@ void OtaService::confirm() {
 			set_last("update to %s abandoned after %ld attempt(s)", instruction.version,
 				static_cast<long>(instruction.attempts));
 		}
+	} else if (status == InstructionStatus::upload) {
+		ESP_LOGW(kTag, "firmware upload abandoned: no image was installed (the updater's 10 minutes ran out or the "
+			"upload was cancelled); %s runs on", kVersion);
+		set_last("firmware upload abandoned: no image was installed");
 	} else if (status == InstructionStatus::corrupt) {
 		ESP_LOGW(kTag, "discarding an unusable update instruction (%s)", error);
+	} else {
+		// An updater that predates uploads erases the upload instruction as unreadable, but it does not
+		// know update.token: the token left alone says the upload never started.
+		char token[kUploadTokenLength + 1];
+		if (settings.get_string(setting::kUpdateToken, token, sizeof(token)) != SettingsStatus::not_found) {
+			ESP_LOGW(kTag, "firmware upload did not start: the updater discarded the request (it predates uploads; "
+				"flash the updater over USB, doc/ota.md)");
+			set_last("firmware upload did not start: the updater predates uploads");
+			status = InstructionStatus::corrupt; // erase the token below
+		}
+		std::memset(token, 0, sizeof(token));
 	}
 	if (status != InstructionStatus::none) {
 		clear_update_instruction(settings);
+	}
+}
+
+void OtaService::report_upload(Settings& settings) {
+	char uploaded[Version::kMaxText + 1];
+	SettingsStatus status = settings.get_string(setting::kUpdateUploaded, uploaded, sizeof(uploaded));
+	if (status == SettingsStatus::not_found) {
+		return;
+	}
+	Version wanted;
+	Version running;
+	if (status == SettingsStatus::ok && parse_version(uploaded, wanted) && parse_version(kVersion, running) &&
+		compare_versions(wanted, running) == 0) {
+		ESP_LOGI(kTag, "update to %s completed (uploaded from the browser)", uploaded);
+		set_last("update to %s completed (uploaded)", uploaded);
+	} else if (status == SettingsStatus::ok) {
+		ESP_LOGW(kTag, "the updater installed the uploaded %s, but %s runs", uploaded, kVersion);
+		set_last("uploaded %s, but %s runs", uploaded, kVersion);
+	}
+	status = settings.erase(setting::kUpdateUploaded);
+	if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
+		ESP_LOGE(kTag, "cannot erase %s: %s", setting::kUpdateUploaded, settings_status_name(status));
 	}
 }
 
@@ -325,6 +363,59 @@ void OtaService::begin_update(const UpdateManifest& manifest, const char* image_
 	set_last("updating to %s", manifest.version);
 	controller_->loop().schedule_at(controller_->clock().monotonic_ms() + kRestartGraceMs,
 		Callback::member<OtaService, &OtaService::restart_into_updater>(this));
+}
+
+bool OtaService::start_upload(const char* token, const char** error) {
+	const char* refusal = nullptr;
+	if (!from_ota0_) {
+		refusal = "the application does not run from ota_0 (see the log at start)";
+	} else if (restart_pending_) {
+		refusal = "an update is already starting";
+	} else if (busy_.load()) {
+		refusal = "an update check is running; try again in a moment";
+	}
+	if (refusal != nullptr) {
+		*error = refusal;
+		ESP_LOGW(kTag, "firmware upload refused: %s", refusal);
+		return false;
+	}
+	const esp_partition_t* updater =
+		esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
+	if (updater == nullptr ||
+		esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr) == nullptr) {
+		*error = "the partition table has no updater (factory) or ota_0 partition";
+		ESP_LOGE(kTag, "firmware upload refused: %s", *error);
+		return false;
+	}
+	static esp_app_desc_t description; // kept off the loop task's stack
+	if (esp_ota_get_partition_description(updater, &description) != ESP_OK) {
+		*error = "the updater partition holds no valid updater; flash it over USB (doc/ota.md)";
+		ESP_LOGE(kTag, "firmware upload refused: %s", *error);
+		return false;
+	}
+	description.version[sizeof(description.version) - 1] = '\0';
+	if (!updater_supports_upload(description.version)) {
+		*error = "the updater in this device predates firmware uploads; it is updated over USB only (doc/ota.md)";
+		ESP_LOGW(kTag, "firmware upload refused: updater %s: %s", description.version, *error);
+		return false;
+	}
+	Settings& settings = controller_->settings();
+	if (!store_upload_instruction(settings, token, error)) {
+		ESP_LOGE(kTag, "firmware upload refused: %s", *error);
+		clear_update_instruction(settings);
+		return false;
+	}
+	esp_err_t err = esp_ota_set_boot_partition(updater);
+	if (err != ESP_OK) {
+		clear_update_instruction(settings);
+		*error = "the updater cannot be booted; flash it over USB (doc/ota.md)";
+		ESP_LOGE(kTag, "firmware upload refused: cannot boot the updater: %s", esp_err_to_name(err));
+		return false;
+	}
+	restart_pending_ = true;
+	ESP_LOGW(kTag, "firmware upload: instruction stored for updater %s, the updater boots next", description.version);
+	set_last("restarting into the updater for a firmware upload");
+	return true;
 }
 
 void OtaService::restart_into_updater() {
