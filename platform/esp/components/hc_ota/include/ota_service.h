@@ -49,6 +49,13 @@ public:
 	/// outcome is logged.
 	bool check(bool force, const char* base, const char** error);
 
+	/// Prepares a firmware upload from the browser (doc/ota.md "Upload from the browser"): refuses
+	/// (false with the reason) when the application does not run from ota_0, an update is under
+	/// way, or the updater in the factory partition predates uploads; otherwise stores the upload
+	/// instruction with `token` and makes the updater the boot partition. The caller (the web API)
+	/// restarts the device after its answer.
+	bool start_upload(const char* token, const char** error);
+
 	/// Validates and stores update.url (nullptr or "" erases it: checks disabled).
 	bool set_url(const char* url, const char** error);
 
@@ -70,6 +77,7 @@ private:
 	void periodic_check();
 	void confirm();
 	void confirm_timeout();
+	void report_upload(Settings& settings);
 	void finish_check();
 	void begin_update(const UpdateManifest& manifest, const char* image_url);
 	void restart_into_updater();

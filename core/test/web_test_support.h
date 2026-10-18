@@ -83,6 +83,17 @@ public:
 		update_calls.push_back(std::string(force ? "now " : "check ") + (url != nullptr ? url : "-"));
 		return hc::HostResult::ok;
 	}
+	hc::HostResult start_upload(const char* token, const char** reason) override {
+		if (!uploads) {
+			return hc::WebHost::start_upload(token, reason);
+		}
+		if (!upload_refusal.empty()) {
+			*reason = upload_refusal.c_str();
+			return hc::HostResult::refused;
+		}
+		upload_tokens.push_back(token);
+		return hc::HostResult::ok;
+	}
 	hc::HostResult clear_coredump(const char** reason) override {
 		if (!coredump_clearable) {
 			return hc::WebHost::clear_coredump(reason);
@@ -115,6 +126,9 @@ public:
 	bool updates = false;
 	std::string update_refusal;
 	std::vector<std::string> update_calls;
+	bool uploads = false;
+	std::string upload_refusal;
+	std::vector<std::string> upload_tokens;
 	bool coredump_clearable = false;
 	int coredump_clears = 0;
 	bool platform_log = false;

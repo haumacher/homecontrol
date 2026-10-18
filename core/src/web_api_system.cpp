@@ -14,6 +14,7 @@
 #include "hc/live_feed.h"
 #include "hc/mqtt.h"
 #include "hc/network_settings.h"
+#include "hc/update_check.h"
 #include "hc/web_api.h"
 
 namespace hc {
@@ -168,6 +169,12 @@ void WebApi::system(const char* what, const WebRequest& request, WebResponse& re
 		}
 		return;
 	}
+	if (std::strcmp(what, "update/upload") == 0) {
+		if (method_is(request, response, HttpMethod::post)) {
+			system_upload(request, response);
+		}
+		return;
+	}
 	if (std::strcmp(what, "log-level") == 0) {
 		if (request.method != HttpMethod::get && request.method != HttpMethod::put) {
 			refuse(response, 405, "api.method_not_allowed", "use GET or PUT");
@@ -237,6 +244,10 @@ void WebApi::action_due() {
 		case Pending::restart: host_.system_action(SystemAction::restart); break;
 		case Pending::factory_reset: host_.system_action(SystemAction::factory_reset); break;
 		case Pending::wifi: controller_.connectivity().request_connect("new WiFi credentials from the API"); break;
+		case Pending::upload:
+			Log::warn(kTag, "restarting into the updater for the firmware upload");
+			host_.system_action(SystemAction::restart);
+			break;
 		case Pending::none: break;
 	}
 }
@@ -271,6 +282,51 @@ void WebApi::system_update(bool force, const WebRequest& request, WebResponse& r
 	Log::info(kTag, "%s requested over the API from %s", force ? "update now" : "update check", request.source);
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object().member("ok", true).member("force", force).end_object();
+	finish(response, json);
+}
+
+void WebApi::system_upload(const WebRequest& request, WebResponse& response) {
+	if (pending_ != Pending::none) {
+		decline(request, response, 409, "system.busy", "a restart or reconnect is already under way");
+		return;
+	}
+	const Connectivity& net = controller_.connectivity();
+	if (!net.is_up() || net.ip()[0] == '\0') {
+		decline(request, response, 409, "update.refused",
+			"the device has no network address to tell the browser where the updater answers");
+		return;
+	}
+	char token[kUploadTokenLength + 1];
+	if (!auth_.random_hex(kUploadTokenLength / 2, token)) {
+		decline(request, response, 500, "auth.no_random", "the device has no secure random source");
+		return;
+	}
+	const char* reason = nullptr;
+	HostResult result = host_.start_upload(token, &reason);
+	if (result != HostResult::ok) {
+		std::memset(token, 0, sizeof(token));
+		decline(request, response, result == HostResult::unavailable ? 501 : 409,
+			result == HostResult::unavailable ? "system.unavailable" : "update.refused", reason);
+		return;
+	}
+	char url[Connectivity::kMaxAddress + 16];
+	std::snprintf(url, sizeof(url), "http://%s/", net.ip());
+	Log::warn(kTag, "firmware upload requested over the API from %s: restarting into the updater in %u ms, which "
+		"waits at %s for %u s", request.source, static_cast<unsigned>(kActionDelayMs), url,
+		static_cast<unsigned>(kUploadTimeoutMs / 1000));
+	pending_ = Pending::upload;
+	controller_.loop().cancel(action_timer_);
+	action_timer_ = controller_.loop().schedule_at(controller_.clock().monotonic_ms() + kActionDelayMs,
+		Callback::member<WebApi, &WebApi::action_due>(this));
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object()
+		.member("ok", true)
+		.member("url", url)
+		.member("token", token)
+		.member("restart_in_ms", kActionDelayMs)
+		.member("timeout_s", kUploadTimeoutMs / 1000)
+		.end_object();
+	std::memset(token, 0, sizeof(token));
 	finish(response, json);
 }
 

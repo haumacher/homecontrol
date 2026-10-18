@@ -79,6 +79,18 @@ public:
 		return HostResult::unavailable;
 	}
 
+	/// Prepares a firmware upload from the browser (doc/ota.md "Upload from the browser"): checks that
+	/// the device can take one (an updater that serves uploads, the application in ota_0, no update
+	/// under way), stores the upload instruction with `token` (hc::store_upload_instruction) and makes
+	/// the updater the boot partition. It does not restart: the API restarts the device a moment
+	/// after its answer (system_action(SystemAction::restart)). ok, unavailable (no updater) or
+	/// refused with `reason`; a refusal leaves no instruction behind.
+	virtual HostResult start_upload(const char* token, const char** reason) {
+		(void)token;
+		*reason = "this platform does not update itself (no OTA updater)";
+		return HostResult::unavailable;
+	}
+
 	/// Erases the stored core dump (the console's `coredump clear`). ok, unavailable, or refused
 	/// (the erase failed) with `reason`.
 	virtual HostResult clear_coredump(const char** reason) {

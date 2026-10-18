@@ -209,6 +209,7 @@ private:
 	void system(const char* what, const WebRequest& request, WebResponse& response);
 	void system_action(SystemAction action, const WebRequest& request, WebResponse& response);
 	void system_update(bool force, const WebRequest& request, WebResponse& response);
+	void system_upload(const WebRequest& request, WebResponse& response);
 	void log_level(const WebRequest& request, WebResponse& response);
 	void wifi(const WebRequest& request, WebResponse& response);
 	void clear_coredump(WebResponse& response);
@@ -240,8 +241,9 @@ private:
 	const char* zigbee_reason_ = nullptr;
 	ExternalValues* external_ = nullptr;
 	const BlobStore* blobs_ = nullptr;
-	/// The deferred system action (restart, factory reset, WiFi reconnect) and its timer.
-	enum class Pending : uint8_t { none, restart, factory_reset, wifi };
+	/// The deferred system action (restart, factory reset, WiFi reconnect, the restart into the
+	/// updater for an upload) and its timer.
+	enum class Pending : uint8_t { none, restart, factory_reset, wifi, upload };
 	Pending pending_ = Pending::none;
 	TimerHandle action_timer_;
 	/// A consistent copy of the controller's log ring for GET /api/log.

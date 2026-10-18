@@ -160,8 +160,8 @@ An installed device's serial console is out of reach, so every console command t
 device has a route (issue #38; the mapping is in doc/diagnostics.md, "The console"). The routes
 live in the core's `WebApi` (`web_api_system.cpp`), so the POSIX build serves them too; what only a
 platform can do goes through `WebHost`'s hooks: `system_action_possible`/`system_action` (restart,
-factory reset), `start_update`, `clear_coredump`, `set_platform_log_level`/`has_platform_log` and
-`storage_usage`. Each defaults to "unavailable" with a reason, which the route answers as 501
+factory reset), `start_update`, `start_upload` (the firmware upload, doc/ota.md "Upload from the
+browser"), `clear_coredump`, `set_platform_log_level`/`has_platform_log` and `storage_usage`. Each defaults to "unavailable" with a reason, which the route answers as 501
 `system.unavailable`. The services themselves come in through the same setters as before
 (`set_knx`, `set_zigbee`, `set_external`, `set_blob_store` next to `set_mqtt` and
 `set_language_packs`).
@@ -228,7 +228,12 @@ are all local).
   confirmation), the theme, the device status (network, time, memory, update, web) and the
   editable settings with their validation messages (`knx.gateway`, `knx.nat` among them), then the
   **System** section (`system.js`, what the serial console offers, issue #38): firmware update
-  (check, update now), restart, factory reset (the button unlocks only once the device name is
+  (check, update now, and **Install firmware file** (issue #39): reads the chosen file's app
+  descriptor and refuses anything but `homecontrol`, confirms with the version, calls
+  `POST /api/system/update/upload`, keeps the token in `sessionStorage`, stops the WebSocket, waits
+  for the updater's `GET /status`, uploads with progress, waits for the application's open session
+  answer and shows the new version and build; offered only on a page opened by the device's IP
+  address, otherwise it links there, doc/ota.md "Upload from the browser"), restart, factory reset (the button unlocks only once the device name is
   typed), the core dump (present, download, clear), storage usage, the connections (KNX state and
   gateway, MQTT with "publish discovery", each external source with "fetch", the language pack with
   "sync"), log levels per tag, API tokens (list, create with the token shown once, revoke) and the

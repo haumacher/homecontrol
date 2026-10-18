@@ -3,9 +3,11 @@
  */
 #include "hc/update_check.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "hc/log.h"
+#include "hc/sha.h"
 
 namespace hc {
 
@@ -730,8 +732,24 @@ const char* instruction_status_name(InstructionStatus status) {
 		return "pending";
 	case InstructionStatus::corrupt:
 		return "corrupt";
+	case InstructionStatus::upload:
+		return "awaiting upload";
 	}
 	return "?";
+}
+
+bool upload_token_valid(const char* token) {
+	if (token == nullptr) {
+		return false;
+	}
+	size_t i = 0;
+	for (; token[i] != '\0'; ++i) {
+		char c = token[i];
+		if (i >= kUploadTokenLength || !(is_digit(c) || (c >= 'a' && c <= 'f'))) {
+			return false;
+		}
+	}
+	return i == kUploadTokenLength;
 }
 
 InstructionStatus load_update_instruction(const Settings& settings, UpdateInstruction& out, const char** error) {
@@ -743,6 +761,16 @@ InstructionStatus load_update_instruction(const Settings& settings, UpdateInstru
 	if (status != SettingsStatus::ok) {
 		refuse(error, "update.image unreadable");
 		return InstructionStatus::corrupt;
+	}
+	if (std::strcmp(out.image_url, kUploadMarker) == 0) {
+		out.image_url[0] = '\0';
+		if (settings.get_string(setting::kUpdateToken, out.token, sizeof(out.token)) != SettingsStatus::ok ||
+			!upload_token_valid(out.token)) {
+			out.token[0] = '\0';
+			refuse(error, "update.token missing or invalid");
+			return InstructionStatus::corrupt;
+		}
+		return InstructionStatus::upload;
 	}
 	if (!update_url_valid(out.image_url)) {
 		refuse(error, "update.image is not a valid URL");
@@ -810,9 +838,45 @@ bool store_update_instruction(Settings& settings, const UpdateManifest& manifest
 	return true;
 }
 
+bool store_upload_instruction(Settings& settings, const char* token, const char** error) {
+	if (!upload_token_valid(token)) {
+		return refuse(error, "the upload token is not 32 lower-case hex digits");
+	}
+	// The marker in update.image completes the instruction: everything else first.
+	if (!clear_update_instruction(settings)) {
+		return refuse(error, "cannot erase the previous update instruction");
+	}
+	SettingsStatus status = settings.erase(setting::kUpdateUploaded);
+	if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
+		return refuse(error, "cannot erase update.uploaded");
+	}
+	if (settings.set_string(setting::kUpdateToken, token) != SettingsStatus::ok) {
+		return refuse(error, "cannot store update.token");
+	}
+	if (settings.set_string(setting::kUpdateImage, kUploadMarker) != SettingsStatus::ok) {
+		return refuse(error, "cannot store update.image");
+	}
+	return true;
+}
+
+bool upload_authorized(const char* expected, const char* authorization) {
+	static const char kPrefix[] = "Bearer ";
+	constexpr size_t kPrefixLength = sizeof(kPrefix) - 1;
+	if (!upload_token_valid(expected) || authorization == nullptr ||
+		std::strncmp(authorization, kPrefix, kPrefixLength) != 0) {
+		return false;
+	}
+	const char* presented = authorization + kPrefixLength;
+	if (std::strlen(presented) != kUploadTokenLength) {
+		return false;
+	}
+	return constant_time_equal(reinterpret_cast<const uint8_t*>(expected), reinterpret_cast<const uint8_t*>(presented),
+		kUploadTokenLength);
+}
+
 bool clear_update_instruction(Settings& settings) {
-	static const char* const kKeys[] = {setting::kUpdateImage, setting::kUpdateVersion, setting::kUpdateSha256,
-		setting::kUpdateSize, setting::kUpdateAttempts};
+	static const char* const kKeys[] = {setting::kUpdateImage, setting::kUpdateToken, setting::kUpdateVersion,
+		setting::kUpdateSha256, setting::kUpdateSize, setting::kUpdateAttempts};
 	bool ok = true;
 	for (const char* key : kKeys) {
 		SettingsStatus status = settings.erase(key);
@@ -851,11 +915,22 @@ const char* updater_action_name(UpdaterAction action) {
 		return "download";
 	case UpdaterAction::wait:
 		return "wait";
+	case UpdaterAction::serve_upload:
+		return "serve upload";
 	}
 	return "?";
 }
 
 UpdaterStep decide_updater_step(InstructionStatus instruction, int32_t attempts, AppImageState app) {
+	if (instruction == InstructionStatus::upload) {
+		if (app == AppImageState::valid) {
+			return UpdaterStep{UpdaterAction::serve_upload, 0,
+				"firmware upload requested; waiting 10 minutes for the image, then booting the application",
+				kUploadTimeoutMs};
+		}
+		return UpdaterStep{UpdaterAction::serve_upload, 0,
+			"firmware upload requested and no bootable application in ota_0: waiting for the image without a limit", 0};
+	}
 	if (instruction != InstructionStatus::pending) {
 		if (app != AppImageState::missing) {
 			return UpdaterStep{UpdaterAction::boot_app, 0,
@@ -875,6 +950,91 @@ UpdaterStep decide_updater_step(InstructionStatus instruction, int32_t attempts,
 	}
 	return UpdaterStep{UpdaterAction::download, kUpdateIdleRetryMs,
 		"update attempts used up and no bootable application; retrying every 5 minutes"};
+}
+
+UpdaterStep decide_upload_expired(AppImageState app, bool upload_running) {
+	if (upload_running) {
+		return UpdaterStep{UpdaterAction::serve_upload, 0, "an upload is being written; waiting for it", 0};
+	}
+	if (app == AppImageState::valid) {
+		return UpdaterStep{UpdaterAction::boot_app, 0,
+			"no firmware upload within 10 minutes; the previous application is intact, booting it"};
+	}
+	return UpdaterStep{UpdaterAction::serve_upload, 0,
+		"no firmware upload within 10 minutes and no bootable application in ota_0: waiting for the image without "
+		"a limit", 0};
+}
+
+namespace {
+
+uint32_t read_le32(const uint8_t* p) {
+	return static_cast<uint32_t>(p[0]) | static_cast<uint32_t>(p[1]) << 8 | static_cast<uint32_t>(p[2]) << 16 |
+		static_cast<uint32_t>(p[3]) << 24;
+}
+
+/// Copies a fixed-size, possibly unterminated descriptor string.
+void copy_field(char* out, const uint8_t* field, size_t size) {
+	size_t n = 0;
+	while (n < size && field[n] != 0) {
+		unsigned char c = field[n];
+		out[n] = c >= 0x20 && c < 0x7f ? static_cast<char>(c) : '?';
+		++n;
+	}
+	out[n] = '\0';
+}
+
+} // namespace
+
+bool check_app_image(const uint8_t* data, size_t length, const char* project, uint16_t chip_id, AppImageInfo& out,
+	char* reason, size_t reason_size) {
+	out = AppImageInfo();
+	if (length < app_image::kHeadLength) {
+		std::snprintf(reason, reason_size, "image shorter than its header (%u bytes)", static_cast<unsigned>(length));
+		return false;
+	}
+	if (data[0] != app_image::kMagic) {
+		std::snprintf(reason, reason_size, "not an ESP firmware image (magic 0x%02x; an error page?)",
+			static_cast<unsigned>(data[0]));
+		return false;
+	}
+	out.chip_id = static_cast<uint16_t>(data[app_image::kChipIdOffset] | data[app_image::kChipIdOffset + 1] << 8);
+	if (out.chip_id != chip_id) {
+		std::snprintf(reason, reason_size, "image is for another chip (chip id %u, this is %u)",
+			static_cast<unsigned>(out.chip_id), static_cast<unsigned>(chip_id));
+		return false;
+	}
+	const uint8_t* desc = data + app_image::kDescOffset;
+	if (read_le32(desc) != app_image::kDescMagic) {
+		std::snprintf(reason, reason_size, "image has no app descriptor");
+		return false;
+	}
+	copy_field(out.version, desc + app_image::kVersionOffset, sizeof(out.version) - 1);
+	copy_field(out.project, desc + app_image::kProjectOffset, sizeof(out.project) - 1);
+	if (std::strcmp(out.project, project) != 0) {
+		std::snprintf(reason, reason_size, "image is \"%s\", not the application \"%s\"", out.project, project);
+		return false;
+	}
+	return true;
+}
+
+bool updater_supports_upload(const char* version) {
+	Version parsed;
+	if (version == nullptr || !parse_version(version, parsed)) {
+		return false;
+	}
+	const size_t feature = std::strlen(kUpdaterUploadFeature);
+	for (const char* p = parsed.build; *p != '\0';) {
+		const char* end = std::strchr(p, '.');
+		size_t n = end != nullptr ? static_cast<size_t>(end - p) : std::strlen(p);
+		if (n == feature && std::strncmp(p, kUpdaterUploadFeature, n) == 0) {
+			return true;
+		}
+		if (end == nullptr) {
+			break;
+		}
+		p = end + 1;
+	}
+	return false;
 }
 
 } // namespace hc
