@@ -6,6 +6,8 @@
 #include <limits>
 #include <string>
 
+#include <cstdint>
+
 #include "doctest.h"
 #include "hc/json.h"
 #include "hc/value_json.h"
@@ -58,6 +60,23 @@ TEST_CASE("JsonWriter replaces invalid UTF-8 and prints reals exactly") {
 	JsonWriter json(buffer, sizeof(buffer));
 	json.begin_array().string("a\xff" "b").number(0.1).number(21.5).number(1e300).number(uint64_t(18446744073709551615ull)).end_array();
 	CHECK(std::string(json.data()) == "[\"a\xEF\xBF\xBD" "b\",0.1,21.5,1e+300,18446744073709551615]");
+}
+
+TEST_CASE("JsonWriter prints 64-bit integers by hand (the updater's printf has no %llu)") {
+	char buffer[160];
+	hc::JsonWriter json(buffer, sizeof(buffer));
+	json.begin_array()
+		.number(static_cast<uint64_t>(0))
+		.number(static_cast<uint32_t>(4294967295u))
+		.number(static_cast<uint64_t>(18446744073709551615ull))
+		.number(static_cast<int64_t>(-1))
+		.number(static_cast<int64_t>(INT64_MIN))
+		.number(static_cast<int64_t>(INT64_MAX))
+		.number(static_cast<int32_t>(-2147483647 - 1))
+		.end_array();
+	REQUIRE_FALSE(json.overflowed());
+	CHECK(std::string(json.data(), json.length()) ==
+		"[0,4294967295,18446744073709551615,-1,-9223372036854775808,9223372036854775807,-2147483648]");
 }
 
 TEST_CASE("JsonWriter reports overflow and can roll back to a mark") {

@@ -202,11 +202,32 @@ JsonWriter& JsonWriter::number(double value) {
 	return *this;
 }
 
+namespace {
+
+/// Decimal digits of `value` into the end of `buffer`; returns the first digit. Written by hand
+/// because a printf without 64-bit support (newlib's nano format, which the OTA updater uses for
+/// its size) prints "%llu" as the letters "lu" and corrupts the JSON.
+char* decimal_digits(uint64_t value, char* buffer, size_t size) {
+	char* p = buffer + size;
+	*--p = '\0';
+	do {
+		*--p = static_cast<char>('0' + value % 10);
+		value /= 10;
+	} while (value != 0);
+	return p;
+}
+
+} // namespace
+
 JsonWriter& JsonWriter::number(int64_t value) {
 	separate();
 	char text[24];
-	int n = std::snprintf(text, sizeof(text), "%lld", static_cast<long long>(value));
-	put(text, static_cast<size_t>(n));
+	uint64_t magnitude = value < 0 ? static_cast<uint64_t>(0) - static_cast<uint64_t>(value) : static_cast<uint64_t>(value);
+	char* digits = decimal_digits(magnitude, text, sizeof(text));
+	if (value < 0) {
+		*--digits = '-';
+	}
+	put(digits, std::strlen(digits));
 	need_comma_ = true;
 	return *this;
 }
@@ -214,8 +235,8 @@ JsonWriter& JsonWriter::number(int64_t value) {
 JsonWriter& JsonWriter::number(uint64_t value) {
 	separate();
 	char text[24];
-	int n = std::snprintf(text, sizeof(text), "%llu", static_cast<unsigned long long>(value));
-	put(text, static_cast<size_t>(n));
+	const char* digits = decimal_digits(value, text, sizeof(text));
+	put(digits, std::strlen(digits));
 	need_comma_ = true;
 	return *this;
 }
