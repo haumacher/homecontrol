@@ -198,6 +198,16 @@ delivery (this list grows; add every trap you fall into):
 - **Verify a wiring claim on the hardware by its log line, not by the build growing.** The core
   links in whether or not a platform service uses it; only the service's own log line (or its
   console command) proves it runs.
+- **A watchdog panic on the C6 can leave no core dump and a cut register dump.** The panic
+  handler prints with a 1 s watchdog budget before it writes the core dump; a slow USB Serial/JTAG
+  reader exhausts it (`Saved PC` in `panic_print_char_usb_serial_jtag`, reset `TG0_WDT_HPSYS`).
+  Symbolize what did print by rebuilding the *same commit* in a worktree: the IRAM addresses are
+  stable across rebuilds of one commit and sdkconfig (`riscv32-esp-elf-addr2line -e homecontrol.elf
+  -f -i -p <MEPC> <RA>`). `MEPC` in `vPortYield` (port.c, the spin waiting for the yield interrupt)
+  with IDLE starved means a task that runs without ever switching, not a lock wait; the loop passes
+  that spin at every ordinary wait, so it names the mechanism, not the caller. A silent serial port
+  plus esptool "Write timeout" is such a firmware still running with its console reader starved;
+  only BOOT held during RESET gets the chip back.
 
 When a probe legitimately fails: send it back (§2). When it exposes something deeper than the
 package (a format gap, a platform-interface hole), fix small ones yourself with a regression test;
