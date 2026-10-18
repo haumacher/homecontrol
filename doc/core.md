@@ -87,6 +87,13 @@ runs the loop in the FreeRTOS task `hc_loop` (8 KB stack, priority 5) and sleeps
 default 100 Hz), so a message from another task wakes it at once. The 1 s cap is a safety net
 for a missed wakeup, not part of the timing contract.
 
+**Load figures** (issue #42, the System page): the loop counts the periods its periodic timers
+skipped since boot (`missed_periods()`, each skip also a warning) and keeps its longest turn with the
+time it began (`longest_turn_ms()`, `longest_turn_at_ms()`), measured on the clock the Controller
+hands it (`set_clock()`). A turn is one `run_once`, or a batch of messages the platform runs on the
+loop's thread outside it (`account_turn()`: the ESP's `LoopQueue::dispatch()`, where web requests and
+console commands run; POSIX's web jobs and KNX datagrams after its `poll()`).
+
 ## Tests
 
 The core's unit tests (`core/test/`, doctest vendored in `third_party/doctest/`) run on the host

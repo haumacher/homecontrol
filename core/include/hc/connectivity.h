@@ -195,6 +195,11 @@ public:
 
 	const Backoff& backoff() const { return backoff_; }
 
+	/// How often the link came up since boot (the reconnects are one less), and when it last did
+	/// (monotonic ms; 0 if never). The System page.
+	uint32_t link_ups() const { return link_ups_; }
+	uint64_t up_since_ms() const { return up_since_ms_; }
+
 private:
 	enum class Action : uint8_t {
 		none,
@@ -245,6 +250,8 @@ private:
 	uint64_t action_at_ = EventLoop::kNever;
 	uint32_t attempts_ = 0;
 	uint32_t failures_ = 0;
+	uint32_t link_ups_ = 0;
+	uint64_t up_since_ms_ = 0;
 	ConnectivityListener* listeners_[kListenerCapacity] = {};
 	size_t listener_count_ = 0;
 	bool started_ = false;

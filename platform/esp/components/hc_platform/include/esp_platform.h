@@ -35,10 +35,22 @@ public:
 	void write(LogLevel level, const char* tag, const char* message) override;
 };
 
-/// Free heap and the minimum ever free heap from the IDF heap statistics.
+/// The device's facts (esp_system_info.cpp): free heap, the minimum ever free heap, the largest
+/// block and the heap's size from the IDF heap statistics; the FreeRTOS tasks with their stack
+/// high-water marks and, with CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS, their CPU share; the die
+/// temperature (driver temperature_sensor, installed at the first reading, enabled per reading);
+/// chip, flash, IDF and OTA facts; the NVS statistics of the `nvs` partition.
 class EspSystemInfo : public SystemInfo {
 public:
 	MemoryInfo memory() const override;
+	bool visit_tasks(TaskVisitor& visitor, const char** reason) const override;
+	bool temperature(Temperature& out, const char** reason) const override;
+	void visit_chip(DiagnosticsVisitor& visitor) const override;
+	bool visit_settings_store(DiagnosticsVisitor& visitor, const char** reason) const override;
+
+private:
+	/// The temperature sensor's handle once installed (temperature_sensor_handle_t).
+	mutable void* sensor_ = nullptr;
 };
 
 /// newlib's local time: apply() sets TZ and calls tzset().

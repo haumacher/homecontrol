@@ -9,6 +9,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "hc/event_loop.h"
 
 namespace hc {
 namespace esp {
@@ -46,10 +47,15 @@ public:
 	/// most kDepth, the rest in the next call).
 	void dispatch(TickType_t ticks);
 
+	/// The loop whose turn figures include the messages' run time (EventLoop::account_turn(): a web
+	/// request or a console command runs here, outside run_once). nullptr: not accounted.
+	void set_loop(EventLoop* loop) { loop_ = loop; }
+
 private:
 	StaticQueue_t control_;
 	uint8_t storage_[kDepth * sizeof(LoopMessage)];
 	QueueHandle_t queue_ = nullptr;
+	EventLoop* loop_ = nullptr;
 };
 
 } // namespace esp

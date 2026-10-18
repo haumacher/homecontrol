@@ -221,3 +221,8 @@ target_include_directories(hc_posix_mqtt_tests PRIVATE "${HC_REPO_DIR}/core/test
 target_link_libraries(hc_posix_mqtt_tests PRIVATE hc_posix_web)
 target_compile_definitions(hc_posix_mqtt_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
 doctest_discover_tests(hc_posix_mqtt_tests)
+# The System page's facts of the host (issue #42): threads, resident memory, thermal zone, CPU.
+target_sources(hc_posix PRIVATE src/posix_system_info.cpp)
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/web_diagnostics_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/web_diagnostics_probe_test.cpp")
+target_sources(hc_tests PRIVATE test/posix_system_info_test.cpp)

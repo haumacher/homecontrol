@@ -159,6 +159,8 @@ public:
 	const Backoff& backoff() const { return backoff_; }
 	/// Connection attempts since start.
 	uint32_t attempts() const { return attempts_; }
+	/// How often the tunnel came up since start (the reconnects are one less).
+	uint32_t connections() const { return connections_; }
 
 	// ConnectivityListener
 	void connectivity_changed(const Connectivity& connectivity, LinkState previous) override;
@@ -237,6 +239,7 @@ private:
 	uint32_t heartbeat_misses_ = 0;
 	bool heartbeat_outstanding_ = false;
 	uint32_t attempts_ = 0;
+	uint32_t connections_ = 0;
 	uint64_t retry_at_ = EventLoop::kNever;
 
 	TimerHandle retry_timer_;

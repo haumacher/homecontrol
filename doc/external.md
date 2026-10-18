@@ -43,7 +43,7 @@ on `weather.temperature`.
 ## A fetch
 
 A failure is anything of: the fetch could not start (busy, URL), no connection or TLS failure, an
-HTTP status other than 200, a body larger than 8192 bytes (the reason names the limit), a body
+HTTP status other than 200, a body larger than 12288 bytes (the reason names the limit), a body
 that is not JSON, a path that is missing, an index out of range, a value of the wrong kind
 (`null`, an object, a string for a number datapoint, a number out of an integer datapoint's range).
 Every binding is extracted and converted before any is reported: a response reports all its values

@@ -199,6 +199,59 @@ TEST_CASE("EventLoop.PeriodicTimerFiresOncePerRunAndSkipsMissedPeriods") {
 	CHECK(rec.order.size() == 1);
 	CHECK(loop.next_deadline() == 400);
 	CHECK(capture.sink.contains("missed 5 period(s), next at 400 ms"));
+	CHECK(loop.missed_periods() == 5);
+}
+
+TEST_CASE("EventLoop.CountsMissedPeriodsAndTheLongestTurn") {
+	// A handler that overruns its period (issue #42): the loop counts the skipped periods and keeps
+	// the longest turn, measured on its clock, with the time the turn began.
+	ScopedCapture capture;
+	hc_test::FakeClock clock;
+	clock.now_ms = 100;
+	EventLoop loop;
+	loop.set_clock(&clock);
+	CHECK(loop.missed_periods() == 0);
+	CHECK(loop.longest_turn_ms() == 0);
+	int ticks = 0;
+	Action slow{[&]() {
+		if (++ticks == 1) {
+			clock.advance(350); // the first tick takes 350 ms
+		} else {
+			clock.advance(5);
+		}
+	}};
+	loop.schedule_periodic(100, 100, slow.callback());
+
+	loop.run_once(clock.now_ms); // at 100; the handler returns at 450
+	CHECK(ticks == 1);
+	CHECK(loop.longest_turn_ms() == 350);
+	CHECK(loop.longest_turn_at_ms() == 100);
+	CHECK(loop.missed_periods() == 0); // not yet noticed: the timer re-armed for 200
+	CHECK(loop.next_deadline() == 200);
+
+	loop.run_once(clock.now_ms); // at 450: 200 fires, 300 and 400 were missed
+	CHECK(ticks == 2);
+	CHECK(loop.missed_periods() == 2);
+	CHECK(capture.sink.contains("missed 2 period(s), next at 500 ms"));
+	CHECK(loop.next_deadline() == 500);
+	CHECK(loop.longest_turn_ms() == 350); // the 5-ms turn does not replace it
+	CHECK(loop.longest_turn_at_ms() == 100);
+
+	// Work the platform runs on the loop's thread outside run_once counts as a turn too.
+	loop.account_turn(1000, 1400);
+	CHECK(loop.longest_turn_ms() == 400);
+	CHECK(loop.longest_turn_at_ms() == 1000);
+	loop.account_turn(2000, 1990); // a clock that went backwards is not a turn
+	CHECK(loop.longest_turn_ms() == 400);
+}
+
+TEST_CASE("EventLoop.WithoutAClockTurnsAreNotMeasured") {
+	EventLoop loop;
+	Action body{[]() {}};
+	loop.schedule_at(10, body.callback());
+	loop.run_once(5000);
+	CHECK(loop.longest_turn_ms() == 0);
+	CHECK(loop.longest_turn_at_ms() == 0);
 }
 
 TEST_CASE("EventLoop.PeriodicTimerCancelsItselfInHandler") {

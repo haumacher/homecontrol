@@ -335,6 +335,42 @@ svg {
 	margin: 0;
 }
 
+.cards .card.wide {
+	grid-column: 1 / -1;
+}
+
+/* The System page's task list (diagnostics.js). */
+.table-scroll {
+	overflow-x: auto;
+}
+
+.table {
+	width: 100%;
+	border-collapse: collapse;
+	font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+	padding: 4px 8px;
+	text-align: left;
+	white-space: nowrap;
+	border-bottom: 1px solid var(--line);
+}
+
+.table th {
+	color: var(--text-2);
+	font-weight: 500;
+}
+
+.table .num {
+	text-align: right;
+}
+
+.table tr.current td {
+	font-weight: 600;
+}
+
 .tiles {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));

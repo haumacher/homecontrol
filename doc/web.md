@@ -214,7 +214,7 @@ update manifest grows a UI part (to do with the release workflow).
 Dark by default, light when the browser prefers it (`prefers-color-scheme`), or either one chosen in
 Settings (remembered in the browser's local storage, a convenience only); reduced motion respected
 (no pulsing, a dashed outline marks a pending tile instead). A sidebar with Overview, Rules,
-Schedules, Zigbee, Log and Settings that becomes a drawer below 760 px; a top bar with the device name and
+Schedules, Zigbee, Log, System and Settings that becomes a drawer below 760 px; a top bar with the device name and
 the live state. Every control is a native button, input or select (keyboard operable, focus
 visible) with a touch target of at least 44 px. No external resources (fonts, icons and scripts
 are all local).
@@ -260,6 +260,15 @@ are all local).
   confirmation). The list is read again on every event and after a reconnect. Without a
   coordinator the page says why (`system.unavailable`).
 - **Log**: the ring's lines, polled every 3 s.
+- **System** (`diagnostics.js`, issue #42): `GET /api/system/diagnostics` every 5 s while open, in
+  the Settings page's card style: memory (free, lowest, heap, largest block) with the die
+  temperature, the event loop (missed timer periods, longest turn and when, the loop task's stack
+  reserve, timers in use), chip and firmware (SoC, CPU, flash, IDF, partition and OTA state, reset
+  reason, starts, brownouts, uptime, core dump), the network (state, address, time connected,
+  reconnects, SSID, channel, RSSI, transmit power limit, power save, MAC, gateway, DNS), storage
+  (LittleFS, NVS entries), the connections (KNX state, channel, telegrams, reconnects; the Zigbee
+  network and its devices), the console's status lines (LED, time, Improv) and every task (name,
+  state, priority, stack never used, CPU share). What the platform lacks shows its reason.
 
 ### The dashboard
 

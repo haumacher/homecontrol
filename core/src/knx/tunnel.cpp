@@ -709,6 +709,9 @@ void KnxTunnel::set_state(TunnelState state, const char* reason) {
 	}
 	TunnelState previous = state_;
 	state_ = state;
+	if (state == TunnelState::up) {
+		++connections_;
+	}
 	notifying_ = true;
 	for (size_t i = 0; i < listener_count_; ++i) {
 		listeners_[i]->tunnel_state_changed(*this, previous);

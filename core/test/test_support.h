@@ -40,13 +40,50 @@ public:
 	bool synchronized = false;
 };
 
-/// Fixed memory figures.
+/// Fixed memory figures; tasks, a temperature and chip facts when a test sets them (the System page).
 class FakeSystemInfo : public hc::SystemInfo {
 public:
-	hc::MemoryInfo memory() const override { return hc::MemoryInfo{free_bytes, min_free_bytes}; }
+	hc::MemoryInfo memory() const override {
+		hc::MemoryInfo info{free_bytes, min_free_bytes};
+		info.largest_block = largest_block;
+		return info;
+	}
+
+	bool visit_tasks(hc::TaskVisitor& visitor, const char** reason) const override {
+		if (!list_tasks) {
+			return hc::SystemInfo::visit_tasks(visitor, reason);
+		}
+		for (const hc::TaskInfo& task : tasks) {
+			visitor.task(task);
+		}
+		return true;
+	}
+
+	bool temperature(hc::Temperature& out, const char** reason) const override {
+		if (!has_temperature) {
+			return hc::SystemInfo::temperature(out, reason);
+		}
+		++temperature_reads;
+		out = reading;
+		return true;
+	}
+
+	void visit_chip(hc::DiagnosticsVisitor& visitor) const override {
+		if (chip) {
+			visitor.text("model", "ESP32-C6");
+			visitor.number("cpu_mhz", 160);
+		}
+	}
 
 	uint32_t free_bytes = 300000;
 	uint32_t min_free_bytes = 250000;
+	uint32_t largest_block = 0;
+	bool list_tasks = false;
+	std::vector<hc::TaskInfo> tasks;
+	bool has_temperature = false;
+	hc::Temperature reading;
+	mutable int temperature_reads = 0;
+	bool chip = false;
 };
 
 /// Records every message as "<letter> <tag>: <message>".

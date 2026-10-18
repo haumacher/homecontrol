@@ -117,3 +117,5 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/mqtt.cpp"
 	"${HC_CORE_DIR}/src/mqtt_codec.cpp"
 )
+# The System page: tasks, memory, temperature, the loop, the link, chip and storage facts (issue #42).
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/web_api_diagnostics.cpp")

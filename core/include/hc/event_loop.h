@@ -9,6 +9,8 @@
 
 namespace hc {
 
+class Clock;
+
 /// A function to run on the event loop: a plain function pointer plus an opaque context, so that
 /// scheduling never allocates. Use Callback::member<T, &T::method>(object) for member functions.
 struct Callback {
@@ -119,6 +121,24 @@ public:
 	/// Number of posted callbacks waiting to run.
 	size_t event_count() const { return event_count_; }
 
+	// ---- Load figures since boot (the System page, spec/api.md "System diagnostics") ----
+
+	/// The clock run_once() measures its turns with (the platform's monotonic clock; the Controller
+	/// sets it). Without one the turns are not measured.
+	void set_clock(const Clock* clock) { clock_ = clock; }
+
+	/// Accounts a turn that ran from `start_ms` to `end_ms`: run_once() itself, or work the platform
+	/// runs on the loop's thread outside it (messages from other tasks). Keeps the longest.
+	void account_turn(uint64_t start_ms, uint64_t end_ms);
+
+	/// Periods periodic timers skipped since boot because the loop was late (each skip is also
+	/// logged as a warning).
+	uint64_t missed_periods() const { return missed_periods_; }
+
+	/// The longest turn since boot in ms, and when it began (monotonic ms; 0 while none was measured).
+	uint64_t longest_turn_ms() const { return longest_turn_ms_; }
+	uint64_t longest_turn_at_ms() const { return longest_turn_at_ms_; }
+
 private:
 	enum class SlotState : uint8_t {
 		free,
@@ -169,6 +189,11 @@ private:
 	size_t event_count_ = 0;
 
 	bool running_ = false;
+
+	const Clock* clock_ = nullptr;
+	uint64_t missed_periods_ = 0;
+	uint64_t longest_turn_ms_ = 0;
+	uint64_t longest_turn_at_ms_ = 0;
 };
 
 } // namespace hc

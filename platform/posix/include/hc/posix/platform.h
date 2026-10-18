@@ -29,11 +29,19 @@ public:
 	void write(LogLevel level, const char* tag, const char* message) override;
 };
 
-/// Free-memory figures on the host. A heap figure of a Linux process is not meaningful for the
-/// device budget (the C6 has a fixed heap, the host grows on demand), so this reports 0 for both.
+/// The host's system facts (posix_system_info.cpp). A heap figure of a Linux process is not
+/// meaningful for the device budget (the C6 has a fixed heap, the host grows on demand), so the
+/// heap figures are 0 and the process's resident memory (/proc/self/statm) stands beside them. The
+/// tasks are the process's threads (/proc/self/task: name, state, CPU share since the thread
+/// started; no priority or stack figures), the temperature is thermal_zone0 if the host has one,
+/// the chip facts are the CPU model, the core count and the kernel.
 class PosixSystemInfo : public SystemInfo {
 public:
 	MemoryInfo memory() const override;
+	bool visit_tasks(TaskVisitor& visitor, const char** reason) const override;
+	bool temperature(Temperature& out, const char** reason) const override;
+	void visit_chip(DiagnosticsVisitor& visitor) const override;
+	bool visit_settings_store(DiagnosticsVisitor& visitor, const char** reason) const override;
 };
 
 /// The C library's local time: apply() sets the environment variable TZ and calls tzset(), which
@@ -59,6 +67,11 @@ public:
 	/// Pairing (WPS) does not exist on the host: refused with a log line.
 	bool start_pairing() override;
 	void stop_pairing() override {}
+	/// The host's network has no radio: no SSID, channel or signal (the address is the core's).
+	bool link_details(LinkDetails&, const char** reason) const override {
+		*reason = "the host's network has no radio link";
+		return false;
+	}
 
 	/// Writes the host's primary IPv4 address into `buffer`; false (and 127.0.0.1) if none is found.
 	static bool primary_address(char* buffer, size_t size);

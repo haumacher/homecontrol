@@ -357,7 +357,7 @@ bool LanguagePacks::parse_manifest(const char* body, size_t length, Entry& wante
 				refusal = "\"sha256\" must be 64 hex digits";
 			} else if (!json_member(value, "size", field) || !json_number(field, size) || size < 1 ||
 				size > static_cast<double>(kMaxPack) || size != static_cast<double>(static_cast<uint32_t>(size))) {
-				refusal = "\"size\" must be 1 to 8192 bytes";
+				refusal = "\"size\" must be 1 to 12288 bytes";
 			} else {
 				for (char& c : entry.sha256) {
 					if (c == '\0') {

@@ -38,3 +38,10 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
 # CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE is not set
+
+# The System page's CPU share per task (issue #42): FreeRTOS run-time statistics on esp_timer's
+# microseconds (one esp_timer_get_time() per context switch, no extra timer), counted in 64 bits:
+# the IDF's default 32-bit counter wraps after 71 minutes and the shares become nonsense.
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
+CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y

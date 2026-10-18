@@ -39,10 +39,6 @@ void StderrLogSink::write(LogLevel level, const char* tag, const char* message) 
 		message);
 }
 
-MemoryInfo PosixSystemInfo::memory() const {
-	return MemoryInfo{0, 0};
-}
-
 void PosixTimeZone::apply(const char* posix_tz) {
 	setenv("TZ", posix_tz, 1);
 	tzset();

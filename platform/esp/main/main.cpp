@@ -149,6 +149,7 @@ hc::esp::ImageConsole& image_console() {
 
 void loop_task(void*) {
 	hc::Controller& ctl = controller();
+	g_queue.set_loop(&ctl.loop()); // the messages' run time counts as loop turns (the System page)
 	g_wifi.init(ctl.connectivity());
 	g_services.init(ctl.connectivity(), g_wifi.hostname());
 	g_ota.init(ctl);

@@ -57,6 +57,9 @@ public:
 	bool start_pairing() override;
 	void stop_pairing() override;
 	void power_save_changed() override;
+	/// The SSID, channel and RSSI of the access point (while associated), the transmit power limit,
+	/// the power-save mode, the station MAC and the interface's gateway, netmask and DNS server.
+	bool link_details(LinkDetails& out, const char** reason) const override;
 
 	bool start_scan(WifiScanSink& sink) override;
 

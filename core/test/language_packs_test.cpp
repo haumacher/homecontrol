@@ -414,7 +414,7 @@ TEST_CASE("Lang: the wanted language's malformed entry and a manifest of another
 	REQUIRE(f.fetcher.urls.size() == 3);
 	std::string big(LanguagePacks::kMaxPack + 1, 'x');
 	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", big)));
-	CHECK(std::string(f.packs.detail()).find("\"size\" must be 1 to 8192 bytes") != std::string::npos);
+	CHECK(std::string(f.packs.detail()).find("\"size\" must be 1 to 12288 bytes") != std::string::npos);
 
 	f.run_for(4 * LanguagePacks::kRetryInitialMs);
 	REQUIRE(f.fetcher.urls.size() == 4);

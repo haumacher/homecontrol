@@ -11,6 +11,7 @@ import { renderLogin, renderOnboarding } from "/auth.js";
 import { renderOverview } from "/overview.js";
 import { renderSettings } from "/settings.js";
 import { renderLog } from "/log.js";
+import { renderDiagnostics } from "/diagnostics.js";
 import { renderRules } from "/rules.js";
 import { renderSchedules } from "/schedules.js";
 import { renderZigbee } from "/zigbee.js";
@@ -23,6 +24,7 @@ const routes = {
 	"/zigbee": { render: renderZigbee, title: "zigbee.title" },
 	"/settings": { render: renderSettings, title: "settings.title" },
 	"/log": { render: renderLog, title: "log.title" },
+	"/system": { render: renderDiagnostics, title: "settings.system" },
 	"/login": { render: renderLogin, bare: true },
 	"/onboarding": { render: renderOnboarding, bare: true },
 };
