@@ -348,6 +348,33 @@ the device's datapoints (their values come from `/api/datapoints` or the live fe
 device announced its leave (it stays known, rejoining restores it); `stale`: not heard within its
 expected interval; `seen_ago_s` only once heard since the start.
 
+### `GET /api/zigbee/export[?from=<n>]`
+
+The device list as E-Home's importer reads it (spec/zigbee.md "Export"; issue #40, the field
+round trip without a reachable E-Home): the same paging as the list, each device with its interview
+result and every function the mapping derives.
+
+```json
+{"format": "homecontrol-zigbee-export", "version": 1, "controller": "homecontrol-a1b2c3",
+ "exported": 1792231392,
+ "network": {"up": true, "pan_id": 6699, "channel": 15, "extended_pan_id": "...", "permit_join_s": 0},
+ "count": 1, "max_devices": 32, "from": 0,
+ "devices": [{"ieee": "00124b0012345678", "manufacturer": "IKEA of Sweden", "model": "TRADFRI bulb E27 WS opal 980lm",
+              "label": "Hall", "interviewed": true,
+              "endpoints": [{"id": 1, "profile": 260, "device": 544, "in": [0, 3, 4, 5, 6, 8, 768, 4096], "out": [5, 25, 32, 4096]}],
+              "functions": [{"name": "zigbee.00124b0012345678.1.on", "function": "on_off", "endpoint": 1, "cluster": 6,
+                             "attribute": 0, "type": "boolean", "writable": true, "datapoint": "hall.light"},
+                            {"name": "zigbee.00124b0012345678.1.level", "function": "level", "endpoint": 1, "cluster": 8,
+                             "attribute": 0, "type": "real", "unit": "%", "writable": true, "datapoint": "zigbee.00124b0012345678.1.level"}]}],
+ "next": null}
+```
+
+`exported` is the controller's wall-clock time in Unix seconds (0 before the clock is set).
+`datapoint` is the name the loaded model gives the function (a binding of the runtime image, or the
+generic `name`); absent while the model is not loaded. The web UI's "Export device list" joins the
+pages into one file `zigbee-devices-<controller>.json` with `format`, `version`, `controller`,
+`exported`, `network` and all `devices`.
+
 ### `POST /api/zigbee/permit`
 
 Body `{"seconds": 0..254}`: opens the network for joining (0 closes it). 200

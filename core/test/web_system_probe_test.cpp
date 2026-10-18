@@ -116,6 +116,48 @@ TEST_CASE("WebSystem probe: a device that left is listed as left with stale valu
 	feed.closed(1);
 }
 
+TEST_CASE("WebSystem probe: the export carries the interview result and every function with its binding keys") {
+	ProbeFixture f;
+	auto r = f.call(HttpMethod::get, "/api/zigbee/export");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK(r.json["format"].text == "homecontrol-zigbee-export");
+	CHECK(r.json["version"].number == 1);
+	CHECK(r.json["count"].number == 0);
+	f.device.join_bulb();
+	r = f.call(HttpMethod::get, "/api/zigbee/export");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	REQUIRE(r.json["devices"].items.size() == 1);
+	const auto& bulb = r.json["devices"].items[0];
+	CHECK(bulb["ieee"].text == "00124b0001020304");
+	CHECK(bulb["manufacturer"].text == "IKEA of Sweden");
+	REQUIRE(bulb["endpoints"].items.size() == 1);
+	const auto& endpoint = bulb["endpoints"].items[0];
+	CHECK(endpoint["id"].number == 11);
+	CHECK(endpoint["profile"].number == 0x0104);
+	bool has_on_off = false;
+	for (const auto& c : endpoint["in"].items) {
+		has_on_off = has_on_off || c.number == 6;
+	}
+	CHECK(has_on_off);
+	REQUIRE(bulb["functions"].items.size() == 3);
+	const auto& on = bulb["functions"].items[0];
+	CHECK(on["name"].text == "zigbee.00124b0001020304.11.on");
+	CHECK(on["function"].text == "on_off");
+	CHECK(on["endpoint"].number == 11);
+	CHECK(on["cluster"].number == 6);
+	CHECK(on["attribute"].number == 0);
+	CHECK(on["type"].text == "boolean");
+	CHECK(on["writable"].boolean);
+	CHECK(on["datapoint"].text == "zigbee.00124b0001020304.11.on"); // generic: no image binds it
+	const auto& level = bulb["functions"].items[1];
+	CHECK(level["function"].text == "level");
+	CHECK(level["unit"].text == "%");
+	CHECK(r.json["next"].kind == hc_test::Json::Kind::null);
+	// The list and the export page alike; an unknown sub-route is 404, POST is 405.
+	CHECK(f.call(HttpMethod::get, "/api/zigbee/export?from=1").json["devices"].items.empty());
+	CHECK(f.call(HttpMethod::post, "/api/zigbee/export").status == 405);
+}
+
 TEST_CASE("WebSystem probe: labels are limited in bytes, not characters; closing the network; a deploy token "
 	"may drive the Zigbee routes") {
 	ProbeFixture f;

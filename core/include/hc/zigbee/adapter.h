@@ -271,6 +271,11 @@ public:
 	void write_network_json(JsonWriter& json) const;
 	/// Device `index` of devices() as an object.
 	void write_device_json(JsonWriter& json, size_t index) const;
+	/// The device as E-Home's importer needs it (spec/zigbee.md "Export"): identity, label, the
+	/// interview result (endpoints with profile, device id, input and output clusters, zone type)
+	/// and every function the mapping derives, with its generic datapoint name, cluster, attribute,
+	/// value type, unit, whether it is commandable, and the name the loaded model gives it.
+	void write_device_export_json(JsonWriter& json, size_t index) const;
 
 	// Technology
 	const char* name() const override { return "zigbee"; }

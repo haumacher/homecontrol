@@ -104,6 +104,41 @@ The controller keeps the joined devices in the blob `zigbee-devices.json` (at mo
 
 Unknown members are ignored; a malformed database is refused as a whole and nothing of it is used.
 
+## Export (issue #40)
+
+`ZigbeeAdapter::write_device_export_json()`, served paged by `GET /api/zigbee/export` (spec/api.md)
+and downloaded by the web UI as one file, is the contract with E-Home's importer: what the installer
+pairs in the field, E-Home names, places and wires, and ships back as the bindings above.
+
+```json
+{
+	"format": "homecontrol-zigbee-export", "version": 1, "controller": "homecontrol-a1b2c3", "exported": 1792231392,
+	"network": {"up": true, "pan_id": 6699, "channel": 20, "extended_pan_id": "60554bfffe010203", "permit_join_s": 0},
+	"devices": [
+		{
+			"ieee": "00158d0001020304", "manufacturer": "LUMI", "model": "lumi.weather", "label": "Bathroom", "interviewed": true,
+			"endpoints": [{"id": 1, "profile": 260, "device": 770, "in": [0, 3, 1026, 1029, 1027], "out": [], "zone_type": 21}],
+			"functions": [
+				{"name": "zigbee.00158d0001020304.1.temperature", "function": "temperature", "endpoint": 1, "cluster": 1026,
+				 "attribute": 0, "type": "real", "unit": "°C", "writable": false, "datapoint": "bath.temperature"},
+				{"name": "zigbee.00158d0001020304.1.humidity", "function": "humidity", "endpoint": 1, "cluster": 1029,
+				 "attribute": 0, "type": "real", "unit": "%", "writable": false}
+			]
+		}
+	]
+}
+```
+
+- `endpoints`: the interview result as kept in the database (`ZigbeeEndpoint`: at most 4 endpoints,
+  12 clusters per direction; `zone_type` only for an IAS Zone endpoint whose type was read).
+- `functions`: every function the mapping (`doc/zigbee.md`, the function table) derives from the
+  endpoints, bound or not: `name` the generic datapoint name, `function` the table's key, `cluster`
+  and `attribute` the binding's `cluster`/`attribute` (no `attribute` for `action`, a client
+  binding), `type` the value type a binding's `type` must fit, `unit` where the function has one,
+  `writable` whether a binding may be commanded, and `datapoint` the name the loaded model gives it
+  (the image's binding, else the generic name; absent while no model is loaded).
+- `version` counts incompatible changes of this object; a reader refuses a higher one.
+
 ## Adapter view
 
 `ZigbeeAdapter::write_json()` (the console, the API's pairing view):

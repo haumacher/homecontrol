@@ -124,6 +124,8 @@ export function renderZigbee(content, ctx) {
 		left > 0 ? t("zigbee.pair.again") : t("zigbee.pair"));
 		const close = h("button", { type: "button", class: "button secondary",
 			onclick: () => act(close, "POST", "/api/zigbee/permit", { seconds: 0 }) }, t("zigbee.pair.close"));
+		const exportButton = h("button", { type: "button", class: "button secondary", disabled: !data.count,
+			onclick: () => exportDevices(exportButton) }, t("zigbee.export"));
 		replace(network,
 			h("h2", null, t("zigbee.network")),
 			h("dl", { class: "rows" }, [
@@ -133,11 +135,45 @@ export function renderZigbee(content, ctx) {
 				[t("zigbee.joining"), left > 0 ? t("zigbee.joining.open", { seconds: left }) : t("zigbee.joining.closed")],
 			].map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
 			h("p", { class: "hint" }, left > 0 ? t("zigbee.pair.hint") : t("zigbee.pair.intro")),
-			h("div", { class: "actions" }, pair, left > 0 ? close : null),
+			h("div", { class: "actions" }, pair, left > 0 ? close : null, exportButton),
+			h("p", { class: "hint" }, t("zigbee.export.hint")),
 			activity.childElementCount ? activity : null);
 		clearTimeout(ticker);
 		if (left > 0 && !stopped) {
 			ticker = setTimeout(drawNetwork, 1000);
+		}
+	}
+
+	// The device list as E-Home's importer reads it (spec/zigbee.md "Export"): the pages of
+	// GET /api/zigbee/export joined into one file, downloaded by the browser.
+	async function exportDevices(button) {
+		button.disabled = true;
+		try {
+			let from = 0;
+			let file = null;
+			for (;;) {
+				const page = await api("GET", `/api/zigbee/export?from=${from}`);
+				if (!file) {
+					file = { format: page.format, version: page.version, controller: page.controller,
+						exported: page.exported, network: page.network, devices: [] };
+				}
+				file.devices.push(...page.devices);
+				if (page.next === null || page.next === undefined) {
+					break;
+				}
+				from = page.next;
+			}
+			const blob = new Blob([JSON.stringify(file, null, "\t") + "\n"], { type: "application/json" });
+			const url = URL.createObjectURL(blob);
+			const link = h("a", { href: url, download: `zigbee-devices-${file.controller || "homecontrol"}.json` });
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
+		} catch (error) {
+			window.alert(errorText(error));
+		} finally {
+			button.disabled = false;
 		}
 	}
 

@@ -150,6 +150,13 @@ with the announce that follows, while a battery device still listens (a sleepy d
 requests only right after its join or when it polls; a manual `zigbee interview` of a resting Hue
 sensor timed out three times). A rejoin after a power cycle changes nothing; the reports continue.
 
+**Engineering the paired devices.** Pairing happens where the devices are; the wiring happens in
+E-Home. The Zigbee page's "Export device list" downloads `zigbee-devices-<controller>.json`
+(`GET /api/zigbee/export`, the format in `spec/zigbee.md` "Export"): every device with its
+interview result and the functions the mapping derives. E-Home imports it, names and places the
+devices, binds their functions to datapoints and ships the result as the runtime image's Zigbee
+bindings; an E-Home on the same network does the same directly over the API (#16).
+
 `zigbee devices` lists the devices with their datapoints and values. A device that leaves (without
 rejoin) is kept in the database but marked as left; `zigbee remove <ieee>` asks it to leave and
 deletes it. `zigbee identify <ieee>` makes it blink for 10 s, `zigbee label <ieee> <text>` names it,

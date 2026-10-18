@@ -1689,6 +1689,76 @@ void ZigbeeAdapter::write_device_json(JsonWriter& json, size_t index) const {
 	json.end_object();
 }
 
+void ZigbeeAdapter::write_device_export_json(JsonWriter& json, size_t index) const {
+	const ZigbeeDevice& device = database_.at(index);
+	char ieee[kIeeeText];
+	format_ieee(device.ieee, ieee);
+	json.begin_object();
+	json.member("ieee", ieee);
+	json.member("manufacturer", device.manufacturer);
+	json.member("model", device.model);
+	json.member("label", device.label);
+	json.member("interviewed", device.interviewed);
+	json.key("endpoints").begin_array();
+	for (size_t e = 0; e < device.endpoint_count; ++e) {
+		const ZigbeeEndpoint& endpoint = device.endpoints[e];
+		json.begin_object();
+		json.member("id", static_cast<uint32_t>(endpoint.id));
+		json.member("profile", static_cast<uint32_t>(endpoint.profile));
+		json.member("device", static_cast<uint32_t>(endpoint.device));
+		json.key("in").begin_array();
+		for (size_t c = 0; c < endpoint.in_count; ++c) {
+			json.number(static_cast<uint32_t>(endpoint.in[c]));
+		}
+		json.end_array();
+		json.key("out").begin_array();
+		for (size_t c = 0; c < endpoint.out_count; ++c) {
+			json.number(static_cast<uint32_t>(endpoint.out[c]));
+		}
+		json.end_array();
+		if (endpoint.zone_type != ZigbeeEndpoint::kNoZoneType) {
+			json.member("zone_type", static_cast<uint32_t>(endpoint.zone_type));
+		}
+		json.end_object();
+	}
+	json.end_array();
+	json.key("functions").begin_array();
+	ZigbeePoint points[kMaxDevicePoints];
+	size_t count = device_points(device, points, kMaxDevicePoints);
+	for (size_t i = 0; i < count; ++i) {
+		const ZigbeePoint& point = points[i];
+		const FunctionInfo& info = function_info(point.function);
+		char generic[Datapoint::kMaxName + 1];
+		json.begin_object();
+		json.member("name", point_name(point, generic, sizeof(generic)));
+		json.member("function", info.key);
+		json.member("endpoint", static_cast<uint32_t>(point.endpoint));
+		json.member("cluster", static_cast<uint32_t>(info.cluster));
+		if (info.attribute != 0xFFFF) { // action, a client binding, has no attribute
+			json.member("attribute", static_cast<uint32_t>(info.attribute));
+		}
+		json.member("type", value_type_name(point.type()));
+		if (unit_of(point.function) != nullptr) {
+			json.member("unit", unit_of(point.function));
+		}
+		json.member("writable", point.command_cluster != cluster::kNone);
+		// The name the loaded model gives it (a binding of the image, or the generic one).
+		for (size_t p = 0; loaded_ && p < point_count_; ++p) {
+			if (points_[p].ieee == device.ieee && points_[p].endpoint == point.endpoint &&
+				points_[p].function == point.function && ids_[p] != kNoId) {
+				const Datapoint* dp = model_.get(ids_[p]);
+				if (dp != nullptr) {
+					json.member("datapoint", dp->name());
+				}
+				break;
+			}
+		}
+		json.end_object();
+	}
+	json.end_array();
+	json.end_object();
+}
+
 void ZigbeeAdapter::write_json(JsonWriter& json) const {
 	json.begin_object();
 	json.key("network").begin_object();

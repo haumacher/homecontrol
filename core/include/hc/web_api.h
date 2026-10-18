@@ -215,6 +215,7 @@ private:
 	void tokens(const char* rest, const WebRequest& request, WebResponse& response);
 	void zigbee(const char* rest, const WebRequest& request, WebResponse& response);
 	void zigbee_list(const WebRequest& request, WebResponse& response);
+	void zigbee_export(const WebRequest& request, WebResponse& response);
 	void external_fetch(const char* rest, const WebRequest& request, WebResponse& response);
 	void lang_sync(const WebRequest& request, WebResponse& response);
 	void mqtt_discovery(const WebRequest& request, WebResponse& response);

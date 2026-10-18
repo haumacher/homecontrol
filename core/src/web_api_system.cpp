@@ -487,6 +487,12 @@ void WebApi::zigbee(const char* rest, const WebRequest& request, WebResponse& re
 		}
 		return;
 	}
+	if (std::strcmp(rest, "/export") == 0) {
+		if (method_is(request, response, HttpMethod::get)) {
+			zigbee_export(request, response);
+		}
+		return;
+	}
 	const char* error = nullptr;
 	if (std::strcmp(rest, "/permit") == 0) {
 		if (!method_is(request, response, HttpMethod::post)) {
@@ -631,6 +637,53 @@ void WebApi::zigbee_list(const WebRequest& request, WebResponse& response) {
 	}
 	if (written == 0 && index < devices.size()) {
 		refuse(response, 500, "api.response_too_large", "a device does not fit the server's buffer");
+		return;
+	}
+	json.release();
+	json.end_array();
+	json.key("next");
+	if (index < devices.size()) {
+		json.number(static_cast<uint32_t>(index));
+	} else {
+		json.null();
+	}
+	json.end_object();
+	finish(response, json);
+}
+
+/// The export for E-Home's importer (spec/zigbee.md "Export"): the device objects of
+/// write_device_export_json(), paged like the list; the UI joins the pages into one file.
+void WebApi::zigbee_export(const WebRequest& request, WebResponse& response) {
+	const zigbee::DeviceDatabase& devices = zigbee_->devices();
+	uint32_t from = 0;
+	query_uint(request.query, "from", from);
+	JsonWriter json(response.body, response.capacity);
+	json.reserve(96);
+	json.begin_object()
+		.member("format", "homecontrol-zigbee-export")
+		.member("version", static_cast<uint32_t>(1))
+		.member("controller", host_.device_name())
+		.member("exported", static_cast<int64_t>(controller_.clock().wall_time().seconds));
+	json.key("network").begin_object();
+	zigbee_->write_network_json(json);
+	json.end_object();
+	json.member("count", static_cast<uint32_t>(devices.size()))
+		.member("max_devices", static_cast<uint32_t>(zigbee::DeviceDatabase::kMaxDevices))
+		.member("from", from);
+	json.key("devices").begin_array();
+	size_t index = from;
+	size_t written = 0;
+	for (; index < devices.size() && written < kZigbeePageSize; ++index) {
+		JsonWriter::Mark mark = json.mark();
+		zigbee_->write_device_export_json(json, index);
+		if (json.overflowed()) {
+			json.reset(mark);
+			break;
+		}
+		++written;
+	}
+	if (written == 0 && index < devices.size()) {
+		refuse(response, 500, "api.response_too_large", "a device's export does not fit the server's buffer");
 		return;
 	}
 	json.release();
