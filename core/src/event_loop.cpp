@@ -4,6 +4,7 @@
 #include "hc/event_loop.h"
 
 #include "hc/log.h"
+#include "hc/platform/clock.h"
 
 namespace hc {
 
@@ -90,6 +91,9 @@ void EventLoop::run_once(uint64_t now_ms) {
 		return;
 	}
 	running_ = true;
+	// The turn is measured on the clock, not from `now_ms`: the platform may pass a time it read
+	// earlier, and a handler's time is what counts.
+	uint64_t started_ms = clock_ != nullptr ? clock_->monotonic_ms() : 0;
 
 	// Snapshot the due timers before running anything, so that timers scheduled by handlers wait
 	// for the next call. Popping yields (deadline, sequence) order.
@@ -118,6 +122,17 @@ void EventLoop::run_once(uint64_t now_ms) {
 	}
 
 	running_ = false;
+	if (clock_ != nullptr) {
+		account_turn(started_ms, clock_->monotonic_ms());
+	}
+}
+
+void EventLoop::account_turn(uint64_t start_ms, uint64_t end_ms) {
+	uint64_t length = end_ms > start_ms ? end_ms - start_ms : 0;
+	if (length > longest_turn_ms_) {
+		longest_turn_ms_ = length;
+		longest_turn_at_ms_ = start_ms;
+	}
 }
 
 void EventLoop::fire(uint8_t index, uint32_t generation, uint64_t now_ms) {
@@ -142,6 +157,7 @@ void EventLoop::fire(uint8_t index, uint32_t generation, uint64_t now_ms) {
 	if (next <= now_ms) {
 		uint64_t missed = (now_ms - slot.deadline) / slot.period;
 		next = slot.deadline + (missed + 1) * slot.period;
+		missed_periods_ += missed;
 		Log::warn(kTag, "periodic timer %08x (period %u ms) missed %llu period(s), next at %llu ms",
 			static_cast<unsigned>(handle_of(index).value()), static_cast<unsigned>(slot.period),
 			static_cast<unsigned long long>(missed), static_cast<unsigned long long>(next));

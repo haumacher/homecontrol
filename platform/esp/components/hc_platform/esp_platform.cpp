@@ -42,10 +42,6 @@ void EspLogSink::write(LogLevel level, const char* tag, const char* message) {
 	}
 }
 
-MemoryInfo EspSystemInfo::memory() const {
-	return MemoryInfo{esp_get_free_heap_size(), esp_get_minimum_free_heap_size()};
-}
-
 void EspTimeZone::apply(const char* posix_tz) {
 	setenv("TZ", posix_tz, 1);
 	tzset();

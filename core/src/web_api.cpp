@@ -326,6 +326,11 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		coredump(response);
 		return;
 	}
+	// ---- The System page (web_api_diagnostics.cpp) ----
+	if (std::strcmp(path, "/api/system/diagnostics") == 0) {
+		diagnostics(request, response);
+		return;
+	}
 	// ---- The console's commands (web_api_system.cpp) ----
 	if (starts_with(path, "/api/system/")) {
 		system(path + 12, request, response);

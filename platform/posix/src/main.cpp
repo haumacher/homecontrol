@@ -140,8 +140,10 @@ void print_usage(const char* program) {
 } // namespace
 
 /// Sleeps up to `ms` or until the web executor has a job or the KNX socket a datagram, then runs
-/// the jobs and delivers the datagrams on this (the loop's) thread.
-void sleep_until_work(hc::posix::LoopExecutor& executor, hc::posix::PosixUdpSocket& knx_socket, uint64_t ms) {
+/// the jobs and delivers the datagrams on this (the loop's) thread; their run time counts as a turn
+/// of the loop (EventLoop::account_turn(), the System page).
+void sleep_until_work(hc::posix::LoopExecutor& executor, hc::posix::PosixUdpSocket& knx_socket, uint64_t ms,
+	hc::EventLoop& loop, const hc::Clock& clock) {
 	pollfd entries[2];
 	nfds_t count = 0;
 	if (executor.wake_fd() >= 0) {
@@ -161,8 +163,10 @@ void sleep_until_work(hc::posix::LoopExecutor& executor, hc::posix::PosixUdpSock
 		return;
 	}
 	int ready = poll(entries, count, static_cast<int>(ms));
+	uint64_t started_ms = clock.monotonic_ms();
 	if (ready <= 0) {
 		executor.run_pending(); // a job may have slipped in right after the wait ended
+		loop.account_turn(started_ms, clock.monotonic_ms());
 		return;
 	}
 	for (nfds_t i = 0; i < count; ++i) {
@@ -175,6 +179,7 @@ void sleep_until_work(hc::posix::LoopExecutor& executor, hc::posix::PosixUdpSock
 			executor.run_pending();
 		}
 	}
+	loop.account_turn(started_ms, clock.monotonic_ms());
 }
 
 int main(int argc, char** argv) {
@@ -364,12 +369,12 @@ int main(int argc, char** argv) {
 		uint64_t wait = deadline <= now ? 0 : deadline - now;
 		// Sleeps until the deadline, a job from a web server thread, or a datagram for the KNX tunnel
 		// (a signal interrupts the sleep; the loop then checks g_stop).
-		sleep_until_work(executor, knx_socket, wait < kMaxSleepMs ? wait : kMaxSleepMs);
+		sleep_until_work(executor, knx_socket, wait < kMaxSleepMs ? wait : kMaxSleepMs, controller.loop(), clock);
 	}
 	mqtt.stop(); // offline on the status topic; the retained configs stay for the next run
 	for (int i = 0; i < 30 && mqtt.state() != hc::MqttState::disabled; ++i) {
 		controller.run_once(); // the retirement drains the queue and disconnects (at most kRetireMs)
-		sleep_until_work(executor, knx_socket, 100);
+		sleep_until_work(executor, knx_socket, 100, controller.loop(), clock);
 	}
 	executor.stop();
 	if (web) {

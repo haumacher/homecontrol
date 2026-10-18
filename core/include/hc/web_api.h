@@ -220,6 +220,7 @@ private:
 	void external_fetch(const char* rest, const WebRequest& request, WebResponse& response);
 	void lang_sync(const WebRequest& request, WebResponse& response);
 	void mqtt_discovery(const WebRequest& request, WebResponse& response);
+	void diagnostics(const WebRequest& request, WebResponse& response); // the System page (web_api_diagnostics.cpp)
 	void action_due();
 	bool parse_body(const WebRequest& request, WebResponse& response, JsonSpan& body, bool optional = false);
 	void ok(WebResponse& response);

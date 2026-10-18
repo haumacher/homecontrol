@@ -131,6 +131,44 @@ bool WifiDriver::rssi(int8_t& out) const {
 	return true;
 }
 
+bool WifiDriver::link_details(LinkDetails& out, const char** reason) const {
+	if (!initialized_) {
+		*reason = "WiFi is not initialized (see the log)";
+		return false;
+	}
+	wifi_ap_record_t record;
+	if (associated_ && esp_wifi_sta_get_ap_info(&record) == ESP_OK) {
+		std::snprintf(out.ssid, sizeof(out.ssid), "%.32s", reinterpret_cast<const char*>(record.ssid));
+		out.channel = record.primary;
+		out.rssi = record.rssi;
+		out.has_rssi = true;
+	}
+	int8_t power = 0;
+	if (esp_wifi_get_max_tx_power(&power) == ESP_OK) {
+		out.tx_power_dbm = power / 4.0; // the IDF counts quarter dBm
+		out.has_tx_power = true;
+	}
+	wifi_ps_type_t ps;
+	if (esp_wifi_get_ps(&ps) == ESP_OK) {
+		out.power_save = ps == WIFI_PS_MIN_MODEM ? "min" : ps == WIFI_PS_MAX_MODEM ? "max" : "none";
+	}
+	uint8_t mac[6];
+	if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
+		std::snprintf(out.mac, sizeof(out.mac), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3],
+			mac[4], mac[5]);
+	}
+	esp_netif_ip_info_t ip;
+	if (has_ip_ && netif_ != nullptr && esp_netif_get_ip_info(netif_, &ip) == ESP_OK) {
+		std::snprintf(out.gateway, sizeof(out.gateway), IPSTR, IP2STR(&ip.gw));
+		std::snprintf(out.netmask, sizeof(out.netmask), IPSTR, IP2STR(&ip.netmask));
+		esp_netif_dns_info_t dns;
+		if (esp_netif_get_dns_info(netif_, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK && dns.ip.type == ESP_IPADDR_TYPE_V4) {
+			std::snprintf(out.dns, sizeof(out.dns), IPSTR, IP2STR(&dns.ip.u_addr.ip4));
+		}
+	}
+	return true;
+}
+
 ConnectResult WifiDriver::connect() {
 	if (!initialized_) {
 		ESP_LOGE(kTag, "refusing connect: WiFi failed to initialize (see the error at boot)");

@@ -35,7 +35,7 @@ BASE = os.path.join(REPO, 'web', 'ui', 'dist', 'lang', 'en.json')
 PACKS = os.path.join(REPO, 'web', 'ui', 'lang')
 
 # LanguagePacks::kMaxPack (core/include/hc/language_packs.h): the device's fetch buffer.
-MAX_PACK = 8192
+MAX_PACK = 12288
 TAG = re.compile(r'^[a-z]{2}(-[A-Z]{2})?$')
 PLACEHOLDER = re.compile(r'\{(\w+)\}')
 

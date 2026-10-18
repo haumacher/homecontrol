@@ -136,7 +136,7 @@ Console-only by design: `web password clear`, `crash` and `web demo`; also `wifi
 
 | Group | Command | Effect | Also via (spec/api.md, the web UI) |
 |---|---|---|---|
-| system | `status` | uptime, network, LED, time, heap (free, minimum, largest block), the boot record, every task with priority and the stack it never used, Improv | `GET /api/status` (no task stacks); Settings |
+| system | `status` | uptime, network, LED, time, heap (free, minimum, largest block), the boot record, every task with priority and the stack it never used, Improv | `GET /api/system/diagnostics`; the System page (also each task's state and CPU share, the loop's missed periods and longest turn) |
 | | `uptime` | `up 0 d 01:02:03 (3723 s), boot 57, reset reason: software restart` | `GET /api/status` (`uptime_s`, `boot`) |
 | | `settings list` | all stored settings, `wifi.psk` masked | `GET /api/settings` (the shown keys) |
 | | `restart` | restarts | `POST /api/system/restart`; Settings, System |

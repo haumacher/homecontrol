@@ -35,6 +35,7 @@ Controller::Controller(const Platform& platform)
 	  time_(loop_, platform.clock, platform.time_zone, platform.settings) {
 	Log::set_sink(&sink_);
 	Log::set_ring(&log_ring_);
+	loop_.set_clock(&clock_); // the loop measures its turns (the System page)
 	time_.add_listener(*this, TimeEvents::kSynchronized);
 }
 

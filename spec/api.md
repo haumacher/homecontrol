@@ -328,6 +328,70 @@ wrong credentials take it off the network (the console or a factory reset bring 
 UI warns before sending. The psk is never logged or echoed. Refusals: 422 `wifi.invalid` (with the
 reason), 409 `system.busy`, 500 `settings.storage_error`.
 
+### `GET /api/system/diagnostics`
+
+The System page (issue #42, `core/src/web_api_diagnostics.cpp`): everything the console's `status`
+prints and what else helps with a complaint, read on each request (the page polls every 5 s; the
+WebSocket's `status` message stays within its 1400 bytes and carries none of it). Session or token.
+Each section a platform cannot fill says `"available": false` with `"reason"`; a figure the platform
+does not know is left out.
+
+```json
+{"uptime_s": 3725, "now_ms": 3725012,
+ "device": {"name", "version", "build", "ui"}, "boot": {...}, "update": {...},
+ "chip": {"available": true, "model": "ESP32-C6", "revision": "v0.1", "cores": 1, "cpu_mhz": 160,
+          "flash_size": 4194304, "flash_mode": "dio", "flash_freq": "80m", "idf": "v5.3", "ota_state": "valid"},
+ "led": "ready", "time": {"synchronized": true, "local": "..."}, "improv": {"active": false},
+ "memory": {"available": true, "free": 181240, "min_free": 150112, "largest": 90100, "total": 401000},
+ "temperature": {"available": true, "celsius": 41.2, "accuracy": 2, "source": "die sensor"},
+ "network": {"state": "up", "ip": "192.0.2.10", "mode": "normal", "pairing": false, "reason": "link up",
+             "failures": 0, "link_ups": 3, "reconnects": 2, "up_for_s": 600},
+ "wifi": {"available": true, "ssid": "example", "channel": 6, "rssi": -61, "tx_power_dbm": 15,
+          "power_save": "min", "mac": "aa:bb:cc:dd:ee:ff", "gateway": "192.0.2.1", "netmask": "255.255.255.0",
+          "dns": "192.0.2.1"},
+ "storage": {"available": true, "total": 1048576, "used": 65536, "free": 983040, "files": 4, "bytes": 12000,
+             "nvs": {"available": true, "used": 80, "free": 420, "usable": 294, "total": 500, "namespaces": 6}},
+ "knx": {"available": true, "state": "up", "reason": "", "connections": 2, "reconnects": 1, "attempts": 3,
+         "queued": 0, "channel": 7, "telegrams": 1234},
+ "zigbee": {"available": true, "up": true, "channel": 15, "pan_id": 6754, "devices": 3},
+ "tasks": {"list": [{"name": "hc_loop", "state": "running", "priority": 5, "stack_free": 3412,
+                     "cpu_permille": 21, "current": true}, ...],
+           "available": true, "count": 21, "cpu": true},
+ "loop": {"missed": 3, "longest_turn_ms": 812, "longest_turn_at_ms": 20000, "longest_turn_ago_s": 3705,
+          "timers": 17, "timer_capacity": 32, "stack_free": 3412}}
+```
+
+- `device`, `boot`, `update`, `led`, `time`, `improv`: as in `GET /api/status`.
+- `chip`: the platform's facts. The device: `model`, `revision`, `cores`, `cpu_mhz`, `flash_size`
+  (bytes), `flash_mode`, `flash_freq`, `idf`, `ota_state` (the running partition's: `new`, `pending
+  verify`, `valid`, `invalid`, `aborted`, `undefined`). POSIX: `model` (the CPU), `cores`, `arch`, `os`.
+- `memory`: the heap in bytes (`largest`: the largest block it can hand out; `total`: its size).
+  POSIX has no heap budget (`"available": false`) and reports the process's `resident` memory.
+- `temperature`: one reading per request. The device reads the die sensor (driver
+  `temperature_sensor`, range 20..100 °C, `accuracy` ±2 °C as the IDF documents it); POSIX reads
+  `/sys/class/thermal/thermal_zone0/temp` if present (`accuracy` left out: unknown).
+- `network`: the core's view (doc/network.md): `failures` since the link was last up, `link_ups`
+  since boot, `reconnects` (`link_ups` − 1), `up_for_s` while up. `wifi`: the driver's link facts
+  (`rssi` in dBm while associated, `tx_power_dbm` the transmit power limit, `power_save` as the
+  setting `wifi.ps` names it); POSIX has no radio.
+- `storage`: the blob store's partition and files as in `GET /api/status`, and `nvs`: the entries of
+  the `nvs` partition (`usable`: free entries outside the page NVS keeps in reserve), `namespaces`.
+- `knx`: the tunnel's state, `connections` since start (`reconnects` one less), `attempts`, `queued`,
+  `channel` while up, `telegrams` seen. `zigbee`: the network (`channel`, `pan_id` while up) and the
+  device count; without a coordinator the reason.
+- `tasks`: every task (on POSIX every thread of the process) with `state` (`running`, `ready`,
+  `blocked`, `suspended`, `deleted`, `unknown`), `priority`, `stack_free` (bytes never used: the
+  high-water mark), `cpu_permille` (its share of all cores' time since boot, FreeRTOS run-time
+  statistics; `cpu` false when the build measures none), `core` (when pinned) and `current` (the
+  calling task: the event loop's). The list stops before the response buffer is full; `omitted`
+  then counts the tasks left out (`count` is all of them).
+- `loop`: the event loop since boot (doc/core.md): `missed` timer periods (each also a warning in the
+  log), the longest turn (`longest_turn_ms`, its start `longest_turn_at_ms` on the monotonic clock,
+  `longest_turn_ago_s`; a turn is a `run_once` or a batch of messages other tasks posted, such as a
+  web request), the timers in use, `stack_free` of the loop's task.
+
+Refusals: 405 for another method.
+
 ### `DELETE /api/coredump`
 
 Erases the stored core dump (the console's `coredump clear`). 200 `{"ok": true}`. Refusals: 404

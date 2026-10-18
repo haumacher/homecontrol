@@ -25,3 +25,9 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 # uxTaskGetSystemState() for the console's task list (name, priority, stack high-water mark).
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+# The System page's CPU share per task (issue #42): FreeRTOS run-time statistics on esp_timer's
+# microseconds (one esp_timer_get_time() per context switch, no extra timer), counted in 64 bits:
+# the IDF's default 32-bit counter wraps after 71 minutes and the shares become nonsense.
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
+CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y

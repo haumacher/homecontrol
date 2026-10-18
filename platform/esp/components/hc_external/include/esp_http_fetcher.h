@@ -21,7 +21,7 @@ namespace esp {
 /// flight.
 class EspHttpFetcher : public HttpFetcher {
 public:
-	static constexpr size_t kBufferBytes = 8192;
+	static constexpr size_t kBufferBytes = 12288;
 	static constexpr int kTimeoutMs = 15000;
 	/// Stack of the worker task: the TLS handshake and the HTTP client.
 	static constexpr uint32_t kTaskStack = 8192;

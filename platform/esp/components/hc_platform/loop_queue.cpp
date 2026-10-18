@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 namespace hc {
 namespace esp {
@@ -49,10 +50,14 @@ void LoopQueue::dispatch(TickType_t ticks) {
 		return;
 	}
 	// Bounded, so that a handler that posts again cannot keep the loop from its timers.
+	uint64_t started_ms = static_cast<uint64_t>(esp_timer_get_time()) / 1000u; // the EspClock's time base
 	size_t handled = 0;
 	do {
 		message.handler(message.context, message);
 	} while (++handled < kDepth && xQueueReceive(queue_, &message, 0) == pdTRUE);
+	if (loop_ != nullptr) {
+		loop_->account_turn(started_ms, static_cast<uint64_t>(esp_timer_get_time()) / 1000u);
+	}
 }
 
 } // namespace esp

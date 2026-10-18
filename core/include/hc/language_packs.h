@@ -85,7 +85,7 @@ public:
 	/// The longest manifest accepted.
 	static constexpr size_t kMaxManifest = 4096;
 	/// The largest pack accepted (gzip-compressed bytes): the device's fetch buffer, a BlobStore blob.
-	static constexpr size_t kMaxPack = 8192;
+	static constexpr size_t kMaxPack = 12288;
 	/// Languages remembered from the manifest.
 	static constexpr size_t kMaxOffers = 16;
 	/// The blob name prefix of the packs.

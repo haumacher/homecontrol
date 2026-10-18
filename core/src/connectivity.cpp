@@ -590,6 +590,11 @@ void Connectivity::set_state(LinkState state, const char* reason) {
 		ip_[0] = '\0';
 	}
 
+	if (state == LinkState::up && previous != LinkState::up) {
+		++link_ups_;
+		up_since_ms_ = clock_.monotonic_ms();
+	}
+
 	switch (state) {
 	case LinkState::up:
 		Log::info(kTag, "network up %s", ip_);

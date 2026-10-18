@@ -141,7 +141,7 @@ TEST_CASE("Lang probe: de-AT prefers the release's own de-AT pack over de, whate
 
 TEST_CASE("Lang probe: an unusable de entry fails a de-AT device instead of reporting not offered") {
 	Probe p("de-AT");
-	p.fetcher.ok("{\"version\": \"0.1.0-dev\", \"packs\": {" + entry("de", "lang-de.json.gz", kDe, "9000") + "}}");
+	p.fetcher.ok("{\"version\": \"0.1.0-dev\", \"packs\": {" + entry("de", "lang-de.json.gz", kDe, "20000") + "}}");
 	p.run_for(1);
 	CHECK(p.fetcher.urls.size() == 1);
 	CHECK(p.packs.state() == LanguagePackState::failed);
