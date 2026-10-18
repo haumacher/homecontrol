@@ -354,6 +354,8 @@ does not know is left out.
  "knx": {"available": true, "state": "up", "reason": "", "connections": 2, "reconnects": 1, "attempts": 3,
          "queued": 0, "channel": 7, "telegrams": 1234},
  "zigbee": {"available": true, "up": true, "channel": 15, "pan_id": 6754, "devices": 3},
+ "console": {"available": true, "host": true, "dropped": 12, "dropped_unread": 12, "queued": 0,
+             "capacity": 4096},
  "tasks": {"list": [{"name": "hc_loop", "state": "running", "priority": 5, "stack_free": 3412,
                      "cpu_permille": 21, "current": true}, ...],
            "available": true, "count": 21, "cpu": true},
@@ -379,6 +381,12 @@ does not know is left out.
 - `knx`: the tunnel's state, `connections` since start (`reconnects` one less), `attempts`, `queued`,
   `channel` while up, `telegrams` seen. `zigbee`: the network (`channel`, `pan_id` while up) and the
   device count; without a coordinator the reason.
+- `console`: the console output queue (issue #46, doc/diagnostics.md "Console output"): the lines
+  `dropped` since boot because the queue was full (each gap also a marker line in the console
+  stream), `dropped_unread` of them while nobody read the port (no USB host attached, or the port not opened:
+  the writer had made no progress for a second),
+  the bytes `queued` now and the queue's `capacity`, `host` whether a USB host is attached. POSIX
+  writes stdout directly: `"available": false`.
 - `tasks`: every task (on POSIX every thread of the process) with `state` (`running`, `ready`,
   `blocked`, `suspended`, `deleted`, `unknown`), `priority`, `stack_free` (bytes never used: the
   high-water mark), `cpu_permille` (its share of all cores' time since boot, FreeRTOS run-time

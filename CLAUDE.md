@@ -48,7 +48,9 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   component; `hc_platform` the `hc::esp` platform: clock, NVS settings, time zone, status LED,
   event-loop queue, the system facts for the System page, the diagnostics `EspDiagnostics` (reset
   reason, boot record in NVS `diag`, core dump, task watchdog on the event loop;
-  `doc/diagnostics.md`); `hc_net` WiFi station with WPS and the scan, mDNS, SNTP, the WPS button;
+  `doc/diagnostics.md`), the console output `ConsoleOutput` (all of stdout through a 4 KB
+  `hc::OutputRing` to the writer task `hc_out`, so no task waits for the USB host; drops are counted;
+  `doc/diagnostics.md` "Console output"); `hc_net` WiFi station with WPS and the scan, mDNS, SNTP, the WPS button;
   `hc_improv` the USB Serial/JTAG port shared by Improv and the console (reader task, console input
   device); `hc_console` the serial console and its command table (grouped `help`, `status` with the
   boot record and the task stacks, `log level|tail`, `coredump status|clear`, `crash yes`, `factory

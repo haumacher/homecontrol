@@ -72,6 +72,21 @@ struct Temperature {
 	const char* source = "";
 };
 
+/// The console output path (SystemInfo::console_output(), issue #46): what the queue between the
+/// printing tasks and the port's writer task holds and what it had to drop.
+struct ConsoleOutputInfo {
+	/// Lines dropped since boot because the queue was full (a reader too slow or none at all).
+	uint64_t dropped = 0;
+	/// Of those, the lines dropped while nobody read the port (the device: no USB host attached, or
+	/// the port not opened, so the writer made no progress for a second).
+	uint64_t dropped_unread = 0;
+	/// Bytes queued now, and the queue's size.
+	uint32_t queued = 0;
+	uint32_t capacity = 0;
+	/// A host is attached to the port now (the device: USB frames arrive).
+	bool host = false;
+};
+
 /// Diagnostics the platform supplies to the core: the memory figures (also in the heartbeat and the
 /// status), and what the System page shows (GET /api/system/diagnostics, spec/api.md): the tasks, the
 /// chip's die temperature, the chip and firmware facts and the storage statistics. Every method but
@@ -106,6 +121,14 @@ public:
 	virtual bool visit_settings_store(DiagnosticsVisitor& visitor, const char** reason) const {
 		(void)visitor;
 		*reason = "this platform keeps no statistics of its settings store";
+		return false;
+	}
+
+	/// The console output queue's figures. False with the reason when the platform writes its
+	/// console output directly (the host build: stdout).
+	virtual bool console_output(ConsoleOutputInfo& out, const char** reason) const {
+		(void)out;
+		*reason = "this platform writes its console output directly, without a queue";
 		return false;
 	}
 

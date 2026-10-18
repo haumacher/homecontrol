@@ -32,6 +32,7 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/live_feed.cpp"
 	"${HC_CORE_DIR}/src/monitor_feed.cpp"
 	"${HC_CORE_DIR}/src/log_ring.cpp"
+	"${HC_CORE_DIR}/src/output_ring.cpp"
 	"${HC_CORE_DIR}/src/sha.cpp"
 	"${HC_CORE_DIR}/src/value_json.cpp"
 	"${HC_CORE_DIR}/src/web_api.cpp"

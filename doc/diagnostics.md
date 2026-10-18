@@ -136,7 +136,7 @@ Console-only by design: `web password clear`, `crash` and `web demo`; also `wifi
 
 | Group | Command | Effect | Also via (spec/api.md, the web UI) |
 |---|---|---|---|
-| system | `status` | uptime, network, LED, time, heap (free, minimum, largest block), the boot record, every task with priority and the stack it never used, Improv | `GET /api/system/diagnostics`; the System page (also each task's state and CPU share, the loop's missed periods and longest turn) |
+| system | `status` | uptime, network, LED, time, heap (free, minimum, largest block), the boot record, the console output queue (lines dropped, of them while nobody read the port, bytes queued, USB host attached), every task with priority and the stack it never used, Improv | `GET /api/system/diagnostics`; the System page (also each task's state and CPU share, the loop's missed periods and longest turn) |
 | | `uptime` | `up 0 d 01:02:03 (3723 s), boot 57, reset reason: software restart` | `GET /api/status` (`uptime_s`, `boot`) |
 | | `settings list` | all stored settings, `wifi.psk` masked | `GET /api/settings` (the shown keys) |
 | | `restart` | restarts | `POST /api/system/restart`; Settings, System |
@@ -169,6 +169,39 @@ Console-only by design: `web password clear`, `crash` and `web demo`; also `wifi
 
 Other components add commands through `ConsoleContext::extensions` (`hc::esp::ConsoleCommand`); they
 appear under *components*.
+
+## Console output
+
+No task waits for the USB host (issue #46). Before, stdout went through the IDF's VFS of the USB
+Serial/JTAG driver, which writes one character at a time and, with a host draining the port, waits
+up to 50 ms per character whenever the driver's buffer is full: a burst of log lines on the event
+loop cost hundreds of milliseconds, the loop missed its timers, warned about it (more output) and
+ended in the task watchdog.
+
+Now `app_main` first starts the console output path (`hc_platform/console_output.cpp`): it installs
+the driver (transmit buffer 2 KB), creates the writer task `hc_out` (priority 3, below the serial
+reader and the event loop; 2 KB stack) and points stdout and stderr at the device `/dev/hcout`.
+Its `write()` appends to an `hc::OutputRing` of 4 KB under a short critical section (a copy of the
+bytes with the CRLF translation: microseconds) and wakes the writer, which takes the queued bytes
+and does the blocking driver writes, at most 256 bytes and 100 ms per call. Everything printed goes
+this way: `hc::Log` through the ESP sink and the IDF components through `esp_log` (both print with
+`vprintf` to stdout), the console's command output, prompt and line editor, and the Improv frames as
+whole records. The bootloader and the IDF start-up before `app_main` print through the IDF's own
+synchronous path, the panic handler through its own path past the queue. The log ring of the web UI
+(`/api/log`, `log tail`) is filled by `hc::Log` before the console output and never loses a line to
+the USB port.
+
+When the queue is full a line is dropped whole (never its tail without its head) and counted; the
+next output that finds room is preceded once by `… N line(s) dropped (console output could not keep
+up)`, also when the queue merely ran empty. The counter is in `status` (`console`) and on the System
+page (`GET /api/system/diagnostics`, `console`: `dropped`, `dropped_unread` of them while nobody read
+the port, `queued`, `capacity`, `host`). Nobody reads when no USB host is attached (a charger instead
+of a computer) or the host has not opened the port; the device tells this from the writer having
+made no progress for a second (`usb_serial_jtag_is_connected()` covers only the first). Then the
+queue fills and stays full, the first 6 KB since then wait for the next reader,
+and every further line is dropped and counted; the event loop does not notice. One loop turn can
+queue at most the 4 KB (the writer runs when the loop is idle): a console command printing more,
+such as `log tail` over the whole log ring, ends in the marker line.
 
 ## Testing on the board
 

@@ -2,10 +2,11 @@
  * Copyright (c) 2026 Bernhard Haumacher
  */
 // The device's facts for the System page (issue #42): heap, FreeRTOS tasks with their run-time
-// statistics, the die temperature, chip and firmware, the NVS statistics.
+// statistics, the die temperature, chip and firmware, the NVS statistics, the console output queue.
 
 #include "esp_platform.h"
 
+#include "console_output.h"
 #include <cstdio>
 #include <memory>
 #include <new>
@@ -208,6 +209,15 @@ bool EspSystemInfo::visit_settings_store(DiagnosticsVisitor& visitor, const char
 	visitor.number("usable", stats.available_entries); // free entries outside the page NVS keeps in reserve
 	visitor.number("total", stats.total_entries);
 	visitor.number("namespaces", stats.namespace_count);
+	return true;
+}
+
+bool EspSystemInfo::console_output(ConsoleOutputInfo& out, const char** reason) const {
+	if (!hc::esp::console_output().driver_installed()) {
+		*reason = "the USB Serial/JTAG driver is not installed: console output is written synchronously";
+		return false;
+	}
+	out = hc::esp::console_output().info();
 	return true;
 }
 

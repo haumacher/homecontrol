@@ -312,6 +312,24 @@ void WebApi::diagnostics(const WebRequest& request, WebResponse& response) {
 	}
 	json.end_object();
 
+	// ---- The console output queue (issue #46) ----
+	json.key("console").begin_object();
+	{
+		ConsoleOutputInfo console;
+		const char* reason = nullptr;
+		if (system.console_output(console, &reason)) {
+			json.member("available", true)
+				.member("host", console.host)
+				.member("dropped", console.dropped)
+				.member("dropped_unread", console.dropped_unread)
+				.member("queued", console.queued)
+				.member("capacity", console.capacity);
+		} else {
+			unavailable(json, reason);
+		}
+	}
+	json.end_object();
+
 	// ---- Tasks (last but one: the list stops at the buffer's reserve) ----
 	json.key("tasks").begin_object();
 	TaskWriter tasks(json, response.capacity);

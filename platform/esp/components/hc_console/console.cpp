@@ -2,6 +2,7 @@
  * Copyright (c) 2026 Bernhard Haumacher
  */
 #include "console.h"
+#include "console_output.h"
 
 #include <atomic>
 #include <cstdio>
@@ -81,6 +82,19 @@ void print_tasks() {
 #endif
 }
 
+/// The console output queue (issue #46): what it holds and what it had to drop.
+void print_console_output(ConsoleContext& c) {
+	ConsoleOutputInfo out;
+	const char* reason = nullptr;
+	if (!c.controller.system().console_output(out, &reason)) {
+		std::printf("console   output queue not running: %s\n", reason);
+		return;
+	}
+	std::printf("console   %llu line(s) dropped (%llu while nobody read the port), %u of %u B queued, USB host %s\n",
+		static_cast<unsigned long long>(out.dropped), static_cast<unsigned long long>(out.dropped_unread),
+		static_cast<unsigned>(out.queued), static_cast<unsigned>(out.capacity), out.host ? "attached" : "absent");
+}
+
 int cmd_status(ConsoleContext& c, int, char**) {
 	Controller& ctl = c.controller;
 	const Connectivity& net = ctl.connectivity();
@@ -101,6 +115,7 @@ int cmd_status(ConsoleContext& c, int, char**) {
 		static_cast<unsigned>(memory.min_free_bytes),
 		static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT)));
 	print_boot(c);
+	print_console_output(c);
 	print_tasks();
 	const Improv& improv = ctl.improv();
 	if (improv.active()) {
@@ -337,7 +352,7 @@ int cmd_update(ConsoleContext& c, int argc, char** argv) {
 int cmd_restart(ConsoleContext&, int, char**) {
 	ESP_LOGW(kTag, "restart requested on the console");
 	std::printf("restarting\n");
-	std::fflush(stdout);
+	console_output().drain(500);
 	esp_restart();
 	return 0;
 }
@@ -851,7 +866,7 @@ void factory_reset_and_restart(BlobStore* blobs, const char* origin) {
 	esp_err_t err = nvs_flash_erase(); // closes the open handles first (settings, boot record)
 	std::printf("nvs        %s\n", err == ESP_OK ? "erased" : esp_err_to_name(err));
 	std::printf("restarting\n");
-	std::fflush(stdout);
+	console_output().drain(500);
 	vTaskDelay(pdMS_TO_TICKS(100));
 	esp_restart();
 }

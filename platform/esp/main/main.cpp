@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 
 #include "console.h"
+#include "console_output.h"
 #include "esp_platform.h"
 #include "esp_status_light.h"
 #include "hc/controller.h"
@@ -259,6 +260,9 @@ void init_nvs() {
 } // namespace
 
 extern "C" void app_main(void) {
+	// The console output path first (issue #46): from here on no task blocks on the USB port;
+	// before, the IDF's synchronous path printed the start-up.
+	hc::esp::console_output().start();
 	init_nvs();
 	g_diag.init(); // diagnostics: the reset reason and the boot record, before the controller logs
 	if (!g_queue.init()) {

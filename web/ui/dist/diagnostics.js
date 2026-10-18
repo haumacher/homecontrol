@@ -95,7 +95,24 @@ function loopCard(d) {
 		[t("sys.longest"), longest],
 		l.stack_free !== undefined ? [t("sys.stack"), `${l.stack_free} B`] : null,
 		[t("sys.timers"), `${l.timers ?? "—"} / ${l.timer_capacity ?? "—"}`],
+		...consoleRows(d.console || {}),
 	]));
+}
+
+/// The console output queue (issue #46): lines dropped although a host was reading are a warning;
+/// those dropped while nobody read the port are only counted.
+function consoleRows(c) {
+	if (!c.available) {
+		return [[t("sys.console.queue"), t("sys.na", { reason: c.reason || "—" })]];
+	}
+	const dropped = c.dropped ?? 0;
+	const unread = c.dropped_unread ?? 0;
+	return [
+		[t("sys.console.dropped"), badge(dropped === unread,
+			unread > 0 ? t("sys.console.dropped.value", { dropped, unread }) : String(dropped))],
+		[t("sys.console.queue"), `${c.queued ?? 0} / ${c.capacity ?? 0} B`],
+		[t("sys.console.host"), c.host ? t("status.yes") : t("status.no")],
+	];
 }
 
 function networkCard(d) {

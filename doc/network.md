@@ -102,14 +102,16 @@ has sent a frame: on the monitor Improv is invisible.
 blink), also during the short pause of pairing for a scan.
 
 **Sharing the port with the console.** The IDF REPL reads the port itself, so it cannot share it:
-`hc_improv` installs the USB Serial/JTAG driver, and while Improv is active a reader task reads the
+the console output path (`console_output.h` in `hc_platform`, started first thing in `app_main`)
+installs the USB Serial/JTAG driver, and while Improv is active a reader task of `hc_improv` reads the
 raw bytes and splits them with `hc::ImprovReader`. A frame starts with the magic `IMPROV` followed by
 version 1; bytes matching a prefix of the magic are held back (at most 100 ms) and released to the
 console as soon as the match breaks, so typing `IMPORT` or `IMPROVE` on the console works. Frames go
 to the event loop; everything else reaches the console's line editor through the VFS device
 `/dev/hcin`, the REPL task's stdin. When Improv ends the reader task exits and the console reads the
-driver directly. Frames are written in one driver call each, framed by newlines; log lines go
-between them (ESP Web Tools skips the noise).
+driver directly. Frames are queued as whole records on the console output path, framed by
+newlines; log lines go between them, never inside one (ESP Web Tools skips the noise). The output
+path never blocks the sender (doc/diagnostics.md "Console output").
 
 **Testing it locally** (Chrome on the desk machine, the C6 connected):
 

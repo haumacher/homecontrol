@@ -77,3 +77,36 @@ TEST_CASE("WebDiagnostics probe: a deploy token reads the page, one task is the 
 	CHECK(f.request(HttpMethod::get, "/api/system/diagnostics", "", "", bearer, false).status == 401);
 	CHECK(f.get("/api/system/diagnostics", f.cookie).status == 200);
 }
+
+TEST_CASE("WebDiagnostics probe: the console output queue (issue #46) with its drops, or the reason it is missing") {
+	ProbeFixture f;
+	// The host build writes stdout directly: no queue, and the section says why.
+	auto r = f.get("/api/system/diagnostics", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK_FALSE(r.json["console"]["available"].boolean);
+	CHECK_FALSE(r.json["console"]["reason"].text.empty());
+	CHECK_FALSE(r.json["console"].has("dropped"));
+
+	// The device's queue: the figures as the platform reports them, a 64-bit count included, and
+	// the task list still behind it.
+	f.fake.system.has_console = true;
+	f.fake.system.console.dropped = 5000000000ull;
+	f.fake.system.console.dropped_unread = 4999999990ull;
+	f.fake.system.console.queued = 812;
+	f.fake.system.console.capacity = 4096;
+	f.fake.system.console.host = true;
+	f.fake.system.list_tasks = true;
+	f.fake.system.tasks = {task("hc_out", hc::TaskState::blocked, 3, 1400, 1, false),
+		task("hc_loop", hc::TaskState::running, 5, 3412, 87, true)};
+	r = f.get("/api/system/diagnostics", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	const auto& c = r.json["console"];
+	CHECK(c["available"].boolean);
+	CHECK(c["host"].boolean);
+	CHECK(c["dropped"].number == 5000000000.0);
+	CHECK(c["dropped_unread"].number == 4999999990.0);
+	CHECK(c["queued"].number == 812);
+	CHECK(c["capacity"].number == 4096);
+	CHECK(r.json["tasks"]["count"].number == 2);
+	CHECK(r.json["loop"].has("missed"));
+}

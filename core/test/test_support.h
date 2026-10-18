@@ -75,6 +75,14 @@ public:
 		}
 	}
 
+	bool console_output(hc::ConsoleOutputInfo& out, const char** reason) const override {
+		if (!has_console) {
+			return hc::SystemInfo::console_output(out, reason);
+		}
+		out = console;
+		return true;
+	}
+
 	uint32_t free_bytes = 300000;
 	uint32_t min_free_bytes = 250000;
 	uint32_t largest_block = 0;
@@ -84,6 +92,8 @@ public:
 	hc::Temperature reading;
 	mutable int temperature_reads = 0;
 	bool chip = false;
+	bool has_console = false;
+	hc::ConsoleOutputInfo console;
 };
 
 /// Records every message as "<letter> <tag>: <message>".

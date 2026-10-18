@@ -9,8 +9,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include "console_output.h"
 #include "driver/usb_serial_jtag.h"
-#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_chip_info.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -29,11 +29,6 @@ namespace {
 
 constexpr const char* kTag = "hc.serial";
 
-/// Driver buffers: a frame fits the receive buffer; a scan's result frames (about 1 KB in a burst)
-/// fit the transmit buffer.
-constexpr uint32_t kRxBuffer = 512;
-constexpr uint32_t kTxBuffer = 1024;
-
 /// Console input waiting for the REPL.
 constexpr size_t kConsoleBuffer = 256;
 
@@ -44,11 +39,10 @@ constexpr UBaseType_t kReaderPriority = 4;
 /// Read timeout of the reader task: the granularity of ImprovReader::poll() and of noticing the end.
 constexpr TickType_t kReadTicks = pdMS_TO_TICKS(20);
 
-/// How long the reader waits for the loop to take the previous frame, and how long a frame write or
-/// a console push may block.
+/// How long the reader waits for the loop to take the previous frame, and how long a console push
+/// may block (the reader task's own wait).
 constexpr TickType_t kMailboxWait = pdMS_TO_TICKS(10);
 constexpr int kMailboxTries = 100;
-constexpr TickType_t kWriteTicks = pdMS_TO_TICKS(100);
 constexpr TickType_t kPushTicks = pdMS_TO_TICKS(100);
 
 // ---- The console input device (REPL task) ------------------------------------------------------
@@ -125,19 +119,12 @@ ssize_t console_read(int, void* dst, size_t size) {
 } // namespace
 
 bool SerialMux::init() {
-	usb_serial_jtag_driver_config_t config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
-	config.rx_buffer_size = kRxBuffer;
-	config.tx_buffer_size = kTxBuffer;
-	esp_err_t err = usb_serial_jtag_driver_install(&config);
-	if (err != ESP_OK) {
-		ESP_LOGE(kTag, "USB Serial/JTAG driver not installed: %s; no console input, no Improv", esp_err_to_name(err));
+	// The driver and stdout belong to the console output path (console_output.h), started first
+	// thing in app_main.
+	if (!console_output().driver_installed()) {
+		ESP_LOGE(kTag, "no console input, no Improv: the USB Serial/JTAG driver is not installed (see the boot log)");
 		return false;
 	}
-	// stdout (logs, console output) through the driver, with CRLF line endings.
-	usb_serial_jtag_vfs_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
-	usb_serial_jtag_vfs_use_driver();
-	fcntl(fileno(stdout), F_SETFL, 0);
-
 	g_stream = xStreamBufferCreateStatic(kConsoleBuffer, 1, g_stream_storage, &g_stream_control);
 	esp_vfs_t vfs = {};
 	vfs.flags = ESP_VFS_FLAG_DEFAULT;
@@ -146,7 +133,7 @@ bool SerialMux::init() {
 	vfs.read = &console_read;
 	vfs.fstat = &console_fstat;
 	vfs.fcntl = &console_fcntl;
-	err = esp_vfs_register(kConsoleInput, &vfs, nullptr);
+	esp_err_t err = esp_vfs_register(kConsoleInput, &vfs, nullptr);
 	if (err != ESP_OK) {
 		ESP_LOGE(kTag, "console input device %s not registered: %s; no console input", kConsoleInput,
 			esp_err_to_name(err));
@@ -265,14 +252,15 @@ void SerialMux::send_frame(const uint8_t* frame, size_t length) {
 	if (!initialized_ || length > improv::kMaxFrame) {
 		return;
 	}
-	// One driver call per frame: newline, frame, newline. The clients find the magic only at the
-	// start of a line; the trailing newline keeps the next log line off the frame.
+	// One record per frame: newline, frame, newline, queued whole on the console output path, so a
+	// log line never lands inside it. The clients find the magic only at the start of a line; the
+	// trailing newline keeps the next log line off the frame.
 	uint8_t framed[improv::kMaxFrame + 2];
 	framed[0] = '\n';
 	std::memcpy(framed + 1, frame, length);
 	framed[length + 1] = '\n';
-	if (usb_serial_jtag_write_bytes(framed, length + 2, kWriteTicks) == 0) {
-		ESP_LOGW(kTag, "Improv frame not sent: the USB transmit buffer stayed full (nobody reading?)");
+	if (!console_output().append_frame(framed, length + 2)) {
+		ESP_LOGW(kTag, "Improv frame not sent: the console output queue is full (nobody reading?)");
 	}
 }
 

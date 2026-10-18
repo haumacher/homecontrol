@@ -29,15 +29,16 @@ namespace esp {
 /// reads that buffer through the VFS device kConsoleInput. When Improv ends (improv_ended()), the
 /// reader task releases what it holds and exits; the device then reads the driver directly.
 ///
-/// Output: frames are written with one driver call each, framed by newlines (the clients look for
-/// the magic at the start of a line); log lines and console output keep going through stdout and
-/// the same driver, between frames.
+/// Output: frames are queued as whole records on the console output path (console_output.h),
+/// framed by newlines (the clients look for the magic at the start of a line); log lines and
+/// console output go through stdout into the same queue, between frames. Nothing here blocks on
+/// the host.
 class SerialMux : public ImprovPort {
 public:
 	/// The console's input device (open it as the REPL task's stdin).
 	static constexpr const char* kConsoleInput = "/dev/hcin";
 
-	/// Installs the driver, routes stdout through it and registers kConsoleInput. Call once at boot,
+	/// Registers kConsoleInput on the driver ConsoleOutput::start() installed. Call once at boot,
 	/// before the console starts. Logs and returns false on failure.
 	bool init();
 
