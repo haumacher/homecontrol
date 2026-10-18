@@ -16,7 +16,10 @@
 #include "doctest.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
+#include "hc/image/rules_clock.h"
+#include "hc/network_settings.h"
 #include "hc/rules/engine.h"
+#include "hc/time_service.h"
 #include "hc/rules/parameter_store.h"
 #include "rules_test_support.h"
 #include "test_support.h"
@@ -55,29 +58,33 @@ namespace {
 
 constexpr uint64_t kBase = 1000000; ///< Monotonic time of the corpus's time 0.
 
-/// The wall clock and the sun of a case.
+/// The case's wall clock as the core's time service interface: UTC from the case's start and the
+/// monotonic clock, local time through the case's time zone (README "clock": `zone`, UTC without).
+class CaseClock : public hc::TimeSource {
+public:
+	uint64_t monotonic_ms() const override { return clock->now_ms; }
+
+	hc::WallTime now_utc() const override {
+		return hc::WallTime{start_utc + static_cast<int64_t>((clock->now_ms - kBase) / 1000), synchronized};
+	}
+
+	bool to_local(int64_t utc_seconds, hc::LocalTime& out) const override { return zone.to_local(utc_seconds, out); }
+
+	bool sun_times(const hc::Date&, hc::SunTimes&) const override { return false; }
+
+	const hc_test::FakeClock* clock = nullptr;
+	bool synchronized = false;
+	int64_t start_utc = 0;
+	hc_test::PosixRuleZone zone;
+};
+
+/// The wall clock and the sun of a case: the device's adapter (image::RulesClock) over the case's
+/// clock and zone, the sun times from the case.
 class CaseTime : public hc::rules::TimeSource {
 public:
-	bool local_now(hc::DateTime& out) const override {
-		if (!synchronized) {
-			return false;
-		}
-		int64_t s = start_seconds + static_cast<int64_t>((clock->now_ms - kBase) / 1000);
-		int64_t days = s >= 0 ? s / 86400 : (s - 86399) / 86400;
-		int64_t rest = s - days * 86400;
-		int32_t year = 0;
-		unsigned month = 0, day = 0;
-		hc::rules::civil_of(days, year, month, day);
-		out = hc::DateTime();
-		out.year = static_cast<uint16_t>(year);
-		out.month = static_cast<uint8_t>(month);
-		out.day = static_cast<uint8_t>(day);
-		out.hour = static_cast<uint8_t>(rest / 3600);
-		out.minute = static_cast<uint8_t>(rest % 3600 / 60);
-		out.second = static_cast<uint8_t>(rest % 60);
-		out.day_of_week = hc::rules::weekday_of(year, month, day);
-		return true;
-	}
+	bool local_now(hc::DateTime& out) const override { return rules_clock.local_now(out); }
+	int64_t local_to_utc(const hc::DateTime& local) const override { return rules_clock.local_to_utc(local); }
+	bool utc_to_local(int64_t utc, hc::DateTime& out) const override { return rules_clock.utc_to_local(utc, out); }
 
 	bool sun_time(hc::rules::SunEvent event, hc::TimeOfDay& out) const override {
 		const Val& v = sun[static_cast<size_t>(event)];
@@ -88,9 +95,8 @@ public:
 		return true;
 	}
 
-	const hc_test::FakeClock* clock = nullptr;
-	bool synchronized = false;
-	int64_t start_seconds = 0;
+	CaseClock wall;
+	hc::image::RulesClock rules_clock{wall};
 	Val sun[4];
 };
 
@@ -100,6 +106,8 @@ struct LogEntry {
 	std::string code;
 	std::string level;
 	std::string message;
+	std::string culprit; ///< loopGuard: the rule that fired most, and its derived firings.
+	uint32_t firings = 0;
 };
 
 struct CommandEntry {
@@ -115,7 +123,15 @@ public:
 
 	void rule_logged(const char* rule, LogCode code, hc::LogLevel level, const char* text) override {
 		const char* level_name = level == hc::LogLevel::error ? "error" : (level == hc::LogLevel::warn ? "warning" : "info");
-		logs.push_back(LogEntry{clock_.now_ms - kBase, rule, hc::rules::log_code_name(code), level_name, text});
+		logs.push_back(LogEntry{clock_.now_ms - kBase, rule, hc::rules::log_code_name(code), level_name, text, std::string(), 0});
+	}
+
+	void loop_guard(const char* rule, const char* culprit, uint32_t firings) override {
+		REQUIRE(!logs.empty());
+		CHECK(logs.back().code == "loopGuard");
+		CHECK(logs.back().rule == rule);
+		logs.back().culprit = culprit;
+		logs.back().firings = firings;
 	}
 
 	void rule_commanded(const char* rule, const hc::Datapoint& datapoint, const hc::Value& value) override {
@@ -132,7 +148,14 @@ private:
 std::string text_of(const Val& v) {
 	char buffer[256];
 	hc::rules::literal_text(v, buffer, sizeof(buffer));
-	return v.has() ? std::string(hc::rules::type_name(v.type)) + " " + buffer : "null";
+	if (!v.has()) {
+		return "null";
+	}
+	std::string text = std::string(hc::rules::type_name(v.type)) + " " + buffer;
+	if (v.type == Type::date_time && (v.u.dt.flags & hc::DateTime::kSummerTime) != 0) {
+		text += " (summer time)";
+	}
+	return text;
 }
 
 /// Exact comparison, reals with a relative tolerance of 1e-9.
@@ -155,15 +178,27 @@ public:
 	explicit CaseRunner(const Json& json) : case_(json) { refusing_.refuse = true; }
 
 	void run() {
-		time_.clock = &clock_;
+		time_.wall.clock = &clock_;
 		clock_.now_ms = kBase;
+		REQUIRE(time_.wall.zone.parse("UTC0"));
 		if (case_.has("clock")) {
 			const Json& c = case_["clock"];
+			if (c.has("zone")) {
+				REQUIRE_MESSAGE(time_.wall.zone.parse(c["zone"].text.c_str()), "zone " << c["zone"].text);
+			}
 			int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
 			REQUIRE(std::sscanf(c["start"].text.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &s) == 6);
-			time_.start_seconds = hc::rules::days_of(y, static_cast<unsigned>(mo), static_cast<unsigned>(d)) * 86400 +
-				h * 3600 + mi * 60 + s;
-			time_.synchronized = !c.has("synchronized") || c["synchronized"].boolean;
+			hc::Date date;
+			date.year = static_cast<uint16_t>(y);
+			date.month = static_cast<uint8_t>(mo);
+			date.day = static_cast<uint8_t>(d);
+			// The local start time; a time that occurs twice is its first occurrence.
+			time_.wall.start_utc = time_.wall.local_to_utc(date, static_cast<unsigned>(h), static_cast<unsigned>(mi),
+				static_cast<unsigned>(s));
+			time_.wall.synchronized = !c.has("synchronized") || c["synchronized"].boolean;
+		}
+		if (case_.has("ui") && case_["ui"].has("lang")) {
+			REQUIRE(settings_.set_string(hc::setting::kUiLang, case_["ui"]["lang"].text.c_str()) == hc::SettingsStatus::ok);
 		}
 		static const char* const kSun[] = {"sunrise", "sunset", "dawn", "dusk"};
 		for (size_t i = 0; i < 4; ++i) {
@@ -173,15 +208,30 @@ public:
 			}
 		}
 		for (const Json& s : case_["schedules"].items) {
-			schedules_.ids.push_back(s.text);
+			if (s.kind == Json::Kind::object) {
+				schedules_.ids.push_back(s["id"].text);
+				if (s.has("output")) {
+					schedules_.outputs.push_back(s["output"].text);
+				}
+			} else {
+				schedules_.ids.push_back(s.text);
+			}
 		}
 		load_model();
 		for (const auto& entry : case_["persisted"].members) {
 			size_t slash = entry.first.find('/');
 			REQUIRE(slash != std::string::npos);
 			Val v;
-			Type type = hc::rules::type_from_name(entry.second["type"].text.c_str());
-			REQUIRE(hc::rules::val_from_json(type, tree_.value(entry.second["value"]), v) == hc::rules::LiteralStatus::ok);
+			if (entry.second["type"].text == "state") {
+				// A persisted rule state (spec 8.5): `<ruleId>/.state` with the state id.
+				REQUIRE(entry.first.substr(slash + 1) == hc::rules::ParameterStore::kStateKey);
+				const std::string& id = entry.second["value"].text;
+				v = Val::of_string(id.c_str(), id.size());
+				REQUIRE(v.has());
+			} else {
+				Type type = hc::rules::type_from_name(entry.second["type"].text.c_str());
+				REQUIRE(hc::rules::val_from_json(type, tree_.value(entry.second["value"]), v) == hc::rules::LiteralStatus::ok);
+			}
 			hc::rules::ParameterStore store(settings_);
 			REQUIRE(store.write(entry.first.substr(0, slash).c_str(), entry.first.substr(slash + 1).c_str(), v));
 		}
@@ -220,7 +270,11 @@ private:
 		bool has_schedule(const char* id) const override {
 			return std::find(ids.begin(), ids.end(), std::string(id)) != ids.end();
 		}
+		bool owns_output(const char* datapoint) const override {
+			return std::find(outputs.begin(), outputs.end(), std::string(datapoint)) != outputs.end();
+		}
 		std::vector<std::string> ids;
+		std::vector<std::string> outputs;
 	};
 
 	void load_model() {
@@ -258,14 +312,21 @@ private:
 		}
 		Val v;
 		const char* reason = "";
-		if (type == Type::date_time && json.has("dayOfWeek")) {
-			// The corpus notation adds the day of the week to a date-time (README "Values"); the
-			// image's literal (spec 3.1) has none: it is computed from the date.
+		if (type == Type::date_time && (json.has("dayOfWeek") || json.has("summerTime"))) {
+			// The corpus notation adds the day of the week and the summer-time flag to a date-time
+			// (README "Values"); the image's literal (spec 3.1) has neither: the day comes from the
+			// date, the flag from the zone.
 			Json copy = json;
 			copy.members.erase("dayOfWeek");
+			copy.members.erase("summerTime");
 			REQUIRE(hc::rules::val_from_json(type, tree_.value(copy), v, &reason) == hc::rules::LiteralStatus::ok);
-			CHECK_MESSAGE(v.u.dt.day_of_week == static_cast<uint8_t>(json["dayOfWeek"].number),
-				"day of week of an expected date-time");
+			if (json.has("dayOfWeek")) {
+				CHECK_MESSAGE(v.u.dt.day_of_week == static_cast<uint8_t>(json["dayOfWeek"].number),
+					"day of week of an expected date-time");
+			}
+			if (json.has("summerTime") && json["summerTime"].boolean) {
+				v.u.dt.flags = hc::DateTime::kSummerTime;
+			}
 			return v;
 		}
 		REQUIRE_MESSAGE(hc::rules::val_from_json(type, tree_.value(json), v, &reason) == hc::rules::LiteralStatus::ok,
@@ -317,7 +378,7 @@ private:
 			const Json& p = step["setParameter"];
 			engine_->set_parameter(p["rule"].text.c_str(), p["parameter"].text.c_str(), tree_.value(p["value"]));
 		} else if (step.has("clockSync")) {
-			time_.synchronized = step["clockSync"].boolean;
+			time_.wall.synchronized = step["clockSync"].boolean;
 		} else if (step.has("image")) {
 			LoadResult result = engine_->load(tree_.value(step["image"]["rules"]), &schedules_);
 			REQUIRE_MESSAGE(result.ok(), "image at " << at << " refused: " << std::string(hc::rules::load_error_name(result.error))
@@ -380,6 +441,22 @@ private:
 			std::string want = entry.second.kind == Json::Kind::null ? "null" : entry.second.text;
 			CHECK_MESSAGE(have == want, where << ": timer " << entry.first << " is " << have << ", expected " << want);
 		}
+		for (const auto& entry : expected["names"].members) {
+			hc::rules::RuleDiagnostics d;
+			REQUIRE(engine_->diagnostics(static_cast<size_t>(rule_index(entry.first)), d));
+			CHECK_MESSAGE(std::string(d.name) == entry.second.text, where << ": name of " << entry.first << " is "
+				<< std::string(d.name) << ", expected " << entry.second.text);
+		}
+		for (const auto& entry : expected["labels"].members) {
+			size_t slash = entry.first.find('/');
+			int r = rule_index(entry.first.substr(0, slash));
+			int p = engine_->rules().find_parameter(static_cast<size_t>(r), entry.first.substr(slash + 1).c_str());
+			REQUIRE_MESSAGE(p >= 0, "no parameter " << entry.first);
+			const hc::rules::RuleSet& set = engine_->rules();
+			std::string have = set.str(set.parameter(set.rule(static_cast<size_t>(r)).first_parameter + p).label);
+			CHECK_MESSAGE(have == entry.second.text, where << ": label of " << entry.first << " is " << have
+				<< ", expected " << entry.second.text);
+		}
 		for (const auto& entry : expected["firings"].members) {
 			hc::rules::RuleDiagnostics d;
 			REQUIRE(engine_->diagnostics(static_cast<size_t>(rule_index(entry.first)), d));
@@ -387,6 +464,7 @@ private:
 				<< entry.first << " are " << d.firings << ", expected " << entry.second.text);
 		}
 		if (expected.has("persisted")) {
+			engine_->persist_now(); // the delayed state writes (README: the store as an orderly shutdown leaves it)
 			compare_persisted(expected["persisted"], where);
 		}
 	}
@@ -448,17 +526,28 @@ private:
 		for (const LogEntry& l : recorder_.logs) {
 			have_logs += std::to_string(l.at) + " " + l.rule + " " + l.code;
 			have_logs += l.code == "log" ? " " + l.level + " \"" + l.message + "\"\n" : " (" + l.message + ")\n";
+			if (!l.culprit.empty()) {
+				have_logs.back() = ' ';
+				have_logs += "culprit " + l.culprit + " " + std::to_string(l.firings) + "\n";
+			}
 		}
 		bool logs_ok = recorder_.logs.size() == expected["logs"].items.size();
 		for (size_t i = 0; i < expected["logs"].items.size(); ++i) {
 			const Json& l = expected["logs"].items[i];
 			want_logs += l["at"].text + " " + l["rule"].text + " " + l["code"].text;
 			want_logs += l["code"].text == "log" ? " " + l["level"].text + " \"" + l["message"].text + "\"\n" : "\n";
+			if (l.has("culprit")) {
+				want_logs.back() = ' ';
+				want_logs += "culprit " + l["culprit"].text + " " + std::to_string(static_cast<uint32_t>(l["firings"].number)) + "\n";
+			}
 			if (logs_ok) {
 				const LogEntry& h = recorder_.logs[i];
 				logs_ok = h.at == static_cast<uint64_t>(l["at"].number) && h.rule == l["rule"].text && h.code == l["code"].text;
 				if (logs_ok && h.code == "log") {
 					logs_ok = h.level == l["level"].text && h.message == l["message"].text;
+				}
+				if (logs_ok && l.has("culprit")) {
+					logs_ok = h.culprit == l["culprit"].text && h.firings == static_cast<uint32_t>(l["firings"].number);
 				}
 			}
 		}
@@ -539,8 +628,14 @@ HC_RULE_CASE("32", "load-refused-match-time")
 HC_RULE_CASE("33", "load-refused-unknown-timer")
 HC_RULE_CASE("34", "example-heating-setback")
 HC_RULE_CASE("35", "example-blind-sun-wind")
+HC_RULE_CASE("36", "parameter-reset-to-default")
+HC_RULE_CASE("37", "state-persistence-reboot")
+HC_RULE_CASE("38", "date-time-across-dst")
+HC_RULE_CASE("39", "load-refused-schedule-output")
+HC_RULE_CASE("40", "labels-language")
+HC_RULE_CASE("41", "canonical-normalization")
 
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
-	CHECK(files.size() == 35);
+	CHECK(files.size() == 42);
 }

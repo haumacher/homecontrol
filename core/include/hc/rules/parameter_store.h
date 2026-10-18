@@ -25,10 +25,18 @@ namespace hc::rules {
 /// another, undeclared parameter) counts as no override; the loader refuses an image in which two
 /// declared parameters share a key. The mapping depends only on the ids, so it survives any
 /// reordering or renumbering of rules and parameters in E-Home.
+///
+/// The current state of a rule with states (spec/rules.md 8.5) is stored the same way under the
+/// logical key `<ruleId>/.state` (kStateKey) as a string value holding the state id. A parameter id
+/// is an identifier and never starts with '.', so the two key spaces cannot meet; the loader refuses
+/// an image in which a state key's hash collides with a parameter's. A store written before states
+/// were persisted simply has no such entries.
 class ParameterStore {
 public:
 	/// Longest logical key: a 32-byte rule id, '/', a 24-byte parameter id.
 	static constexpr size_t kMaxLogicalKey = 57;
+	/// The pseudo parameter id of a rule's persisted state.
+	static constexpr const char* kStateKey = ".state";
 
 	explicit ParameterStore(Settings& settings) : settings_(settings) {}
 

@@ -1,0 +1,80 @@
+{
+	"title": "Normalized expression trees: a folded minus, an enumeration literal through its partner, a controlled literal, a time of day with a day of the week",
+	"description": "Spec 4.2 and 4.9 (decision 6, issue #27; issue #34): the loader normalizes the tree before the round trip with the text form. A unary minus on a number literal is a negative literal (-(-5) is 5, -1.5 a real literal); an integer literal compared with, or combined by coalesce with, an enumeration is an enumeration literal and prints as the number; an enumeration literal elsewhere is an integer; a controlled literal is the call controlled(b, n); a time of day with a day of the week prints as mon 07:30, also in a log message.",
+	"datapoints": [
+		{"name": "e.in", "type": "enumeration"},
+		{"name": "e.out", "type": "enumeration"},
+		{"name": "c.out", "type": "controlled"},
+		{"name": "r.out", "type": "real"},
+		{"name": "i.out", "type": "signed"},
+		{"name": "b.out", "type": "boolean"},
+		{"name": "x.go", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "norm",
+			"name": "Normalization",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.go"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "e.out",
+							"value": {"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "e.in"}, {"kind": "literal", "type": "integer", "value": 2}]}
+						},
+						{
+							"kind": "write",
+							"datapoint": "b.out",
+							"value": {"kind": "binary", "op": "==", "left": {"kind": "datapoint", "name": "e.in"}, "right": {"kind": "literal", "type": "integer", "value": 1}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "i.out",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "enumeration", "value": 3}, "right": {"kind": "unary", "op": "-", "operand": {"kind": "unary", "op": "-", "operand": {"kind": "literal", "type": "integer", "value": 5}}}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "r.out",
+							"value": {"kind": "unary", "op": "-", "operand": {"kind": "literal", "type": "real", "value": 1.5}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "c.out",
+							"value": {"kind": "literal", "type": "controlled", "value": {"control": true, "value": 3}}
+						},
+						{
+							"kind": "log",
+							"level": "info",
+							"message": ["at ", {"kind": "literal", "type": "timeOfDay", "value": {"hour": 7, "minute": 30, "second": 0, "dayOfWeek": 1}}, ", e.in ", {"kind": "datapoint", "name": "e.in"}]
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "x.go", "value": true}},
+		{"at": 2000, "report": {"datapoint": "e.in", "value": 1}},
+		{"at": 3000, "report": {"datapoint": "x.go", "value": false}}
+	],
+	"end": 4000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "norm", "datapoint": "e.out", "value": 2},
+			{"at": 1000, "rule": "norm", "datapoint": "i.out", "value": 8},
+			{"at": 1000, "rule": "norm", "datapoint": "r.out", "value": -1.5},
+			{"at": 1000, "rule": "norm", "datapoint": "c.out", "value": {"control": true, "value": 3}},
+			{"at": 3000, "rule": "norm", "datapoint": "e.out", "value": 1},
+			{"at": 3000, "rule": "norm", "datapoint": "b.out", "value": true},
+			{"at": 3000, "rule": "norm", "datapoint": "i.out", "value": 8},
+			{"at": 3000, "rule": "norm", "datapoint": "r.out", "value": -1.5},
+			{"at": 3000, "rule": "norm", "datapoint": "c.out", "value": {"control": true, "value": 3}}
+		],
+		"logs": [
+			{"at": 1000, "rule": "norm", "code": "valueNoValue"},
+			{"at": 1000, "rule": "norm", "code": "log", "level": "info", "message": "at mon 07:30, e.in none"},
+			{"at": 3000, "rule": "norm", "code": "log", "level": "info", "message": "at mon 07:30, e.in 1"}
+		]
+	}
+}

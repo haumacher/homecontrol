@@ -1,0 +1,63 @@
+{
+	"title": "Date-time arithmetic on the instant across the end of summer time (Europe/Berlin, 2026-10-25); comparisons compare instants",
+	"description": "Spec 4.5 (decision 7, issue #27): dateTime ± duration is computed on the UTC instant and converted back to local time; comparisons of date-times compare instants. The clock starts at 01:30 CEST. At 0, now() + 1h is 02:30 CEST (the first 02:30); 2026-10-24T12:00 + 24h is 2026-10-25 11:00 (23 h of local time later in hours, 24 h in instants). At one hour, now() is 02:30 CEST and now() + 1h is 02:30 CET, the second 02:30. A literal carries no summer-time flag: 2026-10-25T02:30 is the standard-time (second) occurrence, so now() at 02:30 CEST is before it.",
+	"clock": {"start": "2026-10-25T01:30:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"datapoints": [
+		{"name": "t.a", "type": "dateTime"},
+		{"name": "t.b", "type": "dateTime"},
+		{"name": "t.d", "type": "dateTime"},
+		{"name": "t.before", "type": "boolean"},
+		{"name": "x.go", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "dst",
+			"name": "Summer time",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start", "reasons": ["boot"]}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "t.a",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "call", "function": "now", "args": []}, "right": {"kind": "literal", "type": "duration", "value": 3600000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "t.d",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "literal", "type": "dateTime", "value": {"year": 2026, "month": 10, "day": 24, "hour": 12, "minute": 0, "second": 0}}, "right": {"kind": "literal", "type": "duration", "value": 86400000}}
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.go"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "t.b",
+							"value": {"kind": "binary", "op": "+", "left": {"kind": "call", "function": "now", "args": []}, "right": {"kind": "literal", "type": "duration", "value": 3600000}}
+						},
+						{
+							"kind": "write",
+							"datapoint": "t.before",
+							"value": {"kind": "binary", "op": "<", "left": {"kind": "call", "function": "now", "args": []}, "right": {"kind": "literal", "type": "dateTime", "value": {"year": 2026, "month": 10, "day": 25, "hour": 2, "minute": 30, "second": 0}}}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 3600000, "report": {"datapoint": "x.go", "value": true}}
+	],
+	"end": 3600000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "dst", "datapoint": "t.a", "value": {"year": 2026, "month": 10, "day": 25, "hour": 2, "minute": 30, "second": 0, "dayOfWeek": 7, "summerTime": true}},
+			{"at": 0, "rule": "dst", "datapoint": "t.d", "value": {"year": 2026, "month": 10, "day": 25, "hour": 11, "minute": 0, "second": 0, "dayOfWeek": 7}},
+			{"at": 3600000, "rule": "dst", "datapoint": "t.b", "value": {"year": 2026, "month": 10, "day": 25, "hour": 2, "minute": 30, "second": 0, "dayOfWeek": 7}},
+			{"at": 3600000, "rule": "dst", "datapoint": "t.before", "value": true}
+		],
+		"logs": []
+	}
+}

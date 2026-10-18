@@ -20,10 +20,13 @@
 #include "doctest.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
+#include "hc/image/rules_clock.h"
+#include "hc/knx/adapter.h"
 #include "hc/rules/engine.h"
 #include "hc/rules/parameter_store.h"
 #include "hc/rules/printer.h"
 #include "hc/rules/rule_set.h"
+#include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "test_support.h"
 
@@ -114,6 +117,8 @@ struct Bench {
 		d.add("s", hc::ValueType::string);
 		d.add("t", hc::ValueType::time_of_day);
 		d.add("ro", hc::ValueType::boolean, false);
+		d.add("e", hc::ValueType::enumeration);
+		d.add("c", hc::ValueType::controlled);
 		d.load(model);
 	}
 
@@ -278,6 +283,19 @@ private:
 			kind_ = c == '$' ? Tok::parameter : Tok::ident;
 			if (kind_ == Tok::ident && (tok_ == "true" || tok_ == "false")) {
 				kind_ = Tok::literal;
+			}
+			if (kind_ == Tok::ident) {
+				// A time of day with a day of the week: "mon 07:30" (grammar "time literal").
+				static const std::regex kDayTime(R"((mon|tue|wed|thu|fri|sat|sun) [0-9]{1,2}:[0-9]{2}(:[0-9]{2})?)");
+				size_t length = 0;
+				pos_ = s;
+				if (match_at(kDayTime, length)) {
+					tok_ = text_.substr(pos_, length);
+					pos_ += length;
+					kind_ = Tok::literal;
+				} else {
+					pos_ = e;
+				}
 			}
 			return;
 		}
@@ -577,7 +595,7 @@ TEST_CASE("RulesPrinter round trip of every corpus expression") {
 			const Json* ids;
 			bool has_schedule(const char* id) const override {
 				for (const Json& s : ids->items) {
-					if (s.text == id) {
+					if ((s.kind == Json::Kind::object ? s["id"].text : s.text) == id) {
 						return true;
 					}
 				}
@@ -631,7 +649,10 @@ TEST_CASE("RulesPrinter spec examples and parentheses") {
 	CHECK(print_condition(bench, bin("or", dp("b"), bin("or", dp("b"), dp("b")))) == "@b or (@b or @b)");
 	// a comparison under a comparison; -(-5); -(a + b); not binds looser than comparisons
 	CHECK(print_condition(bench, bin("==", bin("<", lit_int(1), lit_int(2)), lit_bool(true))) == "(1 < 2) == true");
-	CHECK(print_condition(bench, bin("==", un("-", lit_int(-5)), lit_int(5))) == "-(-5) == 5");
+	// A minus applied to a number literal is folded into it at load (4.8): -(-5) is the literal 5.
+	CHECK(print_condition(bench, bin("==", un("-", lit_int(-5)), lit_int(5))) == "5 == 5");
+	CHECK(print_condition(bench, bin("==", un("-", dp("r")), lit_int(5))) == "-@r == 5");
+	CHECK(print_condition(bench, bin("==", un("-", un("-", dp("r"))), lit_int(5))) == "-(-@r) == 5");
 	CHECK(print_condition(bench, bin("==", un("-", bin("+", lit_int(1), lit_int(2))), lit_int(-3))) == "-(1 + 2) == -3");
 	CHECK(print_condition(bench, un("not", bin("==", dp("u"), lit_int(1)))) == "not @u == 1");
 	CHECK(print_condition(bench, bin("==", un("not", dp("b")), lit_bool(false))) == "(not @b) == false");
@@ -639,6 +660,50 @@ TEST_CASE("RulesPrinter spec examples and parentheses") {
 		"(1 + 2) * 3 == 9");
 	CHECK(print_condition(bench, bin("==", dp("s"), R"({"kind": "literal", "type": "string", "value": "say \"hi\"\n"})")) ==
 		R"(@s == "say \"hi\"\n")");
+}
+
+TEST_CASE("RulesPrinter normalized trees (spec 4.9)") {
+	Bench bench;
+	// Loads a condition; returns the printed text and the compiled right operand of its root.
+	auto load = [&](const std::string& condition, hc::rules::Node& right) {
+		RuleSet set;
+		LoadResult result = bench.load(image(rule_json(
+			R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "condition": )" + condition + R"(, "actions": []})")), set);
+		REQUIRE_MESSAGE(result.ok(), std::string(result.path) << ": " << std::string(result.text));
+		uint16_t root = set.reaction(0).condition;
+		right = set.node(static_cast<uint16_t>(set.node(root).a + 1));
+		return print(set, bench.model, 0, root);
+	};
+	hc::rules::Node right;
+	// 1. A unary minus on a number literal is a negative literal, an odd chain negated.
+	CHECK(load(bin("==", dp("r"), un("-", R"({"kind": "literal", "type": "real", "value": 1.5})")), right) == "@r == -1.5");
+	CHECK(right.kind == hc::rules::NodeKind::literal);
+	CHECK(right.type == Type::real);
+	CHECK(load(bin("==", dp("u"), un("-", un("-", un("-", lit_int(5))))), right) == "@u == -5");
+	CHECK(right.kind == hc::rules::NodeKind::literal);
+	CHECK(right.lit.i == -5);
+	CHECK(load(bin("<", dp("t"), bin("+", dp("t"), un("-", R"({"kind": "literal", "type": "duration", "value": 90000})"))), right) ==
+		"@t < @t + -1min30s");
+	// 2. An integer literal compared with an enumeration is an enumeration literal; its text stays
+	// the number. An enumeration literal compared with an integer is an integer literal.
+	CHECK(load(bin("==", dp("e"), lit_int(3)), right) == "@e == 3");
+	CHECK(right.type == Type::enumeration);
+	CHECK(right.lit.e == 3u);
+	CHECK(load(bin("!=", dp("u"), R"({"kind": "literal", "type": "enumeration", "value": 3})"), right) == "@u != 3");
+	CHECK(right.type == Type::integer);
+	CHECK(load(bin("==", dp("e"), R"({"kind": "call", "function": "coalesce", "args": [{"kind": "datapoint", "name": "e"}, )" +
+		lit_int(2) + "]}"), right) == "@e == coalesce(@e, 2)");
+	CHECK(right.type == Type::enumeration);
+	// 3. A controlled literal is the call controlled(b, n).
+	CHECK(load(bin("==", dp("c"), R"({"kind": "literal", "type": "controlled", "value": {"control": true, "value": 3}})"), right) ==
+		"@c == controlled(true, 3)");
+	CHECK(right.kind == hc::rules::NodeKind::call);
+	CHECK(right.type == Type::controlled);
+	// 4. A time of day with a day of the week: "mon 07:30".
+	CHECK(load(bin("==", dp("t"), R"({"kind": "literal", "type": "timeOfDay", "value": {"hour": 7, "minute": 30, "second": 0, "dayOfWeek": 1}})"), right) ==
+		"@t == mon 07:30");
+	CHECK(load(bin("==", dp("t"), R"({"kind": "literal", "type": "timeOfDay", "value": {"hour": 23, "minute": 5, "second": 9, "dayOfWeek": 7}})"), right) ==
+		"@t == sun 23:05:09");
 }
 
 TEST_CASE("RulesPrinter bare datapoint names") {
@@ -859,6 +924,67 @@ TEST_CASE("RulesLoad limits") {
 	};
 	CHECK(bench.refusal(image(rule_json(log_action(8)))) == "ok");
 	CHECK(bench.refusal(image(rule_json(log_action(9)))) == "limitExceeded");
+	// bytes of a text part of a log message (issue #33)
+	auto log_text = [](size_t bytes) {
+		return R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "actions": [{"kind": "log", "level": "info", "message": [")" +
+			std::string(bytes, 'x') + R"("]}]})";
+	};
+	CHECK(bench.refusal(image(rule_json(log_text(200)))) == "ok");
+	CHECK(bench.refusal(image(rule_json(log_text(201)))) == "limitExceeded");
+	// choices of a parameter
+	auto choices = [](size_t n) {
+		std::string s;
+		for (size_t i = 0; i < n; ++i) {
+			s += std::string(i ? "," : "") + R"({"value": )" + std::to_string(i) + R"(, "label": "C"})";
+		}
+		return R"("parameters": [{"id": "m", "label": "M", "type": "integer", "default": 0, "choices": [)" + s + "]}]";
+	};
+	CHECK(bench.refusal(image(rule_json(reaction, choices(16)))) == "ok");
+	CHECK(bench.refusal(image(rule_json(reaction, choices(17)))) == "limitExceeded");
+}
+
+TEST_CASE("RulesLoad dates, state() references, schedule outputs (issue #33)") {
+	Bench bench;
+	auto date_literal = [](int year) {
+		return R"({"kind": "literal", "type": "date", "value": {"year": )" + std::to_string(year) + R"(, "month": 1, "day": 1}})";
+	};
+	auto condition = [](const std::string& c) {
+		return R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "condition": )" + c + R"(, "actions": []})";
+	};
+	std::string today = R"({"kind": "call", "function": "today", "args": []})";
+	CHECK(bench.refusal(image(rule_json(condition(bin("<", today, date_literal(1900)))))) == "ok");
+	CHECK(bench.refusal(image(rule_json(condition(bin("<", today, date_literal(2155)))))) == "ok");
+	CHECK(bench.refusal(image(rule_json(condition(bin("<", today, date_literal(1899)))))) == "invalidLiteral");
+	CHECK(bench.refusal(image(rule_json(condition(bin("<", today, date_literal(2156)))))) == "invalidLiteral");
+	// state("id"): a string literal whose value is no string or longer than a rule id names no rule
+	std::string states = R"("states": [{"id": "on"}], "initialState": "on")";
+	auto state_of = [](const std::string& value) {
+		return R"({"kind": "call", "function": "state", "args": [{"kind": "literal", "type": "string", "value": )" + value + "}]}";
+	};
+	auto eq = [&](const std::string& value) {
+		return condition(bin("==", state_of(value), R"({"kind": "literal", "type": "string", "value": "on"})"));
+	};
+	CHECK(bench.refusal(image(rule_json(eq(R"("x")"), states))) == "ok");
+	CHECK(bench.refusal(image(rule_json(eq("5"), states))) == "unknownReference");
+	CHECK(bench.refusal(image(rule_json(eq('"' + std::string(33, 'x') + '"'), states))) == "unknownReference");
+	CHECK(bench.refusal(image(rule_json(condition(bin("==", R"({"kind": "call", "function": "state", "args": [{"kind": "datapoint", "name": "s"}]})",
+		R"({"kind": "literal", "type": "string", "value": "on"})")), states))) == "forbidden");
+	// A write to a schedule entry's output datapoint
+	struct Outputs : hc::rules::ScheduleDirectory {
+		bool has_schedule(const char*) const override { return false; }
+		bool owns_output(const char* datapoint) const override { return std::strcmp(datapoint, "r") == 0; }
+	} outputs;
+	auto load = [&](const std::string& target) {
+		Json json;
+		std::string error;
+		REQUIRE(hc_test::parse_json(image(rule_json(write_reaction(target, R"({"kind": "literal", "type": "real", "value": 1.0})"))), json, error));
+		hc_test::ScopedCapture capture(hc::LogLevel::error);
+		RuleSet set;
+		LoadResult result = set.load(bench.tree.value(json), bench.model, &outputs);
+		return result.ok() ? std::string("ok") : std::string(hc::rules::load_error_name(result.error));
+	};
+	CHECK(load("r") == "notWritable");
+	CHECK(load("u") == "ok");
 }
 
 TEST_CASE("RulesLoad node budget of the image") {
@@ -992,6 +1118,59 @@ TEST_CASE("RulesParameterStore an image whose parameter keys collide is refused"
 	CHECK(result.error == hc::rules::LoadError::limit_exceeded);
 	CHECK(std::string(result.text).find("collide") != std::string::npos);
 	CHECK_FALSE(engine.loaded());
+	// The check belongs to the rule set's load (issue #33): E-Home's checker and every loader see it.
+	RuleSet set;
+	result = set.load(tree.value(json), model, nullptr);
+	CHECK(result.error == hc::rules::LoadError::limit_exceeded);
+	CHECK(std::string(result.path) == "rules[1]");
+	CHECK(set.rule_count() == 0);
+}
+
+TEST_CASE("RulesLoad labels: a string or a language map, resolved in the device's language (spec 2.2)") {
+	Bench bench;
+	std::string reaction = R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "actions": []})";
+	auto name_in = [&](const std::string& name, const char* language, std::string* json = nullptr) {
+		RuleSet set;
+		Json parsed;
+		std::string error;
+		std::string text = image(R"({"id": "x", "name": )" + name + R"(, "reactions": [)" + reaction + "]}");
+		REQUIRE_MESSAGE(hc_test::parse_json(text, parsed, error), error);
+		hc_test::ScopedCapture capture(hc::LogLevel::error);
+		LoadResult result = set.load(bench.tree.value(parsed), bench.model, &bench.schedules, language);
+		if (!result.ok()) {
+			return std::string("refused: ") + hc::rules::load_error_name(result.error);
+		}
+		if (json != nullptr) {
+			const char* raw = set.label_json(set.rule(0).name_json);
+			*json = raw == nullptr ? "" : raw;
+		}
+		return std::string(set.str(set.rule(0).name));
+	};
+	std::string map = R"({"fr": "Escalier", "en": "Stairs", "de": "Treppe", "de-AT": "Stiege"})";
+	CHECK(name_in(map, "de-AT") == "Stiege"); // the exact tag
+	CHECK(name_in(map, "de-CH") == "Treppe"); // the base language
+	CHECK(name_in(map, "de") == "Treppe");
+	CHECK(name_in(map, "it") == "Stairs"); // English
+	CHECK(name_in(R"({"fr": "Escalier", "it": "Scala"})", "de") == "Escalier"); // the first entry
+	CHECK(name_in(R"({"DE": "Treppe", "en": "Stairs"})", "de") == "Treppe"); // tags compare without case
+	std::string json;
+	CHECK(name_in(R"({"en": "A \"q\"", "de": "B"})", "en", &json) == "A \"q\"");
+	// Passed to the web API as compact JSON in the image's member order (the test's JSON tree
+	// orders members by name).
+	CHECK(json == R"({"de":"B","en":"A \"q\""})");
+	CHECK(name_in(R"("Plain")", "de", &json) == "Plain");
+	CHECK(json.empty());
+	CHECK(name_in("{}", "en") == "refused: malformed");
+	CHECK(name_in(R"({"e": "x"})", "en") == "refused: malformed");
+	CHECK(name_in(R"({"en": ""})", "en") == "refused: malformed");
+	CHECK(name_in(R"({"en": 5})", "en") == "refused: malformed");
+	CHECK(name_in(R"({"en": ")" + std::string(64, 'a') + R"("})", "en") == "refused: malformed");
+	std::string many = "{";
+	for (int i = 0; i < 17; ++i) {
+		many += std::string(i ? "," : "") + "\"l" + static_cast<char>('a' + i) + "\": \"x\"";
+	}
+	many += "}";
+	CHECK(name_in(many, "en") == "refused: limitExceeded");
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1180,6 +1359,153 @@ TEST_CASE("RulesEngine allocates nothing while processing events") {
 	g_counting = false;
 	CHECK(g_allocations == 0);
 	CHECK(bench.commands >= 6);
+}
+
+TEST_CASE("RulesEngine state changes allocate nothing; their write is delayed and coalesced (spec 8.5)") {
+	EngineBench bench;
+	Datapoints d;
+	d.add("button", hc::ValueType::boolean);
+	d.add("light", hc::ValueType::boolean);
+	std::string stairs = R"({"id": "stairs", "name": "Stairs", )"
+		R"("timers": [{"id": "t", "duration": {"kind": "literal", "type": "duration", "value": 2000}}], )"
+		R"("states": [{"id": "off", "entry": [{"kind": "write", "datapoint": "light", "value": )" + lit_bool(false) + R"(}]}, )"
+		R"({"id": "on", "entry": [{"kind": "write", "datapoint": "light", "value": )" + lit_bool(true) +
+		R"(}, {"kind": "restartTimer", "timer": "t"}]}], "initialState": "off", )"
+		R"("reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "button", "on": "update"}], "actions": [], "to": "on"}, )"
+		R"({"triggers": [{"kind": "timer", "timer": "t"}], "actions": [], "from": ["on"], "to": "off"}]})";
+	bench.setup(d, image(stairs));
+	char key[16];
+	hc::rules::ParameterStore::key_for("stairs", hc::rules::ParameterStore::kStateKey, key);
+	CHECK(bench.settings.entries.count(key) == 0); // the initial state is written 10 s later
+	bench.advance(hc::rules::Engine::kStatePersistDelayMs);
+	REQUIRE(bench.settings.entries.count(key) == 1);
+	CHECK(bench.settings.entries[key].text == "stairs/.state=s:6f6666");
+	g_allocations = 0;
+	g_counting = true;
+	for (int round = 0; round < 3; ++round) {
+		bench.report("button", hc::Value::of_bool(true));
+		bench.advance(3000); // on, then off when the timer expires: within the delay, no write
+	}
+	g_counting = false;
+	CHECK(g_allocations == 0);
+	CHECK(bench.settings.entries[key].text == "stairs/.state=s:6f6666");
+	bench.report("button", hc::Value::of_bool(true));
+	bench.engine->persist_now();
+	CHECK(bench.settings.entries[key].text == "stairs/.state=s:6f6e");
+}
+
+TEST_CASE("RulesClock date-time instants across the end of summer time (spec 4.5)") {
+	// The test zone evaluates a POSIX TZ string itself: no dependency on the host's TZ.
+	hc_test::PosixRuleZone zone;
+	REQUIRE(zone.parse("CET-1CEST,M3.5.0,M10.5.0/3"));
+	int64_t change = hc::days_from_civil(2026, 10, 25) * 86400 + 3600; // 01:00 UTC, 03:00 CEST -> 02:00 CET
+	hc::LocalTime l{};
+	REQUIRE(zone.to_local(change - 1, l));
+	CHECK((l.hour == 2 && l.minute == 59 && l.dst));
+	REQUIRE(zone.to_local(change, l));
+	CHECK((l.hour == 2 && l.minute == 0 && !l.dst));
+	REQUIRE(zone.to_local(hc::days_from_civil(2026, 3, 29) * 86400 + 3600, l)); // 01:00 UTC, 02:00 CET -> 03:00 CEST
+	CHECK((l.hour == 3 && l.dst));
+	REQUIRE(zone.to_local(hc::days_from_civil(2026, 7, 1) * 86400, l));
+	CHECK((l.hour == 2 && l.dst));
+
+	struct Wall : hc::TimeSource {
+		uint64_t monotonic_ms() const override { return 0; }
+		hc::WallTime now_utc() const override { return hc::WallTime{utc, true}; }
+		bool to_local(int64_t seconds, hc::LocalTime& out) const override { return zone->to_local(seconds, out); }
+		bool sun_times(const hc::Date&, hc::SunTimes&) const override { return false; }
+		const hc_test::PosixRuleZone* zone = nullptr;
+		int64_t utc = 0;
+	} wall;
+	wall.zone = &zone;
+	hc::image::RulesClock clock(wall);
+	hc::DateTime t;
+	t.year = 2026;
+	t.month = 10;
+	t.day = 25;
+	t.hour = 2;
+	t.minute = 30;
+	// The ambiguous 02:30: the summer-time flag selects the first occurrence, no flag the second.
+	t.flags = hc::DateTime::kSummerTime;
+	CHECK(clock.local_to_utc(t) == change - 1800);
+	t.flags = 0;
+	CHECK(clock.local_to_utc(t) == change + 1800);
+	// now() carries the flag; utc_to_local sets it from the zone.
+	wall.utc = change - 1800;
+	REQUIRE(clock.local_now(t));
+	CHECK((t.hour == 2 && t.minute == 30 && t.flags == hc::DateTime::kSummerTime));
+	REQUIRE(clock.utc_to_local(change + 1800, t));
+	CHECK((t.hour == 2 && t.minute == 30 && t.flags == 0));
+	// A time in the spring gap is its end, 03:00 CEST.
+	t = hc::DateTime();
+	t.year = 2026;
+	t.month = 3;
+	t.day = 29;
+	t.hour = 2;
+	t.minute = 30;
+	CHECK(clock.local_to_utc(t) == hc::days_from_civil(2026, 3, 29) * 86400 + 3600);
+}
+
+TEST_CASE("RulesSwap facts of spec 7.6: values kept by name and type, read-on-start for the new datapoints") {
+	// The image service swaps with DatapointModel::load(..., keep_values = true) and configures the
+	// KNX adapter again (Image.SwapKeepsValuesAndFollowsIds covers the values through the service).
+	hc_test::TunnelFixture f;
+	hc::DatapointModel model{f.clock};
+	hc::knx::KnxAdapter adapter{f.loop, f.clock, model, f.tunnel, nullptr};
+	using hc::knx::GroupAddress;
+	GroupAddress temperature[1] = {GroupAddress::of(1, 2, 3)};
+	GroupAddress humidity[1] = {GroupAddress::of(1, 2, 4)};
+	auto mapping = [](uint16_t id, const GroupAddress* listen) {
+		hc::knx::KnxMapping m;
+		m.datapoint = id;
+		m.dpt = hc::Dpt{9, 1};
+		m.listen = listen;
+		m.listen_count = 1;
+		return m;
+	};
+	hc::DatapointSpec first[] = {{"temperature", hc::ValueType::real, hc::DatapointFlags::kReadOnStart}};
+	REQUIRE(model.load(first, 1) == hc::DatapointStatus::ok);
+	adapter.start();
+	hc::knx::KnxMapping m1[] = {mapping(0, temperature)};
+	REQUIRE(adapter.configure(m1, 1));
+	uint8_t gateway_sequence = 0;
+	auto confirm_last = [&]() { // acknowledges the last TUNNELING_REQUEST and confirms it
+		const hc_test::Bytes& request = f.socket.last().data;
+		REQUIRE(request[3] == 0x20);
+		f.socket.inject(hc_test::tunneling_ack(7, request[8]));
+		hc_test::Bytes cemi(request.begin() + 10, request.end());
+		cemi[0] = 0x2E;
+		f.socket.inject(hc_test::tunneling_request(7, gateway_sequence++, cemi));
+	};
+	f.connect(7);
+	f.run_for(150);
+	CHECK(adapter.reads_pending() == 0);
+	confirm_last();
+	// The answer: 21.0 °C from 1.1.10.
+	f.socket.inject(hc_test::tunneling_request(7, gateway_sequence++, hc_test::bytes("29 00 BC D0 11 0A 0A 03 03 00 40 0C 1A")));
+	REQUIRE(model.get(0)->quality() == hc::Quality::good);
+	uint64_t updated = model.get(0)->updated_ms();
+	// The swap adds the humidity before the temperature: the temperature keeps value, quality and
+	// update time under its new id; the new datapoint is read (the adapter reads every
+	// read-on-start datapoint after a reconfiguration, the new ones among them).
+	f.run_for(2000);
+	hc::DatapointSpec second[] = {{"humidity", hc::ValueType::real, hc::DatapointFlags::kReadOnStart},
+		{"temperature", hc::ValueType::real, hc::DatapointFlags::kReadOnStart}};
+	REQUIRE(model.load(second, 2, true) == hc::DatapointStatus::ok);
+	hc::knx::KnxMapping m2[] = {mapping(0, humidity), mapping(1, temperature)};
+	REQUIRE(adapter.configure(m2, 2));
+	const hc::Datapoint* t = model.find("temperature");
+	REQUIRE(t != nullptr);
+	CHECK(t->quality() == hc::Quality::good);
+	CHECK(t->value().as_real() == doctest::Approx(21.0));
+	CHECK(t->updated_ms() == updated);
+	CHECK(model.find("humidity")->quality() == hc::Quality::unknown);
+	CHECK(adapter.reads_pending() == 2);
+	size_t before = f.socket.count(hc::knx::ip::Service::tunneling_request);
+	f.run_for(150);
+	REQUIRE(f.socket.count(hc::knx::ip::Service::tunneling_request) == before + 1);
+	const hc_test::Bytes& request = f.socket.last().data;
+	CHECK(hc_test::hex(hc_test::Bytes(request.begin() + 16, request.end())) == "0A 04 01 00 00"); // humidity: read
 }
 
 TEST_CASE("RulesEngine diagnostics texts") {

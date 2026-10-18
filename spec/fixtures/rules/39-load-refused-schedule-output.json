@@ -1,0 +1,21 @@
+{
+	"title": "Load refusal notWritable: a rule writes the output datapoint of a schedule entry",
+	"description": "Spec 10.1 (decision 4 of issue #33): the scheduler owns the output datapoint of a schedule entry; a write action to it is refused at load, not at run time.",
+	"datapoints": [{"name": "heat.setpoint", "type": "real"}, {"name": "x.go", "type": "boolean"}],
+	"schedules": [{"id": "heat.comfort", "output": "heat.setpoint"}],
+	"rules": [
+		{
+			"id": "boost",
+			"name": "Boost",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.go"}],
+					"actions": [{"kind": "write", "datapoint": "heat.setpoint", "value": {"kind": "literal", "type": "real", "value": 24.0}}]
+				}
+			]
+		}
+	],
+	"timeline": [],
+	"end": 0,
+	"expected": {"loadRefused": "notWritable"}
+}

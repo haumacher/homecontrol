@@ -557,6 +557,26 @@ TEST_CASE("WebApi.Rules: fixed parameters, choices, the enable switch not adjust
 	CHECK(f.put("/api/rules/r/parameters/mode", "{\"value\":2}").status == 200);
 }
 
+TEST_CASE("WebApi.Rules: labels pass through as the image gives them (spec/rules.md 2.2)") {
+	DashboardFixture f;
+	std::string text = image_fixture("example.json");
+	auto replace = [&](const std::string& from, const std::string& to) {
+		size_t at = text.find(from);
+		REQUIRE(at != std::string::npos);
+		text.replace(at, from.size(), to);
+	};
+	replace(R"("name": "Hall light by presence")", R"("name": {"en": "Hall light by presence", "de": "Flurlicht"})");
+	replace(R"("label": "Switch-off delay")", R"("label": {"en": "Switch-off delay", "de": "Ausschaltverzögerung"})");
+	f.load(text);
+	auto r = f.get("/api/rules", f.cookie);
+	REQUIRE(r.status == 200);
+	auto& rule = r.json["rules"].items[0];
+	CHECK(rule["name"]["en"].text == "Hall light by presence");
+	CHECK(rule["name"]["de"].text == "Flurlicht");
+	CHECK(rule["parameters"].items[0]["label"]["de"].text == "Ausschaltverzögerung");
+	CHECK(rule["parameters"].items[1]["label"].text == "Dark below");
+}
+
 TEST_CASE("WebApi.Schedules: entries with their switches and next firings") {
 	DashboardFixture f;
 	f.load(kSmallImage);

@@ -31,7 +31,10 @@ struct Limits {
 	static constexpr size_t kQueue = 128;
 	static constexpr int64_t kTimerMinMs = 100;
 	static constexpr int64_t kTimerMaxMs = 30LL * 86400000LL;
-	static constexpr size_t kMessage = 200;
+	static constexpr size_t kMessage = 200; ///< Also the longest text part of a log message.
+	static constexpr size_t kChoices = 16;  ///< Choices per parameter.
+	static constexpr size_t kLabel = 63;    ///< Bytes of a label text.
+	static constexpr size_t kLabelLanguages = 16; ///< Entries of a label's language map.
 };
 
 /// "No index" in the compiled structures.
@@ -138,14 +141,20 @@ struct Reaction {
 	ActionList else_actions;
 };
 
+/// A label (spec/rules.md 2.2, spec/runtime-image.md): `label` and `name` members are string
+/// offsets of the text resolved in the device's language at load; the `..._json` members are the
+/// string offset of the label's language map as compact JSON (`{"de":"...","en":"..."}`), 0 when
+/// the image gave a plain string.
 struct Choice {
 	uint16_t value; ///< Constant index.
 	uint32_t label; ///< String offset.
+	uint32_t label_json;
 };
 
 struct Parameter {
 	uint32_t id;
 	uint32_t label;
+	uint32_t label_json;
 	uint32_t unit; ///< String offset ("" without unit).
 	Type type;
 	bool adjustable;
@@ -170,6 +179,7 @@ struct State {
 struct Rule {
 	uint32_t id;
 	uint32_t name;
+	uint32_t name_json; ///< See Choice: 0 for a plain string.
 	uint16_t first_parameter; ///< The rule's parameter 0 is `enabled`.
 	uint16_t first_timer;
 	uint16_t first_state;
@@ -220,6 +230,12 @@ struct LoadResult {
 class ScheduleDirectory {
 public:
 	virtual bool has_schedule(const char* id) const = 0;
+	/// Whether `datapoint` is the `output` of a schedule entry (spec/schedules.md): the scheduler
+	/// owns it, a rule's `write` to it is refused at load (notWritable, spec/rules.md 10.1).
+	virtual bool owns_output(const char* datapoint) const {
+		(void)datapoint;
+		return false;
+	}
 
 protected:
 	~ScheduleDirectory() = default;
@@ -245,8 +261,12 @@ public:
 
 	/// Validates `rules` (spec 10) against the datapoints of `model` and the schedules of
 	/// `schedules` (nullptr: no schedules) and replaces this set on success. A refusal leaves this
-	/// set unchanged and is logged (tag hc.rule) with the rule, the path and the reason.
-	LoadResult load(const JsonValue& rules, const DatapointModel& model, const ScheduleDirectory* schedules);
+	/// set unchanged and is logged (tag hc.rule) with the rule, the path and the reason. The trees
+	/// are normalized (spec 4.8); labels are resolved in `language` (a language tag, the device's
+	/// `ui.lang`; spec 2.2). Two parameters (or rule states, spec 8.5) whose storage keys
+	/// (ParameterStore) collide refuse the set (limitExceeded).
+	LoadResult load(const JsonValue& rules, const DatapointModel& model, const ScheduleDirectory* schedules,
+		const char* language = "en");
 
 	void clear();
 	bool empty() const { return rule_count_ == 0; }
@@ -264,6 +284,8 @@ public:
 	const Node& node(size_t i) const { return nodes_[i]; }
 	const Val& constant(size_t i) const { return constants_[i]; }
 	const char* str(uint32_t offset) const { return strings_ + offset; }
+	/// The language map of a label as JSON (`..._json` member), nullptr for a plain string.
+	const char* label_json(uint32_t offset) const { return offset != 0 ? strings_ + offset : nullptr; }
 
 	size_t reaction_count() const { return reaction_count_; }
 	size_t trigger_count() const { return trigger_count_; }

@@ -1,0 +1,66 @@
+{
+	"title": "setParameter to the default removes the override; the parameter then follows the image's default across a reboot and a swap",
+	"description": "Spec 8.2 and 8.4 (decision 15, issue #25): a value equal to the declared default is not stored, and a stored override is removed; a differing value is stored. At 7000 the image's default changes to 25 while the override 25 is stored: the override stays (it is still valid, spec 7.6). Setting 25 then removes it without an event (the value does not change). At 9000 the default goes back to 20 and the parameter, no longer overridden, follows it.",
+	"datapoints": [{"name": "heat.setpoint", "type": "real"}],
+	"rules": [
+		{
+			"id": "heat",
+			"name": "Heating",
+			"parameters": [{"id": "level", "label": "Comfort temperature", "type": "real", "default": 20.0, "min": 10.0, "max": 30.0, "unit": "°C"}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "parameter", "parameter": "level"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["level ", {"kind": "parameter", "id": "level"}]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "setParameter": {"rule": "heat", "parameter": "level", "value": 22.0}},
+		{"at": 1500, "check": {"parameters": {"heat/level": 22.0}, "persisted": {"heat/level": 22.0}}},
+		{"at": 2000, "setParameter": {"rule": "heat", "parameter": "level", "value": 20.0}},
+		{"at": 2500, "check": {"parameters": {"heat/level": 20.0}, "persisted": {}}},
+		{"at": 3000, "setParameter": {"rule": "heat", "parameter": "level", "value": 25.0}},
+		{"at": 4000, "reboot": true},
+		{"at": 4500, "check": {"parameters": {"heat/level": 25.0}, "persisted": {"heat/level": 25.0}}},
+		{"at": 7000, "image": {"rules": [
+			{
+				"id": "heat",
+				"name": "Heating",
+				"parameters": [{"id": "level", "label": "Comfort temperature", "type": "real", "default": 25.0, "min": 10.0, "max": 30.0, "unit": "°C"}],
+				"reactions": [
+					{
+						"triggers": [{"kind": "parameter", "parameter": "level"}],
+						"actions": [{"kind": "log", "level": "info", "message": ["level ", {"kind": "parameter", "id": "level"}]}]
+					}
+				]
+			}
+		]}},
+		{"at": 7500, "check": {"parameters": {"heat/level": 25.0}, "persisted": {"heat/level": 25.0}}},
+		{"at": 8000, "setParameter": {"rule": "heat", "parameter": "level", "value": 25.0}},
+		{"at": 8500, "check": {"parameters": {"heat/level": 25.0}, "persisted": {}}},
+		{"at": 9000, "image": {"rules": [
+			{
+				"id": "heat",
+				"name": "Heating",
+				"parameters": [{"id": "level", "label": "Comfort temperature", "type": "real", "default": 20.0, "min": 10.0, "max": 30.0, "unit": "°C"}],
+				"reactions": [
+					{
+						"triggers": [{"kind": "parameter", "parameter": "level"}],
+						"actions": [{"kind": "log", "level": "info", "message": ["level ", {"kind": "parameter", "id": "level"}]}]
+					}
+				]
+			}
+		]}}
+	],
+	"end": 10000,
+	"expected": {
+		"commands": [],
+		"logs": [
+			{"at": 1000, "rule": "heat", "code": "log", "level": "info", "message": "level 22"},
+			{"at": 2000, "rule": "heat", "code": "log", "level": "info", "message": "level 20"},
+			{"at": 3000, "rule": "heat", "code": "log", "level": "info", "message": "level 25"}
+		],
+		"final": {"parameters": {"heat/level": 20.0}, "persisted": {}}
+	}
+}

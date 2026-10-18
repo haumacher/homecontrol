@@ -8,11 +8,9 @@
 namespace hc {
 namespace image {
 
-bool RulesClock::local_now(DateTime& out) const {
-	LocalTime local;
-	if (!time_.local_time(local)) {
-		return false;
-	}
+namespace {
+
+void date_time_of(const LocalTime& local, DateTime& out) {
 	out = DateTime();
 	out.year = static_cast<uint16_t>(local.year);
 	out.month = local.month;
@@ -21,6 +19,60 @@ bool RulesClock::local_now(DateTime& out) const {
 	out.minute = local.minute;
 	out.second = local.second > 59 ? 59 : local.second;
 	out.day_of_week = rules::weekday_of(local.year, local.month, local.day);
+	out.flags = local.dst ? DateTime::kSummerTime : 0;
+}
+
+bool same_fields(const LocalTime& local, const DateTime& d) {
+	return local.year == d.year && local.month == d.month && local.day == d.day && local.hour == d.hour &&
+		local.minute == d.minute && local.second == d.second;
+}
+
+} // namespace
+
+bool RulesClock::local_now(DateTime& out) const {
+	LocalTime local;
+	if (!time_.local_time(local)) {
+		return false;
+	}
+	date_time_of(local, out);
+	return true;
+}
+
+int64_t RulesClock::local_to_utc(const DateTime& local) const {
+	Date date;
+	date.year = local.year;
+	date.month = local.month;
+	date.day = local.day;
+	// The first occurrence (or the end of a spring-forward gap), by the scheduler's rule.
+	int64_t first = time_.local_to_utc(date, local.hour, local.minute, local.second);
+	LocalTime at;
+	bool summer = (local.flags & DateTime::kSummerTime) != 0;
+	if (!time_.to_local(first, at) || !same_fields(at, local) || at.dst == summer) {
+		return first;
+	}
+	// A time that occurs twice: the other occurrence has the same fields under the offset of the
+	// day before or after (at most one offset change within a day either side, as local_to_utc()).
+	int32_t offset = time_.utc_offset(first);
+	for (int64_t probe : {first - 86400, first + 86400}) {
+		int32_t other_offset = time_.utc_offset(probe);
+		if (other_offset == offset) {
+			continue;
+		}
+		int64_t other = first + offset - other_offset;
+		LocalTime there;
+		if (time_.to_local(other, there) && same_fields(there, local) && there.dst == summer) {
+			return other;
+		}
+	}
+	return first;
+}
+
+bool RulesClock::utc_to_local(int64_t utc_seconds, DateTime& out) const {
+	LocalTime local;
+	if (!time_.to_local(utc_seconds, local) || local.year < 1900 || local.year > 2155) {
+		return false;
+	}
+	date_time_of(local, out);
 	return true;
 }
 

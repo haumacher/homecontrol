@@ -1,0 +1,34 @@
+{
+	"title": "Labels: a rule name, a parameter label and a choice label as a string or a language map, resolved from ui.lang",
+	"description": "Spec 2.2 (decision 11, issue #28): a label is a string or an object from language tags to strings. The engine resolves it once at load in the device's language (the setting ui.lang, here de-CH): the exact tag, then the base language, then en, then the first entry. The web API passes the map through.",
+	"ui": {"lang": "de-CH"},
+	"datapoints": [{"name": "x.c", "type": "boolean"}],
+	"rules": [
+		{
+			"id": "stairs",
+			"name": {"en": "Staircase", "de": "Treppenhaus", "de-CH": "Stägeli"},
+			"parameters": [
+				{"id": "onTime", "label": {"en": "On time", "de": "Einschaltdauer"}, "type": "duration", "default": 60000},
+				{"id": "level", "label": {"fr": "Luminosité", "en": "Brightness"}, "type": "real", "default": 50.0},
+				{"id": "warn", "label": {"fr": "Avertir", "it": "Avvisare"}, "type": "boolean", "default": true},
+				{"id": "mode", "label": "Mode", "type": "enumeration", "default": 0, "choices": [{"value": 0, "label": {"en": "Auto", "de": "Automatik"}}, {"value": 1, "label": "Manual"}]}
+			],
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "x.c"}], "actions": []}]
+		},
+		{
+			"id": "hall",
+			"name": "Hall",
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "x.c"}], "actions": []}]
+		}
+	],
+	"timeline": [],
+	"end": 1000,
+	"expected": {
+		"commands": [],
+		"logs": [],
+		"final": {
+			"names": {"stairs": "Stägeli", "hall": "Hall"},
+			"labels": {"stairs/onTime": "Einschaltdauer", "stairs/level": "Brightness", "stairs/warn": "Avertir", "stairs/mode": "Mode"}
+		}
+	}
+}

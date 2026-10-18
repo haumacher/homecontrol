@@ -1,7 +1,7 @@
 {
 	"title": "Start trigger: boot, image swap and reboot, filtered by reason",
 	"description": "The image at 1000 is identical to the boot image. The reboot at 2000 loses the datapoint values, so the boot counter starts again at 1.",
-	"note": "Review: the start trigger fires for every rule of a new image, also for rules that did not change (open question 5).",
+	"note": "Decided (spec 12, point 5, issue #26): the start trigger fires for every rule of a new image, also for rules that did not change.",
 	"datapoints": [{"name": "status.ready", "type": "boolean"}, {"name": "status.boots", "type": "unsigned"}],
 	"rules": [
 		{

@@ -351,7 +351,11 @@ declared parameters (`enabled`, parameter 0, is the `enabled*` members): `type` 
 type name, `value`/`default`/`min`/`max` in the parameter's JSON form (boolean; number for
 integer, real, enumeration and duration (ms); string; `{"hour","minute","second"}` for a time of
 day; `{"year","month","day"}` for a date; `{"control","value"}`; the literal text otherwise),
-`min`, `max`, `step` and `choices` (`[{"value", "label"}]`) only when declared.
+`min`, `max`, `step` and `choices` (`[{"value", "label"}]`) only when declared. The rule's `name`,
+a parameter's `label` and a choice's `label` are labels (spec/rules.md 2.2) passed through as the
+image gives them: a string, or an object from language tags to strings
+(`{"en": "Staircase", "de": "Treppenhaus"}`) that the UI resolves in the viewer's language. The
+device's log and the diagnostics' texts use the label resolved in the setting `ui.lang`.
 
 ### `PUT /api/rules/<rule>/parameters/<parameter>`
 
