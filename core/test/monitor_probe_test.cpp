@@ -104,3 +104,20 @@ TEST_CASE("Monitor probe: a command sent over the WebSocket is recorded with ori
 	}
 	CHECK(seen);
 }
+
+TEST_CASE("Monitor probe: a rule's read action is a rule event with action read and no value") {
+	ProbeFixture f;
+	hc::MonitorFeed& monitor = f.feed.monitor();
+	uint32_t from = monitor.next();
+	monitor.rule_read("temp-watch", *f.model.find("hall.scene"));
+	REQUIRE(monitor.next() == from + 1);
+	auto r = f.get("/api/monitor?since=" + std::to_string(from) + "&limit=1", f.cookie);
+	REQUIRE(r.status == 200);
+	const auto& events = r.json["events"].items;
+	REQUIRE(events.size() == 1);
+	CHECK(events[0]["kind"].text == "rule");
+	CHECK(events[0]["rule"].text == "temp-watch");
+	CHECK(events[0]["action"].text == "read");
+	CHECK(events[0]["name"].text == "hall.scene");
+	CHECK_FALSE(events[0].has("value"));
+}

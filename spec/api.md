@@ -469,6 +469,7 @@ change (an image load or a reload of the providers' datapoints) the older events
 {"seq": 815, "ms": 80310, "kind": "zigbee", "event": "action", "ieee": "000b57fffe112233", "ep": 1,
  "cluster": 6, "cmd": 2, "dp": 22, "name": "hall.button", "value": 2}
 {"seq": 816, "ms": 80320, "kind": "rule", "rule": "hall-presence-light", "dp": 3, "name": "hall.light", "value": true}
+{"seq": 819, "ms": 95000, "kind": "rule", "rule": "temp-watch", "action": "read", "dp": 4, "name": "living.temperature"}
 {"seq": 817, "ms": 80400, "kind": "command", "origin": "ws", "via": "session", "dp": 5, "name": "living.setpoint", "value": 21}
 {"seq": 818, "ms": 90000, "kind": "image", "event": "load", "project": "example-house", "revision": 7, "source": "api"}
 {"kind": "gap", "seq": 700, "count": 12}
@@ -487,7 +488,9 @@ change (an image load or a reload of the providers' datapoints) the older events
   or `command` (a command the controller sent for a datapoint; `cmd` the ZCL command id). `ieee`
   (16 hex digits), `short` (the network address, when known), `ep` the endpoint, `cluster`. `value`
   is the datapoint's value, or for an attribute no datapoint maps its decoded number or string.
-- `rule`: a rule commanded a datapoint; `rule` is its id (cut to 27 bytes).
+- `rule`: a rule commanded a datapoint; `rule` is its id (cut to 27 bytes). With `"action": "read"`
+  the rule asked the technology for the datapoint's value (spec/rules.md 7.12); the resulting
+  telegram follows as its own event, and no `value` is given.
 - `command`: a datapoint was commanded from outside the rules; `origin` `ws` (a WebSocket client's
   `command`), `api` (`POST /api/datapoints/<id>/command`) or `app` (the controller itself: the
   console, a component); `via` `session` or `token` for `ws` and `api`. A command reaches the

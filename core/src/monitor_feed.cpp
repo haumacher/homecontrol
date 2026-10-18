@@ -378,9 +378,17 @@ void MonitorFeed::rule_commanded(const char* rule, const Datapoint& datapoint, c
 		event->flags |= MonitorEvent::kHasValue;
 	}
 	event->kind = MonitorEvent::Kind::rule;
-	event->sub = 0;
+	event->sub = static_cast<uint8_t>(MonitorEvent::RuleAction::command);
 	event->flags &= static_cast<uint8_t>(~MonitorEvent::kViaToken);
 	copy_text(event->named.text, sizeof(event->named.text), rule);
+}
+
+void MonitorFeed::rule_read(const char* rule, const Datapoint& datapoint) {
+	// A rule's read action (spec/rules.md 7.12): the technology's telegram follows as its own event;
+	// this one says which rule asked.
+	MonitorEvent& event = append(MonitorEvent::Kind::rule, static_cast<uint8_t>(MonitorEvent::RuleAction::read));
+	event.datapoint = datapoint.id();
+	copy_text(event.named.text, sizeof(event.named.text), rule);
 }
 
 // ---- JSON -------------------------------------------------------------------------------------
@@ -429,6 +437,9 @@ void MonitorFeed::write_event(JsonWriter& json, const MonitorEvent& event, uint3
 		}
 		case MonitorEvent::Kind::rule:
 			json.member("rule", event.named.text);
+			if (event.sub == static_cast<uint8_t>(MonitorEvent::RuleAction::read)) {
+				json.member("action", "read");
+			}
 			break;
 		case MonitorEvent::Kind::command:
 			json.member("origin", sub_name(event));

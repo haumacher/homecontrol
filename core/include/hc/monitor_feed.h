@@ -38,13 +38,14 @@ struct MonitorEvent {
 	enum class Kind : uint8_t {
 		knx,     ///< A group telegram (sub: KnxDirection).
 		zigbee,  ///< A Zigbee frame (sub: ZigbeeEvent).
-		rule,    ///< A rule commanded a datapoint.
+		rule,    ///< A rule commanded or read a datapoint (sub: RuleAction).
 		command, ///< A datapoint was commanded from outside the rules (sub: CommandOrigin).
 		image,   ///< The model changed (sub: ImageEvent).
 	};
 	enum class KnxDirection : uint8_t { rx, tx };
 	enum class ZigbeeEvent : uint8_t { report, action, command };
 	enum class CommandOrigin : uint8_t { app, ws, api };
+	enum class RuleAction : uint8_t { command, read };
 	enum class ImageEvent : uint8_t { load, reload, unload };
 
 	enum Flags : uint8_t {
@@ -195,6 +196,7 @@ public:
 	void zigbee_traffic(const zigbee::ZigbeeTraffic& traffic) override;
 	// rules::EngineObserver
 	void rule_commanded(const char* rule, const Datapoint& datapoint, const Value& value) override;
+	void rule_read(const char* rule, const Datapoint& datapoint) override;
 
 	/// The names of the JSON encoding.
 	static const char* kind_name(MonitorEvent::Kind kind);
