@@ -145,6 +145,138 @@ std::optional<Value> attribute_value(Function function, const ZclValue& value) {
 	return std::nullopt;
 }
 
+bool configures_reporting(Function function) {
+	return function_info(function).max_s > 0;
+}
+
+Reporting default_reporting(Function function) {
+	const FunctionInfo& info = function_info(function);
+	Reporting reporting;
+	if (info.max_s > 0) {
+		reporting.min_s = info.min_s;
+		reporting.max_s = info.max_s;
+		reporting.change = static_cast<uint16_t>(info.change);
+	}
+	return reporting;
+}
+
+namespace {
+
+/// How a function's reportable change in the datapoint's unit maps to the attribute: raw =
+/// round(change * scale), at most max_raw. scale 0: no change in the unit.
+struct ChangeScale {
+	double scale;
+	uint16_t max_raw;
+	const char* refusal;
+};
+
+ChangeScale change_scale(Function function) {
+	switch (function) {
+		case Function::level: return {2.54, 254, "change must be 0..100 (%)"};
+		case Function::temperature: return {100.0, 32767, "change must be 0..327.67 (\xc2\xb0" "C)"};
+		case Function::humidity: return {100.0, 10000, "change must be 0..100 (%)"};
+		case Function::battery: return {2.0, 200, "change must be 0..100 (%)"};
+		case Function::on_off:
+			return {0, 0, "the function on_off has no reportable change (a discrete value reports every change)"};
+		case Function::occupancy:
+			return {0, 0, "the function occupancy has no reportable change (a discrete value reports every change)"};
+		case Function::illuminance:
+			return {0, 0, "the function illuminance has no reportable change in lux (its attribute is logarithmic: a lux "
+				"step has no fixed attribute step); min and max are allowed"};
+		case Function::color_temperature:
+			return {0, 0, "the function color_temperature has no reportable change in K (its attribute counts mireds, "
+				"1000000 / K: a kelvin step has no fixed attribute step); min and max are allowed"};
+		case Function::ias_zone:
+		case Function::multistate:
+		case Function::action:
+			break;
+	}
+	return {0, 0, "the function has no reportable change"};
+}
+
+/// Why `function` takes no reporting override; nullptr if it does.
+const char* no_reporting_reason(Function function) {
+	switch (function) {
+		case Function::action: return "the function action (a client binding, button commands) configures no reporting";
+		case Function::multistate: return "the function multistate configures no reporting (its reports are events)";
+		case Function::ias_zone:
+			return "the function ias_zone configures no reporting (zone status change notifications)";
+		default: return nullptr;
+	}
+}
+
+} // namespace
+
+bool change_to_raw(Function function, double change, uint16_t& raw, const char** error) {
+	ChangeScale scale = change_scale(function);
+	if (scale.scale == 0) {
+		fail(error, scale.refusal);
+		return false;
+	}
+	double steps = change * scale.scale;
+	if (!(change >= 0) || std::round(steps) > static_cast<double>(scale.max_raw)) {
+		fail(error, scale.refusal);
+		return false;
+	}
+	raw = static_cast<uint16_t>(std::lround(steps));
+	return true;
+}
+
+bool change_to_unit(Function function, uint16_t raw, double& change) {
+	ChangeScale scale = change_scale(function);
+	if (scale.scale == 0) {
+		return false;
+	}
+	change = static_cast<double>(raw) / scale.scale;
+	if (function == Function::level) {
+		change = round1(change);
+	}
+	return true;
+}
+
+bool resolve_reporting(Function function, const ReportingOverride& override, Reporting& out, ReportingMember* member,
+	const char** error) {
+	auto refuse = [&](ReportingMember which, const char* reason) {
+		if (member != nullptr) {
+			*member = which;
+		}
+		fail(error, reason);
+		return false;
+	};
+	out = default_reporting(function);
+	if (override.set == 0) {
+		return true;
+	}
+	if (!configures_reporting(function)) {
+		const char* reason = no_reporting_reason(function);
+		return refuse(ReportingMember::whole, reason != nullptr ? reason : "the function configures no reporting");
+	}
+	if ((override.set & ReportingOverride::kMin) != 0) {
+		if (override.min_s > Reporting::kMaxMin) {
+			return refuse(ReportingMember::min, "min must be 0..65534");
+		}
+		out.min_s = override.min_s;
+	}
+	if ((override.set & ReportingOverride::kMax) != 0) {
+		out.max_s = override.max_s;
+	}
+	if (out.periodic() && out.max_s < out.min_s) {
+		if ((override.set & ReportingOverride::kMax) != 0) {
+			return refuse(ReportingMember::max, "max must not be below min (an absent min is the function's default); "
+				"0: no periodic reports, 65535: no reports");
+		}
+		return refuse(ReportingMember::min, "min must not exceed max (an absent max is the function's default); "
+			"max 0: no periodic reports, max 65535: no reports");
+	}
+	if ((override.set & ReportingOverride::kChange) != 0) {
+		const char* why = nullptr;
+		if (!change_to_raw(function, override.change, out.change, &why)) {
+			return refuse(ReportingMember::change, why);
+		}
+	}
+	return true;
+}
+
 bool can_command(Function function, uint16_t command_cluster) {
 	if (command_cluster == cluster::kNone) {
 		return true;
@@ -198,6 +330,7 @@ size_t map_device(const ZigbeeDevice& device, ZigbeePoint* out, size_t capacity)
 			point.function = function;
 			point.command_cluster = function_info(function).command_cluster;
 			point.zone_type = endpoint.zone_type;
+			point.reporting = default_reporting(function);
 		}
 		++count;
 	};
@@ -241,6 +374,10 @@ std::optional<ZigbeePoint> override_point(const ZigbeeOverride& binding, const c
 			fail(error, "a client binding (button commands) cannot be commanded");
 			return std::nullopt;
 		}
+		if (binding.reporting.set != 0) {
+			fail(error, no_reporting_reason(Function::action));
+			return std::nullopt;
+		}
 		point.function = Function::action;
 		return point;
 	}
@@ -255,6 +392,9 @@ std::optional<ZigbeePoint> override_point(const ZigbeeOverride& binding, const c
 	}
 	point.function = info->function;
 	point.command_cluster = binding.command_cluster;
+	if (!resolve_reporting(info->function, binding.reporting, point.reporting, nullptr, error)) {
+		return std::nullopt;
+	}
 	return point;
 }
 

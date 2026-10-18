@@ -139,9 +139,14 @@ protected:
 ///   (no image service, the tests and a build without images), it loads the model itself (refused
 ///   while the model holds datapoints of another owner) and reloads it when a device is interviewed
 ///   or removed; values survive the reload.
+/// - **Reporting.** Each point carries its effective reporting (the function table's default, or
+///   the binding's override, spec/zigbee.md "Reporting overrides"); the interview configures it,
+///   and bindings that change it configure the interviewed devices concerned again
+///   (reconfigure_reporting()), except at their first application (the start).
 /// - **Stale.** Every kCheckPeriodMs the adapter compares each device's silence with its stale
-///   timeout: kStaleFactor times the largest maximum reporting interval of its datapoints (a device
-///   without configured reporting, a pure button, never goes stale). Silence counts from the start
+///   timeout: kStaleFactor times the largest effective maximum reporting interval of its datapoints
+///   (a device without a periodic report, a pure button or one whose overrides turn it off with max
+///   0 or 65535, never goes stale). Silence counts from the start
 ///   for a device not heard since. Any frame of a stale device ends it; its datapoints are read
 ///   again.
 /// - **Reads.** After start() and after a silence, the server attributes of each device are read,
@@ -192,7 +197,8 @@ public:
 
 	/// Alone (without an image service): replaces the runtime image's device bindings (copied); with
 	/// an image service the bindings come with model_loaded() and this is refused. Checked before anything changes: every
-	/// binding has a name and maps a known function (override_point()), no name and no
+	/// binding has a name and maps a known function with an acceptable reporting override
+	/// (override_point()), no name and no
 	/// (device, endpoint, function) appears twice, at most kMaxOverrides. Reloads the datapoints when
 	/// started. A refusal (false, the reason in `error` and the log) keeps the previous bindings.
 	bool configure(const ZigbeeOverride* overrides, size_t count, const char** error = nullptr);
@@ -323,6 +329,10 @@ private:
 	void end_interview();
 	void start_pending_interview();
 	void setup_reporting(const ZigbeeDevice& device);
+	/// After the bindings changed from `old_table`: configures the reporting of every function of an
+	/// interviewed device whose effective reporting the new bindings change (or that the old ones did
+	/// not make a point), and binds its cluster.
+	void reconfigure_reporting(const ZigbeePoint* old_table, size_t old_count);
 	bool rebuild(const char** error);
 	bool save_database();
 	void check_stale();
@@ -359,6 +369,9 @@ private:
 	bool persistent_;
 	bool started_ = false;
 	bool loaded_ = false;
+	/// Whether bindings were applied before (configure() or model_loaded()): the first application,
+	/// at the start, configures nothing (the devices kept what their interview configured).
+	bool bindings_known_ = false;
 	uint64_t start_ms_ = 0;
 	TimerHandle check_timer_;
 	TimerHandle refresh_timer_;

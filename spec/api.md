@@ -464,15 +464,19 @@ result and every function the mapping derives.
               "label": "Hall", "interviewed": true,
               "endpoints": [{"id": 1, "profile": 260, "device": 544, "in": [0, 3, 4, 5, 6, 8, 768, 4096], "out": [5, 25, 32, 4096]}],
               "functions": [{"name": "zigbee.00124b0012345678.1.on", "function": "on_off", "endpoint": 1, "cluster": 6,
-                             "attribute": 0, "type": "boolean", "writable": true, "datapoint": "hall.light"},
+                             "attribute": 0, "type": "boolean", "writable": true,
+                             "reporting": {"min": 0, "max": 300}, "datapoint": "hall.light"},
                             {"name": "zigbee.00124b0012345678.1.level", "function": "level", "endpoint": 1, "cluster": 8,
-                             "attribute": 0, "type": "real", "unit": "%", "writable": true, "datapoint": "zigbee.00124b0012345678.1.level"}]}],
+                             "attribute": 0, "type": "real", "unit": "%", "writable": true,
+                             "reporting": {"min": 1, "max": 300, "change": 0.4}}]}],
  "next": null}
 ```
 
 `exported` is the controller's wall-clock time in Unix seconds (0 before the clock is set).
 `datapoint` is the name the loaded model gives the function (a binding of the runtime image, or the
-generic `name`); absent while the model is not loaded. The web UI's "Export device list" joins the
+generic `name`); absent while the model is not loaded, and for a function of a bound device that no
+binding names (the example's `level`). `reporting` is the effective reporting of the function in the
+image's units (spec/zigbee.md "Export"). The web UI's "Export device list" joins the
 pages into one file `zigbee-devices-<controller>.json` with `format`, `version`, `controller`,
 `exported`, `network` and all `devices`.
 

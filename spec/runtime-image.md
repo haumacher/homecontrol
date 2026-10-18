@@ -162,6 +162,7 @@ device, and a device with a binding gets only its bound datapoints.
 | `attribute` | integer 0..65535 | unless `client` | |
 | `client` | boolean | no, false | The device's client cluster commands (a button, cluster 6 or 8): an `enumeration` of actions. |
 | `command` | integer 0..65534 | if `transmit` | The cluster the commands go to: the function's own, or 8 (Level Control) for On/Off. Absent: read-only. |
+| `reporting` | object | no | The reporting the controller configures for the function instead of its defaults: `min`, `max` (seconds; `max` 0 no periodic reports, 65535 no reports) and `change` (in the datapoint's unit), each optional (`spec/zigbee.md` "Reporting overrides"). Not for a client binding, `multistate` and `ias_zone`. |
 
 At most 512 Zigbee bindings; no function of an endpoint is bound twice. The controller adds the
 generic datapoints of the joined devices without bindings behind the image's datapoints

@@ -92,6 +92,71 @@ std::optional<Value> attribute_value(Function function, const ZclValue& value);
 /// additionally Level Control for on_off (move to level with on/off: 254 or 0).
 bool can_command(Function function, uint16_t command_cluster);
 
+/// The reporting of one attribute (ZCL Configure Reporting): minimum and maximum interval in seconds
+/// and the reportable change in the attribute's raw units (every raw change of the functions with a
+/// change fits 16 bits).
+struct Reporting {
+	/// `max_s`: no periodic reports, the device reports on a change only (ZCL).
+	static constexpr uint16_t kNoPeriodic = 0;
+	/// `max_s`: the device issues no reports of the attribute at all (ZCL); values come from reads.
+	static constexpr uint16_t kNoReports = 0xFFFF;
+	/// The largest `min_s`.
+	static constexpr uint16_t kMaxMin = 0xFFFE;
+
+	uint16_t min_s = 0;
+	uint16_t max_s = 0;
+	uint16_t change = 0;
+
+	/// Whether the device promises a report within `max_s` (counts for the stale rule).
+	bool periodic() const { return max_s != kNoPeriodic && max_s != kNoReports; }
+	bool operator==(const Reporting& other) const {
+		return min_s == other.min_s && max_s == other.max_s && change == other.change;
+	}
+	bool operator!=(const Reporting& other) const { return !(*this == other); }
+};
+
+/// Whether the adapter configures the reporting of `function` (its table entry has a maximum
+/// interval): every server function except ias_zone (zone notifications) and multistate (events);
+/// not action (client clusters).
+bool configures_reporting(Function function);
+
+/// The function table's reporting of `function` (zero for a function without reporting).
+Reporting default_reporting(Function function);
+
+/// The reportable change of `function` from the datapoint's unit (°C, %) into the attribute's raw
+/// units, rounded to the nearest step; false with `error` for a function without a change in its
+/// unit (discrete values, illuminance, colour temperature) or a change outside 0..the type's range.
+bool change_to_raw(Function function, double change, uint16_t& raw, const char** error = nullptr);
+
+/// The reportable change in the datapoint's unit of a raw change; false for a function without a
+/// change in its unit. Level is rounded to one decimal (one step is 0.39 %).
+bool change_to_unit(Function function, uint16_t raw, double& change);
+
+/// The reporting a runtime image sets for one bound function (spec/zigbee.md "Reporting
+/// overrides"): each part optional, a missing one keeps the function table's default.
+struct ReportingOverride {
+	static constexpr uint8_t kMin = 0x1;
+	static constexpr uint8_t kMax = 0x2;
+	static constexpr uint8_t kChange = 0x4;
+
+	/// Which parts are given (kMin | kMax | kChange); 0: no override.
+	uint8_t set = 0;
+	uint16_t min_s = 0;
+	uint16_t max_s = 0;
+	/// In the datapoint's unit (°C, %).
+	double change = 0;
+};
+
+/// Which member of a ReportingOverride a refusal concerns.
+enum class ReportingMember : uint8_t { whole, min, max, change };
+
+/// The effective reporting of `function` with `override` over the defaults; false with the member
+/// and the reason (spec/zigbee.md "Bindings") when the function configures no reporting, `min` is
+/// above kMaxMin, `max` below the effective `min` (other than kNoPeriodic and kNoReports), or the
+/// change is not allowed for the function or out of range.
+bool resolve_reporting(Function function, const ReportingOverride& override, Reporting& out,
+	ReportingMember* member = nullptr, const char** error = nullptr);
+
 /// One datapoint the adapter owns: where its value comes from and where its commands go.
 struct ZigbeePoint {
 	Ieee ieee = 0;
@@ -104,6 +169,9 @@ struct ZigbeePoint {
 	const char* name = nullptr;
 	/// Zone type of an ias_zone point at mapping time (for the generic name).
 	uint16_t zone_type = ZigbeeEndpoint::kNoZoneType;
+	/// The reporting the adapter configures (configures_reporting()): the function's default, or the
+	/// binding's override over it.
+	Reporting reporting;
 
 	ValueType type() const { return function_info(function).value_type; }
 	uint16_t cluster() const { return function_info(function).cluster; }
@@ -139,10 +207,13 @@ struct ZigbeeOverride {
 	bool client = false;
 	/// The cluster commands go to; cluster::kNone: read-only.
 	uint16_t command_cluster = cluster::kNone;
+	/// The reporting instead of the function's defaults (none set: the defaults).
+	ReportingOverride reporting;
 };
 
 /// The point of an override; empty with `error` when the cluster/attribute is no known function,
-/// the endpoint is 0 or above 240, the name is missing, or the command cluster cannot command it.
+/// the endpoint is 0 or above 240, the name is missing, the command cluster cannot command it, or
+/// the reporting override is refused (resolve_reporting()).
 std::optional<ZigbeePoint> override_point(const ZigbeeOverride& binding, const char** error = nullptr);
 
 } // namespace zigbee

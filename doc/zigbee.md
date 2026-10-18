@@ -183,6 +183,17 @@ functions:
 | `multistate` | Multistate Input 0x0012 / 0x0055 | `.multistate` | unsigned | – (read and reports the device sends) | – |
 | `action` | client On/Off 0x0006 and Level Control 0x0008 commands | `.action` | enumeration: 0 off, 1 on, 2 toggle, 3 dim up, 4 dim down, 5 dim stop | – (commands) | – |
 
+The reporting column holds the defaults the adapter configures after the interview (the change in
+the attribute's raw units where the datapoint's unit has no fixed step: 10 mireds, illuminance 500).
+A binding of the runtime image may override them per function (`reporting`: `min`, `max` and the
+change in the datapoint's unit, `spec/zigbee.md` "Reporting overrides"; E-Home is the place to tune,
+haumacher/ehome #64): the adapter keeps the defaults and the raw scales (`resolve_reporting()`,
+`change_to_raw()` in `cluster_mapping.h`), every point carries its effective reporting, and the
+export (`GET /api/zigbee/export`) shows the effective values per function. An image whose bindings
+change a function's effective reporting configures it again on the interviewed devices concerned
+when it is applied (not at the start: the devices keep what they were told); a device that misses
+the request keeps its previous configuration until the next change or interview.
+
 `on_off` is also commandable through Level Control (a dimmer without the On/Off cluster takes Move
 to Level with On/Off). The writable datapoints (`.on`, `.level`, `.color_temperature`) carry the
 flags writable and transmit; the server functions except `multistate` are read at start.
@@ -222,12 +233,15 @@ owner that load is refused ("the model holds datapoints of another owner").
 ## Stale rule
 
 A device that has configured reporting must be heard within three times the largest maximum
-reporting interval of its datapoints (`kStaleFactor`): a bulb (max 300 s) within 15 minutes, a
-temperature sensor (max 600 s) within 30 minutes, a battery-only device (max 21600 s) within 18
-hours. The adapter checks every 10 s; the silence counts from the controller's start for a device
-not heard since. A stale device's datapoints get the quality stale; its next frame ends it and its
-values are read again. Devices without configured reporting (pure buttons, IAS zones) never go
-stale.
+reporting interval of its datapoints (`kStaleFactor`), the effective ones (a binding's override
+over the default): a bulb (max 300 s) within 15 minutes, a temperature sensor (max 600 s) within 30
+minutes, a battery-only device (max 21600 s) within 18 hours. The adapter checks every 10 s; the
+silence counts from the controller's start for a device not heard since. A stale device's
+datapoints get the quality stale; its next frame ends it and its values are read again. Devices
+without configured reporting (pure buttons, IAS zones) never go stale. A function whose override
+turns the periodic report off promises no report and does not count: `max` 65535 (ZCL: the device
+issues no reports of the attribute) and `max` 0 (ZCL: reports on a change only). A device whose
+every function has it off never goes stale, like a pure button.
 
 ## Threading
 

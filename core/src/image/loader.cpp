@@ -762,6 +762,71 @@ struct ZigbeeDraft {
 	zigbee::Function function = zigbee::Function::on_off;
 };
 
+/// The `reporting` member of a `zigbee` binding of `function` (spec/zigbee.md "Reporting
+/// overrides") into `out`; refuses with the member's path and false.
+bool parse_zigbee_reporting(Ctx& c, const JsonSpan& value, zigbee::Function function, zigbee::ReportingOverride& out) {
+	if (!c.object(value, "reporting")) {
+		return false;
+	}
+	zigbee::ReportingOverride reporting;
+	// Whether the function takes an override at all decides before its members are looked at.
+	zigbee::ReportingOverride any;
+	any.set = zigbee::ReportingOverride::kMin;
+	zigbee::Reporting effective;
+	const char* why = nullptr;
+	if (!zigbee::configures_reporting(function)) {
+		zigbee::resolve_reporting(function, any, effective, nullptr, &why);
+		c.refuse("%s", why != nullptr ? why : "the function configures no reporting");
+		return false;
+	}
+	bool ok = true;
+	JsonSpan member;
+	int64_t number = 0;
+	if (c.member(value, "min", member)) {
+		Path q(c, ".min");
+		if (c.integer(member, 0, zigbee::Reporting::kMaxMin, number, "min")) {
+			reporting.set |= zigbee::ReportingOverride::kMin;
+			reporting.min_s = static_cast<uint16_t>(number);
+		} else {
+			ok = false;
+		}
+	}
+	if (c.member(value, "max", member)) {
+		Path q(c, ".max");
+		if (c.integer(member, 0, zigbee::Reporting::kNoReports, number, "max")) {
+			reporting.set |= zigbee::ReportingOverride::kMax;
+			reporting.max_s = static_cast<uint16_t>(number);
+		} else {
+			ok = false;
+		}
+	}
+	if (c.member(value, "change", member)) {
+		Path q(c, ".change");
+		double change = 0;
+		if (c.number(member, -1e308, 1e308, change, "change")) {
+			reporting.set |= zigbee::ReportingOverride::kChange;
+			reporting.change = change;
+		} else {
+			ok = false;
+		}
+	}
+	if (!ok) {
+		return false;
+	}
+	zigbee::ReportingMember which = zigbee::ReportingMember::whole;
+	if (!zigbee::resolve_reporting(function, reporting, effective, &which, &why)) {
+		const char* segment = which == zigbee::ReportingMember::min ? ".min"
+			: which == zigbee::ReportingMember::max ? ".max"
+			: which == zigbee::ReportingMember::change ? ".change"
+			: "";
+		Path q(c, "%s", segment);
+		c.refuse("%s", why != nullptr ? why : "?");
+		return false;
+	}
+	out = reporting;
+	return true;
+}
+
 /// The `zigbee` member of a datapoint: the device function it stands for. Checks the address, the
 /// endpoint, the cluster/attribute against the function table, the command cluster, the function's
 /// value type against the datapoint's and that a transmitting datapoint can be commanded.
@@ -857,6 +922,12 @@ void parse_zigbee(Ctx& c, const JsonSpan& value, const DatapointSpec& spec, Zigb
 		c.refuse("a transmitting Zigbee datapoint needs the cluster its commands go to (command); %s",
 			binding.client ? "a client binding (button commands) cannot be commanded" : "without it the binding is read-only");
 		return;
+	}
+	if (c.member(value, "reporting", member)) {
+		Path q(c, ".reporting");
+		if (!parse_zigbee_reporting(c, member, point->function, binding.reporting)) {
+			return;
+		}
 	}
 	draft.present = spec.name != nullptr;
 	draft.binding = binding;
@@ -1129,7 +1200,11 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 	plan.datapoints = plan.arena.array<DatapointSpec>(total);
 	plan.bindings = plan.arena.array<Binding>(total);
 	KnxDraft* drafts = plan.arena.array<KnxDraft>(declared);
-	ZigbeeDraft* zigbee_drafts = plan.arena.array<ZigbeeDraft>(declared);
+	// The Zigbee drafts are needed only here (the bindings are copied into plan.zigbee below): a
+	// scratch arena, freed at the return, keeps them out of the plan the service holds while the
+	// image is loaded.
+	Arena scratch;
+	ZigbeeDraft* zigbee_drafts = scratch.array<ZigbeeDraft>(declared);
 	HistorySpec* history = plan.arena.array<HistorySpec>(declared);
 	if (total > 0 && (plan.datapoints == nullptr || plan.bindings == nullptr || (declared > 0 && (drafts == nullptr ||
 		zigbee_drafts == nullptr || history == nullptr)))) {

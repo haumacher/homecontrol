@@ -680,3 +680,177 @@ TEST_CASE("Image.DynamicProbeSwapKeepsProviderValuesAndARefusedChangeKeepsTheMod
 	CHECK(f.model.size() == 0);
 	CHECK(f.service.dynamic_refusal() == nullptr); // model_cleared() is for a cleared model, not an empty set
 }
+
+// ---- Reporting overrides of the image's zigbee bindings (spec/zigbee.md "Reporting overrides") ----
+
+namespace {
+
+std::string sensor_image(int revision, const std::string& temperature_reporting) {
+	return "{\"image\": {\"schemaVersion\": \"1.0\", \"projectId\": \"zb\", \"revision\": " + std::to_string(revision) +
+		"}, \"datapoints\": ["
+		"{\"id\": \"bath.temperature\", \"type\": \"real\", \"zigbee\": {\"ieee\": \"00158d0005060708\", \"endpoint\": 1, "
+		"\"cluster\": 1026, \"attribute\": 0" + temperature_reporting + "}}, "
+		"{\"id\": \"bath.humidity\", \"type\": \"real\", \"zigbee\": {\"ieee\": \"00158d0005060708\", \"endpoint\": 1, "
+		"\"cluster\": 1029, \"attribute\": 0}}]}";
+}
+
+std::string export_json(const hc::zigbee::ZigbeeAdapter& adapter, size_t index) {
+	char buffer[8192];
+	hc::JsonWriter json(buffer, sizeof(buffer));
+	adapter.write_device_export_json(json, index);
+	REQUIRE_FALSE(json.overflowed());
+	return std::string(json.data(), json.length());
+}
+
+} // namespace
+
+TEST_CASE("Image.ZigbeeBindingsWithoutReportingLoadAsBefore") {
+	// spec/fixtures/images/zigbee-bindings.json is an image as E-Home wrote them before `reporting`.
+	Plan plan;
+	Report report;
+	REQUIRE_MESSAGE(parse(fixture("zigbee-bindings.json"), plan, report), describe(report));
+	REQUIRE(plan.zigbee_count == 4);
+	for (size_t i = 0; i < plan.zigbee_count; ++i) {
+		CHECK(plan.zigbee[i].reporting.set == 0);
+	}
+	ZigbeeImageFixture f;
+	REQUIRE_MESSAGE(f.load(fixture("zigbee-bindings.json")), describe(f.service.report()));
+	f.device.join_sensor();
+	f.device.join_bulb();
+	f.run_for(2000);
+	// The function table's defaults, for the bound functions only.
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..600 10"));
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0405 0x0000 30..600 100"));
+	CHECK(f.driver.has("configure 0x1a2b 11 0x0006 0x0000 0..300 0"));
+	CHECK(f.driver.count("configure") == 3);
+	CHECK(f.zigbee.stale_timeout_s(hc_test::kSensor) == 1800);
+	REQUIRE(f.dp("bath.temperature") != nullptr);
+	CHECK(f.dp("bath.temperature")->technology() == &f.zigbee);
+}
+
+TEST_CASE("Image.ZigbeeReportingOverrideReachesTheDeviceAndTheExport") {
+	Plan plan;
+	Report report;
+	REQUIRE_MESSAGE(parse(sensor_image(1, ", \"reporting\": {\"min\": 30, \"max\": 900, \"change\": 0.5}"), plan, report),
+		describe(report));
+	REQUIRE(plan.zigbee_count == 2);
+	CHECK(plan.zigbee[0].reporting.set == (hc::zigbee::ReportingOverride::kMin | hc::zigbee::ReportingOverride::kMax |
+		hc::zigbee::ReportingOverride::kChange));
+	CHECK(plan.zigbee[0].reporting.min_s == 30);
+	CHECK(plan.zigbee[0].reporting.max_s == 900);
+	CHECK(plan.zigbee[0].reporting.change == 0.5);
+
+	ZigbeeImageFixture f;
+	REQUIRE_MESSAGE(f.load(sensor_image(1, ", \"reporting\": {\"min\": 30, \"max\": 900, \"change\": 0.5}")),
+		describe(f.service.report()));
+	// Loading the image configures nothing for a device that is not interviewed: its interview does.
+	CHECK(f.driver.count("configure") == 0);
+	f.device.join_sensor();
+	f.run_for(2000);
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..900 50"));
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0405 0x0000 30..600 100"));
+	CHECK(f.driver.count("configure") == 2);
+	CHECK(f.zigbee.stale_timeout_s(hc_test::kSensor) == 2700);
+	std::string view = export_json(f.zigbee, 0);
+	CHECK(view.find("\"reporting\":{\"min\":30,\"max\":900,\"change\":0.5},\"datapoint\":\"bath.temperature\"") !=
+		std::string::npos);
+	CHECK(view.find("\"reporting\":{\"min\":30,\"max\":600,\"change\":1},\"datapoint\":\"bath.humidity\"") !=
+		std::string::npos);
+	CHECK(view.find("\"function\":\"battery\"") != std::string::npos); // unbound, listed with its defaults
+	CHECK(view.find("\"reporting\":{\"min\":3600,\"max\":21600,\"change\":1}}") != std::string::npos);
+
+	// A new image changes the temperature's override: the interviewed sensor is configured again at
+	// once, the unchanged humidity is not.
+	f.driver.calls.clear();
+	REQUIRE_MESSAGE(f.load(sensor_image(2, ", \"reporting\": {\"max\": 65535}")), describe(f.service.report()));
+	f.run_for(10);
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..65535 10"));
+	CHECK(f.driver.count("configure") == 1);
+	CHECK(f.zigbee.stale_timeout_s(hc_test::kSensor) == 1800); // the humidity's 600 s remain
+	view = export_json(f.zigbee, 0);
+	CHECK(view.find("\"reporting\":{\"min\":30,\"max\":65535,\"change\":0.1},\"datapoint\":\"bath.temperature\"") !=
+		std::string::npos);
+
+	// A refused image changes nothing on the device.
+	f.driver.calls.clear();
+	CHECK_FALSE(f.load(sensor_image(3, ", \"reporting\": {\"min\": 900, \"max\": 30}")));
+	CHECK(has_refusal(f.service.report(), "datapoints[0].zigbee.reporting.max", "max must not be below min"));
+	CHECK(f.driver.count("configure") == 0);
+
+	// Removing the image: every function of the now generic device gets the defaults it lacks.
+	const char* error = nullptr;
+	REQUIRE(f.service.unload(&error));
+	f.run_for(10);
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..600 10"));
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0001 0x0021 3600..21600 2"));
+	CHECK(f.driver.count("configure") == 2);
+}
+
+// ---- Probe: the stale rule of a device with mixed reporting, across an image swap --------------------
+
+TEST_CASE("Image.ZigbeeReportingProbeMixedPeriodicAndOnChangeStaleRule") {
+	// The temperature reports on change only (max 0, at most every 60 s); the humidity keeps its
+	// periodic default. The device's stale time follows the humidity alone.
+	ZigbeeImageFixture f;
+	REQUIRE_MESSAGE(f.load(sensor_image(1, ", \"reporting\": {\"min\": 60, \"max\": 0}")), describe(f.service.report()));
+	f.device.join_sensor();
+	f.run_for(2000);
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 60..0 10"));
+	CHECK(f.driver.has("configure 0x3c4d 1 0x0405 0x0000 30..600 100"));
+	CHECK(f.driver.count("configure") == 2);
+	CHECK(f.zigbee.stale_timeout_s(hc_test::kSensor) == 1800);
+	std::string view = export_json(f.zigbee, 0);
+	CHECK(view.find("\"reporting\":{\"min\":60,\"max\":0,\"change\":0.1},\"datapoint\":\"bath.temperature\"") !=
+		std::string::npos);
+
+	f.device.report(hc_test::kSensorShort, 1, hc::zigbee::cluster::kTemperatureMeasurement,
+		hc::zigbee::attribute::kMeasuredValue, hc::zigbee::zcl_type::kInt16, 2150);
+	f.device.report(hc_test::kSensorShort, 1, hc::zigbee::cluster::kRelativeHumidity,
+		hc::zigbee::attribute::kMeasuredValue, hc::zigbee::zcl_type::kUint16, 5500);
+	f.run_for(10);
+	REQUIRE(f.dp("bath.temperature") != nullptr);
+	CHECK(f.dp("bath.temperature")->quality() == hc::Quality::good);
+	CHECK(f.dp("bath.humidity")->quality() == hc::Quality::good);
+
+	// Silence past three humidity maxima: both datapoints of the device are stale.
+	f.run_for(1800 * 1000 + 60 * 1000);
+	CHECK(f.dp("bath.temperature")->quality() == hc::Quality::stale);
+	CHECK(f.dp("bath.humidity")->quality() == hc::Quality::stale);
+	// A temperature report alone brings the device back; the humidity stays stale until the read the
+	// revival requests is answered (doc/zigbee.md "Stale rule").
+	f.driver.calls.clear();
+	f.device.report(hc_test::kSensorShort, 1, hc::zigbee::cluster::kTemperatureMeasurement,
+		hc::zigbee::attribute::kMeasuredValue, hc::zigbee::zcl_type::kInt16, 2200);
+	f.run_for(2000); // the read-back of the revived device is scheduled, not immediate
+	CHECK(f.dp("bath.temperature")->quality() == hc::Quality::good);
+	CHECK(f.dp("bath.humidity")->quality() == hc::Quality::stale);
+	{
+		std::string calls;
+		for (const std::string& call : f.driver.calls) {
+			calls += call + "; ";
+		}
+		CHECK_MESSAGE(f.driver.has("read 0x3c4d 1 0x0405 0"), calls);
+	}
+	f.device.report(hc_test::kSensorShort, 1, hc::zigbee::cluster::kRelativeHumidity,
+		hc::zigbee::attribute::kMeasuredValue, hc::zigbee::zcl_type::kUint16, 5600);
+	f.run_for(10);
+	CHECK(f.dp("bath.humidity")->quality() == hc::Quality::good);
+
+	// The humidity goes on-change only as well: the device never goes stale again, the humidity is
+	// reconfigured once, the temperature (unchanged) not.
+	f.driver.calls.clear();
+	std::string both = "{\"image\": {\"schemaVersion\": \"1.0\", \"projectId\": \"zb\", \"revision\": 2}, \"datapoints\": ["
+		"{\"id\": \"bath.temperature\", \"type\": \"real\", \"zigbee\": {\"ieee\": \"00158d0005060708\", \"endpoint\": 1, "
+		"\"cluster\": 1026, \"attribute\": 0, \"reporting\": {\"min\": 60, \"max\": 0}}}, "
+		"{\"id\": \"bath.humidity\", \"type\": \"real\", \"zigbee\": {\"ieee\": \"00158d0005060708\", \"endpoint\": 1, "
+		"\"cluster\": 1029, \"attribute\": 0, \"reporting\": {\"max\": 0, \"change\": 2}}}]}";
+	REQUIRE_MESSAGE(f.load(both), describe(f.service.report()));
+	f.run_for(10);
+	CHECK(f.driver.calls == std::vector<std::string>{"bind 0x3c4d 1 0x0405", "configure 0x3c4d 1 0x0405 0x0000 30..0 200"});
+	CHECK(f.zigbee.stale_timeout_s(hc_test::kSensor) == 0);
+	f.run_for(24 * 3600 * 1000);
+	CHECK(f.dp("bath.temperature")->quality() == hc::Quality::good);
+	CHECK(f.dp("bath.humidity")->quality() == hc::Quality::good);
+	CHECK(export_json(f.zigbee, 0).find("\"reporting\":{\"min\":30,\"max\":0,\"change\":2},\"datapoint\":\"bath.humidity\"") !=
+		std::string::npos);
+}

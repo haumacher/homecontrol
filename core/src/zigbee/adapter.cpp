@@ -54,6 +54,36 @@ const char* unit_of(Function function) {
 	}
 }
 
+/// The reporting the bindings `table` give the function of the device's endpoint: a bound device's
+/// binding of it, or the default of a function the generic rules map for a device without
+/// bindings. False when the function is no point of the device (a bound device's unbound function,
+/// a function the device does not have).
+bool reporting_in(const ZigbeePoint* table, size_t count, const ZigbeeDevice& device, uint8_t endpoint,
+	Function function, Reporting& out) {
+	bool bound = false;
+	for (size_t i = 0; i < count; ++i) {
+		const ZigbeePoint& point = table[i];
+		if (point.ieee != device.ieee) {
+			continue;
+		}
+		bound = true;
+		if (point.endpoint == endpoint && point.function == function) {
+			out = point.reporting;
+			return true;
+		}
+	}
+	if (bound || !device.interviewed) {
+		return false;
+	}
+	const ZigbeeEndpoint* e = device.endpoint(endpoint);
+	const FunctionInfo& info = function_info(function);
+	if (e == nullptr || !info.server || !e->has_in(info.cluster)) {
+		return false;
+	}
+	out = default_reporting(function);
+	return true;
+}
+
 const char* step_name(uint8_t step) {
 	switch (step) {
 		case 0: return "active endpoints";
@@ -238,9 +268,13 @@ bool ZigbeeAdapter::configure(const ZigbeeOverride* overrides, size_t count, con
 		Log::error(kTag, "bindings refused: their datapoints cannot be loaded; the previous bindings stay");
 		return false;
 	}
+	Log::info(kTag, "%u binding(s) from the runtime image", static_cast<unsigned>(count));
+	if (started_ && bindings_known_) {
+		reconfigure_reporting(old_table, old_count);
+	}
+	bindings_known_ = true;
 	delete[] old_table;
 	delete[] old_names;
-	Log::info(kTag, "%u binding(s) from the runtime image", static_cast<unsigned>(count));
 	return true;
 }
 
@@ -538,12 +572,20 @@ void ZigbeeAdapter::model_loaded(const image::ImageBindings& bindings) {
 		}
 	}
 	// Adopt: the bindings, the points and their ids.
-	free_overrides();
+	ZigbeePoint* old_overrides = overrides_;
+	char* old_names = override_names_;
+	size_t old_count = override_count_;
 	overrides_ = next->overrides;
 	override_names_ = next->override_names;
 	override_count_ = next->override_count;
 	next->overrides = nullptr;
 	next->override_names = nullptr;
+	if (started_ && bindings_known_) {
+		reconfigure_reporting(old_overrides, old_count);
+	}
+	bindings_known_ = true;
+	delete[] old_overrides;
+	delete[] old_names;
 	delete[] points_;
 	delete[] ids_;
 	points_ = next->points;
@@ -768,8 +810,10 @@ void ZigbeeAdapter::touch(ZigbeeDevice& device) {
 uint32_t ZigbeeAdapter::stale_timeout_s(Ieee ieee) const {
 	uint32_t longest = 0;
 	for (size_t i = 0; i < point_count_; ++i) {
-		if (points_[i].ieee == ieee) {
-			uint32_t max_s = function_info(points_[i].function).max_s;
+		const ZigbeePoint& point = points_[i];
+		// A function without a periodic report (max 0: on change only, 65535: no reports) promises nothing.
+		if (point.ieee == ieee && configures_reporting(point.function) && point.reporting.periodic()) {
+			uint32_t max_s = point.reporting.max_s;
 			if (max_s > longest) {
 				longest = max_s;
 			}
@@ -1145,8 +1189,9 @@ void ZigbeeAdapter::setup_reporting(const ZigbeeDevice& device) {
 			continue; // Zone notifications go to the enrolled CIE address, no binding needed.
 		}
 		bind_once(point.endpoint, info.cluster);
-		if (info.max_s > 0) {
-			ReportingConfig config{info.attribute, info.zcl_type, info.min_s, info.max_s, info.change};
+		if (configures_reporting(point.function)) {
+			ReportingConfig config{info.attribute, info.zcl_type, point.reporting.min_s, point.reporting.max_s,
+				point.reporting.change};
 			driver_.configure_reporting(device.ieee, device.short_addr, point.endpoint, info.cluster, config);
 			++configured;
 		}
@@ -1155,6 +1200,83 @@ void ZigbeeAdapter::setup_reporting(const ZigbeeDevice& device) {
 	Log::info(kTag, "%s: %u binding(s) to the coordinator and the reporting of %u attribute(s) requested "
 		"(refusals and timeouts are logged as they come back)",
 		device_text(device, text, sizeof(text)), static_cast<unsigned>(bound_count), static_cast<unsigned>(configured));
+}
+
+void ZigbeeAdapter::reconfigure_reporting(const ZigbeePoint* old_table, size_t old_count) {
+	for (size_t d = 0; d < database_.size(); ++d) {
+		const ZigbeeDevice& device = database_.at(d);
+		// A device not interviewed (or interviewed now) is configured when its interview finishes; one
+		// that left when it rejoins and is interviewed again.
+		if (!device.interviewed || device.left || device.short_addr == kNoShortAddress ||
+			(interview_.active && interview_.ieee == device.ieee)) {
+			continue;
+		}
+		struct Bound {
+			uint8_t endpoint;
+			uint16_t cluster;
+		};
+		Bound bound[kMaxBindings];
+		size_t bound_count = 0;
+		size_t configured = 0;
+		size_t refused = 0;
+		auto check = [&](uint8_t endpoint, Function function, const Reporting& now) {
+			if (!configures_reporting(function)) {
+				return;
+			}
+			Reporting before;
+			// A function the previous bindings did not make a point was never configured: configure it.
+			if (reporting_in(old_table, old_count, device, endpoint, function, before) && before == now) {
+				return;
+			}
+			const FunctionInfo& info = function_info(function);
+			bool seen = false;
+			for (size_t i = 0; i < bound_count && !seen; ++i) {
+				seen = bound[i].endpoint == endpoint && bound[i].cluster == info.cluster;
+			}
+			if (!seen && bound_count < kMaxBindings) {
+				bound[bound_count++] = Bound{endpoint, info.cluster};
+				driver_.bind(device.ieee, device.short_addr, endpoint, info.cluster);
+			}
+			ReportingConfig config{info.attribute, info.zcl_type, now.min_s, now.max_s, now.change};
+			if (driver_.configure_reporting(device.ieee, device.short_addr, endpoint, info.cluster, config)) {
+				++configured;
+			} else {
+				++refused;
+			}
+		};
+		if (device_has_overrides(device.ieee)) {
+			for (size_t i = 0; i < override_count_; ++i) {
+				const ZigbeePoint& point = overrides_[i];
+				if (point.ieee == device.ieee) {
+					check(point.endpoint, point.function, point.reporting);
+				}
+			}
+		} else {
+			for (size_t e = 0; e < device.endpoint_count; ++e) {
+				const ZigbeeEndpoint& endpoint = device.endpoints[e];
+				for (size_t f = 0; f < kFunctionCount; ++f) {
+					Function function = static_cast<Function>(f);
+					const FunctionInfo& info = function_info(function);
+					if (info.server && endpoint.has_in(info.cluster)) {
+						check(endpoint.id, function, default_reporting(function));
+					}
+				}
+			}
+		}
+		if (configured + refused == 0) {
+			continue;
+		}
+		char text[64];
+		device_text(device, text, sizeof(text));
+		if (refused > 0) {
+			Log::warn(kTag, "%s: the new bindings change the reporting of %u attribute(s), the stack refused %u of the "
+				"requests: those keep their previous configuration", text, static_cast<unsigned>(configured + refused),
+				static_cast<unsigned>(refused));
+		} else {
+			Log::info(kTag, "%s: the new bindings change the reporting of %u attribute(s): configured again "
+				"(refusals and timeouts are logged as they come back)", text, static_cast<unsigned>(configured));
+		}
+	}
 }
 
 // ---- Platform events ------------------------------------------------------------------------
@@ -1723,11 +1845,18 @@ void ZigbeeAdapter::write_device_export_json(JsonWriter& json, size_t index) con
 	}
 	json.end_array();
 	json.key("functions").begin_array();
+	// Every function the mapping derives, bound or not (spec/zigbee.md "Export").
 	ZigbeePoint points[kMaxDevicePoints];
-	size_t count = device_points(device, points, kMaxDevicePoints);
+	size_t count = map_device(device, points, kMaxDevicePoints);
+	if (count > kMaxDevicePoints) {
+		count = kMaxDevicePoints;
+	}
 	for (size_t i = 0; i < count; ++i) {
 		const ZigbeePoint& point = points[i];
 		const FunctionInfo& info = function_info(point.function);
+		// The effective reporting: the binding's (default or override), else the default.
+		Reporting reporting = point.reporting;
+		reporting_in(overrides_, override_count_, device, point.endpoint, point.function, reporting);
 		char generic[Datapoint::kMaxName + 1];
 		json.begin_object();
 		json.member("name", point_name(point, generic, sizeof(generic)));
@@ -1742,6 +1871,16 @@ void ZigbeeAdapter::write_device_export_json(JsonWriter& json, size_t index) con
 			json.member("unit", unit_of(point.function));
 		}
 		json.member("writable", point.command_cluster != cluster::kNone);
+		if (configures_reporting(point.function)) {
+			json.key("reporting").begin_object();
+			json.member("min", static_cast<uint32_t>(reporting.min_s));
+			json.member("max", static_cast<uint32_t>(reporting.max_s));
+			double change = 0;
+			if (change_to_unit(point.function, reporting.change, change)) {
+				json.member("change", change);
+			}
+			json.end_object();
+		}
 		// The name the loaded model gives it (a binding of the image, or the generic one).
 		for (size_t p = 0; loaded_ && p < point_count_; ++p) {
 			if (points_[p].ieee == device.ieee && points_[p].endpoint == point.endpoint &&

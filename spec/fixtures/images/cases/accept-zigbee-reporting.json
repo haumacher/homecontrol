@@ -1,0 +1,11 @@
+{"comment": "Reporting overrides of Zigbee bindings that load: every member optional, the special maxima 0 and 65535, change 0, min and max where change is not allowed.",
+ "expect": {"valid": true},
+ "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
+ "datapoints": [
+   {"id": "bath.temperature", "type": "real", "zigbee": {"ieee": "00158d0001020304", "endpoint": 1, "cluster": 1026, "attribute": 0, "reporting": {"min": 30, "max": 900, "change": 0.5}}},
+   {"id": "bath.humidity", "type": "real", "zigbee": {"ieee": "00158d0001020304", "endpoint": 1, "cluster": 1029, "attribute": 0, "reporting": {}}},
+   {"id": "bath.battery", "type": "real", "zigbee": {"ieee": "00158d0001020304", "endpoint": 1, "cluster": 1, "attribute": 33, "reporting": {"max": 65535}}},
+   {"id": "hall.light", "type": "boolean", "writable": true, "transmit": true, "zigbee": {"ieee": "00124b0001020304", "endpoint": 11, "cluster": 6, "attribute": 0, "command": 6, "reporting": {"min": 0, "max": 0}}},
+   {"id": "hall.level", "type": "real", "zigbee": {"ieee": "00124b0001020304", "endpoint": 11, "cluster": 8, "attribute": 0, "reporting": {"change": 0}}},
+   {"id": "hall.ct", "type": "unsigned", "zigbee": {"ieee": "00124b0001020304", "endpoint": 11, "cluster": 768, "attribute": 7, "reporting": {"min": 5, "max": 120}}},
+   {"id": "hall.lux", "type": "real", "zigbee": {"ieee": "00158d0001020308", "endpoint": 1, "cluster": 1024, "attribute": 0, "reporting": {"max": 1800, "futureMember": 1}}}]}

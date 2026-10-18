@@ -38,6 +38,7 @@ datapoints, added to the model behind the image's (`doc/image.md` "Dynamic datap
 | `cluster`, `attribute` | Select the function (the cluster/attribute pairs of the function table in `doc/zigbee.md`), decimal 0..65535. Required; `attribute` not for a client binding. |
 | `client` | `true`: the device's client cluster commands (a button: `cluster` 6 or 8), the `action` function; `attribute` is then ignored and `command` not allowed. Default `false`. |
 | `command` | The cluster commands go to (0..65534); absent: read-only. Only the function's own cluster, or Level Control (8) for `on_off` (cluster 6), is accepted. |
+| `reporting` | The attribute reporting the controller configures for this function instead of the function table's defaults (below, "Reporting overrides"). Optional; not for a client binding (`action`), `multistate` and `ias_zone`. |
 
 The loader checks every binding before anything changes and refuses with the path and the reason:
 
@@ -53,6 +54,19 @@ The loader checks every binding before anything changes and refuses with the pat
 | | `a transmitting Zigbee datapoint needs the cluster its commands go to (command); ...` |
 | | `a datapoint is either knx or zigbee`, `a datapoint is either zigbee or virtual` |
 | | `device D endpoint E: the function F is bound twice (also datapoints[j] 'name')` |
+| `datapoints[i].zigbee.reporting` | `reporting must be an object` |
+| | `the function action (a client binding, button commands) configures no reporting` |
+| | `the function multistate configures no reporting (its reports are events)` |
+| | `the function ias_zone configures no reporting (zone status change notifications)` |
+| `datapoints[i].zigbee.reporting.min` | `min must be an integer`, `min must be 0..65534` |
+| | `min must not exceed max (an absent max is the function's default); max 0: no periodic reports, max 65535: no reports` (only `min` given) |
+| `datapoints[i].zigbee.reporting.max` | `max must be an integer`, `max must be 0..65535` |
+| | `max must not be below min (an absent min is the function's default); 0: no periodic reports, 65535: no reports` |
+| `datapoints[i].zigbee.reporting.change` | `change must be a number` |
+| | `the function on_off has no reportable change (a discrete value reports every change)`, the same for `occupancy` |
+| | `the function illuminance has no reportable change in lux (its attribute is logarithmic: a lux step has no fixed attribute step); min and max are allowed` |
+| | `the function color_temperature has no reportable change in K (its attribute counts mireds, 1000000 / K: a kelvin step has no fixed attribute step); min and max are allowed` |
+| | `change must be 0..327.67 (°C)` (temperature), `change must be 0..100 (%)` (level, humidity, battery) |
 | `datapoints` | `N Zigbee bindings exceed the limit of 512` |
 | `schedules[i].output` | `outputConflict: output '...' is owned by the Zigbee adapter` |
 
@@ -62,10 +76,69 @@ an `id` refuses the image while that device is joined (`datapoints[i].id: '...' 
 of the provider 'zigbee'`).
 
 Without an image service (the adapter alone) the same bindings are given to
-`ZigbeeAdapter::configure()` as `ZigbeeOverride` records (`name` plus the members above), which
-checks them with the reasons `binding without a datapoint name`, `binding with a reserved IEEE
-address`, `binding endpoint outside 1..240`, the function and command reasons above, `a datapoint
-name is bound twice` and `a function of an endpoint is bound twice`.
+`ZigbeeAdapter::configure()` as `ZigbeeOverride` records (`name` plus the members above, `reporting`
+as a `ReportingOverride`), which checks them with the reasons `binding without a datapoint name`,
+`binding with a reserved IEEE address`, `binding endpoint outside 1..240`, the function and command
+reasons above, the reporting reasons above (the function, `min`, `max` and `change` ones; the types
+of the record leave no room for the others), `a datapoint name is bound twice` and `a function of
+an endpoint is bound twice`.
+
+### Reporting overrides (haumacher/ehome #64)
+
+After a device's interview the controller configures the reporting of each bound (or generic)
+function with the defaults of the function table in `doc/zigbee.md`. A binding's `reporting`
+replaces them for that function; each member is optional, and a missing one keeps the default. The
+image carries values in the datapoint's unit; the controller keeps the defaults and the knowledge of
+the attributes' raw scales.
+
+```json
+{"id": "bath.temperature", "type": "real",
+ "zigbee": {"ieee": "00158d0001020304", "endpoint": 1, "cluster": 1026, "attribute": 0,
+            "reporting": {"min": 30, "max": 900, "change": 0.5}}}
+```
+
+| Member | Meaning |
+|---|---|
+| `min` | The minimum reporting interval in seconds, an integer 0..65534. |
+| `max` | The maximum reporting interval in seconds, an integer 0..65535, at least the effective `min`, except the two values ZCL (Configure Reporting) gives a meaning of their own: **0** no periodic reports, the device reports on a change only (at most every `min`); **65535** the device issues no reports of the attribute at all, its value comes only from reads (at the controller's start, after a device's silence, a rule's `read`). Neither counts toward the device's stale time (`doc/zigbee.md` "Stale rule"). |
+| `change` | The reportable change in the datapoint's unit, a number ≥ 0 (0: every change is reported): °C for `temperature`, % for `level`, `humidity` and `battery`. The controller rounds it to the attribute's step: temperature and humidity × 100, battery × 2, level × 254 / 100 (at most 327.67 °C, 100 %). |
+
+`change` is refused for the discrete functions `on_off` and `occupancy` (ZCL defines no reportable
+change for boolean and bitmap types: every change is reported), and for `illuminance` and
+`color_temperature`: their attributes are on a scale where a step in the datapoint's unit has no
+fixed attribute step (illuminance is 10000 × log10(lux) + 1, so a fixed attribute step is a ratio of
+about 12 % for the default 500, not a number of lux; colour temperature counts mireds, 1000000 / K,
+so 10 mireds are 25 K at 2000 K and 400 K at 6500 K). Their `min` and `max` are allowed; the change
+stays the default. `reporting` as a whole is refused where the controller configures no reporting:
+a client binding (`action`, button commands), `multistate` (its reports are events) and `ias_zone`
+(zone status change notifications go to the enrolled CIE address).
+
+The defaults, in the units of the image (the export shows the effective values, below):
+
+| Function | `min` | `max` | `change` |
+|---|---|---|---|
+| `on_off` | 0 | 300 | – |
+| `level` | 1 | 300 | 0.4 (%, one attribute step) |
+| `color_temperature` | 1 | 300 | – (10 mireds) |
+| `temperature` | 30 | 600 | 0.1 |
+| `humidity` | 30 | 600 | 1 |
+| `illuminance` | 10 | 600 | – (attribute step 500) |
+| `occupancy` | 0 | 600 | – |
+| `battery` | 3600 | 21600 | 1 |
+
+The controller configures the effective values when a device's interview finishes. When an image is
+applied whose bindings change the effective reporting of a function of an interviewed device (an
+override added, changed or removed, a device bound or unbound), the controller configures that
+function's reporting again at once (and binds its cluster to the coordinator); a device that does
+not answer (a sleepy device that misses the request, or one that refuses it) keeps its previous
+configuration, and a refusal is logged, as after an interview. A function the previous bindings
+did not make a datapoint (newly bound on a bound device) is configured and bound as well; a
+function the new bindings drop keeps what it had. Loading the image at the controller's start configures nothing: the devices
+kept their configuration.
+
+An image without `reporting` loads as before and the devices get the defaults
+(`spec/fixtures/images/zigbee-bindings.json`); the refusals and accepted forms are in the corpus
+`spec/fixtures/images/cases/refuse-zigbee-reporting.json` and `accept-zigbee-reporting.json`.
 
 ## Device database
 
@@ -120,9 +193,11 @@ pairs in the field, E-Home names, places and wires, and ships back as the bindin
 			"endpoints": [{"id": 1, "profile": 260, "device": 770, "in": [0, 3, 1026, 1029, 1027], "out": [], "zone_type": 21}],
 			"functions": [
 				{"name": "zigbee.00158d0001020304.1.temperature", "function": "temperature", "endpoint": 1, "cluster": 1026,
-				 "attribute": 0, "type": "real", "unit": "°C", "writable": false, "datapoint": "bath.temperature"},
+				 "attribute": 0, "type": "real", "unit": "°C", "writable": false,
+				 "reporting": {"min": 30, "max": 900, "change": 0.5}, "datapoint": "bath.temperature"},
 				{"name": "zigbee.00158d0001020304.1.humidity", "function": "humidity", "endpoint": 1, "cluster": 1029,
-				 "attribute": 0, "type": "real", "unit": "%", "writable": false}
+				 "attribute": 0, "type": "real", "unit": "%", "writable": false,
+				 "reporting": {"min": 30, "max": 600, "change": 1}}
 			]
 		}
 	]
@@ -135,8 +210,16 @@ pairs in the field, E-Home names, places and wires, and ships back as the bindin
   endpoints, bound or not: `name` the generic datapoint name, `function` the table's key, `cluster`
   and `attribute` the binding's `cluster`/`attribute` (no `attribute` for `action`, a client
   binding), `type` the value type a binding's `type` must fit, `unit` where the function has one,
-  `writable` whether a binding may be commanded, and `datapoint` the name the loaded model gives it
-  (the image's binding, else the generic name; absent while no model is loaded).
+  `writable` whether a binding may be commanded, `reporting` the reporting the controller uses for
+  it, and `datapoint` the name the loaded model gives it (the image's binding, else the generic
+  name; absent while no model is loaded, and for a function of a bound device that no binding names:
+  such a device has only its bound datapoints).
+- `reporting`: `{"min": s, "max": s, "change": x}`, the effective values (the function table's
+  defaults, or the loaded image's override, "Reporting overrides" above) in the image's units, so
+  the same members written back into a binding change nothing. `change` is absent where a binding
+  cannot set it (`on_off`, `occupancy`, `illuminance`, `color_temperature`); `level`'s change is
+  rounded to one decimal (one attribute step is 0.39 %). `reporting` is absent for `action`,
+  `multistate` and `ias_zone`, which have no reporting configured.
 - `version` counts incompatible changes of this object; a reader refuses a higher one.
 
 ## Adapter view

@@ -1,0 +1,10 @@
+{"image": {"schemaVersion": "1.0", "projectId": "zigbee-bindings", "revision": 1},
+ "datapoints": [
+   {"id": "bath.temperature", "label": "Bathroom temperature", "type": "real",
+    "zigbee": {"ieee": "00158d0005060708", "endpoint": 1, "cluster": 1026, "attribute": 0}},
+   {"id": "bath.humidity", "label": "Bathroom humidity", "type": "real",
+    "zigbee": {"ieee": "00158d0005060708", "endpoint": 1, "cluster": 1029, "attribute": 0}},
+   {"id": "living.ceiling", "label": "Ceiling light", "type": "boolean", "writable": true, "transmit": true,
+    "zigbee": {"ieee": "00124b0001020304", "endpoint": 11, "cluster": 6, "attribute": 0, "command": 6}},
+   {"id": "hall.button", "label": "Hall button", "type": "enumeration",
+    "zigbee": {"ieee": "000b57fffe112233", "endpoint": 1, "cluster": 6, "client": true}}]}
