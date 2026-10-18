@@ -158,6 +158,9 @@ TEST_CASE("PosixMqttClientSpeaksMqtt311WithABroker") {
 	TestBroker broker;
 	std::atomic<bool> broker_ok{false};
 	std::vector<uint8_t> connect_body, publish_body, qos0_body;
+	// The broker holds the PUBACK until the test has seen the publish in flight: the client's
+	// reader thread would otherwise race the check (seen on CI).
+	std::atomic<bool> release_puback{false};
 	std::thread script([&] {
 		Packet p;
 		REQUIRE(broker.accept());
@@ -181,6 +184,9 @@ TEST_CASE("PosixMqttClientSpeaksMqtt311WithABroker") {
 		publish_body = p.body;
 		hc::mqtt::Publish pub;
 		REQUIRE(hc::mqtt::decode_publish(p.header, p.body.data(), p.body.size(), pub));
+		while (!release_puback.load()) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
 		broker.write({0x40, 0x02, static_cast<uint8_t>(pub.packet_id >> 8), static_cast<uint8_t>(pub.packet_id)});
 		REQUIRE(broker.read(p));
 		REQUIRE(p.header.type == PacketType::publish);
@@ -202,7 +208,8 @@ TEST_CASE("PosixMqttClientSpeaksMqtt311WithABroker") {
 		REQUIRE(pump(executor, [&] { return !rec.messages.empty(); }));
 		CHECK(rec.messages[0] == "t/a=hello (retained)");
 		REQUIRE(client.publish("x/y", "v", 1, true, 1, &error));
-		CHECK(client.pending() == 1);
+		CHECK(client.pending() == 1); // the broker has not acknowledged yet
+		release_puback = true;
 		REQUIRE(pump(executor, [&] { return client.pending() == 0; }));
 		REQUIRE(client.publish("x/z", "w", 1, false, 0, &error));
 		REQUIRE(pump(executor, [&] { return !rec.reasons.empty(); }));
