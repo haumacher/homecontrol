@@ -184,6 +184,10 @@ delivery (this list grows; add every trap you fall into):
   A broker or server launched with `&` that keeps the shell's pipe open makes the call wait for
   ever; two agents stalled on exactly this. The same for `rm -rf ./*` after a `cd`: the safety check
   refuses it and the call never returns in an agent. Use a fresh directory per run instead.
+- **Parallel Bash calls share one shell working directory.** A `cd` inside one call (`cd
+  platform/esp && idf.py …`) changes the directory under a call running at the same time, whose
+  relative paths (`spec/api.md`) then miss. Every call that may run beside another uses absolute
+  paths, including the first `cd` of a chain.
 - **Verify a wiring claim on the hardware by its log line, not by the build growing.** The core
   links in whether or not a platform service uses it; only the service's own log line (or its
   console command) proves it runs.
