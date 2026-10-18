@@ -1,6 +1,6 @@
 {
 	"title": "Image swap: state and running timers survive by id; removed timers and rules are cancelled; a lost state is reset",
-	"note": "Review: the swap keeps datapoint values (assumption on the image loader of issue #8, open question 2); this case does not depend on it.",
+	"note": "Decided (spec 12, point 2, issue #26): the swap keeps the values of datapoints whose name and type are unchanged (spec 7.6); this case does not depend on it.",
 	"datapoints": [
 		{"name": "go.cmd", "type": "boolean"},
 		{"name": "m.busy", "type": "boolean"},

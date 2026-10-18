@@ -1,0 +1,124 @@
+{
+	"title": "Rule states survive a reboot, timers do not; a persisted state the image no longer declares resets to the initial state",
+	"description": "Spec 8.5 (decision 3, issue #26). At boot, hall's persisted state 'gone' is not declared and old has no states: two stateReset entries; hall enters its initial state with its entry action. The staircase is switched on at 1000; after the reboot at 30000 it is in 'on' again without running the entry action (no command), its timer is stopped, and the start reaction (reason boot, from 'on') restarts it. At 110000 a swap drops the state 'on' (spec 7.6): stateReset, the initial state with its entry action; the stored state follows.",
+	"datapoints": [
+		{"name": "stairs.button", "type": "boolean"},
+		{"name": "stairs.light", "type": "real"},
+		{"name": "x.c", "type": "boolean"}
+	],
+	"persisted": {
+		"hall/.state": {"type": "state", "value": "gone"},
+		"old/.state": {"type": "state", "value": "running"}
+	},
+	"rules": [
+		{
+			"id": "stairs",
+			"name": "Staircase light",
+			"timers": [{"id": "t", "duration": {"kind": "literal", "type": "duration", "value": 60000}}],
+			"states": [
+				{"id": "off", "entry": [{"kind": "write", "datapoint": "stairs.light", "value": {"kind": "literal", "type": "real", "value": 0.0}}]},
+				{
+					"id": "on",
+					"entry": [
+						{"kind": "write", "datapoint": "stairs.light", "value": {"kind": "literal", "type": "real", "value": 100.0}},
+						{"kind": "restartTimer", "timer": "t"}
+					]
+				}
+			],
+			"initialState": "off",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "stairs.button", "on": "update"}],
+					"condition": {"kind": "datapoint", "name": "stairs.button"},
+					"actions": [],
+					"to": "on"
+				},
+				{"triggers": [{"kind": "timer", "timer": "t"}], "actions": [], "from": ["on"], "to": "off"},
+				{"triggers": [{"kind": "start", "reasons": ["boot"]}], "actions": [{"kind": "restartTimer", "timer": "t"}], "from": ["on"]}
+			]
+		},
+		{
+			"id": "hall",
+			"name": "Hall",
+			"states": [
+				{"id": "idle", "entry": [{"kind": "log", "level": "info", "message": ["hall idle"]}]},
+				{"id": "busy"}
+			],
+			"initialState": "idle",
+			"reactions": [
+				{"triggers": [{"kind": "datapoint", "datapoint": "x.c"}], "actions": [], "to": "busy"}
+			]
+		},
+		{
+			"id": "old",
+			"name": "Old",
+			"reactions": [
+				{"triggers": [{"kind": "datapoint", "datapoint": "x.c"}], "actions": [{"kind": "log", "level": "info", "message": ["c"]}]}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "stairs.button", "value": true}},
+		{"at": 15000, "check": {"states": {"stairs": "on", "hall": "idle"}, "persisted": {"stairs/.state": "on", "hall/.state": "idle"}}},
+		{"at": 30000, "reboot": true},
+		{"at": 30000, "check": {"states": {"stairs": "on", "hall": "idle"}, "timers": {"stairs/t": 60000}}},
+		{"at": 100000, "report": {"datapoint": "stairs.button", "value": true}},
+		{"at": 110000, "image": {"rules": [
+			{
+				"id": "stairs",
+				"name": "Staircase light",
+				"timers": [{"id": "t", "duration": {"kind": "literal", "type": "duration", "value": 60000}}],
+				"states": [
+					{"id": "off", "entry": [{"kind": "write", "datapoint": "stairs.light", "value": {"kind": "literal", "type": "real", "value": 0.0}}]},
+					{
+						"id": "lit",
+						"entry": [
+							{"kind": "write", "datapoint": "stairs.light", "value": {"kind": "literal", "type": "real", "value": 100.0}},
+							{"kind": "restartTimer", "timer": "t"}
+						]
+					}
+				],
+				"initialState": "off",
+				"reactions": [
+					{
+						"triggers": [{"kind": "datapoint", "datapoint": "stairs.button", "on": "update"}],
+						"condition": {"kind": "datapoint", "name": "stairs.button"},
+						"actions": [],
+						"to": "lit"
+					},
+					{"triggers": [{"kind": "timer", "timer": "t"}], "actions": [], "from": ["lit"], "to": "off"}
+				]
+			},
+			{
+				"id": "hall",
+				"name": "Hall",
+				"states": [
+					{"id": "idle", "entry": [{"kind": "log", "level": "info", "message": ["hall idle"]}]},
+					{"id": "busy"}
+				],
+				"initialState": "idle",
+				"reactions": [
+					{"triggers": [{"kind": "datapoint", "datapoint": "x.c"}], "actions": [], "to": "busy"}
+				]
+			}
+		]}},
+		{"at": 125000, "check": {"states": {"stairs": "off"}, "persisted": {"stairs/.state": "off", "hall/.state": "idle"}}}
+	],
+	"end": 200000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "stairs", "datapoint": "stairs.light", "value": 0.0},
+			{"at": 1000, "rule": "stairs", "datapoint": "stairs.light", "value": 100.0},
+			{"at": 90000, "rule": "stairs", "datapoint": "stairs.light", "value": 0.0},
+			{"at": 100000, "rule": "stairs", "datapoint": "stairs.light", "value": 100.0},
+			{"at": 110000, "rule": "stairs", "datapoint": "stairs.light", "value": 0.0}
+		],
+		"logs": [
+			{"at": 0, "rule": "hall", "code": "stateReset"},
+			{"at": 0, "rule": "old", "code": "stateReset"},
+			{"at": 0, "rule": "hall", "code": "log", "level": "info", "message": "hall idle"},
+			{"at": 110000, "rule": "stairs", "code": "stateReset"}
+		],
+		"final": {"states": {"stairs": "off", "hall": "idle"}, "timers": {"stairs/t": null}, "persisted": {"stairs/.state": "off", "hall/.state": "idle"}}
+	}
+}

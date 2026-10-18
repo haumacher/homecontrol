@@ -12,6 +12,7 @@
 #include <new>
 #include <utility>
 
+#include "hc/network_settings.h"
 #include "hc/rules/printer.h"
 
 namespace hc::rules {
@@ -63,8 +64,9 @@ int64_t seconds_of(const DateTime& d) {
 	return days_of(d.year, d.month, d.day) * 86400 + d.hour * 3600 + d.minute * 60 + d.second;
 }
 
-/// Ordering of two present values of ordered types (numeric mix compares as real).
-int order(const Val& a, const Val& b) {
+/// Ordering of two present values of ordered types (numeric mix compares as real). Date-times
+/// compare as instants when `zone` is given (spec 4.5), as local fields otherwise.
+int order(const Val& a, const Val& b, const TimeSource* zone = nullptr) {
 	if ((a.type == Type::integer || a.type == Type::real) && (b.type == Type::integer || b.type == Type::real)) {
 		if (is_real(a) || is_real(b)) {
 			return sign(as_double(a) - as_double(b)) == 0 ? (as_double(a) < as_double(b) ? -1 : (as_double(a) > as_double(b) ? 1 : 0))
@@ -80,7 +82,9 @@ int order(const Val& a, const Val& b) {
 			int64_t y = days_of(b.u.date.year, b.u.date.month, b.u.date.day);
 			return sign64(x, y);
 		}
-		case Type::date_time: return sign64(seconds_of(a.u.dt), seconds_of(b.u.dt));
+		case Type::date_time:
+			return zone != nullptr ? sign64(zone->local_to_utc(a.u.dt), zone->local_to_utc(b.u.dt))
+								   : sign64(seconds_of(a.u.dt), seconds_of(b.u.dt));
 		case Type::string: {
 			size_t n = a.length < b.length ? a.length : b.length;
 			int c = std::memcmp(a.u.bytes, b.u.bytes, n);
@@ -93,8 +97,9 @@ int order(const Val& a, const Val& b) {
 	}
 }
 
-/// Equality of the language (spec 4.5), numeric and enumeration/integer mixes included.
-bool equal(const Val& a, const Val& b) {
+/// Equality of the language (spec 4.5), numeric and enumeration/integer mixes included; date-times
+/// as instants when `zone` is given.
+bool equal(const Val& a, const Val& b, const TimeSource* zone = nullptr) {
 	bool a_num = a.type == Type::integer || a.type == Type::real;
 	bool b_num = b.type == Type::integer || b.type == Type::real;
 	if (a_num && b_num) {
@@ -108,6 +113,9 @@ bool equal(const Val& a, const Val& b) {
 	}
 	if (a.type == Type::integer && b.type == Type::enumeration) {
 		return a.u.i == static_cast<int64_t>(b.u.e);
+	}
+	if (zone != nullptr && a.type == Type::date_time && b.type == Type::date_time) {
+		return zone->local_to_utc(a.u.dt) == zone->local_to_utc(b.u.dt);
 	}
 	return val_equal(a, b);
 }
@@ -177,6 +185,7 @@ struct Engine::RuleRuntime {
 	bool last_trigger_wall_valid = false;
 	uint8_t state = kNoState;
 	bool has_state = false;
+	bool state_dirty = false; ///< The state changed; its write is delayed (spec 8.5).
 };
 
 struct Engine::ParamRuntime {
@@ -231,7 +240,7 @@ Val eval_fail(bool& error, const char*& error_text, Type type, const char* text)
 // Construction
 
 Engine::Engine(EventLoop& loop, DatapointModel& model, const Clock& clock, Settings& settings, const TimeSource& time)
-	: loop_(loop), model_(model), clock_(clock), store_(settings), time_(time) {
+	: loop_(loop), model_(model), clock_(clock), settings_(settings), store_(settings), time_(time) {
 	listening_ = model_.add_listener(*this) == DatapointStatus::ok;
 	if (!listening_) {
 		Log::error(kTag, "rule engine cannot listen to the datapoint model: no datapoint triggers");
@@ -239,6 +248,7 @@ Engine::Engine(EventLoop& loop, DatapointModel& model, const Clock& clock, Setti
 }
 
 Engine::~Engine() {
+	persist_now();
 	if (loop_timer_.valid()) {
 		loop_.cancel(loop_timer_);
 	}
@@ -291,51 +301,6 @@ void Engine::log_code(const char* rule_id, RuleRuntime* rr, LogCode code, LogLev
 // ------------------------------------------------------------------------------------------
 // Loading and swapping
 
-bool Engine::check_parameter_keys(const RuleSet& next, LoadResult& result) const {
-	size_t count = next.parameter_count();
-	if (count < 2) {
-		return true;
-	}
-	struct Entry {
-		uint64_t hash;
-		uint16_t rule;
-		uint16_t parameter;
-	};
-	Entry* entries = new (std::nothrow) Entry[count];
-	if (entries == nullptr) {
-		result.error = LoadError::out_of_memory;
-		std::snprintf(result.text, sizeof(result.text), "no memory to check the parameter keys");
-		return false;
-	}
-	size_t n = 0;
-	for (size_t r = 0; r < next.rule_count(); ++r) {
-		const Rule& rule = next.rule(r);
-		for (size_t p = 0; p < rule.parameter_count; ++p) {
-			entries[n++] = Entry{ParameterStore::hash(next.str(rule.id), next.str(next.parameter(rule.first_parameter + p).id)),
-				static_cast<uint16_t>(r), static_cast<uint16_t>(rule.first_parameter + p)};
-		}
-	}
-	std::sort(entries, entries + n, [](const Entry& a, const Entry& b) { return a.hash < b.hash; });
-	bool ok = true;
-	for (size_t i = 1; i < n && ok; ++i) {
-		if (entries[i].hash == entries[i - 1].hash) {
-			const Entry& a = entries[i - 1];
-			const Entry& b = entries[i];
-			result.error = LoadError::limit_exceeded;
-			std::snprintf(result.rule, sizeof(result.rule), "%s", next.str(next.rule(b.rule).id));
-			std::snprintf(result.text, sizeof(result.text), "the storage keys of %s/%s and %s/%s collide; rename one",
-				next.str(next.rule(a.rule).id), next.str(next.parameter(a.parameter).id), next.str(next.rule(b.rule).id),
-				next.str(next.parameter(b.parameter).id));
-			ok = false;
-		}
-	}
-	delete[] entries;
-	if (!ok) {
-		Log::error(kTag, "rules refused: rule '%s': %s: %s", result.rule, load_error_name(result.error), result.text);
-	}
-	return ok;
-}
-
 bool Engine::parameter_valid(const Parameter& d, const Val& v) const {
 	if (!v.present || v.type != d.type) {
 		return false;
@@ -360,8 +325,10 @@ bool Engine::parameter_valid(const Parameter& d, const Val& v) const {
 LoadResult Engine::load(const JsonValue& rules, const ScheduleDirectory* schedules, const uint16_t* previous_ids) {
 	flush();
 	RuleSet next;
-	LoadResult result = next.load(rules, model_, schedules);
-	if (!result.ok() || !check_parameter_keys(next, result)) {
+	char language[setting::kMaxUiLangLength + 1];
+	read_ui_lang(settings_, language, kTag); // labels in the device's language (spec 2.2)
+	LoadResult result = next.load(rules, model_, schedules, language);
+	if (!result.ok()) {
 		return result;
 	}
 	install(std::move(next), result, previous_ids);
@@ -375,10 +342,7 @@ template <class Owner>
 class KeepOverrides : public ParameterStore::Visitor {
 public:
 	explicit KeepOverrides(const Owner& owner) : owner_(owner) {}
-	bool entry(const char* logical, const Val& value) override {
-		(void)value;
-		return owner_.keeps(logical);
-	}
+	bool entry(const char* logical, const Val& value) override { return owner_.keeps(logical, value); }
 
 private:
 	const Owner& owner_;
@@ -529,6 +493,29 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 				}
 			}
 		}
+		if (o < 0 && boot) {
+			// A reboot: the rule enters its persisted state when the image still declares it; its
+			// entry actions do not run again (spec 8.5).
+			Val stored;
+			if (store_.read(rule_id, ParameterStore::kStateKey, stored)) {
+				const char* stored_id = stored.type == Type::string ? stored.str() : "?";
+				int s = (stored.type == Type::string && rule.state_count > 0) ? next.find_state(r, stored_id) : -1;
+				if (s >= 0) {
+					nr.state = static_cast<uint8_t>(s);
+					nr.has_state = true;
+				} else {
+					char text[112];
+					if (rule.state_count > 0) {
+						std::snprintf(text, sizeof(text),
+							"persisted state '%s' is not in the image; the rule enters its initial state", stored_id);
+					} else {
+						std::snprintf(text, sizeof(text), "persisted state '%s' discarded: the rule has no states",
+							stored_id);
+					}
+					log_code(rule_id, &nr, LogCode::state_reset, LogLevel::warn, "persisted state not in the image", text);
+				}
+			}
+		}
 		for (size_t p = 0; p < rule.parameter_count; ++p) {
 			const Parameter& decl = next.parameter(rule.first_parameter + p);
 			ParamRuntime& np = rt->params[rule.first_parameter + p];
@@ -631,10 +618,10 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	booted_ = true;
 
 	// Delete the stored overrides that no parameter holds any more (removed rules, undeclared
-	// parameters, collisions, unreadable entries).
+	// parameters, collisions, unreadable entries) and the stored states the image does not declare.
 	struct Keeper {
 		const Engine& engine;
-		bool keeps(const char* logical) const {
+		bool keeps(const char* logical, const Val& value) const {
 			const char* slash = std::strchr(logical, '/');
 			if (slash == nullptr || static_cast<size_t>(slash - logical) > 32) {
 				return false;
@@ -645,6 +632,10 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 			int r = engine.set_.find_rule(rule_id);
 			if (r < 0) {
 				return false;
+			}
+			if (std::strcmp(slash + 1, ParameterStore::kStateKey) == 0) {
+				return engine.set_.rule(static_cast<size_t>(r)).state_count > 0 && value.type == Type::string &&
+					engine.set_.find_state(static_cast<size_t>(r), value.str()) >= 0;
 			}
 			int p = engine.set_.find_parameter(static_cast<size_t>(r), slash + 1);
 			return p >= 0 && engine.runtime_->params[engine.set_.rule(static_cast<size_t>(r)).first_parameter + p].overridden;
@@ -986,9 +977,20 @@ void Engine::apply_parameter(size_t rule, size_t index, const Val& value, bool d
 	const Parameter& d = set_.parameter(r.first_parameter + index);
 	ParamRuntime& pr = runtime_->params[r.first_parameter + index];
 	Val old = pr.value;
+	bool was_overridden = pr.overridden;
 	pr.value = value;
-	pr.overridden = true;
-	store_.write(set_.str(r.id), set_.str(d.id), value);
+	if (val_identical(value, set_.constant(d.default_value))) {
+		// The default is a reset, not an override: the parameter follows later defaults (spec 8.2).
+		pr.overridden = false;
+		if (was_overridden) {
+			store_.erase(set_.str(r.id), set_.str(d.id));
+		}
+	} else {
+		pr.overridden = true;
+		if (!was_overridden || !val_identical(old, value)) {
+			store_.write(set_.str(r.id), set_.str(d.id), value);
+		}
+	}
 	if (val_identical(old, value)) {
 		return;
 	}
@@ -1003,6 +1005,55 @@ void Engine::apply_parameter(size_t rule, size_t index, const Val& value, bool d
 		push_cascade(event, rule);
 	} else if (push_inbound(event)) {
 		post_drain();
+	}
+}
+
+void Engine::state_changed(size_t rule) {
+	runtime_->rules[rule].state_dirty = true;
+	if (persist_pending_) {
+		return;
+	}
+	persist_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kStatePersistDelayMs,
+		Callback::member<Engine, &Engine::on_persist>(this));
+	persist_pending_ = persist_timer_.valid();
+	if (!persist_pending_) {
+		Log::error(kTag, "cannot delay the write of a rule state; written now");
+		persist_now();
+	}
+}
+
+void Engine::on_persist() {
+	persist_timer_ = TimerHandle();
+	persist_pending_ = false;
+	persist_now();
+}
+
+void Engine::persist_now() {
+	if (persist_pending_) {
+		loop_.cancel(persist_timer_);
+		persist_timer_ = TimerHandle();
+		persist_pending_ = false;
+	}
+	if (runtime_ == nullptr) {
+		return;
+	}
+	for (size_t r = 0; r < runtime_->rule_count; ++r) {
+		RuleRuntime& rr = runtime_->rules[r];
+		if (!rr.state_dirty) {
+			continue;
+		}
+		rr.state_dirty = false;
+		if (!rr.has_state) {
+			continue;
+		}
+		const char* rule_id = set_.str(set_.rule(r).id);
+		const char* state_id = set_.str(set_.state(set_.rule(r).first_state + rr.state).id);
+		Val stored;
+		if (store_.read(rule_id, ParameterStore::kStateKey, stored) && stored.type == Type::string &&
+			std::strcmp(stored.str(), state_id) == 0) {
+			continue; // the store holds it already
+		}
+		store_.write(rule_id, ParameterStore::kStateKey, Val::of_string(state_id, std::strlen(state_id)));
 	}
 }
 
@@ -1059,6 +1110,7 @@ void Engine::run_start(size_t rule, StartReason reason) {
 	if (r.state_count > 0 && !rr.has_state) {
 		rr.state = r.initial_state;
 		rr.has_state = true;
+		state_changed(rule);
 		if (enabled(rule)) {
 			current_rule_ = rule;
 			run_actions(rule, set_.state(r.first_state + r.initial_state).entry);
@@ -1172,9 +1224,10 @@ void Engine::process_event(const Event& e, bool derived) {
 		}
 		if (derived) {
 			if (derived_firings_ + 1 > Limits::kDerivedFirings) {
-				// Name the rule refused and the one that fired most in this cascade.
-				size_t culprit = r;
-				for (size_t i = 0; i < rt.rule_count; ++i) {
+				// Name the rule refused and the one that fired most in this cascade (the first in rule
+				// order on a tie), from the cascade's per-rule counters (spec 9.2).
+				size_t culprit = 0;
+				for (size_t i = 1; i < rt.rule_count; ++i) {
 					if (rt.rules[i].cascade_firings > rt.rules[culprit].cascade_firings) {
 						culprit = i;
 					}
@@ -1184,6 +1237,10 @@ void Engine::process_event(const Event& e, bool derived) {
 					"cascade refused after %u derived firings (most: %s with %u); the queue is emptied",
 					static_cast<unsigned>(Limits::kDerivedFirings), set_.str(set_.rule(culprit).id),
 					static_cast<unsigned>(rt.rules[culprit].cascade_firings));
+				if (observer_) {
+					observer_->loop_guard(set_.str(rule.id), set_.str(set_.rule(culprit).id),
+						rt.rules[culprit].cascade_firings);
+				}
 				aborted_ = true;
 				queue_head_ = queue_count_ = 0;
 				break;
@@ -1242,6 +1299,7 @@ void Engine::process_event(const Event& e, bool derived) {
 					run_actions(r, reaction.actions);
 					rr.state = reaction.to;
 					rr.has_state = true;
+					state_changed(r);
 					run_actions(r, set_.state(rule.first_state + reaction.to).entry);
 					break;
 				}
@@ -1540,12 +1598,12 @@ Val Engine::eval_binary(const Node& n, Eval& cx) {
 		return Val::none(n.type);
 	}
 	switch (op) {
-		case Op::eq: return Val::of_bool(equal(a, b));
-		case Op::ne: return Val::of_bool(!equal(a, b));
-		case Op::lt: return Val::of_bool(order(a, b) < 0);
-		case Op::le: return Val::of_bool(order(a, b) <= 0);
-		case Op::gt: return Val::of_bool(order(a, b) > 0);
-		case Op::ge: return Val::of_bool(order(a, b) >= 0);
+		case Op::eq: return Val::of_bool(equal(a, b, &time_));
+		case Op::ne: return Val::of_bool(!equal(a, b, &time_));
+		case Op::lt: return Val::of_bool(order(a, b, &time_) < 0);
+		case Op::le: return Val::of_bool(order(a, b, &time_) <= 0);
+		case Op::gt: return Val::of_bool(order(a, b, &time_) > 0);
+		case Op::ge: return Val::of_bool(order(a, b, &time_) >= 0);
 		default: break;
 	}
 	auto real_result = [&](double r) { return std::isfinite(r) ? Val::of_real(r) : fail("a result that is not a finite real"); };
@@ -1586,32 +1644,22 @@ Val Engine::eval_binary(const Node& n, Eval& cx) {
 				return Val::of_time(t);
 			}
 			if (a.type == Type::date_time && b.type == Type::duration) {
-				int64_t seconds = b.u.i / 1000;
-				int64_t s = seconds_of(a.u.dt) + (add ? seconds : -seconds);
-				int64_t days = s >= 0 ? s / 86400 : (s - 86399) / 86400;
-				int64_t rest = s - days * 86400;
-				int32_t year = 0;
-				unsigned month = 0, day = 0;
-				civil_of(days, year, month, day);
-				if (year < 1900 || year > 2155) {
+				// On the instant: a duration is elapsed time, also across a DST change (spec 4.6).
+				int64_t seconds = b.u.i / 1000; // truncated toward zero
+				int64_t utc = time_.local_to_utc(a.u.dt) + (add ? seconds : -seconds);
+				DateTime d;
+				if (utc < days_of(1899, 12, 31) * 86400 || utc > days_of(2156, 1, 2) * 86400 ||
+					!time_.utc_to_local(utc, d) || d.year < 1900 || d.year > 2155) {
 					return fail("date-time out of range");
 				}
-				DateTime d;
-				d.year = static_cast<uint16_t>(year);
-				d.month = static_cast<uint8_t>(month);
-				d.day = static_cast<uint8_t>(day);
-				d.hour = static_cast<uint8_t>(rest / 3600);
-				d.minute = static_cast<uint8_t>(rest % 3600 / 60);
-				d.second = static_cast<uint8_t>(rest % 60);
-				d.day_of_week = weekday_of(year, month, day);
-				d.flags = 0;
+				d.flags = static_cast<uint16_t>(d.flags & DateTime::kSummerTime);
 				return Val::of_date_time(d);
 			}
 			if (a.type == Type::time_of_day) { // timeOfDay - timeOfDay
 				return Val::of_duration(static_cast<int64_t>(seconds_of_day(a.u.tod) - seconds_of_day(b.u.tod)) * 1000);
 			}
 			if (a.type == Type::date_time) {
-				return Val::of_duration((seconds_of(a.u.dt) - seconds_of(b.u.dt)) * 1000);
+				return Val::of_duration((time_.local_to_utc(a.u.dt) - time_.local_to_utc(b.u.dt)) * 1000);
 			}
 			if (a.type == Type::date) {
 				return Val::of_duration((days_of(a.u.date.year, a.u.date.month, a.u.date.day) -
@@ -1719,23 +1767,23 @@ Val Engine::eval_call(const Node& n, Eval& cx) {
 			if (!x.has() || !low.has() || !high.has()) {
 				return Val::none(n.type);
 			}
-			if (order(low, high) > 0) {
+			if (order(low, high, &time_) > 0) {
 				return Val::of_bool(false);
 			}
-			return Val::of_bool(order(low, x) <= 0 && order(x, high) <= 0);
+			return Val::of_bool(order(low, x, &time_) <= 0 && order(x, high, &time_) <= 0);
 		}
 		case Fn::hysteresis: {
 			Val x = arg(0), low = arg(1), high = arg(2);
 			if (!x.has() || !low.has() || !high.has()) {
 				return Val::none(n.type);
 			}
-			if (order(low, high) >= 0) {
+			if (order(low, high, &time_) >= 0) {
 				return fail("hysteresis with low >= high");
 			}
-			if (order(x, high) >= 0) {
+			if (order(x, high, &time_) >= 0) {
 				return Val::of_bool(true);
 			}
-			if (order(x, low) <= 0) {
+			if (order(x, low, &time_) <= 0) {
 				return Val::of_bool(false);
 			}
 			return arg(3);
@@ -1764,7 +1812,7 @@ Val Engine::eval_call(const Node& n, Eval& cx) {
 					missing = true;
 					continue;
 				}
-				if (!best.has() || (fn == Fn::min ? order(x, best) < 0 : order(x, best) > 0)) {
+				if (!best.has() || (fn == Fn::min ? order(x, best, &time_) < 0 : order(x, best, &time_) > 0)) {
 					best = x;
 				}
 			}
@@ -1775,11 +1823,11 @@ Val Engine::eval_call(const Node& n, Eval& cx) {
 			if (!x.has() || !low.has() || !high.has()) {
 				return Val::none(n.type);
 			}
-			if (order(low, high) > 0) {
+			if (order(low, high, &time_) > 0) {
 				return fail("clamp with low > high");
 			}
-			Val result = order(x, high) > 0 ? high : x;
-			if (order(result, low) < 0) {
+			Val result = order(x, high, &time_) > 0 ? high : x;
+			if (order(result, low, &time_) < 0) {
 				result = low;
 			}
 			return promote(result, n.type);

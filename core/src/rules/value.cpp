@@ -266,7 +266,16 @@ bool put_literal_common(Out& out, const Val& v) {
 			out.put(text);
 			return true;
 		}
-		case Type::time_of_day: put_time(out, v.u.tod.hour, v.u.tod.minute, v.u.tod.second); return true;
+		case Type::time_of_day: {
+			// A day of the week precedes the time (spec 4.2): "mon 07:30".
+			static const char* const kDays[] = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"};
+			if (v.u.tod.day_of_week >= 1 && v.u.tod.day_of_week <= 7) {
+				out.put(kDays[v.u.tod.day_of_week - 1]);
+				out.put(' ');
+			}
+			put_time(out, v.u.tod.hour, v.u.tod.minute, v.u.tod.second);
+			return true;
+		}
 		case Type::date: put_date(out, v.u.date.year, v.u.date.month, v.u.date.day); return true;
 		case Type::date_time:
 			put_date(out, v.u.dt.year, v.u.dt.month, v.u.dt.day);

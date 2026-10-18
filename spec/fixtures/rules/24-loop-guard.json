@@ -1,7 +1,7 @@
 {
 	"title": "Loop guard: a ping-pong between two rules is refused after 32 derived firings; the next external event works normally",
-	"description": "The direct firing of ping by the external report is not counted; derived firings 1..32 alternate pong, ping; the 33rd (pong) is refused.",
-	"note": "Review: the direct firings of the external event are not counted; the limit is 32 derived firings.",
+	"description": "The direct firing of ping by the external report is not counted; derived firings 1..32 alternate pong, ping; the 33rd (pong) is refused. The log entry names the culprit (spec 9.2): the rule with the most derived firings in the cascade, the first in rule order on a tie; here ping and pong have 16 each, so ping.",
+	"note": "Decided (spec 12, point 8, issue #25): the direct firings of the external event are not counted; the limit is 32 derived firings; the entry names the culprit.",
 	"datapoints": [
 		{"name": "x.a", "type": "unsigned"},
 		{"name": "x.b", "type": "unsigned"},
@@ -93,7 +93,7 @@
 			{"at": 1000, "rule": "ping", "datapoint": "x.b", "value": 17}
 		],
 		"logs": [
-			{"at": 1000, "rule": "pong", "code": "loopGuard"},
+			{"at": 1000, "rule": "pong", "code": "loopGuard", "culprit": "ping", "firings": 16},
 			{"at": 2000, "rule": "watch", "code": "log", "level": "info", "message": "c ok"}
 		],
 		"final": {"datapoints": {"x.a": 16, "x.b": 17}, "firings": {"ping": 17, "pong": 16, "watch": 1}}

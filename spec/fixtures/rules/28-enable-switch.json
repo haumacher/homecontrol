@@ -1,6 +1,7 @@
 {
 	"title": "The enable switch: disabling cancels timers and stops firing; enabling starts with reason enable; a fixed switch is refused",
-	"note": "Review: disabling a rule cancels its running timers; its light stays on (open question 4).",
+	"description": "Switching the rule back on sets the enable switch to its default: the override is removed, nothing stays persisted (spec 8.2).",
+	"note": "Decided (spec 12, point 4, issue #26): disabling a rule cancels its running timers; its light stays on.",
 	"datapoints": [{"name": "m.motion", "type": "boolean"}, {"name": "m.light", "type": "boolean"}],
 	"rules": [
 		{
@@ -71,7 +72,7 @@
 			{"at": 90000, "rule": "fixed", "code": "log", "level": "info", "message": "fixed"}
 		],
 		"final": {
-			"persisted": {"auto/enabled": true},
+			"persisted": {},
 			"parameters": {"auto/enabled": true, "fixed/enabled": true},
 			"firings": {"auto": 4, "fixed": 3}
 		}

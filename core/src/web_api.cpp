@@ -1473,6 +1473,21 @@ void WebApi::history(const WebRequest& request, WebResponse& response) {
 	finish(response, json);
 }
 
+namespace {
+
+/// A label of the rule set (spec/rules.md 2.2): the image's language map as it came, or the text.
+void write_label(JsonWriter& json, const rules::RuleSet& set, const char* key, uint32_t text, uint32_t map) {
+	json.key(key);
+	const char* raw = set.label_json(map);
+	if (raw != nullptr) {
+		json.raw(raw, std::strlen(raw));
+	} else {
+		json.string(set.str(text));
+	}
+}
+
+} // namespace
+
 void WebApi::write_rule(JsonWriter& json, size_t index) {
 	rules::Engine& engine = image_->engine();
 	const rules::RuleSet& set = engine.rules();
@@ -1480,10 +1495,9 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 	rules::RuleDiagnostics d;
 	engine.diagnostics(index, d);
 	const rules::Parameter& enabled = set.parameter(rule.first_parameter);
-	json.begin_object()
-		.member("id", d.id)
-		.member("name", d.name)
-		.member("enabled", engine.enabled(index))
+	json.begin_object().member("id", d.id);
+	write_label(json, set, "name", rule.name, rule.name_json);
+	json.member("enabled", engine.enabled(index))
 		.member("enabledAdjustable", enabled.adjustable)
 		.member("enabledOverridden", engine.parameter_overridden(index, 0))
 		.member("firings", d.firings);
@@ -1522,10 +1536,9 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 	for (size_t p = 1; p < rule.parameter_count; ++p) {
 		const rules::Parameter& decl = set.parameter(rule.first_parameter + p);
 		const char* id = set.str(decl.id);
-		json.begin_object()
-			.member("id", id)
-			.member("label", set.str(decl.label)[0] != '\0' ? set.str(decl.label) : id)
-			.member("type", rules::type_name(decl.type))
+		json.begin_object().member("id", id);
+		write_label(json, set, "label", decl.label, decl.label_json);
+		json.member("type", rules::type_name(decl.type))
 			.member("unit", set.str(decl.unit))
 			.member("adjustable", decl.adjustable)
 			.member("overridden", engine.parameter_overridden(index, p));
@@ -1551,7 +1564,8 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 				const rules::Choice& choice = set.choice(decl.first_choice + c);
 				json.begin_object().key("value");
 				write_val(json, set.constant(choice.value));
-				json.member("label", set.str(choice.label)).end_object();
+				write_label(json, set, "label", choice.label, choice.label_json);
+				json.end_object();
 			}
 			json.end_array();
 		}

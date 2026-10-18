@@ -94,9 +94,13 @@ duration part  = digit , { digit } , duration unit ;
 
 duration unit  = "d" | "h" | "min" | "s" | "ms" ;                         (* day = 24 h; no "m" *)
 
-time literal   = digit , [ digit ] , ":" , digit , digit , [ ":" , digit , digit ] ;
+time literal   = [ weekday , " " ] , digit , [ digit ] , ":" , digit , digit , [ ":" , digit , digit ] ;
                                                                            (* lexical; 0..23 : 0..59
-                                                                              [ : 0..59 ] *)
+                                                                              [ : 0..59 ]; one space
+                                                                              after the day: mon 07:30 *)
+
+weekday        = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun" ;  (* only before a time; else
+                                                                              an ordinary identifier *)
 
 date literal   = 4 * digit , "-" , 2 * digit , "-" , 2 * digit ;          (* lexical; a valid
                                                                               Gregorian date, year
@@ -137,4 +141,6 @@ hex digit      = digit | "A" | "B" | "C" | "D" | "E" | "F" | "a" | "b" | "c" | "
  *   1.5e3           is a real; 1e3 is an error (an integer followed by an identifier).
  *   x"0AFF"         is a raw literal; x is otherwise an ordinary identifier.
  *   @a.b-1          is the datapoint a.b minus 1: "-" does not belong to a bare datapoint name.
+ *   mon 07:30       is one time literal (a time of day on Mondays); a weekday word is a literal
+ *                   only when one space and a time follow it.
  *)

@@ -33,11 +33,43 @@ enum class SunEvent : uint8_t { sunrise, sunset, dawn, dusk };
 /// coordinates); the tests use a fake.
 class TimeSource {
 public:
-	/// The current local time with its day of the week (1 Monday .. 7 Sunday) and no flags; false
-	/// while the wall clock is not synchronized.
+	/// The current local time with its day of the week (1 Monday .. 7 Sunday); its only flag is
+	/// DateTime::kSummerTime while daylight saving time is in effect. False while the wall clock is
+	/// not synchronized.
 	virtual bool local_now(DateTime& out) const = 0;
 	/// Today's local time of `event`; false without coordinates or when it does not occur today.
 	virtual bool sun_time(SunEvent event, TimeOfDay& out) const = 0;
+
+	/// The instant (seconds since the epoch, UTC) of the local civil time `local` (spec 4.6): a time
+	/// that occurs twice (the hour after a fall-back) is its daylight-saving occurrence when
+	/// DateTime::kSummerTime is set and its standard-time occurrence otherwise; a time that does
+	/// not exist (a spring-forward gap) is the instant the gap ends. The other flags and the day of
+	/// the week are ignored. The default is the zone UTC (the fields are the instant).
+	virtual int64_t local_to_utc(const DateTime& local) const {
+		return days_of(local.year, local.month, local.day) * 86400 + local.hour * 3600 + local.minute * 60 +
+			local.second;
+	}
+	/// The local civil time of an instant, with its day of the week and kSummerTime while daylight
+	/// saving time is in effect; false if the zone cannot convert it. The default is UTC.
+	virtual bool utc_to_local(int64_t utc_seconds, DateTime& out) const {
+		int64_t days = utc_seconds >= 0 ? utc_seconds / 86400 : (utc_seconds - 86399) / 86400;
+		int64_t rest = utc_seconds - days * 86400;
+		int32_t year = 0;
+		unsigned month = 0, day = 0;
+		civil_of(days, year, month, day);
+		if (year < 1900 || year > 2155) {
+			return false;
+		}
+		out = DateTime();
+		out.year = static_cast<uint16_t>(year);
+		out.month = static_cast<uint8_t>(month);
+		out.day = static_cast<uint8_t>(day);
+		out.hour = static_cast<uint8_t>(rest / 3600);
+		out.minute = static_cast<uint8_t>(rest % 3600 / 60);
+		out.second = static_cast<uint8_t>(rest % 60);
+		out.day_of_week = weekday_of(year, month, day);
+		return true;
+	}
 
 protected:
 	~TimeSource() = default;
@@ -79,6 +111,11 @@ public:
 	/// A parameter's current value changed (UI, API, action, reset, new image).
 	virtual void parameter_changed(const char* rule, const char* parameter, const Val& value) {
 		(void)rule, (void)parameter, (void)value;
+	}
+	/// Right after the loopGuard entry of `rule` (the rule refused): the rule with the most derived
+	/// firings in the aborted cascade (the first in rule order on a tie) and that count (spec 9.2).
+	virtual void loop_guard(const char* rule, const char* culprit, uint32_t firings) {
+		(void)rule, (void)culprit, (void)firings;
 	}
 
 protected:
@@ -192,6 +229,14 @@ public:
 	/// Processes the queued external events now (call before reloading the datapoint model).
 	void flush();
 
+	/// How long a changed rule state waits before it is written (spec 8.4, 8.5: writes are delayed
+	/// by up to 10 s and coalesced to protect the flash).
+	static constexpr uint32_t kStatePersistDelayMs = 10000;
+
+	/// Writes the rule states whose write is still delayed (an orderly shutdown; the destructor does
+	/// it too). Writes nothing for a state the store already holds.
+	void persist_now();
+
 	void set_observer(EngineObserver* observer) { observer_ = observer; }
 
 	const RuleSet& rules() const { return set_; }
@@ -277,11 +322,15 @@ private:
 
 	// Swap.
 	bool install(RuleSet&& next, LoadResult& result, const uint16_t* previous_ids);
-	bool check_parameter_keys(const RuleSet& next, LoadResult& result) const;
+
+	// State persistence (spec 8.5).
+	void state_changed(size_t rule);
+	void on_persist();
 
 	EventLoop& loop_;
 	DatapointModel& model_;
 	const Clock& clock_;
+	Settings& settings_;
 	ParameterStore store_;
 	const TimeSource& time_;
 	EngineObserver* observer_ = nullptr;
@@ -312,6 +361,8 @@ private:
 
 	TimerHandle loop_timer_;
 	uint64_t loop_deadline_ = 0;
+	TimerHandle persist_timer_;
+	bool persist_pending_ = false;
 	uint32_t timer_sequence_ = 0;
 };
 

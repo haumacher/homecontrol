@@ -8,7 +8,7 @@ import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
 import { formatAgo, formatDurationShort, formatNumber } from "/format.js";
 import { t } from "/i18n.js";
-import { pages } from "/model.js";
+import { label, pages } from "/model.js";
 
 const POLL_MS = 10000;
 const DURATION_UNITS = { ms: 1, s: 1000, min: 60000, h: 3600000, d: 86400000 };
@@ -29,7 +29,7 @@ function valueText(p, value) {
 			return formatNumber(value, p.unit, p.type === "integer" ? 0 : 2);
 		case "enumeration": {
 			const choice = (p.choices || []).find((c) => c.value === value);
-			return choice ? choice.label : String(value);
+			return choice ? label(choice.label, String(value)) : String(value);
 		}
 		case "timeOfDay":
 			return `${String(value.hour).padStart(2, "0")}:${String(value.minute).padStart(2, "0")}`;
@@ -70,7 +70,7 @@ function parameterRow(rule, p, commit) {
 		control.querySelector("input").id = id;
 	} else if (p.choices && p.choices.length) {
 		control = h("select", { id, onchange: (e) => send({ value: Number(e.target.value) }) },
-			p.choices.map((c) => h("option", { value: c.value, selected: c.value === p.value }, c.label)));
+			p.choices.map((c) => h("option", { value: c.value, selected: c.value === p.value }, label(c.label, String(c.value)))));
 	} else if (p.type === "timeOfDay") {
 		const v = p.value || { hour: 0, minute: 0 };
 		control = h("input", { type: "time", id, step: 60, value: `${String(v.hour).padStart(2, "0")}:${String(v.minute).padStart(2, "0")}`,
@@ -100,7 +100,7 @@ function parameterRow(rule, p, commit) {
 	const range = typeof p.min === "number" && typeof p.max === "number" ? t("rules.range", { min: valueText(p, p.min), max: valueText(p, p.max) }) : "";
 	return h("div", { class: "param" },
 		h("div", { class: "param-head" },
-			h("label", { for: id }, p.label),
+			h("label", { for: id }, label(p.label, p.id)),
 			shown,
 			p.overridden ? h("span", { class: "badge" }, t("rules.changed")) : null),
 		h("div", { class: "param-control" }, control,
@@ -132,7 +132,7 @@ function ruleCard(rule, nowMs, commit) {
 		: h("span", { class: `badge ${rule.enabled ? "ok" : "warn"}` }, rule.enabled ? t("rules.enabled") : t("rules.disabled"));
 	const feedback = h("p", { class: "error-text", role: "status" });
 	return h("section", { class: "card rule", "data-rule": rule.id, "aria-labelledby": `rule-${rule.id}` },
-		h("div", { class: "card-head" }, h("h2", { id: `rule-${rule.id}` }, rule.name || rule.id), enable),
+		h("div", { class: "card-head" }, h("h2", { id: `rule-${rule.id}` }, label(rule.name, rule.id)), enable),
 		feedback,
 		h("dl", { class: "rows" }, rows.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
 		rule.parameters.length ? h("div", { class: "params" }, rule.parameters.map((p) => parameterRow(rule, p, commit))) : null);

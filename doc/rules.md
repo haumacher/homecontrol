@@ -13,7 +13,7 @@ Java reference interpreter (issue #13) runs as well.
 | `rules/value.h` | `Val`, the expression value (40 bytes, no heap; strings and raw bytes inline), the conversions of spec 3.2, the JSON literals of 3.1, the formatting of 4.9 and the canonical literal text of 4.2. |
 | `rules/rule_set.h` | `RuleSet`: the compiled `rules` member, loaded and checked (spec section 10). |
 | `rules/engine.h` | `Engine`: the runtime (section 7), the parameters (section 8), the diagnostics (section 9). |
-| `rules/parameter_store.h` | The persisted parameter overrides in `Settings`. |
+| `rules/parameter_store.h` | The persisted parameter overrides and rule states in `Settings`. |
 | `rules/printer.h` | The canonical text of an expression (4.8), for diagnostics and the API. |
 
 ## Using it
@@ -28,11 +28,14 @@ if (result.ok()) engine.start(hc::rules::StartReason::boot);         // image af
 - The engine registers itself as a `DatapointListener` of the model. A listener must not change
   the model, so the listener only records change times and queues the update; a posted callback
   runs the cascades.
-- `TimeSource` gives the local wall time and the sun times. The time service of issue #9
-  implements it; the tests use a fake. `schedule_fired(id)` is called by the scheduler of
-  issue #10.
+- `TimeSource` gives the local wall time (with the summer-time flag), the sun times, and the
+  conversions between a local date-time and its UTC instant (`local_to_utc`, `utc_to_local`) that
+  date-time arithmetic and comparisons use (spec 4.5, 4.6). `hc::image::RulesClock` implements it
+  over the time service of issue #9 and its `TimeZone`; the defaults (UTC) serve tests without a
+  zone. `schedule_fired(id)` is called by the scheduler of issue #10.
 - `load()` installs a new set without starting it. The first load is the boot and reads the
-  persisted overrides; later loads are image swaps (7.6). A refused load changes nothing and logs
+  persisted overrides and states; later loads are image swaps (7.6). Labels are resolved in the
+  language of the setting `ui.lang`, read at every load. A refused load changes nothing and logs
   `rules refused: rule '<id>' at <json path>: <reason>: <text>`.
 - `flush()` processes the queued external events now; call it before reloading the datapoint
   model.
@@ -41,7 +44,10 @@ if (result.ok()) engine.start(hc::rules::StartReason::boot);         // image af
   - every command a rule made;
   - every change of a parameter's value. This is the hook for the parameter datapoints of
     decision ticket #28: a later `ParameterTechnology` subscribes here and calls `set_parameter()`
-    the other way.
+    the other way;
+  - `loop_guard(rule, culprit, firings)` right after the `loopGuard` entry.
+- `persist_now()` writes the delayed state changes at once; the destructor calls it, so an orderly
+  shutdown loses nothing.
 
 The Controller does not own an engine yet, and the ESP main does not create one. Wiring it in
 comes with the runtime image (issue #8).
@@ -124,7 +130,10 @@ its 200-byte buffer is not on every frame.
   - `%` with the dividend's sign;
   - durations in milliseconds;
   - time of day wrapping at midnight;
-  - date-time arithmetic through days since the epoch.
+  - date-time ± duration on the UTC instant: `TimeSource::local_to_utc` (the summer-time flag
+    picks the occurrence of an ambiguous time), plus the whole seconds, `utc_to_local` back; the
+    result keeps only the summer-time flag. Date-time minus date-time and the comparisons of
+    date-times use the instants too.
 - **Mixed integer and real** branches of `if`, `coalesce`, `min`, `max` and `clamp` are promoted
   to real.
 - **Formatting a real** (4.9) rounds the exact binary value with a big-integer helper, ties away
@@ -158,12 +167,14 @@ All functions of spec 4.7 are implemented; none is cut.
   of the `TimeSource` at the same moment, so every expression of a cascade sees one time.
 - **The loop guard**: every firing on a derived event counts. Firing number 33 is refused: the
   queue is emptied, and `loopGuard` is logged for the rule that would have fired. The text names
-  the rule that fired most in this cascade:
-  `cascade refused after 32 derived firings (most: ping with 16)`. Each rule's diagnostics count
+  the culprit, the rule with the most derived firings in this cascade (the first in rule order on a
+  tie): `cascade refused after 32 derived firings (most: ping with 16)`; the observer gets it as
+  `loop_guard(rule, culprit, firings)`. Each rule's diagnostics count
   the cascades it was refused in and its peak firings in one cascade.
 - **Start** (7.5): `start(boot|image)` first re-baselines every match memory without firing. Then
   each rule starts in its own cascade, in rule order. A rule with states enters `initialState`
-  (entry actions) unless its state was preserved; then the `start` trigger fires.
+  (entry actions) unless its state was preserved by the swap or restored at boot; then the `start`
+  trigger fires.
 - **Enabling** a rule runs start(`enable`) inside the cascade of the parameter change.
 - **Disabling** stops the rule's timers at once.
 
@@ -179,7 +190,9 @@ Parameter 0 of every rule is the implicit `enabled`:
 
 1. Convert the value to the parameter's type (3.2), and check it against min, max and choices.
 2. Refuse an invalid value with `parameterRefused`.
-3. Otherwise make it the override and write it to the store immediately.
+3. A value identical to the declared default removes the override and erases a stored one
+   (spec 8.2, decision 15). Any other value becomes the override and is written to the store
+   immediately, unless the store already holds it.
 4. If the value changed, queue a parameter event: external for the UI and API, derived for the
    action.
 
@@ -214,9 +227,11 @@ Why this mapping:
   a table of allocated slots, would have to be migrated on every edit.
 - **Collisions are handled.**
   - Reading a slot whose logical key differs counts as no override.
-  - `Engine::load()` refuses an image in which two declared parameters share a key
-    (`limitExceeded`, naming both). At 48 bits the chance for an image's few hundred parameters
-    is about 1 in 10^10. The unit tests use a real pair found by a cycle search.
+  - `RuleSet::load()` refuses an image in which two persistence keys share a slot: every declared
+    parameter and `<ruleId>/.state` of every rule with states (`limitExceeded` at `rules[i]` of
+    the second, naming both). The check is part of the rule set's load, so every loader sees it.
+    At 48 bits the chance for an image's few hundred keys is about 1 in 10^10. The unit tests use
+    a real pair found by a cycle search.
 
 **After a load**, every stored override that no current parameter holds is deleted: removed rules,
 undeclared parameters, overrides that no longer fit, unreadable `rp.` entries.
@@ -225,6 +240,43 @@ undeclared parameters, overrides that no longer fit, unreadable `rp.` entries.
   `parameterReset`. An override of an undeclared parameter is pruned silently.
 - At a swap, an override of a kept parameter survives when it still fits; otherwise it is reset
   with `parameterReset`.
+
+**Rule states** (spec 8.5) use the same store and slots under the logical key `<ruleId>/.state`
+(a parameter id cannot start with a dot), the value a string: `stairs/.state=s:6f6e` for `on`.
+
+- A transition, and the initial state at a start, marks the rule dirty and arms one event-loop
+  timer 10 s ahead (`kStatePersistDelayMs`), unless it is armed already. When it fires, every dirty
+  rule's state is written unless the store holds it already, so a state that changed and changed
+  back within the window costs no write. When the timer cannot be armed the write happens at once.
+- At boot, `install()` reads the stored state before the start: a declared state is taken without
+  entry actions; an undeclared one, or one of a rule without states, logs `stateReset`, and the
+  start enters `initialState`.
+- After the load, the prune keeps a `.state` entry only for an existing rule with states whose
+  value names a declared state.
+- Parameter writes stay immediate (people change parameters rarely); state writes are delayed
+  because transitions can be frequent.
+
+## Labels
+
+A rule's name, a parameter's label and a choice's label may be a language map (spec 2.2). The
+builder resolves the text once (exact tag, base language, `en`, first entry, tags compared without
+case) into the string pool, and stores the map, re-serialized as compact JSON, as a second string
+(`Rule::name_json`, `Parameter::label_json`, `Choice::label_json`; 0 for a plain string).
+`RuleSet::label_json()` returns it; the web API writes it raw, so the UI can resolve it in the
+viewer's language with `label()` of `model.js`.
+
+## Normalization
+
+The loader compiles only normalized trees (spec 4.8), so the printer's text parses back to the
+same nodes:
+
+- a chain of unary minus over an integer, real or duration literal compiles into one literal
+  (`folded_negation`);
+- an enumeration literal compiles as an integer; an integer literal in 0..2^32-1 becomes an
+  enumeration literal when its partner is an enumeration (`==`/`!=`, `if`, `coalesce`, `toInt`,
+  `setParameter` to an enumeration parameter; `retype_enumeration`);
+- a controlled literal compiles as the call `controlled` with two literal children;
+- the canonical text of a time of day with a day of the week is `mon 07:30`.
 
 ## Image swap
 
@@ -270,13 +322,20 @@ Points the spec leaves open, decided here (E-Home's interpreter should agree):
   - a timer cascade's time is the clock at processing, which equals the deadline when the event
     loop is on time;
   - a datapoint's change time is the clock when the listener is told.
-- **Persistence**: parameter writes go to the store immediately. There is no coalescing; NVS
-  wear is bounded by how often people change parameters.
+- **Persistence**: parameter writes go to the store immediately; NVS wear is bounded by how
+  often people change parameters. State writes are delayed by 10 s and coalesced.
+- **An ambiguous date-time literal** (the hour that occurs twice when summer time ends) has no
+  summer-time flag and therefore means the standard-time occurrence.
+- **Labels** fall back to `en` before the first entry, as the UI's `label()` does.
+- **The loop-guard culprit** on a tie is the first rule in rule order.
+- **More than 16 choices** are refused as `limitExceeded`.
 
 ## Tests
 
-- **`rules_corpus_test.cpp`** runs the 35 corpus cases in the README's procedure. Time 0 is
-  monotonic 1,000,000 ms. A reboot rebuilds the model and the engine, and keeps the settings.
+- **`rules_corpus_test.cpp`** runs the 41 corpus cases in the README's procedure. Time 0 is
+  monotonic 1,000,000 ms. A reboot rebuilds the model and the engine, and keeps the settings. The
+  wall clock is the device's `RulesClock` over a fake time service whose zone evaluates the case's
+  POSIX TZ string itself (`PosixRuleZone` in `rules_test_support.h`), never the host's zone.
 - **`rules_unit_test.cpp`**:
   - the printer round trip (every corpus expression is printed, parsed back by a small parser of
     `spec/rules-grammar.ebnf`, and compared structurally with the compiled nodes), plus the spec's
@@ -286,4 +345,9 @@ Points the spec leaves open, decided here (E-Home's interpreter should agree):
   - the memory accounting of the 50-rule image;
   - no allocation while events are processed;
   - a self-triggering rule ending in `loopGuard`;
-  - the diagnostics texts.
+  - the diagnostics texts;
+  - the four normalized shapes, the label resolution chain, the collision refusal of
+    `RuleSet::load`, delayed and coalesced state writes without allocation;
+  - `RulesClock` across both summer-time changes;
+  - the facts of spec 7.6: values kept by a swap and read-on-start after the KNX adapter's
+    reconfiguration.

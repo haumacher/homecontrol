@@ -1,0 +1,59 @@
+{
+	"title": "Composition: a setParameter action to the default removes the override, the state persists across a reboot, date-time subtraction across the end of summer time, a regional label falls back to its base language",
+	"description": "Probe of decisions 3, 7, 11 and 15 together. ui.lang de-AT resolves the rule name through its base language de. At 1000 the rule enters state b and sets level to 70 from an action: both are persisted. At 7200000 (02:30 CET, the second 02:30 of 2026-10-25 in Europe/Berlin) the rule sets level back to its default 50 from an action, which removes the override, writes now() - 1h, which is 02:30 CEST with the summer-time flag (an hour earlier on the instant, the same local fields), and enters state a. The reboot restores state a without entry actions and the level follows the default.",
+	"ui": {"lang": "de-AT"},
+	"clock": {"start": "2026-10-25T01:30:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"datapoints": [
+		{"name": "x.go", "type": "boolean"},
+		{"name": "t.back", "type": "dateTime"},
+		{"name": "lamp", "type": "real"}
+	],
+	"rules": [
+		{
+			"id": "r",
+			"name": {"en": "Rule", "de": "Regel"},
+			"parameters": [{"id": "level", "label": {"en": "Level", "de": "Stufe"}, "type": "real", "default": 50.0, "min": 0.0, "max": 100.0}],
+			"states": [
+				{"id": "a", "entry": [{"kind": "write", "datapoint": "lamp", "value": {"kind": "literal", "type": "real", "value": 0.0}}]},
+				{"id": "b", "entry": [{"kind": "write", "datapoint": "lamp", "value": {"kind": "parameter", "id": "level"}}]}
+			],
+			"initialState": "a",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.go", "on": "update"}],
+					"condition": {"kind": "datapoint", "name": "x.go"},
+					"actions": [{"kind": "setParameter", "parameter": "level", "value": {"kind": "literal", "type": "real", "value": 70.0}}],
+					"to": "b"
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.go", "on": "update"}],
+					"condition": {"kind": "unary", "op": "not", "operand": {"kind": "datapoint", "name": "x.go"}},
+					"actions": [
+						{"kind": "setParameter", "parameter": "level", "value": {"kind": "literal", "type": "real", "value": 50.0}},
+						{"kind": "write", "datapoint": "t.back", "value": {"kind": "binary", "op": "-", "left": {"kind": "call", "function": "now", "args": []}, "right": {"kind": "literal", "type": "duration", "value": 3600000}}}
+					],
+					"to": "a"
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "x.go", "value": true}},
+		{"at": 15000, "check": {"states": {"r": "b"}, "parameters": {"r/level": 70.0}, "persisted": {"r/level": 70.0, "r/.state": "b"}}},
+		{"at": 7200000, "report": {"datapoint": "x.go", "value": false}},
+		{"at": 7215000, "check": {"states": {"r": "a"}, "parameters": {"r/level": 50.0}, "persisted": {"r/.state": "a"}}},
+		{"at": 7300000, "reboot": true},
+		{"at": 7300000, "check": {"states": {"r": "a"}, "parameters": {"r/level": 50.0}, "names": {"r": "Regel"}, "labels": {"r/level": "Stufe"}}}
+	],
+	"end": 7400000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "r", "datapoint": "lamp", "value": 0.0},
+			{"at": 1000, "rule": "r", "datapoint": "lamp", "value": 70.0},
+			{"at": 7200000, "rule": "r", "datapoint": "t.back", "value": {"year": 2026, "month": 10, "day": 25, "hour": 2, "minute": 30, "second": 0, "dayOfWeek": 7, "summerTime": true}},
+			{"at": 7200000, "rule": "r", "datapoint": "lamp", "value": 0.0}
+		],
+		"logs": [],
+		"final": {"states": {"r": "a"}, "persisted": {"r/.state": "a"}, "names": {"r": "Regel"}}
+	}
+}

@@ -31,7 +31,9 @@ These are the author's decisions; this specification implements them.
 ### 1.2 Decisions taken in this specification
 
 Each decision names the alternatives that were considered and why they lost. They favour the
-long-term benefit of the project over the ease of implementation.
+long-term benefit of the project over the ease of implementation. The points the first draft left
+to the author were decided on 2026-10-18 (issues #25 to #28); section 12 records each decision, and
+the sections it touches state it as fact.
 
 **D1. Expressions are a JSON AST in the image and a text syntax in E-Home.** The runtime image
 stores every expression as a tree of JSON nodes (section 5); E-Home shows and edits a text syntax
@@ -77,7 +79,8 @@ id.** A parameter declares its type, range or choices, unit, default and label; 
 inhabitant persists on the device under `<ruleId>/<parameterId>` and survives a new image while the
 declaration still exists with a compatible type and the value is still valid; otherwise it is reset
 to the new default with a log line (section 8). Only values the inhabitant (or a rule action) set
-are persisted: a parameter never touched follows the default of each new image. *Alternatives:*
+are persisted, and only while they differ from the default: a parameter never touched, or set back
+to its default, follows the default of each new image. *Alternatives:*
 persist every value (E-Home could never change a default again); key by position (any edit in E-Home
 would scramble the stored values); expose arbitrary datapoints for editing (contradicts decision 3
 of the author).
@@ -106,7 +109,8 @@ unreadable in a diff and break when E-Home reorders datapoints).
 **D9. Time is monotonic for durations and local wall time for the calendar.** Timers, `sinceChange`
 and the loop run on the monotonic clock; `now()`, `time()`, `weekday()` and the sun functions use
 the local wall time of the time service (issue #9) and have no value while the wall clock is not
-synchronized. Within one cascade every expression sees the same time.
+synchronized. Within one cascade every expression sees the same time. Date-time arithmetic and
+comparisons work on the instant, so they are correct across a change of summer time (4.5, 4.6).
 
 ### 1.3 Terms
 
@@ -153,7 +157,7 @@ The parameter id `enabled` is reserved for the enable switch (section 8.3).
 | Member | Type | Required | Meaning |
 |---|---|---|---|
 | `id` | rule id | yes | Stable identity assigned by E-Home. |
-| `name` | string, 1..63 bytes | yes | Shown in the UI, the log and the diagnostics. |
+| `name` | label | yes | Shown in the UI, the log and the diagnostics. |
 | `description` | string | no | For people; ignored. |
 | `enabled` | boolean | no, `true` | Default of the enable switch. |
 | `enabledAdjustable` | boolean | no, `true` | Whether the inhabitant may switch the rule on and off (section 8.3). |
@@ -162,6 +166,17 @@ The parameter id `enabled` is reserved for the enable switch (section 8.3).
 | `states` | array of state | no | Section 2.6; present and non-empty makes this a *rule with states*. |
 | `initialState` | state id | with `states` | The state the rule enters when it starts without a preserved state. |
 | `reactions` | array of reaction | yes, 1 or more | Section 2.4. |
+
+A *label* (the rule's `name`, a parameter's `label`, a choice's `label`) is a string of 1..63 bytes
+or an object from language tags to such strings, as in the runtime image
+(`spec/runtime-image.md`): `{"en": "Staircase", "de": "Treppenhaus"}`. A language tag has 2..8
+characters of `A-Z a-z 0-9 -`; an object has 1..16 entries. The device resolves a label once, when
+the image is loaded, in its UI language (the setting `ui.lang`, default `en`): the entry whose tag
+equals the language (letters compared without case), else the entry of its base language (the part
+before `-`: `de` for `de-CH`), else `en`, else the first entry. The resolved text appears in the log
+and the diagnostics; the API passes the label through as the image gives it, and the UI resolves it
+in the viewer's language. E-Home's simulation resolves it the same way in the engineer's language.
+(Decision 11, section 12.)
 
 ### 2.3 Triggers
 
@@ -217,9 +232,10 @@ transition to the current state (a *self-transition*) leaves and re-enters the s
 and entry actions. A reaction without `to` in a rule with states is an *internal reaction*: it runs
 its actions and the state does not change.
 
-When a rule with states starts without a preserved state (boot, new rule, state not preserved by an
-image swap), its current state becomes `initialState` and that state's entry actions run (section
-7.5). There are no other ways to change the state: there is no "set state" action, because a state
+When a rule with states starts without a preserved state (a boot without a persisted state, a new
+rule, a state not preserved by an image swap), its current state becomes `initialState` and that
+state's entry actions run (section 7.5). A preserved state is one kept by an image swap (7.6) or
+restored at boot from the persisted state (8.5); the rule takes it without running entry actions. There are no other ways to change the state: there is no "set state" action, because a state
 change must come from a guarded transition with defined exit and entry actions.
 
 ### 2.7 Actions
@@ -260,9 +276,14 @@ still run.
 
 The datapoint value types are those of `doc/datapoints.md` written in camelCase (`boolean`,
 `unsigned`, `signed`, `real`, `string`, `timeOfDay`, `date`, `dateTime`, `enumeration`,
-`controlled`, `color`, `raw`). A `dateTime` read from a datapoint keeps its fields and flags as
-received; comparisons and arithmetic ignore the flags and the day of week. A `dateTime` produced by
-the language (a literal, `now()`, arithmetic) has no flags and the day of week of its date.
+`controlled`, `color`, `raw`). A `dateTime` is a local time; it denotes an instant through the
+device's time zone (4.5, 4.6). Its *summer-time flag* (KNX SUTI) tells which of the two
+occurrences of a local time that occurs twice (the hour before the end of summer time) is meant:
+set, the occurrence in summer time; clear, the one in standard time. A `dateTime` read from a
+datapoint keeps its fields and flags as received; comparisons and arithmetic use only the
+summer-time flag. A literal has no flags (an ambiguous literal is the standard-time occurrence);
+`now()` and the result of arithmetic carry the summer-time flag when summer time is in effect at
+their instant; all have the day of week of their date.
 
 ### 3.2 Conversions
 
@@ -341,15 +362,17 @@ the interpreters size an evaluation stack from the maximum expression depth (sec
 | integer | `0`, `42`, `-7` | integer | decimal, no leading zeros; a negative literal is a minus folded into the literal |
 | real | `21.5`, `0.25`, `1.5e-5` | real | the shortest decimal that reads back as the same double, with at least one digit after the point; exponent form (`1.5e20`, `1.0e-5`) when the magnitude is at least 1e15 or below 1e-4 |
 | duration | `500ms`, `45s`, `30min`, `1h30min`, `2d` | duration | normalized into `d h min s ms`, largest unit first, zero parts omitted, `0s` for zero |
-| time of day | `20:30`, `06:05:30`, `6:05` | timeOfDay (day 0) | two-digit hour, `HH:MM`, `:SS` only when the seconds are not zero |
+| time of day | `20:30`, `06:05:30`, `6:05`, `mon 07:30` | timeOfDay (day 0, or the day written) | two-digit hour, `HH:MM`, `:SS` only when the seconds are not zero; with a day of the week its name first and one space: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` (`mon 07:30`) |
 | date | `2026-10-17` | date | `YYYY-MM-DD` |
 | date and time | `2026-10-17T20:30`, `2026-10-17T20:30:15` | dateTime | `YYYY-MM-DDTHH:MM`, `:SS` only when not zero |
 | string | `"Hall"`, `"say \"hi\""` | string | double quotes; `\"`, `\\`, `\n`, `\t` escaped, nothing else |
 | color | `#ff8000`, `#ff8000c0` | color | lowercase; six digits (RGB valid) or eight (RGBW, all valid) |
 | raw | `x"0AFF"`, `x""` | raw | uppercase hex, no spaces |
 
-There is no literal for enumerations (compare with integers, `@mode == 3`; see the open questions),
-for `controlled` values (use `controlled(true, 3)`) or for no value.
+The text has no literal for enumerations (compare with integers, `@mode == 3`; decision 6), for
+`controlled` values (`controlled(true, 3)` is a call) or for no value. The AST has literals of type
+`enumeration` and `controlled` (3.1); the loader normalizes them (4.8), so their text is the
+number and the call.
 
 The lexer takes the longest token; `2026-10-17` is a date, not a subtraction (canonical text
 always puts spaces around binary operators), `30min` is a duration, `30 min` an error.
@@ -389,7 +412,8 @@ Parentheses group. `not a == b` is `not (a == b)`; `-x * y` is `(-x) * y`.
 | integer, real (mixed allowed) | numeric (integer converted to real when mixed) | numeric |
 | duration | yes | yes |
 | timeOfDay | hour, minute, second (the day of week is ignored) | by seconds since midnight |
-| date, dateTime | the fields (flags and day of week ignored) | chronological |
+| date | the fields | chronological |
+| dateTime | the instants (the local time through the device's time zone, an ambiguous time by its summer-time flag; the day of week and the other flags ignored) | by instant |
 | string | bytes | bytewise lexicographic (UTF-8) |
 | boolean, enumeration, controlled, color, raw | all fields (color: levels and valid channels) | type error |
 | enumeration with integer | the element number with the integer | type error |
@@ -405,9 +429,9 @@ reals).
 | | integer/real mixed, real | real |
 | | duration, duration | duration |
 | | timeOfDay ± duration | timeOfDay, modulo 24 h; the duration is truncated to whole seconds toward zero first; the day of week is kept |
-| | dateTime ± duration | dateTime, calendar arithmetic on the local fields as if every day had 24 h; whole seconds |
+| | dateTime ± duration | dateTime: the local time converted to its UTC instant (an ambiguous time by its summer-time flag, a time in the gap at the start of summer time as the end of the gap), the duration truncated to whole seconds toward zero added, the instant converted back to local time with its summer-time flag; a year outside 1900..2155 is an evaluation error. `now() + 1h` at 01:30 CEST on the day summer time ends is 02:30 CEST, at 02:30 CEST it is 02:30 CET; `2026-10-24T12:00 + 24h` in Europe/Berlin is `2026-10-25T11:00` |
 | `a - b` | timeOfDay − timeOfDay | duration, −24 h < d < 24 h, no wrap (`(a - b + 1d) % 1d` wraps) |
-| | dateTime − dateTime | duration (local fields, as above) |
+| | dateTime − dateTime | duration between the instants, whole seconds |
 | | date − date | duration, whole days of 24 h |
 | `a + b` | string, string | string (longer than 28 bytes: evaluation error) |
 | `a * b` | integer, integer | integer |
@@ -517,6 +541,23 @@ E-Home prints every AST in exactly one way, and parsing the printed text gives t
 - a minus applied directly to an integer, real or duration literal is part of the literal (the AST
   has a negative literal, not a `unary` node).
 
+The round trip holds on *normalized* trees: printing a normalized tree and parsing the text gives
+the same tree. The loader normalizes every expression of the image before it checks and stores
+it, and E-Home's parser produces only normalized trees (decision 6, issue #34):
+
+1. A `unary` minus whose operand is an integer, real or duration literal, also through a chain of
+   minus nodes, is a literal with the sign applied (`-(-5)` is the literal `5`, `-1.5` the literal
+   `-1.5`); a minus over anything else stays a `unary` node.
+2. An integer literal in 0..2^32-1 that is the partner of an enumeration is an enumeration literal:
+   the other operand of `==` or `!=`, the other value of `if` or `coalesce`, the argument of
+   `toInt`, the value of `setParameter` to an enumeration parameter. An enumeration literal
+   anywhere else is an integer literal. The text of both is the number.
+3. A `controlled` literal is the call `controlled(b, n)` with a boolean and an integer literal.
+4. A time-of-day literal with a day of the week prints as `mon 07:30` (4.2), in expressions and in
+   formatted values (4.9).
+
+The limits of 10.2 apply to the normalized tree.
+
 ### 4.9 Formatting values
 
 Used by `log` messages and `toString`:
@@ -526,7 +567,7 @@ Used by `log` messages and `toString`:
 | boolean | `true`, `false` |
 | integer, enumeration | decimal |
 | real | the exact binary value rounded to 6 decimals, a tie away from zero (`0.0078125` gives `0.007813`; C's `printf` rounds ties to even and cannot be used as is), then trailing zeros and a trailing point removed: `21.5`, `21`, `0.333333`, `-0.5`; a result of zero is `0`, never `-0` |
-| duration, timeOfDay, date, dateTime, color, raw | the canonical literal text (4.2) |
+| duration, timeOfDay, date, dateTime, color, raw | the canonical literal text (4.2); a time of day with a day of the week is `mon 07:30` |
 | string | the bytes, without quotes |
 | controlled | `controlled(true, 3)` |
 | no value | `none` |
@@ -618,8 +659,9 @@ For one event:
    with a trigger matching the event (2.3) whose `from` contains the current state (or have no
    `from`). If there is none, the rule does not fire. Otherwise the rule *fires*:
    - If the event is derived, the cascade's derived-firing count is incremented first; a firing
-     that would make it exceed 32 is refused instead: the engine logs `loopGuard` naming this rule,
-     empties the queue and ends the cascade (the model keeps the values already written).
+     that would make it exceed 32 is refused instead: the engine logs `loopGuard` naming this rule
+     and the culprit (9.2), empties the queue and ends the cascade (the model keeps the values
+     already written).
    - The diagnostics record the trigger (9.1).
    - The reactions of the rule are considered in their order. A reaction is executed when one of
      its triggers matches the event and its `from` contains the current state *at this moment*:
@@ -663,8 +705,9 @@ A rule *starts* at boot, at every image swap (every rule of the new image) and w
 For each starting rule, in rule order, one cascade with an external *start event* for this rule
 alone:
 
-1. A rule with states and no preserved state takes `initialState`; if the rule is enabled, the
-   entry actions of that state run.
+1. A rule with states and no preserved state (2.6) takes `initialState`; if the rule is enabled,
+   the entry actions of that state run. A rule with a preserved state stays in it; no entry
+   actions run.
 2. If the rule is enabled, the start event is processed like any event (7.2): it matches the
    rule's `start` triggers whose `reasons` contain the start reason (`boot`, `image` or `enable`).
 
@@ -682,16 +725,19 @@ When a new image is loaded without a reboot:
    - parameter values set by the inhabitant or a rule, per section 8.4 (otherwise `parameterReset`);
    - running timers whose id is still declared, with their deadlines; other timers are cancelled;
    - the current state when the new rule has a state with that id; otherwise the state is lost,
-     `stateReset` is logged and the rule enters its initial state when it starts;
+     `stateReset` is logged and the rule enters its initial state when it starts; the persisted
+     state follows (8.5);
    - the diagnostics.
 4. Rules with a new id start fresh.
 5. The memories of all `match` triggers are re-baselined (7.4); change tracking (7.7) continues
    for datapoints that still exist.
 6. Every rule of the new image starts with the reason `image` (7.5).
 
-The datapoint values themselves are the image loader's business (issue #8); this specification
-assumes that a datapoint with the same name and value type keeps its value, quality and update
-time across a swap (open question 2).
+Datapoint values (decision 2): a datapoint whose name and value type are unchanged keeps its value,
+quality and update time across a swap, also when its position in the image changed; a new
+datapoint, or one whose value type changed, starts unknown. After the swap the technologies read
+the datapoints declared read-on-start again, the new ones among them (KNX: a GroupValueRead each,
+spread out as at boot), so new inputs get a value without waiting for the next report.
 
 ### 7.7 Change tracking and time
 
@@ -703,8 +749,8 @@ datapoint model's own update time.
 
 Durations are measured on the monotonic clock. The wall clock (local time, time zone from the
 image) serves `now()`, `today()`, `time()`, `weekday()` and the sun functions; while the time
-service reports the wall clock as not synchronized they have no value. `dateTime` arithmetic is
-naive local-field arithmetic (open question 7).
+service reports the wall clock as not synchronized they have no value. `dateTime` arithmetic and
+comparisons work on the instant through the time zone (4.5, 4.6; decision 7).
 
 ### 7.8 Timers
 
@@ -723,9 +769,18 @@ the rule starts with the reason `enable` (7.5), in the cascade of the parameter 
 
 ### 7.10 Reboot
 
-A reboot loses everything held in RAM: states, timers, match memories, change tracking, the
-diagnostics. Persisted parameter values survive. After the image is loaded at boot every rule
-starts with the reason `boot`. Whether states should survive a reboot is open question 3.
+A reboot loses timers, match memories, change tracking and the diagnostics. Persisted parameter
+overrides and rule states (8.5) survive (decision 3). After the image is loaded at boot:
+
+1. Each rule with states whose persisted state the image still declares takes that state, without
+   running its entry actions.
+2. A persisted state that the image does not declare, or a persisted state of a rule that now has
+   no states, logs `stateReset`; a rule with states then takes `initialState` with its entry
+   actions (7.5).
+3. Every rule starts with the reason `boot` (7.5); `start` triggers fire as usual.
+
+Timers do not resume. A rule that needs its timer after a reboot restarts it from a reaction to
+the `start` trigger with the reason `boot` and `from` the state (corpus case 37).
 
 ## 8. Adjustable parameters
 
@@ -734,13 +789,13 @@ starts with the reason `boot`. Whether states should survive a reboot is open qu
 | Member | Type | Required | Meaning |
 |---|---|---|---|
 | `id` | identifier | yes | Unique in the rule; not `enabled`. |
-| `label` | string, 1..63 bytes | yes | Shown in the device UI. |
+| `label` | label (2.2) | yes | Shown in the device UI. |
 | `type` | `boolean`, `integer`, `real`, `string`, `duration`, `timeOfDay`, `enumeration`, `color` | yes | |
 | `default` | JSON value of the type (3.1) | yes | Must itself be valid. |
 | `min`, `max` | JSON value of the type | no | For `integer`, `real`, `duration`, `timeOfDay`; inclusive. |
 | `step` | number or duration (ms) | no | A hint for the UI's control; not enforced. |
 | `unit` | string, at most 15 bytes | no | Display unit: `°C`, `%`, `lx`; for a duration the unit the UI edits in (`s`, `min`, `h`). |
-| `choices` | array of `{"value": v, "label": "..."}` | no | For `integer`, `string`, `enumeration`; the value must be one of them. |
+| `choices` | array of `{"value": v, "label": label}`, at most 16 | no | For `integer`, `string`, `enumeration`; the value must be one of them. |
 | `adjustable` | boolean | no, `true` | Whether the UI and API may change it. A parameter that is not adjustable is a named constant E-Home can change with the next image. |
 
 A value is *valid* for a declaration when it has the type (after the conversions of 3.2), lies
@@ -750,10 +805,11 @@ within `min` and `max` and is one of the `choices` when they are given.
 
 From the UI or API (`setParameter(rule, parameter, value)`): refused with `parameterRefused` and a
 reason returned to the caller when the rule or parameter does not exist, the parameter is not
-adjustable or the value is not valid. Otherwise the value becomes the parameter's *override*,
-which is persisted; if it differs from the current value, a parameter-changed event starts a
-cascade. Resetting a parameter removes the override; the value returns to the default (an event if
-that changes the value).
+adjustable or the value is not valid. Otherwise: a value equal to the declared default removes the
+override, so the parameter follows the default again, also the default of later images; any other
+value becomes the parameter's *override*, which is persisted (decision 15). If the value differs
+from the current value, a parameter-changed event starts a cascade. Resetting a parameter removes
+the override; the value returns to the default (an event if that changes the value).
 
 From a `setParameter` action: the same, except that `adjustable` is not required; a value that is
 not valid (or has no value) logs `parameterRefused`; the change is a derived event of the cascade.
@@ -782,7 +838,22 @@ When a new image is loaded (swap or boot), each override is checked against the 
 | declares it with another type, or the value is no longer valid (range, choices) | deleted, the value becomes the new default, `parameterReset` logged |
 | does not declare the parameter, or the rule is gone | deleted silently (E-Home removed it) |
 
-A parameter that never had an override follows the default of each new image.
+A parameter that never had an override follows the default of each new image. Only values that
+differ from the default are stored (8.2). An override that a new image's default happens to equal
+is kept by the table above; it is removed when the parameter is next set to the default or reset.
+
+### 8.5 Persisted rule states
+
+The current state of every rule with states is persisted (decision 3) in the same store as the
+overrides, under the logical key `<ruleId>/.state` (no parameter id can be `.state`) with the state
+id as the value. Like overrides, its writes may be delayed by up to 10 s and coalesced: a state
+that changes and changes back within the window is not written, a power loss within the window
+loses the latest change, an orderly shutdown writes it. Timers are not persisted.
+
+At boot the persisted state is restored as section 7.10 describes. When a new image is loaded
+(swap or boot), a persisted state is kept when the rule still exists, has states and declares that
+state; otherwise it is deleted (with the `stateReset` of 7.6 or 7.10 when the rule still exists).
+After a swap that reset the state, the rule's new state is persisted like any change.
 
 ## 9. Diagnostics
 
@@ -817,8 +888,8 @@ contract (the corpus compares them); the text after the code is free.
 | `timerRefused` | error | a timer duration has no value or lies outside 100 ms .. 30 d | every time |
 | `parameterRefused` | warning | a parameter value was refused (UI, API or action) | every time |
 | `parameterReset` | warning | an override was deleted by a new image because it no longer fits (8.4) | every time |
-| `stateReset` | warning | a new image does not have the rule's current state (7.6) | every time |
-| `loopGuard` | error | a cascade exceeded 32 derived firings (7.2) | once per cascade |
+| `stateReset` | warning | a new image does not have the rule's current state (7.6); at boot, the persisted state is not declared or the rule has no states (7.10) | every time |
+| `loopGuard` | error | a cascade exceeded 32 derived firings (7.2); the entry names the culprit: the rule with the most derived firings in the cascade (the first in rule order on a tie) and their number | once per cascade |
 | `queueOverflow` | error | the event queue was full; the event was dropped | once per cascade |
 
 "Once" keeps a flag per expression site: a site whose problem persists logs it on the first
@@ -835,13 +906,16 @@ failure refuses the whole image with the rule id, the JSON path and one of these
 |---|---|
 | `malformed` | wrong JSON type, missing or unknown member, unknown `kind`, `function` or `op` |
 | `duplicateId` | two rules, or two parameters/timers/states of one rule, with the same id |
-| `unknownReference` | a datapoint, schedule, parameter, timer, state or rule (in `state("id")`) that does not exist |
+| `unknownReference` | a datapoint, schedule, parameter, timer, state or rule (in `state("id")`) that does not exist; a `state("id")` literal whose value is not a JSON string or is longer than 32 bytes (it names no rule) |
 | `typeError` | operand or argument types (4.4–4.7), a condition that is not boolean, a write value that does not convert to the datapoint type (3.2), a timer duration that is not a duration |
-| `invalidLiteral` | a literal value out of its range (`25:00`, a color level of 256, a string longer than 28 bytes, an integer beyond 2^53-1) |
+| `invalidLiteral` | a literal value out of its range (`25:00`, a color level of 256, a string longer than 28 bytes, an integer beyond 2^53-1, a date or date-time outside the years 1900..2155) |
 | `invalidParameter` | a default that is not valid, `min > max`, `choices` on a type without them |
-| `notWritable` | a `write` to a datapoint without the writable flag |
+| `notWritable` | a `write` to a datapoint without the writable flag; a `write` to the output datapoint of a schedule entry (the scheduler owns it) |
 | `forbidden` | a time, history, timer or state function in a `match` condition; a reference to `enabled`; `from` or `to` in a rule without states; `elseActions` together with `to`; a `timer` node outside `running`/`remaining`; `state()` arguments other than one string literal |
-| `limitExceeded` | a limit of 10.2 |
+| `limitExceeded` | a limit of 10.2; two persistence keys of the image (8.4, 8.5) that collide in the device's storage (the device's mapping, `doc/rules.md`; practically never, but checked) |
+
+Every check belongs to loading the rule set itself, so every loader (the image service, a checker
+in E-Home, a test) refuses the same images.
 
 ### 10.2 Limits
 
@@ -861,6 +935,9 @@ interpreters refuse beyond them (load refusal `limitExceeded`, or the run-time l
 | Expression depth (a leaf has depth 1) | 12 |
 | Arguments per call | 8 |
 | Parts of a log message | 8 |
+| Bytes of a string part of a log message | 200 |
+| Choices of a parameter | 16 |
+| Languages of a label | 16 |
 | Nodes in all expressions of an image | 4096 |
 | Derived firings per cascade | 32 (`loopGuard`) |
 | Events waiting in the queue | 128 (`queueOverflow`) |
@@ -1259,47 +1336,63 @@ rule stairs "Staircase light"
 }
 ```
 
-## 12. Open questions for the author
+## 12. Decisions
 
-Points where a different choice is plausible. Each is decided in this specification as stated; a
-reversal changes the spec, the corpus cases named and both interpreters.
+The points the first draft left open, decided by the author on 2026-10-18. Each keeps its number;
+the sections and corpus cases named state the decision as fact. A reversal changes the spec, the
+corpus cases named and both interpreters.
 
-1. **A condition without value runs neither branch.** Alternative: treat it as `false` and run the
-   `elseActions` (simpler to explain, but "if dark then on else off" would switch off whenever the
-   light sensor is unknown). Case 13.
-2. **Datapoint values across an image swap.** The spec assumes that the image loader (issue #8) keeps
-   value, quality and update time of a datapoint whose name and value type are unchanged; otherwise
-   every swap would make all inputs unknown until the next report. To be decided in #8.
-3. **States and timers do not survive a reboot.** A rule with states starts in its initial state
-   after a power cut. Alternative: persist the current state (flash wear on every transition; a
-   timer cannot be resumed meaningfully). Rules that derive their outputs from state (worked example
-   3) do not need it.
-4. **Disabling a rule cancels its timers.** A light switched on by the rule stays on. Alternatives:
-   let running timers expire (the rule acts while disabled), or declare "disable actions". Case 28.
+1. **A condition without value runs neither branch.** Confirmed as specified (2026-10-18, #25).
+   Treating it as `false` would run the `elseActions`: "if dark then on else off" would switch off
+   whenever the light sensor is unknown. Case 13.
+2. **Datapoint values across an image swap are kept.** Decided (2026-10-18, #26): a datapoint whose
+   name and value type are unchanged keeps value, quality and update time; the datapoints declared
+   read-on-start are read again after the swap, the new ones among them (7.6). Implemented by the
+   image loader (`DatapointModel::load` keeping values, the KNX adapter reading after its
+   reconfiguration).
+3. **States survive a reboot; timers do not.** Decided (2026-10-18, #26): the current state is
+   persisted under `<ruleId>/.state` with delayed, coalesced writes; at boot the rule takes it
+   without running entry actions, and the `start` trigger with the reason `boot` fires as usual; a
+   persisted state the image no longer declares, or a rule now without states, logs `stateReset`
+   and the rule enters `initialState` (2.6, 7.10, 8.5, 9.2). Case 37.
+4. **Disabling a rule cancels its timers.** Confirmed as specified (2026-10-18, #26). A light
+   switched on by the rule stays on. Case 28.
 5. **The `start` trigger fires for every rule at every image swap**, also for unchanged rules.
-   Alternative: only for new and changed rules (needs a content hash per rule; unchanged rules would
-   not re-assert their outputs). Case 6.
-6. **No enumeration literals.** `@hvac.mode == 1` is the canonical text; E-Home could show and accept
-   the names of the datapoint type's values (`@hvac.mode == #comfort`), which needs the value table in
-   the AST or a type-directed printer.
-7. **`dateTime` arithmetic is naive local-field arithmetic** (`now() + 1h` across a DST change is off
-   by an hour). Alternative: compute in UTC and convert back (needs the time zone in both
-   interpreters' expression evaluators). Only `dateTime` is affected; timers are monotonic.
-8. **The loop guard counts derived firings per cascade, limit 32.** Alternatives: a per-rule limit
-   (a single runaway rule is found faster), a different number. Case 24.
-9. **`between` is inclusive, `inWindow` half-open with `from == until` empty.** Alternative: a
-   window with equal ends means the whole day.
-10. **Rule parameters are not datapoints.** ROADMAP item 2 lists rule parameters among the
-    datapoints. Mirroring each parameter as an application datapoint (named, for example,
-    `rule/<ruleId>/<parameterId>`) would let the UI, the log and MQTT treat them uniformly; the
-    validation, persistence and swap rules of section 8 would still apply.
-11. **Labels are in one language.** Alternative: a map from language to label in the image, chosen by
-    the UI's language.
-12. **No `read` action and no "no update within" trigger.** A rule cannot ask a device for its value
-    (KNX GroupValueRead) and cannot react to a sensor that went silent except through `sinceUpdate`
-    in a periodically triggered condition.
-13. **A `match` condition may not use time.** Alternative: re-evaluate time-dependent match
-    conditions every minute (a hidden periodic load); schedules cover the time-based cases now.
-14. **Timer durations are limited to 100 ms .. 30 d.**
-15. **Setting a parameter to its current value still stores an override**, which pins the value
-    against later default changes in E-Home.
+   Confirmed as specified (2026-10-18, #26). Case 6.
+6. **No enumeration literals in the text; the round trip holds on normalized trees.** Decided
+   (2026-10-18, #27; #34): the canonical text compares enumerations with numbers
+   (`@hvac.mode == 1`). The loader and E-Home's parser normalize the AST (4.8): a minus over a
+   number literal becomes a negative literal; an integer literal partnering an enumeration becomes
+   an enumeration literal (its text stays the number), an enumeration literal elsewhere an integer
+   literal; a controlled literal becomes the call `controlled(b, n)`; a time of day with a day of
+   the week prints as `mon 07:30` (4.2, `spec/rules-grammar.ebnf`). Case 41 and the round trip of
+   the corpus.
+7. **`dateTime` arithmetic works on the instant.** Decided (2026-10-18, #27): `dateTime ± duration`
+   is computed on the UTC instant through the device's time zone and converted back; comparisons
+   compare instants; the summer-time flag selects the occurrence of an ambiguous local time (3.1,
+   4.5, 4.6). Timers stay monotonic. Case 38.
+8. **The loop guard counts derived firings per cascade, limit 32.** Confirmed as specified
+   (2026-10-18, #25); the `loopGuard` entry names the culprit, the rule with the most derived
+   firings in the cascade, and their number (9.2). Case 24.
+9. **`between` is inclusive, `inWindow` half-open with `from == until` empty.** Confirmed as
+   specified (2026-10-18, #25). Cases 11 and 17.
+10. **Rule parameters become datapoints.** Adopted (2026-10-18, #28), implemented in the next round:
+    each parameter is mirrored as an application datapoint `rule/<ruleId>/<parameterId>`, so the
+    UI, the log and MQTT treat it uniformly; the validation, persistence and swap rules of section 8
+    still apply. Until then this specification and the corpus do not contain these datapoints.
+11. **Labels may be language maps.** Decided (2026-10-18, #28): a rule's `name`, a parameter's
+    `label` and a choice's `label` are labels (2.2): a string or an object from language tags to
+    strings, resolved once at load from the setting `ui.lang` (exact tag, base language, `en`, the
+    first entry); the API passes the label through. Case 40.
+12. **A `read` action and a `silence` trigger.** Adopted (2026-10-18, #27), implemented in the next
+    round: a `read` action asks the technology for a datapoint's value (KNX GroupValueRead), and a
+    `silence` trigger fires when a datapoint has not been updated for a given duration. Until then
+    this specification and the corpus do not contain them.
+13. **A `match` condition may not use time.** Confirmed as specified (2026-10-18, #25); schedules
+    cover the time-based cases. Case 32.
+14. **Timer durations are limited to 100 ms .. 30 d.** Confirmed as specified (2026-10-18, #27).
+    Case 20.
+15. **Setting a parameter to its default removes the override.** Decided (2026-10-18, #25): a
+    value equal to the declared default is not stored and removes a stored override, so the
+    parameter follows later default changes in E-Home again; a differing value is stored (8.2,
+    8.4). Cases 28 and 36.

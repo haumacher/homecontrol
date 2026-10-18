@@ -4,6 +4,7 @@
 // The rule loader: validates the `rules` member of an image (spec/rules.md section 10) and compiles
 // it into a RuleSet. Two passes over the JSON run the same code: the first validates and counts,
 // the second writes into the one block allocated in between (doc/rules.md, "Memory").
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -11,6 +12,7 @@
 #include <utility>
 
 #include "hc/log.h"
+#include "hc/rules/parameter_store.h"
 #include "hc/rules/rule_set.h"
 
 namespace hc::rules {
@@ -132,6 +134,94 @@ int compare_ordered(const Val& a, const Val& b) {
 
 size_t align8(size_t n) { return (n + 7) & ~static_cast<size_t>(7); }
 
+char ascii_lower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
+
+/// Case-insensitive comparison of the first `n` bytes (language tags are ASCII).
+bool same_tag(const char* a, const char* b, size_t n) {
+	for (size_t i = 0; i < n; ++i) {
+		if (ascii_lower(a[i]) != ascii_lower(b[i])) {
+			return false;
+		}
+		if (a[i] == '\0') {
+			return true;
+		}
+	}
+	return true;
+}
+
+/// A language tag of a label: 2..8 characters of A-Z a-z 0-9 - (spec/runtime-image.md).
+bool valid_language_tag(const char* tag, size_t length) {
+	if (length < 2 || length > 8) {
+		return false;
+	}
+	for (size_t i = 0; i < length; ++i) {
+		char c = tag[i];
+		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/// Checks the storage keys of every parameter and rule state (ParameterStore, spec 8.4, 8.5): two
+/// that hash alike refuse the set.
+bool check_storage_keys(const RuleSet& set, LoadResult& result) {
+	struct Entry {
+		uint64_t hash;
+		uint16_t rule;
+		uint16_t parameter; ///< kNone: the rule's state.
+	};
+	size_t count = set.parameter_count();
+	for (size_t r = 0; r < set.rule_count(); ++r) {
+		count += set.rule(r).state_count > 0 ? 1 : 0;
+	}
+	if (count < 2) {
+		return true;
+	}
+	Entry* entries = new (std::nothrow) Entry[count];
+	if (entries == nullptr) {
+		result.error = LoadError::out_of_memory;
+		std::snprintf(result.text, sizeof(result.text), "no memory to check the storage keys");
+		Log::error(kTag, "rules refused: %s", result.text);
+		return false;
+	}
+	size_t n = 0;
+	for (size_t r = 0; r < set.rule_count(); ++r) {
+		const Rule& rule = set.rule(r);
+		for (size_t p = 0; p < rule.parameter_count; ++p) {
+			entries[n++] = Entry{ParameterStore::hash(set.str(rule.id), set.str(set.parameter(rule.first_parameter + p).id)),
+				static_cast<uint16_t>(r), static_cast<uint16_t>(rule.first_parameter + p)};
+		}
+		if (rule.state_count > 0) {
+			entries[n++] = Entry{ParameterStore::hash(set.str(rule.id), ParameterStore::kStateKey), static_cast<uint16_t>(r),
+				kNone};
+		}
+	}
+	std::sort(entries, entries + n, [](const Entry& a, const Entry& b) { return a.hash < b.hash; });
+	bool ok = true;
+	for (size_t i = 1; i < n && ok; ++i) {
+		if (entries[i].hash == entries[i - 1].hash) {
+			const Entry& a = entries[i - 1];
+			const Entry& b = entries[i];
+			auto key = [&set](const Entry& e) {
+				return e.parameter == kNone ? ParameterStore::kStateKey : set.str(set.parameter(e.parameter).id);
+			};
+			result.error = LoadError::limit_exceeded;
+			std::snprintf(result.rule, sizeof(result.rule), "%s", set.str(set.rule(b.rule).id));
+			std::snprintf(result.path, sizeof(result.path), "rules[%u]", static_cast<unsigned>(b.rule));
+			std::snprintf(result.text, sizeof(result.text), "the storage keys of %s/%s and %s/%s collide; rename one",
+				set.str(set.rule(a.rule).id), key(a), set.str(set.rule(b.rule).id), key(b));
+			ok = false;
+		}
+	}
+	delete[] entries;
+	if (!ok) {
+		Log::error(kTag, "rules refused: rule '%s' at %s: %s: %s", result.rule, result.path,
+			load_error_name(result.error), result.text);
+	}
+	return ok;
+}
+
 } // namespace
 
 const char* function_name(Fn fn) {
@@ -158,8 +248,8 @@ const char* load_error_name(LoadError error) {
 /// counting pass. Both passes allocate in the same order.
 class Builder {
 public:
-	Builder(const DatapointModel& model, const ScheduleDirectory* schedules)
-		: model_(model), schedules_(schedules) {}
+	Builder(const DatapointModel& model, const ScheduleDirectory* schedules, const char* language)
+		: model_(model), schedules_(schedules), language_(language != nullptr && language[0] ? language : "en") {}
 
 	/// Runs one pass. `set` nullptr: the counting pass.
 	bool run(const JsonValue& rules, RuleSet* set);
@@ -211,7 +301,11 @@ private:
 	bool array_member(const JsonValue& object, const char* name, bool required, JsonValue& out, bool& present);
 
 	uint32_t add_string(const char* text);
+	void put_byte(char c);
+	void put_json_string(const char* text);
 	uint16_t add_constant(const Val& value);
+	bool label_member(const JsonValue& object, const char* name, uint32_t& text, uint32_t& json);
+	bool retype_enumeration(Node& node, uint16_t slot);
 	bool alloc_nodes(ExprScope& scope, size_t count, uint16_t& first);
 
 	bool prescan(const JsonValue& rules);
@@ -224,10 +318,13 @@ private:
 	bool trigger(const JsonValue& json, Trigger* out);
 	bool reaction(const JsonValue& json, Reaction* out);
 
-	/// Compiles the expression `json` into a new root; `type` receives its static type.
-	bool root(const JsonValue& json, bool match, uint16_t& index, Type& type);
+	/// Compiles the expression `json` into a new root; `type` receives its static type, `out` (if
+	/// given) the root node.
+	bool root(const JsonValue& json, bool match, uint16_t& index, Type& type, Node* out = nullptr);
 	bool expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16_t slot, bool timer_allowed, Type& type,
-		uint16_t& size);
+		uint16_t& size, Node* out = nullptr);
+	bool folded_negation(const JsonValue& operand, ExprScope& scope, size_t depth, uint16_t slot, Type& type,
+		uint16_t& size, Node* out, bool& folded);
 	bool call(const JsonValue& json, ExprScope& scope, size_t depth, uint16_t slot, Node& node, Type& type,
 		uint16_t& size);
 
@@ -241,6 +338,7 @@ private:
 
 	const DatapointModel& model_;
 	const ScheduleDirectory* schedules_;
+	const char* language_;
 	RuleSet* set_ = nullptr;
 	RuleScope rs_;
 	char path_[sizeof(LoadResult::path)] = {};
@@ -338,6 +436,133 @@ uint32_t Builder::add_string(const char* text) {
 	}
 	n_strings += length + 1;
 	return offset;
+}
+
+void Builder::put_byte(char c) {
+	if (set_) {
+		set_->strings_[n_strings] = c;
+	}
+	++n_strings;
+}
+
+void Builder::put_json_string(const char* text) {
+	static const char kHex[] = "0123456789abcdef";
+	put_byte('"');
+	for (; *text; ++text) {
+		unsigned char c = static_cast<unsigned char>(*text);
+		if (c == '"' || c == '\\') {
+			put_byte('\\');
+			put_byte(static_cast<char>(c));
+		} else if (c < 0x20) {
+			put_byte('\\');
+			put_byte('u');
+			put_byte('0');
+			put_byte('0');
+			put_byte(kHex[c >> 4]);
+			put_byte(kHex[c & 15]);
+		} else {
+			put_byte(static_cast<char>(c));
+		}
+	}
+	put_byte('"');
+}
+
+bool Builder::label_member(const JsonValue& object, const char* name, uint32_t& text, uint32_t& json) {
+	JsonValue member;
+	if (!object.member(name, member)) {
+		return fail(LoadError::malformed, "member '%s' missing", name);
+	}
+	PathScope scope(*this, ".%s", name);
+	char buffer[Limits::kLabel + 1];
+	size_t length = 0;
+	if (member.is(JsonKind::string)) {
+		if (!member.get_string(buffer, sizeof(buffer), &length) || length < 1 || length > Limits::kLabel) {
+			return fail(LoadError::malformed, "'%s' must have 1..%u bytes", name, static_cast<unsigned>(Limits::kLabel));
+		}
+		text = add_string(buffer);
+		json = 0;
+		return true;
+	}
+	if (!member.is(JsonKind::object)) {
+		return fail(LoadError::malformed, "'%s' must be a string or an object of language tags to strings", name);
+	}
+	// The text in the device's language: the exact tag, its base language, English, the first entry.
+	size_t base_length = 0;
+	while (language_[base_length] != '\0' && language_[base_length] != '-') {
+		++base_length;
+	}
+	size_t position = 0;
+	char tag[16];
+	size_t tag_length = 0;
+	JsonValue value;
+	size_t entries = 0;
+	int exact = -1, base = -1, english = -1;
+	while (member.next_member(position, tag, sizeof(tag), tag_length, value)) {
+		if (tag_length >= sizeof(tag) || !valid_language_tag(tag, tag_length)) {
+			return fail(LoadError::malformed, "a language tag of '%s' must have 2..8 characters of A-Z a-z 0-9 -", name);
+		}
+		PathScope tag_scope(*this, ".%s", tag);
+		if (entries >= Limits::kLabelLanguages) {
+			return fail(LoadError::limit_exceeded, "more than %u languages in a label",
+				static_cast<unsigned>(Limits::kLabelLanguages));
+		}
+		if (!value.is(JsonKind::string) || !value.get_string(buffer, sizeof(buffer), &length) || length < 1 ||
+			length > Limits::kLabel) {
+			return fail(LoadError::malformed, "a label text must be a string of 1..%u bytes",
+				static_cast<unsigned>(Limits::kLabel));
+		}
+		if (exact < 0 && same_tag(tag, language_, sizeof(tag)) && std::strlen(language_) == tag_length) {
+			exact = static_cast<int>(entries);
+		}
+		if (base < 0 && tag_length == base_length && same_tag(tag, language_, base_length)) {
+			base = static_cast<int>(entries);
+		}
+		if (english < 0 && tag_length == 2 && same_tag(tag, "en", 2)) {
+			english = static_cast<int>(entries);
+		}
+		++entries;
+	}
+	if (entries == 0) {
+		return fail(LoadError::malformed, "'%s' names no language", name);
+	}
+	int chosen = exact >= 0 ? exact : (base >= 0 ? base : (english >= 0 ? english : 0));
+	// Second walk: the chosen text, then the map as compact JSON.
+	position = 0;
+	for (int i = 0; member.next_member(position, tag, sizeof(tag), tag_length, value); ++i) {
+		if (i == chosen) {
+			value.get_string(buffer, sizeof(buffer), &length);
+			text = add_string(buffer);
+		}
+	}
+	json = static_cast<uint32_t>(n_strings);
+	put_byte('{');
+	position = 0;
+	for (int i = 0; member.next_member(position, tag, sizeof(tag), tag_length, value); ++i) {
+		if (i > 0) {
+			put_byte(',');
+		}
+		put_json_string(tag);
+		put_byte(':');
+		value.get_string(buffer, sizeof(buffer), &length);
+		put_json_string(buffer);
+	}
+	put_byte('}');
+	put_byte('\0');
+	return true;
+}
+
+bool Builder::retype_enumeration(Node& node, uint16_t slot) {
+	if (node.kind != NodeKind::literal || node.type != Type::integer || node.lit.i < 0 || node.lit.i > 4294967295LL) {
+		return false;
+	}
+	uint32_t element = static_cast<uint32_t>(node.lit.i);
+	node.lit = Node::Literal();
+	node.lit.e = element;
+	node.type = Type::enumeration;
+	if (Node* target = node_at(slot)) {
+		*target = node;
+	}
+	return true;
 }
 
 uint16_t Builder::add_constant(const Val& value) {
@@ -497,8 +722,9 @@ bool Builder::rule(const JsonValue& json) {
 	size_t index = n_rules++;
 	Rule* r = set_ ? &set_->rules_[index] : nullptr;
 	bool present = false;
-	char name[64];
-	if (!string_member(json, "name", true, name, sizeof(name), 1, 63, present)) {
+	Rule rule{};
+	rule.id = add_string(rule_ids_[index]);
+	if (!label_member(json, "name", rule.name, rule.name_json)) {
 		return false;
 	}
 	bool enabled = true;
@@ -506,9 +732,6 @@ bool Builder::rule(const JsonValue& json) {
 	if (!bool_member(json, "enabled", true, enabled) || !bool_member(json, "enabledAdjustable", true, enabled_adjustable)) {
 		return false;
 	}
-	Rule rule{};
-	rule.id = add_string(rule_ids_[index]);
-	rule.name = add_string(name);
 	rule.initial_state = kNoState;
 
 	// Parameters: `enabled` first, then the declared ones.
@@ -522,6 +745,7 @@ bool Builder::rule(const JsonValue& json) {
 		Parameter p{};
 		p.id = add_string("enabled");
 		p.label = add_string("Enabled");
+		p.label_json = 0;
 		p.unit = 0;
 		p.type = Type::boolean;
 		p.adjustable = enabled_adjustable;
@@ -780,7 +1004,6 @@ bool Builder::parameter(const JsonValue& json, RuleScope& rs, Parameter* out) {
 	}
 	bool present = false;
 	char id[25];
-	char label[64];
 	char type_text[24];
 	char unit[16];
 	if (!string_member(json, "id", true, id, sizeof(id), 1, 24, present)) {
@@ -798,7 +1021,9 @@ bool Builder::parameter(const JsonValue& json, RuleScope& rs, Parameter* out) {
 		PathScope scope(*this, ".id");
 		return fail(LoadError::duplicate_id, "parameter id '%s' is used twice", id);
 	}
-	if (!string_member(json, "label", true, label, sizeof(label), 1, 63, present) ||
+	Parameter p{};
+	p.id = add_string(id);
+	if (!label_member(json, "label", p.label, p.label_json) ||
 		!string_member(json, "type", true, type_text, sizeof(type_text), 1, 23, present)) {
 		return false;
 	}
@@ -835,9 +1060,6 @@ bool Builder::parameter(const JsonValue& json, RuleScope& rs, Parameter* out) {
 	if (!bool_member(json, "adjustable", true, adjustable)) {
 		return false;
 	}
-	Parameter p{};
-	p.id = add_string(id);
-	p.label = add_string(label);
 	p.unit = unit[0] ? add_string(unit) : 0;
 	p.type = type;
 	p.adjustable = adjustable;
@@ -868,7 +1090,7 @@ bool Builder::parameter(const JsonValue& json, RuleScope& rs, Parameter* out) {
 		return false;
 	}
 	p.first_choice = static_cast<uint16_t>(n_choices);
-	Val choice_values[16];
+	Val choice_values[Limits::kChoices];
 	size_t choice_count = 0;
 	if (has_choices) {
 		PathScope scope(*this, ".choices");
@@ -883,9 +1105,8 @@ bool Builder::parameter(const JsonValue& json, RuleScope& rs, Parameter* out) {
 			if (!only(item, kChoiceMembers)) {
 				return false;
 			}
-			if (choice_count >= 255 || choice_count >= sizeof(choice_values) / sizeof(choice_values[0])) {
-				return fail(LoadError::invalid_parameter, "more than %u choices",
-					static_cast<unsigned>(sizeof(choice_values) / sizeof(choice_values[0])));
+			if (choice_count >= Limits::kChoices) {
+				return fail(LoadError::limit_exceeded, "more than %u choices", static_cast<unsigned>(Limits::kChoices));
 			}
 			JsonValue value_json;
 			if (!item.member("value", value_json)) {
@@ -898,13 +1119,11 @@ bool Builder::parameter(const JsonValue& json, RuleScope& rs, Parameter* out) {
 					return false;
 				}
 			}
-			char choice_label[64];
-			if (!string_member(item, "label", true, choice_label, sizeof(choice_label), 1, 63, present)) {
-				return false;
-			}
 			Choice c{};
 			c.value = add_constant(value);
-			c.label = add_string(choice_label);
+			if (!label_member(item, "label", c.label, c.label_json)) {
+				return false;
+			}
 			if (set_) {
 				set_->choices_[n_choices] = c;
 			}
@@ -1003,6 +1222,11 @@ bool Builder::action(const JsonValue& json, Action* out) {
 			PathScope scope(*this, ".datapoint");
 			return fail(LoadError::not_writable, "datapoint '%s' is not writable", name);
 		}
+		if (schedules_ != nullptr && schedules_->owns_output(name)) {
+			PathScope scope(*this, ".datapoint");
+			return fail(LoadError::not_writable, "datapoint '%s' is the output of a schedule entry; the scheduler owns it",
+				name);
+		}
 		bool only_on_change = false;
 		if (!bool_member(json, "onlyOnChange", false, only_on_change)) {
 			return false;
@@ -1078,8 +1302,12 @@ bool Builder::action(const JsonValue& json, Action* out) {
 		}
 		PathScope scope(*this, ".value");
 		Type type = Type::invalid;
-		if (!root(value, false, a.expr, type)) {
+		Node value_node{};
+		if (!root(value, false, a.expr, type, &value_node)) {
 			return false;
+		}
+		if (rs_.parameter_types[p] == Type::enumeration && retype_enumeration(value_node, a.expr)) {
+			type = Type::enumeration; // the value takes the type of the parameter it is assigned to (4.8)
 		}
 		if (!assign_allowed(type, rs_.parameter_types[p])) {
 			return fail(LoadError::type_error, "a %s value cannot be assigned to the %s parameter '%s'", type_name(type),
@@ -1442,7 +1670,7 @@ bool Builder::reaction(const JsonValue& json, Reaction* out) {
 	return true;
 }
 
-bool Builder::root(const JsonValue& json, bool match, uint16_t& index, Type& type) {
+bool Builder::root(const JsonValue& json, bool match, uint16_t& index, Type& type, Node* out) {
 	ExprScope scope;
 	scope.match = match;
 	uint16_t slot = 0;
@@ -1450,15 +1678,67 @@ bool Builder::root(const JsonValue& json, bool match, uint16_t& index, Type& typ
 		return false;
 	}
 	uint16_t size = 0;
-	if (!expr(json, scope, 1, slot, false, type, size)) {
+	if (!expr(json, scope, 1, slot, false, type, size, out)) {
 		return false;
 	}
 	index = slot;
 	return true;
 }
 
+bool Builder::folded_negation(const JsonValue& operand, ExprScope& scope, size_t depth, uint16_t slot, Type& type,
+	uint16_t& size, Node* out, bool& folded) {
+	// A minus applied directly to an integer, real or duration literal is part of the literal
+	// (spec 4.8): a chain of unary minus nodes ending in such a literal compiles to one literal.
+	folded = false;
+	JsonValue inner = operand;
+	size_t minus = 1;
+	char text[16];
+	JsonValue member;
+	for (;;) {
+		if (!inner.is(JsonKind::object) || !inner.member("kind", member) || !member.get_string(text, sizeof(text))) {
+			return true;
+		}
+		if (std::strcmp(text, "unary") != 0) {
+			break;
+		}
+		static const char* const kMembers[] = {"kind", "op", "operand", nullptr};
+		if (!inner.member("op", member) || !member.get_string(text, sizeof(text)) || std::strcmp(text, "-") != 0 ||
+			!only(inner, kMembers) || !inner.member("operand", member)) {
+			return result.ok(); // not a chain of minus signs: compiled as usual (only() may have refused)
+		}
+		++minus;
+		inner = member;
+	}
+	if (std::strcmp(text, "literal") != 0 || !inner.member("type", member) || !member.get_string(text, sizeof(text)) ||
+		(std::strcmp(text, "integer") != 0 && std::strcmp(text, "real") != 0 && std::strcmp(text, "duration") != 0)) {
+		return true;
+	}
+	Node node{};
+	{
+		PathScope p(*this, ".operand");
+		if (!expr(inner, scope, depth, slot, false, type, size, &node)) {
+			return false;
+		}
+	}
+	if (minus % 2 != 0) {
+		if (node.type == Type::real) {
+			node.lit.r = -node.lit.r;
+		} else {
+			node.lit.i = -node.lit.i; // a literal's magnitude is at most 2^53 - 1
+		}
+	}
+	if (Node* target = node_at(slot)) {
+		*target = node;
+	}
+	if (out) {
+		*out = node;
+	}
+	folded = true;
+	return true;
+}
+
 bool Builder::expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16_t slot, bool timer_allowed,
-	Type& type, uint16_t& size) {
+	Type& type, uint16_t& size, Node* out) {
 	if (depth > Limits::kDepth) {
 		return fail(LoadError::limit_exceeded, "an expression deeper than %u", static_cast<unsigned>(Limits::kDepth));
 	}
@@ -1498,9 +1778,48 @@ bool Builder::expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 				return false;
 			}
 		}
+		// Normalization (spec 4.8): an enumeration literal is the integer of its element number (its
+		// partner gives it back the type, retype_enumeration()); a controlled literal is the call
+		// controlled(bit, n).
+		if (t == Type::enumeration) {
+			value = Val::of_int(value.u.e);
+			t = Type::integer;
+		}
 		node.kind = NodeKind::literal;
 		node.type = t;
-		switch (t) {
+		if (t == Type::controlled) {
+			if (depth + 1 > Limits::kDepth) {
+				return fail(LoadError::limit_exceeded, "an expression deeper than %u (a controlled literal is a call)",
+					static_cast<unsigned>(Limits::kDepth));
+			}
+			uint16_t children = 0;
+			if (!alloc_nodes(scope, 2, children)) {
+				return false;
+			}
+			Node bit{};
+			bit.kind = NodeKind::literal;
+			bit.type = Type::boolean;
+			bit.a = kNone;
+			bit.size = 1;
+			bit.lit.b = value.u.ctl.control;
+			Node number{};
+			number.kind = NodeKind::literal;
+			number.type = Type::integer;
+			number.a = kNone;
+			number.size = 1;
+			number.lit.i = value.u.ctl.value;
+			if (Node* target = node_at(children)) {
+				target[0] = bit;
+				target[1] = number;
+			}
+			node.kind = NodeKind::call;
+			node.op = static_cast<uint8_t>(Fn::controlled);
+			node.type = Type::controlled;
+			node.argc = 2;
+			node.a = children;
+			size = 3;
+			type = Type::controlled;
+		} else switch (t) {
 			case Type::boolean: node.lit.b = value.u.b; break;
 			case Type::integer:
 			case Type::duration: node.lit.i = value.u.i; break;
@@ -1592,6 +1911,15 @@ bool Builder::expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 		if (!json.member("operand", operand)) {
 			return fail(LoadError::malformed, "member 'operand' missing");
 		}
+		if (o == Op::neg) {
+			bool folded = false;
+			if (!folded_negation(operand, scope, depth, slot, type, size, out, folded)) {
+				return false;
+			}
+			if (folded) {
+				return true;
+			}
+		}
 		uint16_t child = 0;
 		if (!alloc_nodes(scope, 1, child)) {
 			return false;
@@ -1648,16 +1976,25 @@ bool Builder::expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 		}
 		Type a = Type::invalid, b = Type::invalid;
 		uint16_t size_a = 0, size_b = 0;
+		Node left_node{}, right_node{};
 		{
 			PathScope p(*this, ".left");
-			if (!expr(left, scope, depth + 1, children, false, a, size_a)) {
+			if (!expr(left, scope, depth + 1, children, false, a, size_a, &left_node)) {
 				return false;
 			}
 		}
 		{
 			PathScope p(*this, ".right");
-			if (!expr(right, scope, depth + 1, static_cast<uint16_t>(children + 1), false, b, size_b)) {
+			if (!expr(right, scope, depth + 1, static_cast<uint16_t>(children + 1), false, b, size_b, &right_node)) {
 				return false;
+			}
+		}
+		if (o == Op::eq || o == Op::ne) {
+			// An integer literal compared with an enumeration is an enumeration literal (4.8).
+			if (a == Type::enumeration && retype_enumeration(right_node, static_cast<uint16_t>(children + 1))) {
+				b = Type::enumeration;
+			} else if (b == Type::enumeration && retype_enumeration(left_node, children)) {
+				a = Type::enumeration;
 			}
 		}
 		Type t = Type::invalid;
@@ -1750,6 +2087,9 @@ bool Builder::expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 	node.size = size;
 	if (Node* target = node_at(slot)) {
 		*target = node;
+	}
+	if (out) {
+		*out = node;
 	}
 	return true;
 }
@@ -1873,6 +2213,7 @@ bool Builder::call(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 		return false;
 	}
 	Type t[Limits::kArguments] = {};
+	Node nodes[Limits::kArguments] = {};
 	uint16_t total = 1;
 	size_t position = 0;
 	JsonValue item;
@@ -1881,11 +2222,28 @@ bool Builder::call(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 		PathScope p(*this, "[%u]", static_cast<unsigned>(i));
 		uint16_t child_size = 0;
 		bool timer_allowed = (fn == Fn::running || fn == Fn::remaining) && i == 0;
-		if (!expr(item, scope, depth + 1, static_cast<uint16_t>(children + i), timer_allowed, t[i], child_size)) {
+		if (!expr(item, scope, depth + 1, static_cast<uint16_t>(children + i), timer_allowed, t[i], child_size,
+				&nodes[i])) {
 			return false;
 		}
 		total = static_cast<uint16_t>(total + child_size);
 		++i;
+	}
+	// An integer literal next to an enumeration in if() and coalesce(), and the argument of toInt(),
+	// is an enumeration literal (4.8).
+	auto partners = [&](size_t x, size_t y) {
+		if (t[x] == Type::enumeration && retype_enumeration(nodes[y], static_cast<uint16_t>(children + y))) {
+			t[y] = Type::enumeration;
+		} else if (t[y] == Type::enumeration && retype_enumeration(nodes[x], static_cast<uint16_t>(children + x))) {
+			t[x] = Type::enumeration;
+		}
+	};
+	if (fn == Fn::if_) {
+		partners(1, 2);
+	} else if (fn == Fn::coalesce) {
+		partners(0, 1);
+	} else if (fn == Fn::to_int && retype_enumeration(nodes[0], children)) {
+		t[0] = Type::enumeration;
 	}
 	if ((fn == Fn::since_change || fn == Fn::changed_within) && set_) {
 		track(set_->nodes_[children].a);
@@ -2120,8 +2478,9 @@ void RuleSet::clear() {
 	new (this) RuleSet();
 }
 
-LoadResult RuleSet::load(const JsonValue& rules, const DatapointModel& model, const ScheduleDirectory* schedules) {
-	Builder* builder = new (std::nothrow) Builder(model, schedules);
+LoadResult RuleSet::load(const JsonValue& rules, const DatapointModel& model, const ScheduleDirectory* schedules,
+	const char* language) {
+	Builder* builder = new (std::nothrow) Builder(model, schedules, language);
 	LoadResult result;
 	if (builder == nullptr) {
 		result.error = LoadError::out_of_memory;
@@ -2221,6 +2580,9 @@ LoadResult RuleSet::load(const JsonValue& rules, const DatapointModel& model, co
 	next.match_count_ = builder->n_matches;
 	next.string_bytes_ = builder->n_strings;
 	delete builder;
+	if (!check_storage_keys(next, result)) {
+		return result;
+	}
 	*this = std::move(next);
 	Log::info(kTag, "rules loaded: %u rules, %u nodes, %u bytes", static_cast<unsigned>(rule_count_),
 		static_cast<unsigned>(node_count_), static_cast<unsigned>(block_size_));

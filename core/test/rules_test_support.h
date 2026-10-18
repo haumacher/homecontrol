@@ -5,6 +5,7 @@
 #define HC_TEST_RULES_TEST_SUPPORT_H
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -13,8 +14,10 @@
 #include <vector>
 
 #include "hc/json_value.h"
+#include "hc/platform/time_zone.h"
 #include "hc/rules/value.h"
 #include "hc/technology.h"
+#include "hc/tz.h"
 #include "json_reader.h"
 
 #ifndef HC_SPEC_DIR
@@ -137,6 +140,156 @@ inline bool parse_json(const std::string& text, Json& out, std::string& error) {
 
 /// The rule corpus files (spec/fixtures/rules/NN-*.json), sorted.
 std::vector<std::string> rule_corpus_files();
+
+/// A time zone given by a POSIX TZ string ("CET-1CEST,M3.5.0,M10.5.0/3", "UTC0"), evaluated here
+/// so that a test pins its zone without depending on the host's TZ or C library. Transition rules
+/// of the form Mm.w.d[/time] only (what real zones use); parse() refuses the rest.
+class PosixRuleZone : public hc::TimeZone {
+public:
+	bool parse(const char* tz) {
+		if (!hc::posix_tz_valid(tz)) {
+			return false;
+		}
+		const char* p = tz;
+		if (!name(p, std_name_) || !offset(p, std_offset_)) {
+			return false;
+		}
+		std_offset_ = -std_offset_; // POSIX: west of Greenwich is positive
+		has_dst_ = *p != '\0';
+		if (!has_dst_) {
+			return true;
+		}
+		if (!name(p, dst_name_)) {
+			return false;
+		}
+		dst_offset_ = std_offset_ + 3600;
+		if (*p != ',' && *p != '\0') {
+			int32_t parsed = 0;
+			if (!offset(p, parsed)) {
+				return false;
+			}
+			dst_offset_ = -parsed;
+		}
+		return *p == ',' && rule(++p, start_) && *p == ',' && rule(++p, end_) && *p == '\0';
+	}
+
+	void apply(const char*) override {}
+
+	bool to_local(int64_t utc, hc::LocalTime& out) const override {
+		bool dst = false;
+		if (has_dst_) {
+			int64_t days = utc >= 0 ? utc / 86400 : (utc - 86399) / 86400;
+			int32_t year = 0;
+			unsigned month = 0, day = 0;
+			hc::rules::civil_of(days, year, month, day);
+			int64_t start = local_instant(year, start_) - std_offset_;
+			int64_t end = local_instant(year, end_) - dst_offset_;
+			dst = start < end ? (utc >= start && utc < end) : !(utc >= end && utc < start);
+		}
+		int64_t local = utc + (dst ? dst_offset_ : std_offset_);
+		int64_t days = local >= 0 ? local / 86400 : (local - 86399) / 86400;
+		int64_t rest = local - days * 86400;
+		int32_t year = 0;
+		unsigned month = 0, day = 0;
+		hc::rules::civil_of(days, year, month, day);
+		out.year = year;
+		out.month = static_cast<uint8_t>(month);
+		out.day = static_cast<uint8_t>(day);
+		out.hour = static_cast<uint8_t>(rest / 3600);
+		out.minute = static_cast<uint8_t>(rest % 3600 / 60);
+		out.second = static_cast<uint8_t>(rest % 60);
+		out.dst = dst;
+		std::snprintf(out.zone, sizeof(out.zone), "%s", (dst ? dst_name_ : std_name_).c_str());
+		return true;
+	}
+
+private:
+	struct Rule {
+		unsigned month = 0, week = 0, weekday = 0; ///< weekday 0 Sunday .. 6
+		int32_t time = 7200;
+	};
+
+	static bool name(const char*& p, std::string& out) {
+		out.clear();
+		if (*p == '<') {
+			for (++p; *p && *p != '>'; ++p) {
+				out += *p;
+			}
+			if (*p != '>') {
+				return false;
+			}
+			++p;
+		} else {
+			while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) {
+				out += *p++;
+			}
+		}
+		return out.size() >= 3;
+	}
+
+	static bool number(const char*& p, int& out) {
+		if (*p < '0' || *p > '9') {
+			return false;
+		}
+		out = 0;
+		while (*p >= '0' && *p <= '9') {
+			out = out * 10 + (*p++ - '0');
+		}
+		return true;
+	}
+
+	/// [+|-]hh[:mm[:ss]] in seconds.
+	static bool offset(const char*& p, int32_t& out) {
+		int sign = 1;
+		if (*p == '+' || *p == '-') {
+			sign = *p++ == '-' ? -1 : 1;
+		}
+		int h = 0, m = 0, sec = 0;
+		if (!number(p, h)) {
+			return false;
+		}
+		if (*p == ':' && (++p, !number(p, m))) {
+			return false;
+		}
+		if (*p == ':' && (++p, !number(p, sec))) {
+			return false;
+		}
+		out = sign * (h * 3600 + m * 60 + sec);
+		return true;
+	}
+
+	static bool rule(const char*& p, Rule& out) {
+		int m = 0, w = 0, d = 0;
+		if (*p != 'M' || !number(++p, m) || *p != '.' || !number(++p, w) || *p != '.' || !number(++p, d)) {
+			return false;
+		}
+		out.month = static_cast<unsigned>(m);
+		out.week = static_cast<unsigned>(w);
+		out.weekday = static_cast<unsigned>(d);
+		out.time = 7200;
+		if (*p == '/') {
+			return offset(++p, out.time);
+		}
+		return true;
+	}
+
+	/// The local seconds (as if UTC) of a rule's moment in `year`.
+	static int64_t local_instant(int32_t year, const Rule& r) {
+		int64_t first = hc::days_from_civil(year, r.month, 1);
+		unsigned first_weekday = static_cast<unsigned>(((first % 7) + 11) % 7); // 1970-01-01 was a Thursday (4)
+		unsigned day = 1 + (r.weekday + 7 - first_weekday) % 7 + (r.week - 1) * 7;
+		static const unsigned kDays[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+		while (day > kDays[r.month - 1] || !hc::rules::valid_date(year, r.month, day)) {
+			day -= 7;
+		}
+		return hc::days_from_civil(year, r.month, day) * 86400 + r.time;
+	}
+
+	std::string std_name_, dst_name_;
+	int32_t std_offset_ = 0, dst_offset_ = 0;
+	bool has_dst_ = false;
+	Rule start_, end_;
+};
 
 /// A technology that accepts every command (without reporting it back), or refuses all.
 class TestTechnology : public hc::Technology {

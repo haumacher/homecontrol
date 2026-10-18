@@ -1,6 +1,6 @@
 {
 	"title": "No value in conditions: not satisfied, neither branch, logged once per condition until it had a value; three-valued and/or",
-	"note": "Review: a condition without value runs neither actions nor elseActions (open question 1).",
+	"note": "Decided (spec 12, point 1, issue #25): a condition without value runs neither actions nor elseActions.",
 	"datapoints": [
 		{"name": "room.temp", "type": "real"},
 		{"name": "room.window", "type": "boolean"},
