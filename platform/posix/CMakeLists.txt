@@ -61,6 +61,7 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/improv_test.cpp"
 	"${HC_REPO_DIR}/core/test/update_check_test.cpp"
 	"${HC_REPO_DIR}/core/test/update_upload_test.cpp"
+	"${HC_REPO_DIR}/core/test/update_upload_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/update_check_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/datapoint_test.cpp"
 	"${HC_REPO_DIR}/core/test/dpt_test.cpp"

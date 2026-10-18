@@ -820,6 +820,10 @@ bool store_update_instruction(Settings& settings, const UpdateManifest& manifest
 	if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
 		return refuse(error, "cannot erase the previous update.image");
 	}
+	status = settings.erase(setting::kUpdateToken); // a download replaces an upload instruction completely
+	if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
+		return refuse(error, "cannot erase the previous update.token");
+	}
 	if (settings.set_string(setting::kUpdateVersion, manifest.version) != SettingsStatus::ok) {
 		return refuse(error, "cannot store update.version");
 	}
