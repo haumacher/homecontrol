@@ -45,3 +45,9 @@ CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
 CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y
+
+# The system event task runs the WiFi and IP handlers of hc_net, which log through stdio into the
+# console ring (doc/diagnostics.md "Console output"); the IDF's 2304 bytes left about 1 KB in steady
+# state and overflowed once at a boot with a USB host attached (a stack protection fault in sys_evt
+# during the WiFi start, 2026-10-18, issue #48). 1.3 KB more RAM buys the margin.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=3584
