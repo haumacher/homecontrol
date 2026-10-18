@@ -173,6 +173,9 @@ export class Live extends EventTarget {
 			case "datapoints":
 				this.merge(message);
 				break;
+			case "zigbee":
+				this.dispatchEvent(new CustomEvent("zigbee", { detail: message }));
+				break;
 			case "result": {
 				const entry = this.pending.get(message.ref);
 				if (entry) {

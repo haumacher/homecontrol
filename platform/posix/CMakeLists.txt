@@ -71,6 +71,8 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/log_ring_test.cpp"
 	"${HC_REPO_DIR}/core/test/auth_test.cpp"
 	"${HC_REPO_DIR}/core/test/web_api_test.cpp"
+	"${HC_REPO_DIR}/core/test/web_system_test.cpp"
+	"${HC_REPO_DIR}/core/test/web_system_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/web_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/live_feed_test.cpp"
 	"${HC_REPO_DIR}/core/test/monitor_feed_test.cpp"

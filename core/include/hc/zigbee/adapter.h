@@ -84,6 +84,40 @@ protected:
 	~ZigbeeTrafficListener() = default;
 };
 
+/// A change of the coordinator's state that a pairing view shows (the WebSocket's `zigbee` message,
+/// spec/api.md "Zigbee").
+struct ZigbeeEvent {
+	enum class Kind : uint8_t {
+		network,          ///< The network came up or went down.
+		permit,           ///< The stack reported the permit-join state (`permit_join_s`, 0: closed).
+		joined,           ///< A new device joined, or a known one joined afresh after a reset.
+		interviewing,     ///< The device's interview started.
+		interviewed,      ///< The interview finished; its datapoints are in the model.
+		interview_failed, ///< The interview failed (it is tried again when the device is heard).
+		left,             ///< The device left the network (it stays in the database).
+		removed,          ///< The device was removed from the database.
+		changed,          ///< Something else about the device changed (label, stale, heard again).
+	};
+	Kind kind = Kind::changed;
+	Ieee ieee = 0;              ///< The device; 0 for network and permit.
+	uint32_t permit_join_s = 0; ///< For permit: how long the network is open.
+};
+
+/// "network", "permit", "joined", "interviewing", "interviewed", "interview_failed", "left",
+/// "removed", "changed".
+const char* zigbee_event_name(ZigbeeEvent::Kind kind);
+
+/// Told about every ZigbeeEvent (ZigbeeAdapter::set_event_listener()), on the event loop's thread,
+/// while the adapter is in the middle of the change: it may read the adapter's state but must not
+/// call its operations.
+class ZigbeeEventListener {
+public:
+	virtual void zigbee_event(const ZigbeeEvent& event) = 0;
+
+protected:
+	~ZigbeeEventListener() = default;
+};
+
 /// The Zigbee technology adapter (doc/zigbee.md): keeps the device database, interviews joining
 /// devices, maps their clusters to datapoints (generic rules or the runtime image's bindings),
 /// configures their reporting, turns attribute reports and button commands into datapoint reports,
@@ -220,10 +254,23 @@ public:
 	void set_traffic_listener(ZigbeeTrafficListener* listener) { traffic_ = listener; }
 	ZigbeeTrafficListener* traffic_listener() const { return traffic_; }
 
+	/// The one event listener (the web API's live feed); nullptr: none. It must outlive the adapter or
+	/// be removed first.
+	void set_event_listener(ZigbeeEventListener* listener) { events_ = listener; }
+	ZigbeeEventListener* event_listener() const { return events_; }
+	/// Counts every ZigbeeEvent: a view that saw another generation reads the devices again.
+	uint32_t generation() const { return generation_; }
+	/// How long the network stays open for joining, in whole seconds (0: closed).
+	uint32_t permit_join_s() const;
+
 	/// {"network": {...}, "devices": [{ieee, short, manufacturer, model, label, interviewed, stale,
-	/// last_seen, datapoints: [names]}]} for the console, the API and E-Home's pairing view
-	/// (spec/zigbee.md).
+	/// left, interviewing, last_seen, seen_ago_s, datapoints: [names]}]} for the console, the API and
+	/// E-Home's pairing view (spec/zigbee.md).
 	void write_json(JsonWriter& json) const;
+	/// The members of the "network" object into an open object.
+	void write_network_json(JsonWriter& json) const;
+	/// Device `index` of devices() as an object.
+	void write_device_json(JsonWriter& json, size_t index) const;
 
 	// Technology
 	const char* name() const override { return "zigbee"; }
@@ -311,6 +358,10 @@ private:
 	TimerHandle check_timer_;
 	TimerHandle refresh_timer_;
 	ZigbeeTrafficListener* traffic_ = nullptr;
+	ZigbeeEventListener* events_ = nullptr;
+	uint32_t generation_ = 0;
+
+	void notify(ZigbeeEvent::Kind kind, Ieee ieee, uint32_t permit_join_s = 0);
 };
 
 } // namespace zigbee

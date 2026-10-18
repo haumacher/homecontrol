@@ -87,6 +87,19 @@ public:
 	void set_language_packs(LanguagePacks* packs) { api_.set_language_packs(packs); }
 	/// The MQTT client the settings mqtt.user and mqtt.password reconnect (call before start()).
 	void set_mqtt(Mqtt* mqtt) { api_.set_mqtt(mqtt); }
+	/// The KNX tunnel and its telegram log: the "knx" status, knx.gateway and knx.nat applied to it.
+	void set_knx(knx::KnxTunnel* tunnel, const knx::TelegramLog* telegrams) { api_.set_knx(tunnel, telegrams); }
+	/// The Zigbee coordinator behind /api/zigbee; nullptr with the reason when it does not run.
+	void set_zigbee(zigbee::ZigbeeAdapter* adapter, const char* reason) { api_.set_zigbee(adapter, reason); }
+	/// The external values behind POST /api/external/<id>/fetch and the "external" status.
+	void set_external(ExternalValues* external) { api_.set_external(external); }
+	/// The blob store the factory reset empties and the "storage" status counts.
+	void set_blob_store(BlobStore* blobs) {
+		blobs_ = blobs;
+		api_.set_blob_store(blobs);
+	}
+	/// The diagnostics whose core dump DELETE /api/coredump erases.
+	void set_diagnostics(EspDiagnostics* diagnostics) { diagnostics_ = diagnostics; }
 	/// The `web` console command (ConsoleContext::extensions).
 	const ConsoleCommand* console_commands() const { return &console_command_; }
 	size_t console_command_count() const { return 1; }
@@ -100,6 +113,13 @@ public:
 	void write_update_state(JsonWriter& json) const override;
 	const char* ui_version() const override { return ui_version_; }
 	uint16_t websocket_port() const override { return 0; }
+	HostResult system_action_possible(SystemAction action, const char** reason) const override;
+	void system_action(SystemAction action) override;
+	HostResult start_update(bool force, const char* url, const char** reason) override;
+	HostResult clear_coredump(const char** reason) override;
+	bool set_platform_log_level(const char* tag, LogLevel level) override;
+	bool has_platform_log() const override { return true; }
+	bool storage_usage(uint64_t& total, uint64_t& used) const override;
 
 	// WsTransport
 	bool ws_send(uint32_t client, const char* text, size_t length) override;
@@ -144,6 +164,8 @@ private:
 	httpd_handle_t server_ = nullptr;
 	char ui_version_[24] = "";
 	bool ui_mounted_ = false;
+	BlobStore* blobs_ = nullptr;
+	EspDiagnostics* diagnostics_ = nullptr;
 
 	/// The one job in flight from the httpd task to the loop (the httpd task serves one request at
 	/// a time). Stays busy after a timeout until the loop has run it.

@@ -233,6 +233,20 @@ directly. Allocation happens at `init()` (the adapter, the driver, the task) and
 reloads (the adapter's point tables, the specs it states); reports, commands and the stale check
 allocate nothing.
 
+## From the web UI
+
+The **Zigbee** page (doc/web.md, "Pages") does what the console does, over the API (spec/api.md,
+"Zigbee"): **Pair** opens the network for 254 s (`POST /api/zigbee/permit`) and counts down;
+**Close** ends it early. While it is open, the WebSocket's `zigbee` events (`joined`,
+`interviewing`, `interviewed`, `interview_failed`, `left`, ...) appear in a list under the network
+card as they happen, and the device cards follow (the page reads `GET /api/zigbee` again on each
+event). Each device card shows the state, manufacturer and model, IEEE, last seen and its
+datapoints' live values, with **Identify** (10 s), **Rename** (the label), **Interview again** and
+**Remove** (after a confirmation; asks the device to leave and forgets it). The adapter reports
+every change of its device list through `ZigbeeEventListener` (one listener, the `WebApi`, which
+forwards to the live feed) and counts them in `generation`. On a chip without 802.15.4 the page
+shows the reason the coordinator does not run.
+
 ## Console
 
 ```

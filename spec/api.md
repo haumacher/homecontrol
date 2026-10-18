@@ -18,6 +18,8 @@ that breaks a client needs a new path or field, not a changed meaning.
 - The ESP device serves everything on port 80. The POSIX build serves HTTP on `--http <port>`
   (default 8080) and the WebSocket on the port above it; `GET /api/auth/session` says which
   (`ws_port`, 0 = the page's port).
+- What a platform cannot do (restart, update itself, keep a core dump, run a Zigbee coordinator)
+  is refused with 501 `system.unavailable` and the reason, never with a silent success.
 
 ## Authentication
 
@@ -29,8 +31,9 @@ Once onboarded, every endpoint except the four under `/api/auth/` needs either
 - the **session cookie** `hc_session` (set by onboarding and login: `HttpOnly; SameSite=Strict;
   Path=/`, no `Max-Age`, i.e. a browser-session cookie; the device forgets all sessions at reboot
   and after 24 h without use), or
-- a **bearer token**: `Authorization: Bearer hct_<32 hex digits>`, created on the serial console
-  with `web token create <name>` (shown once; doc/web.md).
+- a **bearer token**: `Authorization: Bearer hct_<32 hex digits>`, created with
+  `POST /api/tokens` (see "System") or on the serial console with `web token create <name>` (shown
+  once; doc/web.md).
 
 Without either: 401 `auth.required`; with an unknown or revoked token: 401 `auth.token_invalid`.
 
@@ -98,6 +101,24 @@ refused load while no image runs also `"refused": "<code>"`. `source` is how the
 one at start), `api`, `console`, `file` (POSIX `--image`), `restore` (the stored one again after a
 failed apply). `degraded`: the image has KNX datapoints and the tunnel is down (the LED shows
 degraded). The WebSocket's `status` message carries the same member.
+
+Members only `GET /api/status` carries (not the WebSocket's `status` message, which must fit one
+1400-byte frame):
+
+- `storage`: `{"total", "used", "free"}` (bytes of the storage partition; ESP only) and `{"files",
+  "bytes"}` (the blob store's files and their size).
+- `knx`: `{"state": "down|connecting|up", "reason", "gateway": "<host:port or \"\">", "nat",
+  "channel", "address" (both only while up), "queued", "telegrams"}`.
+- `external`: `{"sources": [{"id", "preset", "interval_s", "fetches", "failures", "fetching",
+  "last_ok_ago_s" (once one succeeded), "error", "next_s"}]}`.
+- `lang`: the language pack as `i18n` of `GET /api/settings` (`lang`, `state`, `detail`,
+  `release`, `offered`).
+- `mqtt`: `{"state", "configured"}`, with a broker also `broker`, `base_topic`, `discovery`,
+  `functions`, `published`, `commands`, `refusals`, `connects`, `failures`, `error` and, while
+  waiting, `next_s`.
+- `zigbee`: `{"up", "permit_join_s", "devices", "generation"}` (with a coordinator).
+
+Each appears when the build has the service.
 
 `update` is platform-specific: always `available` (whether the device updates itself), the ESP
 build adds `partition`, `confirmed`, `checking`, `source` (update.url, `""` if none), `last`,
@@ -182,6 +203,8 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
               {"key": "wifi.ps", "value": "min", "default": "min", "editable": true},
               {"key": "mqtt.user", "value": null, "default": "", "editable": true},
               {"key": "mqtt.password", "value": null, "default": "", "editable": true, "secret": true, "stored": true},
+              {"key": "knx.gateway", "value": "192.0.2.20", "default": "", "editable": true},
+              {"key": "knx.nat", "value": "off", "default": "off", "editable": true},
               {"key": "wifi.ssid", "value": "...", "default": "", "editable": false}],
  "i18n": {"lang": "de", "state": "installed", "detail": "pack 'de' of release 0.2.0 installed (5035 bytes)",
           "release": "0.2.0", "offered": [{"code": "de", "name": "Deutsch"}]}}
@@ -202,11 +225,147 @@ retry follows); `offered` the languages the release's manifest lists, by their o
 Body `{"value": "<string, at most 127 bytes>"}`; `""` erases `update.url`. Validated as on the
 console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.url` an http(s) URL; doc/ota.md;
 `ui.lang` a language tag `[a-z]{2}(-[A-Z]{2})?`, doc/i18n.md; `wifi.ps` one of `none`, `min`, `max`,
-doc/network.md; `mqtt.user` and `mqtt.password` 1 to 63 bytes, `""` removes them) and applied at
-once (a new `ui.lang` starts the download of its language pack, a new `wifi.ps` is set on the
+doc/network.md; `mqtt.user` and `mqtt.password` 1 to 63 bytes, `""` removes them; `knx.gateway` a host or IPv4
+address with an optional `:port`, `""` removes it; `knx.nat` `on` or `off`, doc/knx.md) and applied
+at once (a new `knx.gateway` or `knx.nat` reconnects the KNX tunnel, a new `ui.lang` starts the download of its language pack, a new `wifi.ps` is set on the
 running WiFi link, a new `mqtt.user` or `mqtt.password` reconnects the MQTT client). 200 with the settings list as for GET. Refusals: 404 `settings.unknown`, 403
 `settings.not_editable`, 400 `settings.value_missing`, 422 `settings.invalid` (with the reason),
 500 `settings.storage_error`.
+
+## System
+
+What the serial console does for an installed device (issue #38). The core implements every route
+(`hc::WebApi`, `core/src/web_api_system.cpp`); what only a platform can do goes through the hooks
+of `hc::WebHost` (`core/include/hc/platform/web_host.h`). A platform that cannot do something
+answers 501 `system.unavailable` with the reason (the POSIX build has no OTA updater and no core
+dump). Every refusal is also logged (`<method> <path> from <peer> refused (<code>): <reason>`).
+
+### `POST /api/system/restart`
+
+No body. 200 `{"ok": true, "action": "restart", "in_ms": 750}`: the restart follows after `in_ms`,
+so the answer leaves first. Refusals: 501 `system.unavailable`, 409 `system.busy` (a restart, reset
+or WiFi change is already pending).
+
+### `POST /api/system/factory-reset`
+
+Body `{"confirm": "<device name>"}` (the `device.name` of the status). Erases what the console's
+`factory reset yes` erases (doc/diagnostics.md: every blob, i.e. the runtime image, last values and
+history; the settings with the WiFi credentials, the password and the tokens; on the ESP also the
+Zigbee network and the boot record), then restarts:
+200 `{"ok": true, "action": "factory-reset", "in_ms": 750}`. Refusals: 400
+`system.confirm_missing` (no body or no `confirm`), 422 `system.confirm_mismatch` (nothing was
+erased), 501 `system.unavailable`, 409 `system.busy`.
+
+### `POST /api/system/update/check` and `POST /api/system/update/now`
+
+`check` asks the update server (update.url) whether a newer release exists and installs it as the
+periodic check would; `now` installs the newest release regardless of the version (the console's
+`update check` and `update now`, doc/ota.md). `now` takes an optional body `{"url": "<http(s) URL
+of a firmware image>"}`. 200 `{"ok": true, "force": <bool>}`: the check runs in the background, its
+outcome shows in the log and in the status's `update` member. Refusals: 400 `update.bad_request`
+(a `url` with `check`), 422 `update.invalid` (not an http(s) URL), 501 `system.unavailable`, 409
+`update.refused` (no update source, a check or an update already running, the network down, the
+application not running from `ota_0`; with the reason).
+
+### `GET` and `PUT /api/system/log-level`
+
+```json
+{"default": "info", "tags": [{"tag": "hc.knx", "level": "debug"}], "max_tags": 8, "platform_tags": true}
+```
+
+`PUT` body `{"tag": "<tag>", "level": "error|warn|info|debug"}` (the console's `log level`): `*`
+sets the default and clears every tag level, an `hc.*` tag sets the core's level for it (at most
+`max_tags`), any other tag goes to the platform's log (`platform_tags`: the ESP-IDF components, e.g.
+`wifi`); the ESP build also hands `*` and `hc.*` to the IDF. Answers with the list as for GET; not
+persisted (a restart restores `info`). Refusals: 422 `log.invalid` (unknown level; a tag that is
+empty, longer than 23 characters or contains a space or `*`; all 8 tag slots taken), 422
+`log.platform_tag` (a non-`hc.*` tag on a platform without its own log).
+
+### `PUT /api/system/wifi`
+
+Body `{"ssid": "<1 to 32 bytes>", "psk": "<8 to 63 characters, or \"\" for an open network>"}`.
+Validated and stored as the console's `wifi set`; the link reconnects after the answer:
+200 `{"ok": true, "ssid": "...", "open": false, "reconnect_in_ms": 750, "mdns": "homecontrol-a1b2c3.local"}`.
+The device keeps its name, so the UI is found again at `mdns` once the new network is joined;
+wrong credentials take it off the network (the console or a factory reset bring it back), so the
+UI warns before sending. The psk is never logged or echoed. Refusals: 422 `wifi.invalid` (with the
+reason), 409 `system.busy`, 500 `settings.storage_error`.
+
+### `DELETE /api/coredump`
+
+Erases the stored core dump (the console's `coredump clear`). 200 `{"ok": true}`. Refusals: 404
+`coredump.none`, 501 `system.unavailable`, 500 `coredump.clear_failed`.
+
+### `GET /api/tokens`, `POST /api/tokens`, `DELETE /api/tokens/<name>`
+
+`GET` lists the bearer tokens by name (the secret is never shown again):
+`{"tokens": [{"name": "ehome"}], "max": 8}`. `POST` body `{"name": "<1 to 24 characters [A-Za-z0-9._-]>"}`
+creates one: 200 `{"ok": true, "name": "ehome", "token": "hct_..."}`, the only time the token is
+shown. `DELETE` revokes one: 200 `{"ok": true}`; a WebSocket authenticated by it is closed within a
+second. Refusals: 422 `auth.token_name_invalid`, 409 `auth.token_name_taken`, 409
+`auth.token_capacity`, 404 `auth.token_not_found`, 500 `auth.storage_error`, 500 `auth.no_random`.
+
+### `POST /api/external/<id>/fetch`
+
+Fetches the external source `<id>` of the runtime image now (the console's `external fetch`,
+doc/external.md). 200 `{"ok": true}`; the values follow. Refusals: 404 `external.unknown`, 409
+`external.refused` (its fetch is in flight), 501 `system.unavailable`.
+
+### `POST /api/lang/sync`
+
+Starts the download of the language pack of `ui.lang` now (the console's `lang sync`,
+doc/i18n.md). 200 `{"ok": true}`; the state shows in the status's `lang`. Refusals: 409 `lang.busy`
+(with the reason), 501 `system.unavailable`.
+
+### `POST /api/mqtt/discovery`
+
+Publishes the Home Assistant discovery messages again (the console's `mqtt discovery`,
+doc/mqtt.md). 200 `{"ok": true}`. Refusals: 409 `mqtt.refused` (not connected, discovery off),
+501 `system.unavailable`.
+
+## Zigbee
+
+The coordinator's network and devices (doc/zigbee.md, spec/zigbee.md). Without a coordinator
+(the POSIX build, a target without an 802.15.4 radio, a failed start) every route answers 501
+`system.unavailable` with the reason.
+
+### `GET /api/zigbee[?from=<n>]`
+
+```json
+{"now_ms": 812345, "generation": 42, "loaded": true, "interviewing": false,
+ "network": {"up": true, "pan_id": 6699, "channel": 15, "extended_pan_id": "...", "permit_join_s": 0},
+ "count": 1, "max_devices": 32, "from": 0,
+ "devices": [{"ieee": "00124b0012345678", "short": 6699, "manufacturer": "IKEA of Sweden",
+              "model": "TRADFRI bulb E27 WS opal 980lm", "label": "Hall", "interviewed": true,
+              "stale": false, "left": false, "interviewing": false, "last_seen": 1792231392,
+              "seen_ago_s": 12, "datapoints": ["zigbee.00124b0012345678.1.on"]}],
+ "next": null}
+```
+
+Paged by 16 devices: `next` is the `from` of the next page or `null`. `generation` counts the
+changes of the list (every WebSocket `zigbee` event increments it). `datapoints` are the names of
+the device's datapoints (their values come from `/api/datapoints` or the live feed). `left`: the
+device announced its leave (it stays known, rejoining restores it); `stale`: not heard within its
+expected interval; `seen_ago_s` only once heard since the start.
+
+### `POST /api/zigbee/permit`
+
+Body `{"seconds": 0..254}`: opens the network for joining (0 closes it). 200
+`{"ok": true, "seconds": 254}`; joins and interviews follow as WebSocket `zigbee` events.
+Refusals: 422 `zigbee.invalid`, 409 `zigbee.refused` (network not up).
+
+### Per device: `/api/zigbee/devices/<ieee>`
+
+`<ieee>` as in the list (16 hex digits; the colon form `00:12:...` is accepted too). Each answers 200 `{"ok": true, "device": {...}}`
+with the device as in the list (`DELETE` without `device`).
+
+- `DELETE`: asks the device to leave and forgets it (the console's `zigbee remove`).
+- `POST .../identify`: the device identifies itself (blinks) for 10 s.
+- `PUT .../label` body `{"label": "<at most 32 bytes, \"\" clears>"}`.
+- `POST .../interview`: reads its descriptors and attributes again.
+
+Refusals: 404 `zigbee.unknown_device` (unknown or malformed IEEE), 422 `zigbee.invalid` (label),
+409 `zigbee.refused` (with the adapter's reason, e.g. the device is not interviewed yet).
 
 ## Language packs (static files, not under `/api/`)
 
@@ -426,6 +585,7 @@ Server to client:
 | `result` | answer to `command`: `id`, `ref` (echoed), `ok`, and on refusal `error` and `code` (the `dp.*` codes of the REST command) |
 | `pong` | answer to `ping` |
 | `monitor` | the monitor stream: the answer to a `monitor` message, and the event batches (see "Monitor") |
+| `zigbee` | a change of the Zigbee network or its devices: `event`, `ieee` (the device, 16 hex digits; not for `network` and `permit`), `permit_join_s` (only `permit`), `generation` (as in `GET /api/zigbee`) |
 | `error` | `error`, `code`: `ws.bad_message`, `ws.unknown_type`, and the refusals before a close |
 
 Client to server:
@@ -437,6 +597,12 @@ Client to server:
 | `command` | `id`, `value`, optional `ref` (any JSON value, echoed in the result) |
 | `ping` | keep-alive; the UI sends one every 20 s (the ESP server purges the least recently used connection when its sockets run out) |
 | `monitor` | `subscribe` (with `since`), `send` or `read` (see "Monitor") |
+
+The `zigbee` events (`hc::zigbee::ZigbeeEvent`): `network` (the network formed or went down),
+`permit` (joining opened, extended or closed), `joined` (a new device), `interviewing`,
+`interviewed`, `interview_failed`, `left` (the device announced its leave), `removed` (forgotten,
+`DELETE`), `changed` (a new label, gone stale, heard again, back after a leave). A
+client reads `GET /api/zigbee` for the details; a missed event shows as a jump of `generation`.
 
 A client that misses a message (the server's send buffers were full) gets a fresh snapshot. Close
 codes: 1007 invalid UTF-8, 1008 policy (authentication, origin), 1009 message longer than 1024
@@ -571,9 +737,13 @@ curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/history?ids=4&points=24"
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"value": 600000}' $DEV/api/rules/hall-presence-light/parameters/timeout
 curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"enabled": false}' $DEV/api/schedules/workdayMorning
 curl -s -H "Authorization: Bearer $TOKEN" "$DEV/api/monitor?since=0&limit=20"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST -d '{"seconds": 254}' $DEV/api/zigbee/permit
+curl -s -H "Authorization: Bearer $TOKEN" -X PUT -d '{"tag": "hc.knx", "level": "debug"}' $DEV/api/system/log-level
+curl -s -H "Authorization: Bearer $TOKEN" -X POST $DEV/api/system/update/check
+curl -s -H "Authorization: Bearer $TOKEN" -X POST $DEV/api/system/restart
 ```
 
 ## Diagnostics
 
 - `GET /api/status` carries a `boot` member: `{"reason": "<reset reason in words>", "count": <boots>, "brownouts": <n>, "previous_uptime_s": <s>, "coredump": <bool>}` (doc/diagnostics.md; a POSIX build reports its PID, start time and the signal that stopped the previous run instead).
-- `GET /api/coredump` streams the stored core dump (`application/octet-stream`, the ELF the IDF wrote) for `esp-coredump info_corefile -c core.bin -t raw <homecontrol.elf>`; `404 coredump.none` without one. Session or token as for every route.
+- `GET /api/coredump` streams the stored core dump (`application/octet-stream`, the ELF the IDF wrote) for `esp-coredump info_corefile -c core.bin -t raw <homecontrol.elf>`; `404 coredump.none` without one. Session or token as for every route. `DELETE /api/coredump` erases it (see "System").

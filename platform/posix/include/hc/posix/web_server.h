@@ -109,6 +109,16 @@ public:
 	}
 	/// The MQTT client the settings mqtt.user and mqtt.password reconnect (call before start()).
 	void set_mqtt(Mqtt* mqtt) { api_.set_mqtt(mqtt); }
+	/// The KNX tunnel and its telegram log: the "knx" status, knx.gateway and knx.nat applied to it.
+	void set_knx(knx::KnxTunnel* tunnel, const knx::TelegramLog* telegrams) { api_.set_knx(tunnel, telegrams); }
+	/// The external values behind POST /api/external/<id>/fetch and the "external" status.
+	void set_external(ExternalValues* external) { api_.set_external(external); }
+	/// The blob store the "storage" status counts.
+	void set_blob_store(const BlobStore* blobs) { api_.set_blob_store(blobs); }
+	/// What POST /api/system/restart and /factory-reset do here (main: stop the process, after
+	/// erasing the settings and the blobs for a reset; a supervisor starts it again). Without one,
+	/// both answer 501.
+	void set_system_handler(std::function<void(SystemAction)> handler) { system_handler_ = std::move(handler); }
 
 	// WebHost (loop thread)
 	const char* device_name() const override { return device_name_; }
@@ -119,6 +129,8 @@ public:
 	void write_update_state(JsonWriter& json) const override;
 	const char* ui_version() const override { return ui_version_; }
 	uint16_t websocket_port() const override { return static_cast<uint16_t>(port_ + 1); }
+	HostResult system_action_possible(SystemAction action, const char** reason) const override;
+	void system_action(SystemAction action) override;
 
 	// WsTransport (loop thread)
 	bool ws_send(uint32_t client, const char* text, size_t length) override;
@@ -142,6 +154,7 @@ private:
 	uint16_t port_;
 	std::string www_dir_;
 	const BlobStore* packs_store_ = nullptr;
+	std::function<void(SystemAction)> system_handler_;
 	char device_name_[64] = {};
 	char ui_version_[24] = {};
 

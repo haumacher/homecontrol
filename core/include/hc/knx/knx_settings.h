@@ -13,6 +13,8 @@
 namespace hc {
 namespace knx {
 
+class KnxTunnel;
+
 /// The device settings of the KNX tunnel (doc/knx.md). Persisted names: never rename.
 namespace setting {
 
@@ -54,6 +56,16 @@ void read_gateway_settings(const Settings& settings, GatewayAddress& gateway, bo
 
 /// Validates and stores knx.gateway. False with `error` (nothing stored when invalid).
 bool store_gateway_setting(Settings& settings, const char* text, const char** error);
+
+/// knx.gateway as the console's `knx gateway set|clear` and the settings API change it: validates and
+/// stores `text` ("" erases the setting) and hands the gateway to the running `tunnel` (nullptr: a
+/// build without one; only stored), which reconnects to it (or closes, when cleared). False with
+/// `error` (nothing changed).
+bool apply_gateway_setting(Settings& settings, KnxTunnel* tunnel, const char* text, const char** error);
+
+/// knx.nat as the console's `knx nat on|off` and the settings API change it: stores it and reconnects
+/// the running `tunnel` (nullptr: only stored) in that mode. False with `error`.
+bool apply_nat_setting(Settings& settings, KnxTunnel* tunnel, bool nat, const char** error);
 
 } // namespace knx
 } // namespace hc

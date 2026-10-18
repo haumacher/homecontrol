@@ -129,26 +129,43 @@ the REPL task; the command registry, the line editor's set-up and the probe run 
 
 On the USB Serial/JTAG port (`idf.py -B build-esp32c6 -p /dev/ttyACM1 monitor`), prompt `hc>`. Every
 command body runs on the event loop. `help` lists the commands grouped; `help <command>` shows one.
+An installed device's console is out of reach, so every command that operates the device has a
+route and a place in the web UI (issue #38, doc/web.md "Console parity"); the last column names it.
+Console-only by design: `web password clear`, `crash` and `web demo`; also `wifi wps` and
+`wifi clear`.
 
-| Group | Command | Effect |
-|---|---|---|
-| system | `status` | uptime, network, LED, time, heap (free, minimum, largest block), the boot record, every task with priority and the stack it never used, Improv |
-| | `uptime` | `up 0 d 01:02:03 (3723 s), boot 57, reset reason: software restart` |
-| | `settings list` | all stored settings, `wifi.psk` masked |
-| | `restart` | restarts |
-| | `factory reset yes` | removes every blob of the state directory (the stored runtime image, persisted values, history), erases the Zigbee network (`zb_storage`, `zb_db`) and the `nvs` partition (settings with the WiFi credentials, the web password, the boot record), then restarts; without `yes` it only prints what it would do |
-| network | `wifi wps \| set <ssid> [<psk>] \| clear \| status` | doc/network.md |
-| | `ntp set <server>` | doc/network.md |
-| time | `tz set <posix-tz>` | doc/time.md |
-| update | `update status \| check \| now [<url>] \| url set <url> \| url clear` | doc/ota.md |
-| diagnostics | `log level` | the core's threshold and the tags with their own |
-| | `log level <tag\|*> <error\|warn\|info\|debug>` | sets a tag's level at run time: an `hc.*` tag in `hc::Log` (also what reaches the ring and `/api/log`, at most 8 tags) and in the IDF log; other tags (`wifi`, `httpd`, ...) in the IDF log only (their debug lines exist only in a build with `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG`); `*` sets the default and drops every per-tag level; not stored, a restart returns to info |
-| | `log tail [<n>]` | the newest n lines of the log ring (default 20): `seq ms level tag: message` |
-| | `coredump status` | whether a dump is stored, its size, task, PC, panic reason, how to read it |
-| | `coredump clear` | erases the stored dump |
-| | `crash yes` | stores to address 0: a panic, a core dump, a restart (tests the pipeline) |
-| | `crash stall yes` | spins on the event loop without feeding the watchdog: a `task watchdog` reset after 10 s |
-| components | `web`, `storage`, `knx`, `zigbee`, `image`, `external` | the components' own commands (their documents) |
+| Group | Command | Effect | Also via (spec/api.md, the web UI) |
+|---|---|---|---|
+| system | `status` | uptime, network, LED, time, heap (free, minimum, largest block), the boot record, every task with priority and the stack it never used, Improv | `GET /api/status` (no task stacks); Settings |
+| | `uptime` | `up 0 d 01:02:03 (3723 s), boot 57, reset reason: software restart` | `GET /api/status` (`uptime_s`, `boot`) |
+| | `settings list` | all stored settings, `wifi.psk` masked | `GET /api/settings` (the shown keys) |
+| | `restart` | restarts | `POST /api/system/restart`; Settings, System |
+| | `factory reset yes` | removes every blob of the state directory (the stored runtime image, persisted values, history), erases the Zigbee network (`zb_storage`, `zb_db`) and the `nvs` partition (settings with the WiFi credentials, the web password, the boot record), then restarts; without `yes` it only prints what it would do | `POST /api/system/factory-reset` with the device name; Settings, System |
+| network | `wifi set <ssid> [<psk>]`, `wifi status` | doc/network.md | `PUT /api/system/wifi`, `GET /api/status` (`network`); Settings, System |
+| | `wifi wps`, `wifi clear` | doc/network.md | console only (both take the device off its network; WPS needs the router's button anyway) |
+| | `ntp set <server>` | doc/network.md | `PUT /api/settings/ntp.server` |
+| time | `tz set <posix-tz>` | doc/time.md | `PUT /api/settings/tz` |
+| update | `update status \| check \| now [<url>] \| url set <url> \| url clear` | doc/ota.md | `GET /api/status` (`update`), `POST /api/system/update/check`, `POST /api/system/update/now`, `PUT /api/settings/update.url`; Settings, System |
+| diagnostics | `log level` | the core's threshold and the tags with their own | `GET /api/system/log-level` |
+| | `log level <tag\|*> <error\|warn\|info\|debug>` | sets a tag's level at run time: an `hc.*` tag in `hc::Log` (also what reaches the ring and `/api/log`, at most 8 tags) and in the IDF log; other tags (`wifi`, `httpd`, ...) in the IDF log only (their debug lines exist only in a build with `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG`); `*` sets the default and drops every per-tag level; not stored, a restart returns to info | `PUT /api/system/log-level`; Settings, System |
+| | `log tail [<n>]` | the newest n lines of the log ring (default 20): `seq ms level tag: message` | `GET /api/log`; the Log page |
+| | `coredump status` | whether a dump is stored, its size, task, PC, panic reason, how to read it | `GET /api/status` (`boot.coredump*`), `GET /api/coredump`; Settings, System |
+| | `coredump clear` | erases the stored dump | `DELETE /api/coredump`; Settings, System |
+| | `crash yes` | stores to address 0: a panic, a core dump, a restart (tests the pipeline) | console only by design (a test needing the cable to read the result) |
+| | `crash stall yes` | spins on the event loop without feeding the watchdog: a `task watchdog` reset after 10 s | console only by design |
+| components | `web status` | the web server's state | `GET /api/status` (`web`) |
+| | `web token create\|list\|revoke` | API tokens (doc/web.md) | `POST`/`GET /api/tokens`, `DELETE /api/tokens/<name>`; Settings, System |
+| | `web password clear` | resets the device password, onboarding opens again | console only by design (the recovery from a lost password needs physical access) |
+| | `web demo` | the demo datapoints until the next restart | console only by design (a development aid) |
+| | `storage status` | the mount, free space, the blob store's files | `GET /api/status` (`storage`); Settings, System |
+| | `knx status`, `knx gateway set\|clear`, `knx nat on\|off` | doc/knx.md | `GET /api/status` (`knx`), `PUT /api/settings/knx.gateway`, `PUT /api/settings/knx.nat`; Settings |
+| | `knx log`, `knx write`, `knx read` | doc/knx.md | the monitor stream (`GET /api/monitor`, WebSocket `monitor` with `send` and `read`; E-Home's group monitor) |
+| | `zigbee status\|devices\|permit\|remove\|identify\|label\|interview` | doc/zigbee.md | `GET /api/zigbee`, `POST /api/zigbee/permit`, `/api/zigbee/devices/<ieee>`; the Zigbee page |
+| | `image status\|clear` | doc/image.md | `GET /api/status` (`image`), `GET`/`DELETE /api/image`; Settings |
+| | `image load <url>` | downloads an image and loads it | `PUT /api/image` with the image itself (the client downloads it) |
+| | `external status\|fetch <id>` | doc/external.md | `GET /api/status` (`external`), `POST /api/external/<id>/fetch`; Settings, System |
+| | `lang status\|set <code>\|sync` | doc/i18n.md | `GET /api/settings` (`i18n`), `PUT /api/settings/ui.lang`, `POST /api/lang/sync`; Settings |
+| | `mqtt status\|publish-discovery\|set password\|clear password` | doc/mqtt.md | `GET /api/status` (`mqtt`), `POST /api/mqtt/discovery`, `PUT /api/settings/mqtt.password`; Settings |
 
 Other components add commands through `ConsoleContext::extensions` (`hc::esp::ConsoleCommand`); they
 appear under *components*.

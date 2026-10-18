@@ -268,6 +268,19 @@ bool WebServer::set_update_url(const char* url, const char** error) {
 	return true;
 }
 
+HostResult WebServer::system_action_possible(SystemAction action, const char** reason) const {
+	if (!system_handler_) {
+		return WebHost::system_action_possible(action, reason);
+	}
+	return HostResult::ok;
+}
+
+void WebServer::system_action(SystemAction action) {
+	if (system_handler_) {
+		system_handler_(action);
+	}
+}
+
 void WebServer::write_update_state(JsonWriter& json) const {
 	char url[Settings::kMaxStringLength + 1] = {};
 	controller_.settings().get_string(setting::kUpdateUrl, url, sizeof(url));

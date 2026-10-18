@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -71,6 +72,7 @@ const char* status_line(int status) {
 		case 422: return "422 Unprocessable Content";
 		case 429: return "429 Too Many Requests";
 		case 500: return "500 Internal Server Error";
+		case 501: return "501 Not Implemented";
 		case 503: return "503 Service Unavailable";
 		case 507: return "507 Insufficient Storage";
 		default: return status >= 500 ? "500 Internal Server Error" : "400 Bad Request";
@@ -317,6 +319,60 @@ void WebServer::write_update_state(JsonWriter& json) const {
 		uint64_t next = ota_.next_check_ms();
 		json.member("next_check_s", next > now ? (next - now) / 1000 : 0);
 	}
+}
+
+// ---- The console's system commands over the API (issue #38) ------------------------------------
+
+HostResult WebServer::system_action_possible(SystemAction, const char**) const {
+	return HostResult::ok;
+}
+
+void WebServer::system_action(SystemAction action) {
+	if (action == SystemAction::factory_reset) {
+		factory_reset_and_restart(blobs_, "over the API");
+	}
+	Log::warn(kTag, "restart requested over the API: restarting");
+	vTaskDelay(pdMS_TO_TICKS(100)); // let the log line out
+	esp_restart();
+}
+
+HostResult WebServer::start_update(bool force, const char* url, const char** reason) {
+	return ota_.check(force, url, reason) ? HostResult::ok : HostResult::refused;
+}
+
+HostResult WebServer::clear_coredump(const char** reason) {
+	if (diagnostics_ == nullptr) {
+		*reason = "this build has no diagnostics";
+		return HostResult::unavailable;
+	}
+	if (!diagnostics_->coredump_clear()) {
+		*reason = "the core dump could not be erased (see the log)";
+		return HostResult::refused;
+	}
+	return HostResult::ok;
+}
+
+bool WebServer::set_platform_log_level(const char* tag, LogLevel level) {
+	esp_log_level_t esp = ESP_LOG_INFO;
+	switch (level) {
+		case LogLevel::error: esp = ESP_LOG_ERROR; break;
+		case LogLevel::warn: esp = ESP_LOG_WARN; break;
+		case LogLevel::info: esp = ESP_LOG_INFO; break;
+		case LogLevel::debug: esp = ESP_LOG_DEBUG; break;
+	}
+	esp_log_level_set(tag, esp);
+	return true;
+}
+
+bool WebServer::storage_usage(uint64_t& total, uint64_t& used) const {
+	size_t t = 0;
+	size_t u = 0;
+	if (!storage_mounted() || !hc::esp::storage_usage(t, u)) {
+		return false;
+	}
+	total = t;
+	used = u;
+	return true;
 }
 
 bool WebServer::mount_ui() {

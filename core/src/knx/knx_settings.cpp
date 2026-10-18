@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "hc/knx/tunnel.h"
 #include "hc/log.h"
 #include "hc/network_settings.h"
 
@@ -107,6 +108,45 @@ bool store_gateway_setting(Settings& settings, const char* text, const char** er
 			*error = settings_status_name(status);
 		}
 		return false;
+	}
+	return true;
+}
+
+bool apply_gateway_setting(Settings& settings, KnxTunnel* tunnel, const char* text, const char** error) {
+	if (text[0] == '\0') {
+		SettingsStatus status = settings.erase(setting::kGateway);
+		if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
+			if (error != nullptr) {
+				*error = settings_status_name(status);
+			}
+			return false;
+		}
+		if (tunnel != nullptr) {
+			tunnel->set_gateway(nullptr, tunnel->nat());
+		}
+		return true;
+	}
+	if (!store_gateway_setting(settings, text, error)) {
+		return false;
+	}
+	if (tunnel != nullptr) {
+		std::optional<GatewayAddress> gateway = GatewayAddress::parse(text, error);
+		tunnel->set_gateway(&*gateway, tunnel->nat());
+	}
+	return true;
+}
+
+bool apply_nat_setting(Settings& settings, KnxTunnel* tunnel, bool nat, const char** error) {
+	SettingsStatus status = settings.set_bool(setting::kNat, nat);
+	if (status != SettingsStatus::ok) {
+		if (error != nullptr) {
+			*error = settings_status_name(status);
+		}
+		return false;
+	}
+	if (tunnel != nullptr) {
+		GatewayAddress gateway = tunnel->gateway();
+		tunnel->set_gateway(gateway.empty() ? nullptr : &gateway, nat);
 	}
 	return true;
 }

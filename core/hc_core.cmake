@@ -35,6 +35,7 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/sha.cpp"
 	"${HC_CORE_DIR}/src/value_json.cpp"
 	"${HC_CORE_DIR}/src/web_api.cpp"
+	"${HC_CORE_DIR}/src/web_api_system.cpp"
 	"${HC_CORE_DIR}/src/websocket.cpp"
 	"${HC_CORE_DIR}/src/astro.cpp"
 	"${HC_CORE_DIR}/src/time_service.cpp"

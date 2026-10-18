@@ -12,13 +12,21 @@
 #include "hc/datapoint.h"
 #include "hc/json.h"
 #include "hc/log_ring.h"
+#include "hc/platform/blob_store.h"
 #include "hc/platform/web_host.h"
+#include "hc/zigbee/adapter.h"
 
 namespace hc {
 
+class ExternalValues;
 class LanguagePacks;
 class Mqtt;
 class LiveFeed;
+
+namespace knx {
+class KnxTunnel;
+class TelegramLog;
+}
 
 namespace image {
 class ImageService;
@@ -80,7 +88,11 @@ struct WebResponse {
 /// The JSON API under /api/ (spec/api.md): authentication, status, datapoints, the log, the
 /// settings the UI may change, the runtime image, and what the dashboard reads of it (the model of
 /// rooms and functions, the history, the rules' diagnostics and adjustable parameters, the
-/// schedules' switches). Pure core: the ESP and POSIX servers parse HTTP, call handle() on
+/// schedules' switches); and what an installed device's owner needs of the serial console (issue
+/// #38): restart, factory reset, the update, log levels, the core dump, the API tokens, the WiFi
+/// credentials, the Zigbee coordinator (pairing), a manual fetch of an external source, the language
+/// pack sync and the MQTT discovery. What only the platform can do goes through WebHost's hooks; a
+/// platform that cannot answers 501 "system.unavailable" with the reason. Pure core: the ESP and POSIX servers parse HTTP, call handle() on
 /// the event loop's thread and send what it answers. Every refusal is a JSON object
 /// {"error": "<English reason>", "code": "<key>"} with a 4xx/5xx status.
 ///
@@ -89,7 +101,7 @@ struct WebResponse {
 /// "auth.onboarding_required" while the device has no password). State-changing requests (POST,
 /// PUT, DELETE) without a bearer token must carry `X-Requested-With: HomeControl` (CSRF: a
 /// cross-site form cannot set it).
-class WebApi {
+class WebApi : public zigbee::ZigbeeEventListener {
 public:
 	/// Datapoints per page of GET /api/datapoints.
 	static constexpr size_t kPageSize = 50;
@@ -99,6 +111,11 @@ public:
 	/// Largest request body accepted (the platforms refuse longer ones with 413).
 	static constexpr size_t kMaxBody = 1024;
 	static constexpr const char* kCsrfHeaderValue = "HomeControl";
+	/// How long a restart, a factory reset or new WiFi credentials wait after the answer, so that it
+	/// reaches the client before the connection goes.
+	static constexpr uint32_t kActionDelayMs = 750;
+	/// Zigbee devices per page of GET /api/zigbee.
+	static constexpr size_t kZigbeePageSize = 16;
 
 	WebApi(Controller& controller, DatapointModel& model, Auth& auth, WebHost& host);
 
@@ -110,6 +127,20 @@ public:
 	void set_language_packs(LanguagePacks* packs) { packs_ = packs; }
 	/// The MQTT client (doc/mqtt.md): the settings mqtt.user and mqtt.password reconnect it.
 	void set_mqtt(Mqtt* mqtt) { mqtt_ = mqtt; }
+	/// The KNX tunnel and its telegram log: the "knx" member of /api/status; the settings knx.gateway
+	/// and knx.nat are handed to the running tunnel (without one they are only stored).
+	void set_knx(knx::KnxTunnel* tunnel, const knx::TelegramLog* telegrams) {
+		knx_ = tunnel;
+		telegrams_ = telegrams;
+	}
+	/// The Zigbee coordinator behind /api/zigbee (pairing, spec/api.md "Zigbee"); its events reach the
+	/// live feed. nullptr with the reason when the platform has none (the routes answer 501).
+	void set_zigbee(zigbee::ZigbeeAdapter* adapter, const char* unavailable_reason = nullptr);
+	zigbee::ZigbeeAdapter* zigbee() const { return zigbee_; }
+	/// The external values (doc/external.md): POST /api/external/<id>/fetch, the "external" status.
+	void set_external(ExternalValues* external) { external_ = external; }
+	/// The blob store (doc/persistence.md): the file count and bytes of the "storage" status.
+	void set_blob_store(const BlobStore* blobs) { blobs_ = blobs; }
 
 	/// The runtime image service: /api/image and the "image" member of /api/status (doc/image.md).
 	/// The runtime image behind /api/image and the status; its changes resync the live feed.
@@ -128,6 +159,12 @@ public:
 
 	/// The members of the status object (also the WebSocket's status message).
 	void write_status(JsonWriter& json);
+	/// The members GET /api/status adds to write_status() (the WebSocket's status message has no
+	/// room for them): zigbee, storage, knx, external, lang, mqtt.
+	void write_status_details(JsonWriter& json);
+
+	// zigbee::ZigbeeEventListener
+	void zigbee_event(const zigbee::ZigbeeEvent& event) override;
 
 	/// One datapoint with its metadata ({"id","name","type","flags","writable","value","quality",
 	/// "updated_ms"}).
@@ -136,8 +173,9 @@ public:
 	/// Writes {"error": text, "code": code} and the status.
 	static void refuse(WebResponse& response, int status, const char* code, const char* text);
 
-	/// Validates and applies one of the UI-editable settings (tz, ntp.server, update.url, ui.lang). On
-	/// refusal returns false with the code and reason.
+	/// Validates and applies one of the UI-editable settings (tz, ntp.server, update.url, ui.lang,
+	/// wifi.ps, mqtt.user, mqtt.password, knx.gateway, knx.nat). On refusal returns false with the code
+	/// and reason.
 	bool apply_setting(const char* key, const char* value, const char** code, const char** error);
 
 	Controller& controller() { return controller_; }
@@ -167,6 +205,22 @@ private:
 	void schedules(const WebRequest& request, WebResponse& response);
 	void put_schedule(const char* id, const WebRequest& request, WebResponse& response);
 	void write_rule(JsonWriter& json, size_t index);
+	// The console's commands (web_api_system.cpp)
+	void system(const char* what, const WebRequest& request, WebResponse& response);
+	void system_action(SystemAction action, const WebRequest& request, WebResponse& response);
+	void system_update(bool force, const WebRequest& request, WebResponse& response);
+	void log_level(const WebRequest& request, WebResponse& response);
+	void wifi(const WebRequest& request, WebResponse& response);
+	void clear_coredump(WebResponse& response);
+	void tokens(const char* rest, const WebRequest& request, WebResponse& response);
+	void zigbee(const char* rest, const WebRequest& request, WebResponse& response);
+	void zigbee_list(const WebRequest& request, WebResponse& response);
+	void external_fetch(const char* rest, const WebRequest& request, WebResponse& response);
+	void lang_sync(const WebRequest& request, WebResponse& response);
+	void mqtt_discovery(const WebRequest& request, WebResponse& response);
+	void action_due();
+	bool parse_body(const WebRequest& request, WebResponse& response, JsonSpan& body, bool optional = false);
+	void ok(WebResponse& response);
 	void write_schedule(JsonWriter& json, size_t index);
 	bool read_password(const WebRequest& request, WebResponse& response);
 	void set_session_cookie(WebResponse& response, const char* session);
@@ -180,6 +234,16 @@ private:
 	image::ImageService* image_ = nullptr;
 	LanguagePacks* packs_ = nullptr;
 	Mqtt* mqtt_ = nullptr;
+	knx::KnxTunnel* knx_ = nullptr;
+	const knx::TelegramLog* telegrams_ = nullptr;
+	zigbee::ZigbeeAdapter* zigbee_ = nullptr;
+	const char* zigbee_reason_ = nullptr;
+	ExternalValues* external_ = nullptr;
+	const BlobStore* blobs_ = nullptr;
+	/// The deferred system action (restart, factory reset, WiFi reconnect) and its timer.
+	enum class Pending : uint8_t { none, restart, factory_reset, wifi };
+	Pending pending_ = Pending::none;
+	TimerHandle action_timer_;
 	/// A consistent copy of the controller's log ring for GET /api/log.
 	LogRing log_copy_;
 };

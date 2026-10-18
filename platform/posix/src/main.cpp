@@ -24,6 +24,7 @@
 #include <ctime>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "hc/controller.h"
 #include "hc/datapoint.h"
@@ -67,6 +68,28 @@ constexpr unsigned kDefaultHttpPort = 8080;
 constexpr uint64_t kMaxSleepMs = 1000;
 
 volatile std::sig_atomic_t g_stop = 0;
+/// The stop is a restart (or factory reset) requested over the API, not a signal.
+bool g_restart = false;
+
+/// Erases every setting and every blob (the factory reset over the API).
+void erase_all(hc::Settings& settings, hc::BlobStore& blobs) {
+	struct Keys : hc::SettingsVisitor {
+		void entry(const char* key, hc::SettingType) override { names.push_back(key); }
+		std::vector<std::string> names;
+	} keys;
+	settings.visit(keys);
+	for (const std::string& key : keys.names) {
+		settings.erase(key.c_str());
+	}
+	struct Blobs : hc::BlobVisitor {
+		void blob(const char* name, size_t) override { names.push_back(name); }
+		std::vector<std::string> names;
+	} names;
+	blobs.visit(names);
+	for (const std::string& name : names.names) {
+		blobs.remove(name.c_str());
+	}
+}
 
 void on_signal(int signal) {
 	g_stop = signal;
@@ -272,12 +295,12 @@ int main(int argc, char** argv) {
 	hc::Mqtt mqtt(controller.loop(), clock, settings, controller.connectivity(), model, mqtt_client, mqtt_identity,
 		&image.history());
 	image.set_mqtt(&mqtt);
-	bool knx = !gateway.empty();
-	if (knx) {
-		adapter.start();
-		tunnel.set_gateway(&gateway, nat);
-	} else {
-		hc::Log::info(kTag, "no KNX gateway (setting %s): the KNX tunnel is off", hc::knx::setting::kGateway);
+	// The tunnel always runs (as on the device), so that knx.gateway set over the API connects at once.
+	adapter.start();
+	tunnel.set_gateway(&gateway, nat);
+	if (gateway.empty()) {
+		hc::Log::info(kTag, "no KNX gateway (setting %s): the KNX tunnel stays down until one is set",
+			hc::knx::setting::kGateway);
 	}
 
 	struct sigaction action;
@@ -311,14 +334,27 @@ int main(int argc, char** argv) {
 			web->set_image(&image);
 			web->set_language_packs(&packs, &blobs);
 			web->set_mqtt(&mqtt);
+			web->set_external(&external);
+			web->set_blob_store(&blobs);
 		}
+		web->set_knx(&tunnel, &telegrams);
+		// Restart and factory reset over the API: the process stops (a supervisor such as systemd with
+		// Restart=always starts it again); the reset first erases the settings and the blobs.
+		web->set_system_handler([&settings, &blobs](hc::SystemAction action) {
+			if (action == hc::SystemAction::factory_reset) {
+				erase_all(settings, blobs);
+				hc::Log::warn(kTag, "factory reset over the API: settings and blobs erased; stopping");
+			} else {
+				hc::Log::warn(kTag, "restart requested over the API: stopping (a supervisor starts the process again)");
+			}
+			g_restart = true;
+			g_stop = SIGTERM;
+		});
 		if (!web->start()) {
 			return 1;
 		}
 	}
-	if (knx) {
-		tunnel.start();
-	}
+	tunnel.start();
 	hc::Log::info(kTag, "mDNS is not implemented on POSIX: _homecontrol._tcp is not announced (the host's wall clock "
 		"needs no SNTP either; ntp.server is not used here)");
 	while (!g_stop) {
@@ -341,7 +377,8 @@ int main(int argc, char** argv) {
 	}
 	image.flush(); // pending value and history writes
 	tunnel.stop(); // DISCONNECT_REQUEST, so the gateway frees the tunnel at once
-	hc::Log::info(kTag, "stopping on %s after %llu s", hc::posix::PosixDiagnostics::signal_name(g_stop).c_str(),
+	hc::Log::info(kTag, "stopping on %s after %llu s", g_restart ? "a restart over the API" :
+		hc::posix::PosixDiagnostics::signal_name(g_stop).c_str(),
 		static_cast<unsigned long long>(controller.uptime_ms() / 1000));
 	diagnostics.stopped(g_stop);
 	return 0;

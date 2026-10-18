@@ -8,6 +8,7 @@ import { h, replace } from "/dom.js";
 import { formatAgo, formatBytes, formatDuration } from "/format.js";
 import { t, tv, has, bundled, language, languageFound } from "/i18n.js";
 import { loadModel } from "/model.js";
+import { renderSystem } from "/system.js";
 import { currentTheme, setTheme } from "/theme.js";
 
 function rows(pairs) {
@@ -94,7 +95,7 @@ function choiceRow(setting, choices) {
 	return h("div", { class: "field" }, h("label", { for: id }, t(`settings.key.${setting.key}`)), select, feedback);
 }
 
-const kChoices = { "wifi.ps": ["none", "min", "max"] };
+const kChoices = { "wifi.ps": ["none", "min", "max"], "knx.nat": ["off", "on"] };
 
 function settingRow(setting, onSaved) {
 	const id = `setting-${setting.key}`;
@@ -300,6 +301,10 @@ export function renderSettings(content, ctx) {
 	content.appendChild(status);
 	content.appendChild(h("h2", { class: "section-title" }, t("settings.editable")));
 	content.appendChild(editable);
+	const system = h("div", null, h("p", { class: "muted" }, t("app.loading")));
+	renderSystem(system);
+	content.appendChild(h("h2", { class: "section-title" }, t("system.section")));
+	content.appendChild(system);
 	content.appendChild(logout);
 	return () => {
 		ctx.live.removeEventListener("status", onStatus);

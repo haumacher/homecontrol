@@ -64,9 +64,62 @@ public:
 	const char* ui_version() const override { return "abc123"; }
 	uint16_t websocket_port() const override { return 0; }
 
+	// The system hooks (issue #38): the base's "unavailable" until a test enables them.
+	hc::HostResult system_action_possible(hc::SystemAction action, const char** reason) const override {
+		if (!system_actions) {
+			return hc::WebHost::system_action_possible(action, reason);
+		}
+		return hc::HostResult::ok;
+	}
+	void system_action(hc::SystemAction action) override { actions.push_back(action); }
+	hc::HostResult start_update(bool force, const char* url, const char** reason) override {
+		if (!updates) {
+			return hc::WebHost::start_update(force, url, reason);
+		}
+		if (!update_refusal.empty()) {
+			*reason = update_refusal.c_str();
+			return hc::HostResult::refused;
+		}
+		update_calls.push_back(std::string(force ? "now " : "check ") + (url != nullptr ? url : "-"));
+		return hc::HostResult::ok;
+	}
+	hc::HostResult clear_coredump(const char** reason) override {
+		if (!coredump_clearable) {
+			return hc::WebHost::clear_coredump(reason);
+		}
+		++coredump_clears;
+		return hc::HostResult::ok;
+	}
+	bool set_platform_log_level(const char* tag, hc::LogLevel level) override {
+		if (!platform_log) {
+			return false;
+		}
+		platform_levels.push_back(std::string(tag) + "=" + hc::log_level_name(level));
+		return true;
+	}
+	bool has_platform_log() const override { return platform_log; }
+	bool storage_usage(uint64_t& total, uint64_t& used) const override {
+		if (!storage) {
+			return false;
+		}
+		total = 1048576;
+		used = 65536;
+		return true;
+	}
+
 	bool mdns = true;
 	int ntp_changes = 0;
 	std::string update_url;
+	bool system_actions = false;
+	std::vector<hc::SystemAction> actions;
+	bool updates = false;
+	std::string update_refusal;
+	std::vector<std::string> update_calls;
+	bool coredump_clearable = false;
+	int coredump_clears = 0;
+	bool platform_log = false;
+	std::vector<std::string> platform_levels;
+	bool storage = false;
 };
 
 /// Records what the feed sends; can refuse sends.

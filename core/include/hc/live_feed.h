@@ -92,6 +92,11 @@ public:
 
 	void datapoint_updated(const DatapointUpdate& update) override;
 
+	/// A change of the Zigbee coordinator (WebApi relays the adapter's events): every subscribed
+	/// client gets a {"type": "zigbee"} message at once (spec/api.md "Zigbee"). A client that missed
+	/// it (no send buffer) gets a snapshot, which tells it to read GET /api/zigbee again.
+	void zigbee_event(const zigbee::ZigbeeEvent& event);
+
 	/// The monitor stream (GET /api/monitor reads it through WebApi).
 	MonitorFeed& monitor() { return monitor_; }
 

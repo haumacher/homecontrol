@@ -60,6 +60,13 @@ struct ConsoleContext {
 /// if the task cannot be created; a failure inside the task is logged there.
 bool console_start(ConsoleContext& context);
 
+/// The factory reset of the console's `factory reset yes` and of POST /api/system/factory-reset:
+/// removes every blob of `blobs` (nullptr: the state directory is kept, and said so), erases the
+/// Zigbee network (zb_storage, zb_db) and the nvs partition (settings with the WiFi credentials, the
+/// web password and tokens, the boot record), then restarts. Prints each step to stdout. Does not
+/// return.
+[[noreturn]] void factory_reset_and_restart(BlobStore* blobs, const char* origin);
+
 } // namespace esp
 } // namespace hc
 

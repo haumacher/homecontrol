@@ -644,6 +644,7 @@ bool ZigbeeAdapter::remove(Ieee ieee, const char** error) {
 	if (started_) {
 		rebuild(nullptr);
 	}
+	notify(ZigbeeEvent::Kind::removed, ieee);
 	start_pending_interview();
 	return true;
 }
@@ -690,6 +691,7 @@ bool ZigbeeAdapter::set_label(Ieee ieee, const char* label, const char** error) 
 		fail(error, "the device database could not be written");
 		return false;
 	}
+	notify(ZigbeeEvent::Kind::changed, ieee);
 	return true;
 }
 
@@ -727,6 +729,7 @@ ZigbeeDevice* ZigbeeAdapter::resolve(NodeAddress address, bool add) {
 				Log::error(kTag, "device %s not added: %s", ieee, why);
 			} else {
 				Log::info(kTag, "new device %s (short 0x%04x)", ieee, static_cast<unsigned>(address.short_addr));
+				notify(ZigbeeEvent::Kind::joined, address.ieee);
 			}
 			return device;
 		}
@@ -752,6 +755,7 @@ void ZigbeeAdapter::touch(ZigbeeDevice& device) {
 		char text[64];
 		Log::info(kTag, "%s heard again: reading its datapoints", device_text(device, text, sizeof(text)));
 		schedule_refresh();
+		notify(ZigbeeEvent::Kind::changed, device.ieee);
 	}
 	if (!device.interviewed && !device.interview_pending &&
 		(device.interview_ms == 0 || now - device.interview_ms >= kInterviewRetryMs) &&
@@ -842,6 +846,7 @@ void ZigbeeAdapter::check_stale() {
 				}
 			}
 		}
+		notify(ZigbeeEvent::Kind::changed, device.ieee);
 	}
 }
 
@@ -937,6 +942,7 @@ void ZigbeeAdapter::start_interview(ZigbeeDevice& device) {
 	char text[64];
 	Log::info(kTag, "interviewing %s (short 0x%04x)", device_text(device, text, sizeof(text)),
 		static_cast<unsigned>(device.short_addr));
+	notify(ZigbeeEvent::Kind::interviewing, device.ieee);
 	send_step();
 }
 
@@ -1063,6 +1069,7 @@ void ZigbeeAdapter::fail_interview(const char* reason) {
 		ieee, step_name(static_cast<uint8_t>(interview_.step)), reason,
 		static_cast<unsigned>(kInterviewRetryMs / 1000));
 	end_interview();
+	notify(ZigbeeEvent::Kind::interview_failed, interview_.ieee);
 	start_pending_interview();
 }
 
@@ -1094,6 +1101,7 @@ void ZigbeeAdapter::finish_interview() {
 	setup_reporting(*device);
 	device->refresh = true;
 	schedule_refresh();
+	notify(ZigbeeEvent::Kind::interviewed, device->ieee);
 	start_pending_interview();
 }
 
@@ -1165,6 +1173,7 @@ void ZigbeeAdapter::network_state(bool up, uint16_t pan_id, uint8_t channel, Iee
 		network_.permit_until_ms = 0;
 		Log::warn(kTag, "network down");
 	}
+	notify(ZigbeeEvent::Kind::network, 0);
 }
 
 void ZigbeeAdapter::permit_join_status(uint8_t seconds) {
@@ -1176,6 +1185,7 @@ void ZigbeeAdapter::permit_join_status(uint8_t seconds) {
 		network_.permit_until_ms = 0;
 		Log::info(kTag, "network closed for joining");
 	}
+	notify(ZigbeeEvent::Kind::permit, 0, seconds);
 }
 
 void ZigbeeAdapter::device_announced(NodeAddress address) {
@@ -1198,8 +1208,12 @@ void ZigbeeAdapter::device_announced(NodeAddress address) {
 		// It left (a factory reset) and joined again: its endpoints may have changed.
 		device->interview_pending = true;
 	}
+	bool was_left = device->left;
 	device->left = false;
 	touch(*device);
+	if (known && was_left) {
+		notify(ZigbeeEvent::Kind::changed, device->ieee);
+	}
 	start_pending_interview();
 }
 
@@ -1221,6 +1235,7 @@ void ZigbeeAdapter::device_joined(NodeAddress address) {
 		Log::info(kTag, "%s joined afresh (short 0x%04x): it was reset, interviewing it again",
 			device_text(*device, text, sizeof(text)), static_cast<unsigned>(address.short_addr));
 		device->interview_pending = true;
+		notify(ZigbeeEvent::Kind::joined, device->ieee);
 		if (device->seen_ms != 0 && clock_.monotonic_ms() - device->seen_ms < kAnnounceBeforeJoinMs) {
 			start_pending_interview();
 		}
@@ -1237,6 +1252,7 @@ void ZigbeeAdapter::device_left(NodeAddress address) {
 	char text[64];
 	Log::info(kTag, "%s left the network (it stays in the database; `zigbee remove` deletes it)",
 		device_text(*device, text, sizeof(text)));
+	notify(ZigbeeEvent::Kind::left, device->ieee);
 	if (interview_.active && interview_.ieee == device->ieee) {
 		fail_interview("the device left");
 	}
@@ -1594,10 +1610,39 @@ bool ZigbeeAdapter::read(const Datapoint& datapoint) {
 
 // ---- JSON -----------------------------------------------------------------------------------
 
-void ZigbeeAdapter::write_json(JsonWriter& json) const {
+uint32_t ZigbeeAdapter::permit_join_s() const {
 	uint64_t now = clock_.monotonic_ms();
-	json.begin_object();
-	json.key("network").begin_object();
+	return network_.permit_until_ms > now ? static_cast<uint32_t>((network_.permit_until_ms - now + 999) / 1000) : 0;
+}
+
+void ZigbeeAdapter::notify(ZigbeeEvent::Kind kind, Ieee ieee, uint32_t permit_join_s) {
+	++generation_;
+	if (events_ == nullptr) {
+		return;
+	}
+	ZigbeeEvent event;
+	event.kind = kind;
+	event.ieee = ieee;
+	event.permit_join_s = permit_join_s;
+	events_->zigbee_event(event);
+}
+
+const char* zigbee_event_name(ZigbeeEvent::Kind kind) {
+	switch (kind) {
+		case ZigbeeEvent::Kind::network: return "network";
+		case ZigbeeEvent::Kind::permit: return "permit";
+		case ZigbeeEvent::Kind::joined: return "joined";
+		case ZigbeeEvent::Kind::interviewing: return "interviewing";
+		case ZigbeeEvent::Kind::interviewed: return "interviewed";
+		case ZigbeeEvent::Kind::interview_failed: return "interview_failed";
+		case ZigbeeEvent::Kind::left: return "left";
+		case ZigbeeEvent::Kind::removed: return "removed";
+		case ZigbeeEvent::Kind::changed: return "changed";
+	}
+	return "changed";
+}
+
+void ZigbeeAdapter::write_network_json(JsonWriter& json) const {
 	json.member("up", network_.up);
 	if (network_.up) {
 		char ext[kIeeeText];
@@ -1606,38 +1651,52 @@ void ZigbeeAdapter::write_json(JsonWriter& json) const {
 		json.member("channel", static_cast<uint32_t>(network_.channel));
 		json.member("extended_pan_id", ext);
 	}
-	uint32_t open_s = network_.permit_until_ms > now ? static_cast<uint32_t>((network_.permit_until_ms - now + 999) / 1000) : 0;
-	json.member("permit_join_s", open_s);
+	json.member("permit_join_s", permit_join_s());
+}
+
+void ZigbeeAdapter::write_device_json(JsonWriter& json, size_t index) const {
+	const ZigbeeDevice& device = database_.at(index);
+	char ieee[kIeeeText];
+	format_ieee(device.ieee, ieee);
+	json.begin_object();
+	json.member("ieee", ieee);
+	if (device.short_addr != kNoShortAddress) {
+		json.member("short", static_cast<uint32_t>(device.short_addr));
+	}
+	json.member("manufacturer", device.manufacturer);
+	json.member("model", device.model);
+	json.member("label", device.label);
+	json.member("interviewed", device.interviewed);
+	json.member("stale", device.stale);
+	json.member("left", device.left);
+	json.member("interviewing", interview_.active && interview_.ieee == device.ieee);
+	if (device.last_seen_s > 0) {
+		json.member("last_seen", static_cast<int64_t>(device.last_seen_s));
+	}
+	if (device.seen_ms != 0) {
+		json.member("seen_ago_s", (clock_.monotonic_ms() - device.seen_ms) / 1000);
+	}
+	json.key("datapoints").begin_array();
+	for (size_t p = 0; loaded_ && p < point_count_; ++p) {
+		if (points_[p].ieee == device.ieee && ids_[p] != kNoId) {
+			const Datapoint* dp = model_.get(ids_[p]);
+			if (dp != nullptr) {
+				json.string(dp->name());
+			}
+		}
+	}
+	json.end_array();
+	json.end_object();
+}
+
+void ZigbeeAdapter::write_json(JsonWriter& json) const {
+	json.begin_object();
+	json.key("network").begin_object();
+	write_network_json(json);
 	json.end_object();
 	json.key("devices").begin_array();
 	for (size_t i = 0; i < database_.size(); ++i) {
-		const ZigbeeDevice& device = database_.at(i);
-		char ieee[kIeeeText];
-		format_ieee(device.ieee, ieee);
-		json.begin_object();
-		json.member("ieee", ieee);
-		if (device.short_addr != kNoShortAddress) {
-			json.member("short", static_cast<uint32_t>(device.short_addr));
-		}
-		json.member("manufacturer", device.manufacturer);
-		json.member("model", device.model);
-		json.member("label", device.label);
-		json.member("interviewed", device.interviewed);
-		json.member("stale", device.stale);
-		if (device.last_seen_s > 0) {
-			json.member("last_seen", static_cast<int64_t>(device.last_seen_s));
-		}
-		json.key("datapoints").begin_array();
-		for (size_t p = 0; loaded_ && p < point_count_; ++p) {
-			if (points_[p].ieee == device.ieee && ids_[p] != kNoId) {
-				const Datapoint* dp = model_.get(ids_[p]);
-				if (dp != nullptr) {
-					json.string(dp->name());
-				}
-			}
-		}
-		json.end_array();
-		json.end_object();
+		write_device_json(json, i);
 	}
 	json.end_array();
 	json.end_object();

@@ -87,11 +87,13 @@ cheap "log everybody out" is a feature).
 ### Tokens for machines
 
 Scripts and other systems use bearer tokens: `Authorization: Bearer hct_<32 hex>`. They are created
-on the serial console with `web token create <name>`, which prints the token once; the device stores
-only its SHA-256 (`web.tok.N` = `<name>$<hash hex>`, 8 slots), so a flash dump does not reveal
-tokens. `web token list` shows the names, `web token revoke <name>` deletes one (its WebSocket
-connections close within a second). Creating tokens on the console instead of the UI keeps the
-browser out of the business of minting long-lived credentials; a UI page can follow if needed.
+in the System section of Settings (`POST /api/tokens`) or on the serial console with
+`web token create <name>`; either shows the token once, and the device stores only its SHA-256
+(`web.tok.N` = `<name>$<hash hex>`, 8 slots), so a flash dump does not reveal tokens. The list
+shows the names, revoking deletes one (its WebSocket connections close within a second). Minting
+tokens used to be console-only; an installed device has no reachable console (issue #38), so the
+UI does it behind the logged-in session (and the CSRF header), which already allows deploying an
+image.
 
 ### Rate limiting
 
@@ -152,6 +154,23 @@ ring for tools without a socket. The monitor also sends a typed (DPT and value) 
 write, response or read to the tunnel, as the console's `knx write` does, behind the same
 authentication as the commands; its telegrams come back as `tx` events marked `"origin": "monitor"`.
 
+### Console parity: what the console does, the API does
+
+An installed device's serial console is out of reach, so every console command that operates the
+device has a route (issue #38; the mapping is in doc/diagnostics.md, "The console"). The routes
+live in the core's `WebApi` (`web_api_system.cpp`), so the POSIX build serves them too; what only a
+platform can do goes through `WebHost`'s hooks: `system_action_possible`/`system_action` (restart,
+factory reset), `start_update`, `clear_coredump`, `set_platform_log_level`/`has_platform_log` and
+`storage_usage`. Each defaults to "unavailable" with a reason, which the route answers as 501
+`system.unavailable`. The services themselves come in through the same setters as before
+(`set_knx`, `set_zigbee`, `set_external`, `set_blob_store` next to `set_mqtt` and
+`set_language_packs`).
+
+A restart, a factory reset and a WiFi change answer first and act 750 ms later from an event-loop
+timer, so the HTTP response leaves the device; a second request in that time gets 409
+`system.busy`. Console-only by design: `web password clear` (needs physical access, the recovery
+from a lost password), `crash` (a test of the dump pipeline) and `web demo` (a development aid).
+
 ### The UI: static files from LittleFS, no framework
 
 `web/ui/dist/` is the UI as it is served: `index.html`, one stylesheet and ES modules (router,
@@ -187,7 +206,7 @@ update manifest grows a UI part (to do with the release workflow).
 Dark by default, light when the browser prefers it (`prefers-color-scheme`), or either one chosen in
 Settings (remembered in the browser's local storage, a convenience only); reduced motion respected
 (no pulsing, a dashed outline marks a pending tile instead). A sidebar with Overview, Rules,
-Schedules, Log and Settings that becomes a drawer below 760 px; a top bar with the device name and
+Schedules, Zigbee, Log and Settings that becomes a drawer below 760 px; a top bar with the device name and
 the live state. Every control is a native button, input or select (keyboard operable, focus
 visible) with a touch target of at least 44 px. No external resources (fonts, icons and scripts
 are all local).
@@ -207,7 +226,21 @@ are all local).
 - **Settings**: the deployed project (name, revision, generated when and by what, deployed when and
   how, whether it survives a restart) with **Forget project** (`DELETE /api/image` after a
   confirmation), the theme, the device status (network, time, memory, update, web) and the
-  editable settings with their validation messages, logout.
+  editable settings with their validation messages (`knx.gateway`, `knx.nat` among them), then the
+  **System** section (`system.js`, what the serial console offers, issue #38): firmware update
+  (check, update now), restart, factory reset (the button unlocks only once the device name is
+  typed), the core dump (present, download, clear), storage usage, the connections (KNX state and
+  gateway, MQTT with "publish discovery", each external source with "fetch", the language pack with
+  "sync"), log levels per tag, API tokens (list, create with the token shown once, revoke) and the
+  WiFi credentials behind a warning and a confirmation that names the `.local` address to use
+  afterwards; logout. Every refusal shows the device's reason under the card.
+- **Zigbee** (`zigbee.js`): the network (state, channel, devices, whether joining is open with a
+  countdown) with **Pair** (opens for 254 s; again extends, **Close** ends it) and a list of the
+  latest joins and interviews from the WebSocket `zigbee` events; one card per device with its
+  state (interviewing, new, left, silent, ok), manufacturer and model, IEEE, last seen and the live
+  values of its datapoints; **Identify**, **Rename**, **Interview again**, **Remove** (after a
+  confirmation). The list is read again on every event and after a reconnect. Without a
+  coordinator the page says why (`system.unavailable`).
 - **Log**: the ring's lines, polled every 3 s.
 
 ### The dashboard

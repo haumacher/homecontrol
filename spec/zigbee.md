@@ -120,7 +120,10 @@ Unknown members are ignored; a malformed database is refused as a whole and noth
 			"label": "Bathroom",
 			"interviewed": true,
 			"stale": false,
+			"left": false,
+			"interviewing": false,
 			"last_seen": 1792234567,
+			"seen_ago_s": 12,
 			"datapoints": ["zigbee.00158d0001020304.1.temperature", "zigbee.00158d0001020304.1.humidity"]
 		}
 	]
@@ -131,3 +134,7 @@ Unknown members are ignored; a malformed database is refused as a whole and noth
 the remaining time the network is open for joining (0: closed). `datapoints` lists the names of the
 device's datapoints in the model (empty while they are not loaded). On a controller without Zigbee
 the view is `{"available": false, "reason": "..."}`.
+`left`: the device announced its leave (it is kept; a rejoin clears it); `interviewing`: its
+interview runs now; `seen_ago_s`: seconds since it was last heard (absent before it was heard since
+the start). `GET /api/zigbee` (spec/api.md) pages the same device objects with `write_device_json()`
+and the network with `write_network_json()`.

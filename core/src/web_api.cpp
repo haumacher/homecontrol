@@ -11,6 +11,7 @@
 
 #include "hc/image/image_service.h"
 #include "hc/json_document.h"
+#include "hc/knx/knx_settings.h"
 #include "hc/rules/value.h"
 #include "hc/live_feed.h"
 #include "hc/language_packs.h"
@@ -82,6 +83,8 @@ constexpr SettingInfo kShownSettings[] = {
 	{setting::kWifiPowerSave, true},
 	{setting::kMqttUser, true},
 	{setting::kMqttPassword, true, true},
+	{knx::setting::kGateway, true},
+	{knx::setting::kNat, true},
 	{setting::kWifiSsid, false},
 };
 
@@ -312,11 +315,40 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		return;
 	}
 	if (std::strcmp(path, "/api/coredump") == 0) {
+		if (request.method == HttpMethod::del) {
+			clear_coredump(response);
+			return;
+		}
 		if (request.method != HttpMethod::get) {
-			refuse(response, 405, "api.method_not_allowed", "use GET");
+			refuse(response, 405, "api.method_not_allowed", "use GET or DELETE");
 			return;
 		}
 		coredump(response);
+		return;
+	}
+	// ---- The console's commands (web_api_system.cpp) ----
+	if (starts_with(path, "/api/system/")) {
+		system(path + 12, request, response);
+		return;
+	}
+	if (std::strcmp(path, "/api/tokens") == 0 || starts_with(path, "/api/tokens/")) {
+		tokens(path + 11, request, response);
+		return;
+	}
+	if (std::strcmp(path, "/api/zigbee") == 0 || starts_with(path, "/api/zigbee/")) {
+		zigbee(path + 11, request, response);
+		return;
+	}
+	if (starts_with(path, "/api/external/")) {
+		external_fetch(path + 14, request, response);
+		return;
+	}
+	if (std::strcmp(path, "/api/lang/sync") == 0) {
+		lang_sync(request, response);
+		return;
+	}
+	if (std::strcmp(path, "/api/mqtt/discovery") == 0) {
+		mqtt_discovery(request, response);
 		return;
 	}
 	if (std::strcmp(path, "/api/monitor") == 0) { // the monitor stream (monitor_feed.cpp)
@@ -636,6 +668,7 @@ void WebApi::status(WebResponse& response) {
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object();
 	write_status(json);
+	write_status_details(json);
 	json.end_object();
 	finish(response, json);
 }
@@ -880,6 +913,13 @@ void WebApi::settings(WebResponse& response) {
 			fallback = wifi_power_save_name(setting::kDefaultWifiPowerSave);
 			std::snprintf(value, sizeof(value), "%s", wifi_power_save_name(read_wifi_power_save(store, kTag)));
 			status = SettingsStatus::ok;
+		} else if (std::strcmp(info.key, knx::setting::kNat) == 0) {
+			// A boolean setting, shown as the console's on/off.
+			fallback = "off";
+			bool nat = false;
+			store.get_bool(info.key, nat);
+			std::snprintf(value, sizeof(value), "%s", nat ? "on" : "off");
+			status = SettingsStatus::ok;
 		}
 		json.begin_object().member("key", info.key);
 		json.key("value");
@@ -980,6 +1020,26 @@ bool WebApi::apply_setting(const char* key, const char* value, const char** code
 		if (mqtt_ != nullptr) {
 			mqtt_->reconnect(password ? "the broker password changed" : "the broker user name changed");
 		}
+		return true;
+	}
+	if (std::strcmp(key, knx::setting::kGateway) == 0) {
+		if (!knx::apply_gateway_setting(controller_.settings(), knx_, value, error)) {
+			return false;
+		}
+		Log::info(kTag, "KNX gateway %s%s", value[0] == '\0' ? "cleared" : "set to ", value);
+		return true;
+	}
+	if (std::strcmp(key, knx::setting::kNat) == 0) {
+		bool nat = std::strcmp(value, "on") == 0 || std::strcmp(value, "true") == 0;
+		if (!nat && std::strcmp(value, "off") != 0 && std::strcmp(value, "false") != 0) {
+			*error = "knx.nat is on or off";
+			return false;
+		}
+		if (!knx::apply_nat_setting(controller_.settings(), knx_, nat, error)) {
+			*code = "settings.storage_error";
+			return false;
+		}
+		Log::info(kTag, "KNX NAT mode %s", nat ? "on" : "off");
 		return true;
 	}
 	if (std::strcmp(key, setting::kWifiPowerSave) == 0) {

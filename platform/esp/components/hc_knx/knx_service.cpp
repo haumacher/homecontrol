@@ -39,33 +39,19 @@ void KnxService::init() {
 }
 
 bool KnxService::set_gateway(const char* text, const char** error) {
-	if (!knx::store_gateway_setting(controller_.settings(), text, error)) {
+	if (text[0] == '\0') {
+		*error = "the gateway is \"host[:port]\" (knx gateway clear removes it)";
 		return false;
 	}
-	std::optional<knx::GatewayAddress> gateway = knx::GatewayAddress::parse(text, error);
-	tunnel_.set_gateway(&*gateway, tunnel_.nat());
-	return true;
+	return knx::apply_gateway_setting(controller_.settings(), &tunnel_, text, error);
 }
 
 bool KnxService::clear_gateway(const char** error) {
-	SettingsStatus status = controller_.settings().erase(knx::setting::kGateway);
-	if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
-		*error = settings_status_name(status);
-		return false;
-	}
-	tunnel_.set_gateway(nullptr, tunnel_.nat());
-	return true;
+	return knx::apply_gateway_setting(controller_.settings(), &tunnel_, "", error);
 }
 
 bool KnxService::set_nat(bool nat, const char** error) {
-	SettingsStatus status = controller_.settings().set_bool(knx::setting::kNat, nat);
-	if (status != SettingsStatus::ok) {
-		*error = settings_status_name(status);
-		return false;
-	}
-	knx::GatewayAddress gateway = tunnel_.gateway();
-	tunnel_.set_gateway(&gateway, nat);
-	return true;
+	return knx::apply_nat_setting(controller_.settings(), &tunnel_, nat, error);
 }
 
 bool KnxService::write(const char* address_text, const char* dpt_text, const char* value_text, const char** error) {

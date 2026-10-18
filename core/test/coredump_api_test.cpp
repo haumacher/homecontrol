@@ -129,6 +129,23 @@ TEST_CASE("CoreDumpApi.RefusalsSpeak") {
 	r = f.handle(hc::HttpMethod::get, "/api/coredump", "", cookie);
 	CHECK(r.status == 404);
 	CHECK(std::string(r.body, r.length).find("coredump.none") != std::string::npos);
+	// DELETE clears a dump (issue #38); without one there is nothing to clear.
 	r = f.handle(hc::HttpMethod::del, "/api/coredump", "", cookie);
+	CHECK(r.status == 404);
+	CHECK(std::string(r.body, r.length).find("coredump.none") != std::string::npos);
+	r = f.handle(hc::HttpMethod::post, "/api/coredump", "", cookie);
 	CHECK(r.status == 405);
+}
+
+TEST_CASE("CoreDumpApi.Clear: through the platform's hook, 501 where it has none") {
+	DumpFixture f;
+	f.dump.bytes = 100;
+	std::string cookie = f.onboard();
+	hc::WebResponse r = f.handle(hc::HttpMethod::del, "/api/coredump", "", cookie);
+	CHECK(r.status == 501);
+	CHECK(std::string(r.body, r.length).find("system.unavailable") != std::string::npos);
+	f.host.coredump_clearable = true;
+	r = f.handle(hc::HttpMethod::del, "/api/coredump", "", cookie);
+	CHECK(r.status == 200);
+	CHECK(f.host.coredump_clears == 1);
 }

@@ -346,6 +346,27 @@ LiveFeed::StatusSignature LiveFeed::signature() {
 	return s;
 }
 
+void LiveFeed::zigbee_event(const zigbee::ZigbeeEvent& event) {
+	JsonWriter json(out_, sizeof(out_));
+	json.begin_object().member("type", "zigbee").member("event", zigbee::zigbee_event_name(event.kind));
+	if (event.ieee != 0) {
+		char ieee[zigbee::kIeeeText];
+		zigbee::format_ieee(event.ieee, ieee);
+		json.member("ieee", ieee);
+	}
+	if (event.kind == zigbee::ZigbeeEvent::Kind::permit) {
+		json.member("permit_join_s", event.permit_join_s);
+	}
+	json.member("generation", api_.zigbee() != nullptr ? api_.zigbee()->generation() : 0);
+	json.end_object();
+	size_t length = json.length();
+	for (Client& c : clients_) {
+		if (c.used && c.subscribed) {
+			send(c, out_, length);
+		}
+	}
+}
+
 void LiveFeed::send_status(Client* only) {
 	JsonWriter json(out_, sizeof(out_));
 	json.begin_object().member("type", "status");

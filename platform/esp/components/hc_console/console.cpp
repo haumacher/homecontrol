@@ -521,44 +521,7 @@ int cmd_factory(ConsoleContext& c, int argc, char** argv) {
 		return usage("factory reset yes   (erases the settings with the WiFi credentials, the stored runtime image and "
 			"its state, the Zigbee network; then restarts)");
 	}
-	ESP_LOGW(kTag, "factory reset requested on the console");
-	if (c.blobs != nullptr) {
-		unsigned removed = 0;
-		unsigned failed = 0;
-		for (;;) {
-			BlobNames batch;
-			c.blobs->visit(batch);
-			if (batch.count == 0) {
-				break;
-			}
-			unsigned before = removed;
-			for (size_t i = 0; i < batch.count; ++i) {
-				if (c.blobs->remove(batch.names[i]) == BlobStatus::ok) {
-					++removed;
-				} else {
-					++failed;
-				}
-			}
-			if (removed == before) {
-				break; // nothing removable left
-			}
-		}
-		std::printf("state      %u blob(s) removed%s\n", removed, failed != 0 ? ", some could not be removed" : "");
-	} else {
-		std::printf("state      kept: no blob store in this build\n");
-	}
-	erase_partition("zb_storage"); // the Zigbee stack's NVRAM: raw
-	if (esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, "zb_db") != nullptr) {
-		esp_err_t zb = nvs_flash_erase_partition("zb_db"); // an NVS partition: closed before the erase
-		std::printf("zb_db      %s\n", zb == ESP_OK ? "erased" : esp_err_to_name(zb));
-	}
-	esp_err_t err = nvs_flash_erase(); // closes the open handles first (settings, boot record)
-	std::printf("nvs        %s\n", err == ESP_OK ? "erased" : esp_err_to_name(err));
-	std::printf("restarting\n");
-	std::fflush(stdout);
-	vTaskDelay(pdMS_TO_TICKS(100));
-	esp_restart();
-	return 0;
+	factory_reset_and_restart(c.blobs, "on the console");
 }
 
 // ---- The command table: the one place where commands are registered --------------------------
@@ -852,6 +815,46 @@ void repl_task(void*) {
 }
 
 } // namespace
+
+void factory_reset_and_restart(BlobStore* blobs, const char* origin) {
+	ESP_LOGW(kTag, "factory reset requested %s", origin);
+	if (blobs != nullptr) {
+		unsigned removed = 0;
+		unsigned failed = 0;
+		for (;;) {
+			BlobNames batch;
+			blobs->visit(batch);
+			if (batch.count == 0) {
+				break;
+			}
+			unsigned before = removed;
+			for (size_t i = 0; i < batch.count; ++i) {
+				if (blobs->remove(batch.names[i]) == BlobStatus::ok) {
+					++removed;
+				} else {
+					++failed;
+				}
+			}
+			if (removed == before) {
+				break; // nothing removable left
+			}
+		}
+		std::printf("state      %u blob(s) removed%s\n", removed, failed != 0 ? ", some could not be removed" : "");
+	} else {
+		std::printf("state      kept: no blob store in this build\n");
+	}
+	erase_partition("zb_storage"); // the Zigbee stack's NVRAM: raw
+	if (esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, "zb_db") != nullptr) {
+		esp_err_t zb = nvs_flash_erase_partition("zb_db"); // an NVS partition: closed before the erase
+		std::printf("zb_db      %s\n", zb == ESP_OK ? "erased" : esp_err_to_name(zb));
+	}
+	esp_err_t err = nvs_flash_erase(); // closes the open handles first (settings, boot record)
+	std::printf("nvs        %s\n", err == ESP_OK ? "erased" : esp_err_to_name(err));
+	std::printf("restarting\n");
+	std::fflush(stdout);
+	vTaskDelay(pdMS_TO_TICKS(100));
+	esp_restart();
+}
 
 bool console_start(ConsoleContext& context) {
 	g_context = &context;
