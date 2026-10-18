@@ -315,6 +315,108 @@ void LittleFsBlobStore::visit(BlobVisitor& visitor) const {
 	::closedir(dir);
 }
 
+bool LittleFsBlobStore::free_space(size_t& bytes) const {
+	size_t total = 0;
+	size_t used = 0;
+	if (!ready() || !storage_usage(total, used)) {
+		return false;
+	}
+	bytes = total > used ? total - used : 0;
+	return true;
+}
+
+BlobWriter* LittleFsBlobStore::open_writer(const char* name, size_t expected, BlobStatus& status) {
+	status = check_name(name);
+	if (status != BlobStatus::ok) {
+		Log::warn(kTag, "streaming write refused: blob name invalid");
+		return nullptr;
+	}
+	if (writer_.is_open()) {
+		Log::warn(kTag, "streaming write of %s refused: another one is open", name);
+		status = BlobStatus::busy;
+		return nullptr;
+	}
+	if (!ready()) {
+		status = BlobStatus::storage_error;
+		return nullptr;
+	}
+	size_t free = 0;
+	if (expected > 0 && free_space(free) && expected > free) {
+		Log::warn(kTag, "streaming write of %s refused: %u bytes, %u free on the partition", name,
+			static_cast<unsigned>(expected), static_cast<unsigned>(free));
+		status = BlobStatus::no_space;
+		return nullptr;
+	}
+	if (!writer_.begin(name)) {
+		char temporary[kMaxPath];
+		temporary_path(temporary, sizeof(temporary), name);
+		status = failure(errno, "cannot create", temporary);
+		return nullptr;
+	}
+	status = BlobStatus::ok;
+	return &writer_;
+}
+
+bool LittleFsBlobStore::Writer::begin(const char* name) {
+	std::snprintf(name_, sizeof(name_), "%s", name);
+	written_ = 0;
+	char temporary[kMaxPath];
+	temporary_path(temporary, sizeof(temporary), name);
+	fd_ = ::open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	return fd_ >= 0;
+}
+
+BlobStatus LittleFsBlobStore::Writer::append(const void* data, size_t size) {
+	if (fd_ < 0) {
+		return BlobStatus::storage_error;
+	}
+	if (!write_all(fd_, data, size)) {
+		char temporary[kMaxPath];
+		temporary_path(temporary, sizeof(temporary), name_);
+		return failure(errno, "cannot write", temporary);
+	}
+	written_ += size;
+	return BlobStatus::ok;
+}
+
+BlobStatus LittleFsBlobStore::Writer::commit() {
+	if (fd_ < 0) {
+		return BlobStatus::storage_error;
+	}
+	char temporary[kMaxPath];
+	temporary_path(temporary, sizeof(temporary), name_);
+	bool ok = ::fsync(fd_) == 0;
+	int error = errno;
+	if (::close(fd_) != 0 && ok) {
+		ok = false;
+		error = errno;
+	}
+	fd_ = -1;
+	if (!ok) {
+		::unlink(temporary);
+		return failure(error, "cannot write", temporary);
+	}
+	char target[kMaxPath];
+	blob_path(target, sizeof(target), name_);
+	if (::rename(temporary, target) != 0) {
+		error = errno;
+		::unlink(temporary);
+		return failure(error, "cannot replace", target);
+	}
+	return BlobStatus::ok;
+}
+
+void LittleFsBlobStore::Writer::discard() {
+	if (fd_ < 0) {
+		return;
+	}
+	::close(fd_);
+	fd_ = -1;
+	char temporary[kMaxPath];
+	temporary_path(temporary, sizeof(temporary), name_);
+	::unlink(temporary);
+}
+
 void LittleFsBlobStore::print_status() const {
 	if (!storage_mount()) {
 		std::printf("partition %s: not mounted: %s\n", kStoragePartition, storage_failure());

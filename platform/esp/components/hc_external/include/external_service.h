@@ -5,19 +5,20 @@
 #define HC_ESP_EXTERNAL_SERVICE_H
 
 #include "console.h"
-#include "esp_http_fetcher.h"
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/external_values.h"
 #include "loop_queue.h"
+#include "on_demand_fetcher.h"
 
 namespace hc {
 namespace esp {
 
-/// External values on the device (issue #17, doc/external.md): the core's ExternalValues over the
-/// EspHttpFetcher, wired to the controller's loop, time service, settings (location.lat/lon) and
-/// network. Configured by the runtime image's `external` member (issue #8:
-/// values().configure_json()); without a configuration it does nothing.
+/// External values on the device (issue #17, doc/external.md): the core's ExternalValues over an
+/// OnDemandFetcher (the HTTP client exists only while a fetch runs, issue #44), wired to the
+/// controller's loop, time service, settings (location.lat/lon) and network. Configured by the
+/// runtime image's `external` member (issue #8: values().configure_json()); without a configuration
+/// it does nothing and holds no fetcher.
 ///
 /// It also carries the console command `external` (console_command(), for the console's extension
 /// table).
@@ -44,7 +45,7 @@ private:
 
 	Controller& controller_;
 	DatapointModel& model_;
-	EspHttpFetcher fetcher_;
+	OnDemandFetcher fetcher_;
 	ExternalValues values_;
 	ConsoleCommand console_command_;
 };

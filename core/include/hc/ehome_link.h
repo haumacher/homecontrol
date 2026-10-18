@@ -9,6 +9,7 @@
 
 #include "hc/backoff.h"
 #include "hc/event_loop.h"
+#include "hc/fetch_body.h"
 #include "hc/json.h"
 #include "hc/live_feed.h"
 #include "hc/platform/http_fetcher.h"
@@ -102,7 +103,8 @@ public:
 	static constexpr size_t kMaxResponseBody = 4096;
 	/// A piece of a streamed answer (binary frames).
 	static constexpr size_t kStreamPiece = 2048;
-	/// The largest answer of E-Home's enrollment route.
+	/// The largest answer of E-Home's enrollment route (about 300 bytes; on the heap while the
+	/// enrollment runs). A longer one fails the enrollment with this limit named.
 	static constexpr size_t kMaxEnrollAnswer = 2048;
 	/// The live feed's client handle of the E-Home socket.
 	static constexpr uint32_t kFeedHandle = 0xE4031u;
@@ -150,7 +152,9 @@ public:
 	void ws_close(uint32_t client, uint16_t code, const char* reason) override;
 
 	// FetchReceiver: E-Home's answer to the enrollment
-	void fetch_done(const FetchResult& result) override;
+	bool fetch_begin(int http_status, size_t content_length) override;
+	bool fetch_chunk(const char* data, size_t size) override;
+	void fetch_end(const FetchResult& result) override;
 
 private:
 	/// Where the socket is: off, waiting for the network, backoff, opening (connect() called),
@@ -229,6 +233,10 @@ private:
 	char enroll_code_[32] = {};
 	char enroll_text_[160] = {};
 	char enroll_url_[Settings::kMaxStringLength + 1] = {};
+	/// E-Home's answer while the enrollment runs (kMaxEnrollAnswer on the heap).
+	char* answer_ = nullptr;
+	FetchBody answer_body_{nullptr, 0, "E-Home's answer"};
+	void free_answer();
 
 	/// The response envelope: the prefix, the body WebApi writes, the closing brace. On the heap
 	/// while a session runs (connect() to its end), so a controller without E-Home pays nothing.

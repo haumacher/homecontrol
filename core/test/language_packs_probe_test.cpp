@@ -12,6 +12,7 @@
 #include "fake_blob_store.h"
 #include "hc/language_packs.h"
 #include "hc/network_settings.h"
+#include "fake_fetch.h"
 #include "hc/sha.h"
 #include "web_test_support.h"
 
@@ -22,7 +23,7 @@ namespace {
 
 class OneFetcher : public hc::HttpFetcher {
 public:
-	bool fetch(const char* url, size_t, hc::FetchReceiver& receiver, const char** error) override {
+	bool fetch(const char* url, hc::FetchReceiver& receiver, const char** error) override {
 		if (receiver_ != nullptr) {
 			*error = "busy";
 			return false;
@@ -34,13 +35,7 @@ public:
 	bool busy() const override { return receiver_ != nullptr; }
 	void ok(const std::string& body) {
 		REQUIRE(receiver_ != nullptr);
-		hc::FetchResult result;
-		result.ok = true;
-		result.http_status = 200;
-		result.body = body.data();
-		result.length = body.size();
-		hc::FetchReceiver* receiver = receiver_;
-		receiver->fetch_done(result);
+		hc_test::respond(*receiver_, 200, body);
 		receiver_ = nullptr;
 	}
 	std::vector<std::string> urls;
@@ -141,7 +136,7 @@ TEST_CASE("Lang probe: de-AT prefers the release's own de-AT pack over de, whate
 
 TEST_CASE("Lang probe: an unusable de entry fails a de-AT device instead of reporting not offered") {
 	Probe p("de-AT");
-	p.fetcher.ok("{\"version\": \"0.1.0-dev\", \"packs\": {" + entry("de", "lang-de.json.gz", kDe, "20000") + "}}");
+	p.fetcher.ok("{\"version\": \"0.1.0-dev\", \"packs\": {" + entry("de", "lang-de.json.gz", kDe, "0") + "}}");
 	p.run_for(1);
 	CHECK(p.fetcher.urls.size() == 1);
 	CHECK(p.packs.state() == LanguagePackState::failed);

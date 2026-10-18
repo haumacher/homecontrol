@@ -26,18 +26,24 @@ constexpr UBaseType_t kTaskPriority = 4;
 
 } // namespace
 
-EspHttpFetcher::EspHttpFetcher(LoopQueue& queue) : queue_(queue) {}
+EspHttpFetcher::EspHttpFetcher(LoopQueue& queue) : queue_(queue) {
+	consumed_ = xSemaphoreCreateBinaryStatic(&consumed_storage_);
+}
 
-bool EspHttpFetcher::fetch(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) {
+EspHttpFetcher::~EspHttpFetcher() {
+	vSemaphoreDelete(consumed_);
+}
+
+bool EspHttpFetcher::fetch(const char* url, FetchReceiver& receiver, const char** error) {
 	if (busy_.load()) {
 		*error = "busy: a fetch is in flight";
 		return false;
 	}
 	post_length_ = 0;
-	return start(url, max_bytes, receiver, error);
+	return start(url, receiver, error);
 }
 
-bool EspHttpFetcher::post(const char* url, const char* body, size_t length, size_t max_bytes, FetchReceiver& receiver,
+bool EspHttpFetcher::post(const char* url, const char* body, size_t length, FetchReceiver& receiver,
 	const char** error) {
 	if (busy_.load()) {
 		*error = "busy: a fetch is in flight";
@@ -49,10 +55,10 @@ bool EspHttpFetcher::post(const char* url, const char* body, size_t length, size
 	}
 	std::memcpy(post_body_, body, length);
 	post_length_ = length;
-	return start(url, max_bytes, receiver, error);
+	return start(url, receiver, error);
 }
 
-bool EspHttpFetcher::start(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) {
+bool EspHttpFetcher::start(const char* url, FetchReceiver& receiver, const char** error) {
 	if (busy_.load()) {
 		*error = "busy: a fetch is in flight";
 		return false;
@@ -72,12 +78,22 @@ bool EspHttpFetcher::start(const char* url, size_t max_bytes, FetchReceiver& rec
 		return false;
 	}
 #endif
+	if (consumed_ == nullptr) {
+		*error = "no hand-over semaphore";
+		return false;
+	}
 	std::memcpy(url_, url, length + 1);
-	max_bytes_ = max_bytes < kBufferBytes ? max_bytes : kBufferBytes;
 	receiver_ = &receiver;
-	length_ = 0;
 	status_ = 0;
+	announced_ = FetchReceiver::kUnknownLength;
+	chunk_length_ = 0;
+	delivered_ = 0;
+	pieces_ = 0;
+	begun_ = false;
+	aborted_ = false;
+	complete_ = false;
 	error_[0] = '\0';
+	xSemaphoreTake(consumed_, 0); // no stale token from an earlier fetch
 	busy_.store(true);
 	if (xTaskCreate(&EspHttpFetcher::task, "hc_ext_fetch", kTaskStack, this, kTaskPriority, nullptr) != pdPASS) {
 		busy_.store(false);
@@ -90,11 +106,38 @@ bool EspHttpFetcher::start(const char* url, size_t max_bytes, FetchReceiver& rec
 void EspHttpFetcher::task(void* context) {
 	EspHttpFetcher* self = static_cast<EspHttpFetcher*>(context);
 	self->run();
-	if (!self->queue_.post(&EspHttpFetcher::deliver, self, 0, nullptr, "external fetch result")) {
-		// The core's guard (ExternalValues::kFetchTimeoutMs) counts the lost result as a failure.
-		self->busy_.store(false);
-	}
+	self->stack_unused_ = static_cast<uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
+	// The last touch of `self`: the loop delivers the end and frees the fetcher for the next one.
+	self->hand_over(kEnd);
 	vTaskDelete(nullptr);
+}
+
+bool EspHttpFetcher::hand_over(Event event) {
+	// Post until the queue takes it (it is full only for moments).
+	while (!queue_.post(&EspHttpFetcher::on_event, this, event, nullptr, "HTTP fetch piece")) {
+		vTaskDelay(pdMS_TO_TICKS(20));
+	}
+	if (event == kEnd) {
+		return true; // nobody waits: the loop may free the fetcher from now on
+	}
+	xSemaphoreTake(consumed_, portMAX_DELAY);
+	return answer_;
+}
+
+void EspHttpFetcher::on_event(void* context, const LoopMessage& message) {
+	EspHttpFetcher* self = static_cast<EspHttpFetcher*>(context);
+	switch (message.number) {
+		case kBegin:
+			self->answer_ = self->receiver_->fetch_begin(self->status_, self->announced_);
+			break;
+		case kChunk:
+			self->answer_ = self->receiver_->fetch_chunk(self->chunk_, self->chunk_length_);
+			break;
+		default:
+			self->deliver_end();
+			return;
+	}
+	xSemaphoreGive(self->consumed_); // the worker reads on (or stops)
 }
 
 void EspHttpFetcher::run() {
@@ -122,17 +165,18 @@ void EspHttpFetcher::run() {
 		std::snprintf(error_, sizeof(error_), "cannot send the request body");
 	} else {
 		int64_t announced = esp_http_client_fetch_headers(client);
-		status_ = esp_http_client_get_status_code(client);
-		if (status_ != 200 && post_length_ == 0) {
-			std::snprintf(error_, sizeof(error_), "HTTP status %d", status_);
-		} else if (announced > static_cast<int64_t>(max_bytes_)) {
-			std::snprintf(error_, sizeof(error_), "body of %lld bytes larger than %u bytes",
-				static_cast<long long>(announced), static_cast<unsigned>(max_bytes_));
+		if (announced < 0) {
+			std::snprintf(error_, sizeof(error_), "no response headers");
 		} else {
-			read_body(client);
-			// A POST delivers the body of any status (a refusal document); the status still fails it.
-			if (error_[0] == '\0' && status_ != 200) {
-				std::snprintf(error_, sizeof(error_), "HTTP status %d", status_);
+			status_ = esp_http_client_get_status_code(client);
+			// 0: no Content-Length (or chunked); an empty body then ends at the first read.
+			announced_ = announced > 0 && !esp_http_client_is_chunked_response(client) ? static_cast<size_t>(announced)
+																						: FetchReceiver::kUnknownLength;
+			begun_ = true;
+			if (!hand_over(kBegin)) {
+				aborted_ = true;
+			} else {
+				read_body(client);
 			}
 		}
 	}
@@ -142,41 +186,62 @@ void EspHttpFetcher::run() {
 
 void EspHttpFetcher::read_body(void* handle) {
 	esp_http_client_handle_t client = static_cast<esp_http_client_handle_t>(handle);
-	// Read one byte more than allowed to notice a body that did not announce its size.
 	for (;;) {
-		int n = esp_http_client_read(client, body_ + length_, static_cast<int>(max_bytes_ + 1 - length_));
+		int n = esp_http_client_read(client, chunk_, static_cast<int>(kChunkBytes));
 		if (n < 0) {
-			std::snprintf(error_, sizeof(error_), "read error after %u bytes", static_cast<unsigned>(length_));
-			break;
+			std::snprintf(error_, sizeof(error_), "read error after %u bytes", static_cast<unsigned>(delivered_));
+			return;
 		}
 		if (n == 0) {
 			break;
 		}
-		length_ += static_cast<size_t>(n);
-		if (length_ > max_bytes_) {
-			std::snprintf(error_, sizeof(error_), "body larger than %u bytes", static_cast<unsigned>(max_bytes_));
-			break;
+		chunk_length_ = static_cast<size_t>(n);
+		++pieces_;
+		if (!hand_over(kChunk)) {
+			aborted_ = true;
+			return;
 		}
+		delivered_ += chunk_length_;
+	}
+	if (announced_ != FetchReceiver::kUnknownLength ? delivered_ == announced_
+													: esp_http_client_is_complete_data_received(client)) {
+		complete_ = true;
+	} else if (announced_ != FetchReceiver::kUnknownLength) {
+		std::snprintf(error_, sizeof(error_), "body ended after %u of %u bytes", static_cast<unsigned>(delivered_),
+			static_cast<unsigned>(announced_));
+	} else {
+		std::snprintf(error_, sizeof(error_), "body ended early after %u bytes", static_cast<unsigned>(delivered_));
 	}
 }
 
-void EspHttpFetcher::deliver(void* context, const LoopMessage&) {
-	EspHttpFetcher* self = static_cast<EspHttpFetcher*>(context);
-	FetchResult result;
-	result.ok = self->error_[0] == '\0';
-	result.http_status = self->status_;
-	// A POST hands over the body of any status that arrived complete (FetchResult::body).
-	bool body = result.ok || (self->post_length_ > 0 && self->status_ != 0 && self->length_ <= self->max_bytes_);
-	result.body = body ? self->body_ : nullptr;
-	result.length = body ? self->length_ : 0;
-	result.error = self->error_;
-	if (!result.ok) {
-		ESP_LOGD(kTag, "fetch of %s failed: %s", self->url_, self->error_);
+void EspHttpFetcher::deliver_end() {
+	if (error_[0] == '\0') {
+		if (begun_ && status_ != 200) {
+			std::snprintf(error_, sizeof(error_), "HTTP status %d", status_);
+		} else if (aborted_) {
+			std::snprintf(error_, sizeof(error_), "aborted by the receiver");
+		}
 	}
-	FetchReceiver* receiver = self->receiver_;
-	receiver->fetch_done(result);
-	// Busy until the receiver returned: the body stays valid during its call.
-	self->busy_.store(false);
+	FetchResult result;
+	result.http_status = status_;
+	result.length = delivered_;
+	result.aborted = aborted_;
+	result.complete = complete_;
+	result.ok = complete_ && status_ == 200 && error_[0] == '\0';
+	result.error = error_;
+	if (result.ok) {
+		ESP_LOGD(kTag, "fetched %s: %u bytes in %u piece(s); task stack %u of %u B unused", url_,
+			static_cast<unsigned>(delivered_), static_cast<unsigned>(pieces_), static_cast<unsigned>(stack_unused_),
+			static_cast<unsigned>(kTaskStack));
+	} else {
+		ESP_LOGD(kTag, "fetch of %s failed after %u bytes: %s; task stack %u of %u B unused", url_,
+			static_cast<unsigned>(delivered_), error_, static_cast<unsigned>(stack_unused_),
+			static_cast<unsigned>(kTaskStack));
+	}
+	FetchReceiver* receiver = receiver_;
+	receiver->fetch_end(result);
+	// Busy until the receiver returned.
+	busy_.store(false);
 }
 
 } // namespace esp

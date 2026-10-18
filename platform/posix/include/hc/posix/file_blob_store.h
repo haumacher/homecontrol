@@ -18,7 +18,8 @@ namespace posix {
 /// directory is opened on the first call (or by start()): created if missing (mode 0700, the parent
 /// must exist), and temporary files a crash left behind are deleted. If that fails, every call
 /// refuses with storage_error; the cause is logged once. Files in the directory whose names break
-/// the name rule are ignored by visit().
+/// the name rule are ignored by visit(). A streaming write (open_writer()) appends to the same temporary
+/// file and commit() finishes it as write() does (fsync, rename, fsync the directory).
 class FileBlobStore : public BlobStore {
 public:
 	/// `directory` without a trailing slash is fine; nothing is touched before the first call.
@@ -39,8 +40,31 @@ public:
 	BlobStatus size(const char* name, size_t& size) const override;
 	BlobStatus remove(const char* name) override;
 	void visit(BlobVisitor& visitor) const override;
+	BlobWriter* open_writer(const char* name, size_t expected, BlobStatus& status) override;
+	/// The file system's space available to this process (statvfs).
+	bool free_space(size_t& bytes) const override;
 
 private:
+	class Writer : public BlobWriter {
+	public:
+		explicit Writer(FileBlobStore& store) : store_(store) {}
+		~Writer();
+
+		BlobStatus append(const void* data, size_t size) override;
+		BlobStatus commit() override;
+		void discard() override;
+		size_t written() const override { return written_; }
+
+		bool begin(const char* name);
+		bool is_open() const { return fd_ >= 0; }
+
+	private:
+		FileBlobStore& store_;
+		int fd_ = -1;
+		std::string name_;
+		size_t written_ = 0;
+	};
+
 	enum class State { closed, ready, failed };
 
 	bool ready() const;
@@ -50,6 +74,7 @@ private:
 
 	std::string directory_;
 	mutable State state_ = State::closed;
+	Writer writer_{*this};
 };
 
 } // namespace posix

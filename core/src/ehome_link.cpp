@@ -220,6 +220,7 @@ EhomeLink::~EhomeLink() {
 	if (api_.ehome() == this) {
 		api_.set_ehome(nullptr);
 	}
+	free_answer();
 	delete[] body_;
 	delete[] out_;
 }
@@ -926,10 +927,21 @@ void EhomeLink::enroll(const WebRequest& request, WebResponse& response) {
 		.member("version", kVersion)
 		.member("build", build_id())
 		.end_object();
-	if (json.overflowed() || !fetcher_.post(target, payload, json.length(), kMaxEnrollAnswer, *this, &error)) {
+	if (answer_ == nullptr) {
+		answer_ = new (std::nothrow) char[kMaxEnrollAnswer];
+	}
+	if (answer_ != nullptr) {
+		answer_body_ = FetchBody(answer_, kMaxEnrollAnswer, "E-Home's answer");
+	}
+	if (json.overflowed() || answer_ == nullptr ||
+		!fetcher_.post(target, payload, json.length(), *this, &error)) {
+		free_answer();
 		char text[160];
 		std::snprintf(text, sizeof(text), "cannot reach E-Home: %s",
-			json.overflowed() ? "the request does not fit" : error != nullptr ? error : "the HTTP client refused");
+			json.overflowed()     ? "the request does not fit"
+			: error != nullptr    ? error
+			: answer_ == nullptr  ? "no memory for the answer (2048 bytes)"
+								  : "the HTTP client refused");
 		Log::warn(kTag, "enrollment with %s failed: %s", url, text);
 		WebApi::refuse(response, 502, "ehome.unreachable", text);
 		return;
@@ -959,6 +971,7 @@ void EhomeLink::enroll_timeout() {
 	}
 	char text[96];
 	std::snprintf(text, sizeof(text), "no answer from E-Home within %u s", static_cast<unsigned>(kEnrollTimeoutMs / 1000));
+	free_answer();
 	Log::warn(kTag, "enrollment with %s failed: %s", enroll_url_, text);
 	finish_enroll(502, "ehome.unreachable", text);
 }
@@ -984,13 +997,43 @@ bool EhomeLink::poll_enroll(WebResponse& response) {
 	return true;
 }
 
-void EhomeLink::fetch_done(const FetchResult& result) {
+void EhomeLink::free_answer() {
+	delete[] answer_;
+	answer_ = nullptr;
+	answer_body_ = FetchBody(nullptr, 0, "E-Home's answer");
+}
+
+bool EhomeLink::fetch_begin(int, size_t content_length) {
+	// The body of every status is read: E-Home's refusal document names the reason.
+	return enroll_ == Enroll::running && answer_ != nullptr && answer_body_.begin(content_length);
+}
+
+bool EhomeLink::fetch_chunk(const char* data, size_t size) {
+	return enroll_ == Enroll::running && answer_ != nullptr && answer_body_.append(data, size);
+}
+
+void EhomeLink::fetch_end(const FetchResult& result) {
 	if (enroll_ != Enroll::running) {
 		Log::info(kTag, "E-Home's late answer to an enrollment ignored (HTTP %d)", result.http_status);
+		free_answer();
 		return;
 	}
+	if (result.http_status == 200 && answer_body_.refusal()[0] != '\0') {
+		char text[160];
+		std::snprintf(text, sizeof(text), "E-Home's answer is not usable: %s", answer_body_.refusal());
+		free_answer();
+		Log::warn(kTag, "enrollment with %s failed: %s", enroll_url_, text);
+		finish_enroll(502, "ehome.bad_answer", text);
+		return;
+	}
+	// The answer's buffer goes when this call returns (the spans below point into it).
+	struct Release {
+		EhomeLink* self;
+		~Release() { self->free_answer(); }
+	} release{this};
+	// A body that overflowed or was cut is not parsed; its status still speaks.
 	JsonSpan answer;
-	bool parsed = result.body != nullptr && result.length > 0 && json_parse(result.body, result.length, answer) &&
+	bool parsed = result.complete && answer_ != nullptr && answer_body_.length() > 0 && json_parse(answer_body_.data(), answer_body_.length(), answer) &&
 		answer.kind == JsonSpan::Kind::object;
 	char error_text[128] = {};
 	char error_code[32] = {};

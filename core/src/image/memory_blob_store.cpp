@@ -42,18 +42,12 @@ BlobStatus MemoryBlobStore::write(const char* name, const BlobChunk* chunks, siz
 	if (total > kMaxBlobSize) {
 		return BlobStatus::too_large;
 	}
+	status = room(name, total);
+	if (status != BlobStatus::ok) {
+		return status;
+	}
 	Blob* blob = const_cast<Blob*>(find(name));
 	size_t previous = blob != nullptr ? blob->size : 0;
-	if (used_ - previous + total > capacity_) {
-		Log::warn(kTag, "refusing blob %s (%u bytes): the RAM store holds %u of %u bytes", name,
-			static_cast<unsigned>(total), static_cast<unsigned>(used_), static_cast<unsigned>(capacity_));
-		return BlobStatus::no_space;
-	}
-	if (blob == nullptr && count_ >= kMaxBlobs) {
-		Log::warn(kTag, "refusing blob %s: the RAM store holds %u blobs already", name,
-			static_cast<unsigned>(kMaxBlobs));
-		return BlobStatus::no_space;
-	}
 	uint8_t* data = new (std::nothrow) uint8_t[total > 0 ? total : 1];
 	if (data == nullptr) {
 		Log::warn(kTag, "refusing blob %s: no memory for %u bytes", name, static_cast<unsigned>(total));
@@ -74,6 +68,111 @@ BlobStatus MemoryBlobStore::write(const char* name, const BlobChunk* chunks, siz
 	blob->size = total;
 	used_ = used_ - previous + total;
 	return BlobStatus::ok;
+}
+
+BlobStatus MemoryBlobStore::room(const char* name, size_t total) const {
+	const Blob* blob = find(name);
+	size_t previous = blob != nullptr ? blob->size : 0;
+	if (used_ - previous + total > capacity_) {
+		Log::warn(kTag, "refusing blob %s (%u bytes): the RAM store holds %u of %u bytes", name,
+			static_cast<unsigned>(total), static_cast<unsigned>(used_), static_cast<unsigned>(capacity_));
+		return BlobStatus::no_space;
+	}
+	if (blob == nullptr && count_ >= kMaxBlobs) {
+		Log::warn(kTag, "refusing blob %s: the RAM store holds %u blobs already", name,
+			static_cast<unsigned>(kMaxBlobs));
+		return BlobStatus::no_space;
+	}
+	return BlobStatus::ok;
+}
+
+bool MemoryBlobStore::free_space(size_t& bytes) const {
+	bytes = capacity_ - used_;
+	return true;
+}
+
+BlobWriter* MemoryBlobStore::open_writer(const char* name, size_t expected, BlobStatus& status) {
+	status = check_name(name);
+	if (status != BlobStatus::ok) {
+		return nullptr;
+	}
+	if (writer_.open) {
+		status = BlobStatus::busy;
+		return nullptr;
+	}
+	status = room(name, expected);
+	if (status != BlobStatus::ok) {
+		return nullptr;
+	}
+	writer_.open = true;
+	std::strcpy(writer_.name, name);
+	writer_.size = 0;
+	if (expected > writer_.allocated) {
+		delete[] writer_.data;
+		writer_.data = new (std::nothrow) uint8_t[expected];
+		writer_.allocated = writer_.data != nullptr ? expected : 0;
+		// Without memory now, append() tries again in smaller steps.
+	}
+	return &writer_;
+}
+
+BlobStatus MemoryBlobStore::Writer::append(const void* bytes, size_t length) {
+	if (length == 0) {
+		return BlobStatus::ok;
+	}
+	if (store_.room(name, size + length) != BlobStatus::ok) {
+		return BlobStatus::no_space;
+	}
+	if (size + length > allocated) {
+		size_t grown = allocated * 2 > size + length ? allocated * 2 : size + length;
+		uint8_t* bigger = new (std::nothrow) uint8_t[grown];
+		if (bigger == nullptr) {
+			Log::warn(kTag, "streaming write of %s: no memory for %u bytes", name, static_cast<unsigned>(grown));
+			return BlobStatus::no_space;
+		}
+		if (size > 0) {
+			std::memcpy(bigger, data, size);
+		}
+		delete[] data;
+		data = bigger;
+		allocated = grown;
+	}
+	std::memcpy(data + size, bytes, length);
+	size += length;
+	return BlobStatus::ok;
+}
+
+BlobStatus MemoryBlobStore::Writer::commit() {
+	open = false;
+	BlobStatus status = store_.room(name, size);
+	if (status != BlobStatus::ok) {
+		return status;
+	}
+	Blob* blob = const_cast<Blob*>(store_.find(name));
+	size_t previous = blob != nullptr ? blob->size : 0;
+	if (blob == nullptr) {
+		blob = &store_.blobs_[store_.count_++];
+		std::strcpy(blob->name, name);
+	} else {
+		delete[] blob->data;
+	}
+	// The buffer becomes the blob's content (no copy; nullptr for an empty blob); the writer
+	// allocates anew next time.
+	blob->data = data;
+	blob->size = size;
+	store_.used_ = store_.used_ - previous + size;
+	data = nullptr;
+	allocated = 0;
+	size = 0;
+	return BlobStatus::ok;
+}
+
+void MemoryBlobStore::Writer::discard() {
+	open = false;
+	delete[] data;
+	data = nullptr;
+	allocated = 0;
+	size = 0;
 }
 
 BlobStatus MemoryBlobStore::read(const char* name, size_t offset, void* buffer, size_t size, size_t& length) const {

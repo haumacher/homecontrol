@@ -87,7 +87,8 @@ after the TLS handshake and the heap at that moment.
 
 - **ESP** (`platform/esp/components/hc_ehome`): `EspWebSocketClient` on the managed component
   `espressif/esp_websocket_client` (1.8.x) with the certificate bundle; `EhomeService` owns it, an
-  `OnDemandFetcher` for the enrollment (hc_external; its 8 KB buffer exists only during the POST)
+  `OnDemandFetcher` for the enrollment (hc_external; the fetcher exists only during the POST, the
+  answer streams into `EhomeLink`'s own 2 KB buffer, `kMaxEnrollAnswer`, refused beyond it)
   and the `EhomeLink`. The client task reassembles a text message (at most 4096 bytes) and hands
   binary pieces (1 KB, straight from the client's receive buffer) to the loop through the
   `LoopQueue`, waiting until the loop consumed each, so one slot carries everything in order. The
@@ -128,5 +129,5 @@ handshake. These options are set for the whole application (`sdkconfig.defaults.
 check, the HTTP fetcher and MQTT over TLS allocate their record buffers per record too, instead of
 16 KB + 4 KB for the whole of each connection.
 
-The enrollment adds, for its duration only, the fetcher (8 KB buffer and an 8 KB task stack) and a
-TLS handshake.
+The enrollment adds, for its duration only, the fetcher (3 KB with its 2 KB piece buffer), the
+answer's 2 KB buffer, an 8 KB task stack and a TLS handshake.

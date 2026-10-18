@@ -10,6 +10,7 @@
 #include "hc/connectivity.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
+#include "hc/fetch_body.h"
 #include "hc/json.h"
 #include "hc/log.h"
 #include "hc/platform/http_fetcher.h"
@@ -122,9 +123,11 @@ bool external_extract(const JsonSpan& root, const char* path, JsonSpan& out, con
 /// limit of fetch_now() (kManualSpacingMs since its last attempt) allows; it is refused while the
 /// source is blocked (network down, wall clock not synchronized, no location for its URL).
 ///
-/// Memory: configure() allocates one table for the sources and bindings (11,216 bytes at the
-/// capacities below on the ESP32) and frees the previous one; nothing is allocated afterwards.
-/// Threading: the event loop's thread.
+/// Memory: configure() allocates one table sized for the configuration's sources and bindings (about
+/// 0.6 KB per source and 0.2 KB per binding: 1.5 KB for one source with four bindings; the limits
+/// below cap it at 11 KB) and frees the previous one. Each fetch takes a kMaxBody buffer on the heap
+/// for the response while it is in flight (the platform's fetcher hands the body over in pieces,
+/// issue #43). Threading: the event loop's thread.
 class ExternalValues : public Technology, public FetchReceiver {
 public:
 	static constexpr uint32_t kMinIntervalS = 300;
@@ -140,7 +143,8 @@ public:
 	/// Longest URL template (the filled URL must fit HttpFetcher::kMaxUrl).
 	static constexpr size_t kMaxUrl = HttpFetcher::kMaxUrl;
 
-	/// Largest response body accepted.
+	/// Largest response body accepted (it is parsed as a whole; an Open-Meteo answer is about
+	/// 1.5 KB). A longer one fails the fetch with this limit named.
 	static constexpr size_t kMaxBody = 8192;
 
 	/// First fetch of the first source after configure() or after the conditions cleared.
@@ -201,18 +205,26 @@ public:
 	/// Whether a fetch is in flight.
 	bool fetching() const { return in_flight_; }
 
+	/// The bytes of the configuration's table (0 without one): what configure() allocated.
+	size_t table_bytes() const;
+
 	// Technology
 	const char* name() const override { return "external"; }
 	bool command(const Datapoint& datapoint, const Value& value) override;
 	bool read(const Datapoint& datapoint) override;
 
 	// FetchReceiver
-	void fetch_done(const FetchResult& result) override;
+	bool fetch_begin(int http_status, size_t content_length) override;
+	bool fetch_chunk(const char* data, size_t size) override;
+	void fetch_end(const FetchResult& result) override;
 
 private:
 	struct Table;
 	struct Source;
 
+	/// Whether the result of the fetch in flight is still wanted (not timed out, same configuration).
+	bool wanted() const;
+	void free_response();
 	bool fill(Table& table, const ExternalSourceSpec* specs, size_t count);
 	bool fill_json(Table& table, const char* text, size_t length);
 	bool finish(Table& table);
@@ -245,6 +257,9 @@ private:
 	uint32_t in_flight_generation_ = 0;
 	size_t in_flight_source_ = 0;
 	uint64_t in_flight_deadline_ = 0;
+	/// The response of the fetch in flight (kMaxBody on the heap) and its filling.
+	char* response_ = nullptr;
+	FetchBody body_{nullptr, 0, "the response"};
 	char url_[kMaxUrl + 1] = {};
 	char error_[192] = {};
 };

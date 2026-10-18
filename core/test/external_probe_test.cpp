@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "doctest.h"
+#include "fake_fetch.h"
 #include "hc/external_values.h"
 #include "hc/time_service.h"
 #include "test_support.h"
@@ -27,36 +28,26 @@ namespace {
 class Fetcher : public hc::HttpFetcher {
 public:
 	explicit Fetcher(const hc_test::FakeClock& clock) : clock_(clock) {}
-	bool fetch(const char* url, size_t max_bytes, hc::FetchReceiver& receiver, const char** error) override {
+	bool fetch(const char* url, hc::FetchReceiver& receiver, const char** error) override {
 		if (receiver_ != nullptr) {
 			*error = "busy";
 			return false;
 		}
 		urls.push_back(url);
-		(void) max_bytes;
 		receiver_ = &receiver;
 		return true;
 	}
 	bool busy() const override { return receiver_ != nullptr; }
 	bool pending() const { return receiver_ != nullptr; }
 	void ok(const std::string& body) {
-		hc::FetchResult r;
-		r.ok = true;
-		r.http_status = 200;
-		r.body = body.data();
-		r.length = body.size();
-		deliver(r);
-	}
-	void fail(int status) {
-		hc::FetchResult r;
-		r.http_status = status;
-		r.error = "probe failure";
-		deliver(r);
-	}
-	void deliver(const hc::FetchResult& r) {
 		hc::FetchReceiver* receiver = receiver_;
 		receiver_ = nullptr;
-		receiver->fetch_done(r);
+		hc_test::respond(*receiver, 200, body);
+	}
+	void fail(int status) {
+		hc::FetchReceiver* receiver = receiver_;
+		receiver_ = nullptr;
+		hc_test::respond(*receiver, status, "probe failure");
 	}
 	std::vector<std::string> urls;
 

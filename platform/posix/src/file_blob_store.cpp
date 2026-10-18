@@ -6,9 +6,12 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 
@@ -290,6 +293,106 @@ void FileBlobStore::visit(BlobVisitor& visitor) const {
 		}
 	}
 	::closedir(dir);
+}
+
+bool FileBlobStore::free_space(size_t& bytes) const {
+	if (!ready()) {
+		return false;
+	}
+	struct statvfs info;
+	if (::statvfs(directory_.c_str(), &info) != 0) {
+		return false;
+	}
+	unsigned long long available = static_cast<unsigned long long>(info.f_bavail) * info.f_frsize;
+	bytes = available > SIZE_MAX ? SIZE_MAX : static_cast<size_t>(available);
+	return true;
+}
+
+BlobWriter* FileBlobStore::open_writer(const char* name, size_t expected, BlobStatus& status) {
+	status = check_name(name);
+	if (status != BlobStatus::ok) {
+		Log::warn(kTag, "streaming write refused: blob name invalid");
+		return nullptr;
+	}
+	if (writer_.is_open()) {
+		Log::warn(kTag, "streaming write of %s refused: another one is open", name);
+		status = BlobStatus::busy;
+		return nullptr;
+	}
+	if (!ready()) {
+		status = BlobStatus::storage_error;
+		return nullptr;
+	}
+	size_t free = 0;
+	if (expected > 0 && free_space(free) && expected > free) {
+		Log::warn(kTag, "streaming write of %s refused: %zu bytes, %zu free", name, expected, free);
+		status = BlobStatus::no_space;
+		return nullptr;
+	}
+	if (!writer_.begin(name)) {
+		status = failure(errno, "cannot create", temporary_path(name));
+		return nullptr;
+	}
+	status = BlobStatus::ok;
+	return &writer_;
+}
+
+FileBlobStore::Writer::~Writer() {
+	if (fd_ >= 0) {
+		discard();
+	}
+}
+
+bool FileBlobStore::Writer::begin(const char* name) {
+	name_ = name;
+	written_ = 0;
+	fd_ = ::open(store_.temporary_path(name).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	return fd_ >= 0;
+}
+
+BlobStatus FileBlobStore::Writer::append(const void* data, size_t size) {
+	if (fd_ < 0) {
+		return BlobStatus::storage_error;
+	}
+	if (!write_all(fd_, data, size)) {
+		return failure(errno, "cannot write", store_.temporary_path(name_.c_str()));
+	}
+	written_ += size;
+	return BlobStatus::ok;
+}
+
+BlobStatus FileBlobStore::Writer::commit() {
+	if (fd_ < 0) {
+		return BlobStatus::storage_error;
+	}
+	std::string temporary = store_.temporary_path(name_.c_str());
+	bool ok = ::fsync(fd_) == 0;
+	int error = errno;
+	if (::close(fd_) != 0 && ok) {
+		ok = false;
+		error = errno;
+	}
+	fd_ = -1;
+	if (!ok) {
+		::unlink(temporary.c_str());
+		return failure(error, "cannot write", temporary);
+	}
+	std::string target = store_.path(name_.c_str());
+	if (std::rename(temporary.c_str(), target.c_str()) != 0) {
+		error = errno;
+		::unlink(temporary.c_str());
+		return failure(error, "cannot replace", target);
+	}
+	return store_.sync_directory() ? BlobStatus::ok : BlobStatus::storage_error;
+}
+
+void FileBlobStore::Writer::discard() {
+	if (fd_ < 0) {
+		return;
+	}
+	::close(fd_);
+	fd_ = -1;
+	::unlink(store_.temporary_path(name_.c_str()).c_str());
 }
 
 } // namespace posix

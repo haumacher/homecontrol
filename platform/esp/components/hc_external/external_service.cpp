@@ -21,7 +21,7 @@ constexpr const char* kHelp =
 ExternalService::ExternalService(Controller& controller, LoopQueue& queue, DatapointModel& model)
 	: controller_(controller),
 	  model_(model),
-	  fetcher_(queue),
+	  fetcher_(controller.loop(), controller.clock(), queue),
 	  values_(controller.loop(), controller.time(), controller.settings(), controller.connectivity(), model, fetcher_),
 	  console_command_{"external", kHint, kHelp, &ExternalService::console_entry, this} {}
 
@@ -53,6 +53,8 @@ void ExternalService::print_status() const {
 		std::printf("no external sources (the runtime image configures them, issue #8)\n");
 		return;
 	}
+	std::printf("table %u B, fetcher %s\n", static_cast<unsigned>(values_.table_bytes()),
+		fetcher_.allocated() ? "allocated" : "free");
 	uint64_t now = controller_.clock().monotonic_ms();
 	for (size_t i = 0; i < count; ++i) {
 		ExternalSourceStatus status;

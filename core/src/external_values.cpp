@@ -360,12 +360,75 @@ struct ExternalValues::Table {
 		uint16_t datapoint = 0;
 	};
 
-	Source sources[kMaxSources];
+	Source* sources = nullptr;
+	size_t source_capacity = 0;
 	size_t source_count = 0;
-	Binding bindings[kMaxBindings];
+	Binding* bindings = nullptr;
+	size_t binding_capacity = 0;
 	size_t binding_count = 0;
-	Value pending[kMaxBindings]; ///< The values of one response, before they are reported.
+	Value* pending = nullptr; ///< The values of one response, before they are reported (one per binding).
+	/// The whole block: the table and its three arrays.
+	size_t bytes = 0;
+
+	/// One block for exactly `sources` sources and `bindings` bindings (issue #44: no table at the
+	/// limits); nullptr without memory, `bytes` receives the size asked for.
+	static Table* create(size_t sources, size_t bindings, size_t& bytes);
+	static void destroy(Table* table);
 };
+
+namespace {
+
+size_t align_up(size_t n, size_t alignment) {
+	return (n + alignment - 1) / alignment * alignment;
+}
+
+} // namespace
+
+ExternalValues::Table* ExternalValues::Table::create(size_t sources, size_t bindings, size_t& bytes) {
+	size_t at_sources = align_up(sizeof(Table), alignof(Source));
+	size_t at_bindings = align_up(at_sources + sources * sizeof(Source), alignof(Binding));
+	size_t at_pending = align_up(at_bindings + bindings * sizeof(Binding), alignof(Value));
+	bytes = at_pending + bindings * sizeof(Value);
+	void* memory = ::operator new(bytes, std::nothrow);
+	if (memory == nullptr) {
+		return nullptr;
+	}
+	char* base = static_cast<char*>(memory);
+	Table* table = new (memory) Table;
+	table->bytes = bytes;
+	table->sources = reinterpret_cast<Source*>(base + at_sources);
+	table->source_capacity = sources;
+	for (size_t i = 0; i < sources; ++i) {
+		new (&table->sources[i]) Source;
+	}
+	table->bindings = reinterpret_cast<Binding*>(base + at_bindings);
+	table->pending = reinterpret_cast<Value*>(base + at_pending);
+	table->binding_capacity = bindings;
+	for (size_t i = 0; i < bindings; ++i) {
+		new (&table->bindings[i]) Binding;
+		new (&table->pending[i]) Value;
+	}
+	return table;
+}
+
+void ExternalValues::Table::destroy(Table* table) {
+	if (table == nullptr) {
+		return;
+	}
+	for (size_t i = 0; i < table->binding_capacity; ++i) {
+		table->pending[i].~Value();
+		table->bindings[i].~Binding();
+	}
+	for (size_t i = 0; i < table->source_capacity; ++i) {
+		table->sources[i].~Source();
+	}
+	table->~Table();
+	::operator delete(table);
+}
+
+size_t ExternalValues::table_bytes() const {
+	return table_ != nullptr ? table_->bytes : 0;
+}
 
 ExternalValues::ExternalValues(EventLoop& loop, const TimeSource& time, const Settings& settings,
 	const Connectivity& connectivity, DatapointModel& model, HttpFetcher& fetcher)
@@ -373,7 +436,8 @@ ExternalValues::ExternalValues(EventLoop& loop, const TimeSource& time, const Se
 
 ExternalValues::~ExternalValues() {
 	loop_.cancel(timer_);
-	delete table_;
+	Table::destroy(table_);
+	free_response();
 }
 
 bool ExternalValues::reject(const char* fmt, ...) {
@@ -414,6 +478,9 @@ bool ExternalValues::fill(Table& table, const ExternalSourceSpec* specs, size_t 
 	}
 	for (size_t i = 0; i < count; ++i) {
 		const ExternalSourceSpec& spec = specs[i];
+		if (i >= table.source_capacity) {
+			return reject("%zu sources, at most %zu", count, kMaxSources);
+		}
 		Source& source = table.sources[i];
 		if (spec.id == nullptr || !copy_text(source.id, sizeof(source.id), spec.id)) {
 			return reject("source %zu: the id is missing or longer than %zu characters", i + 1, kMaxId);
@@ -439,7 +506,8 @@ bool ExternalValues::fill(Table& table, const ExternalSourceSpec* specs, size_t 
 		}
 		source.first = table.binding_count;
 		for (size_t b = 0; b < spec.binding_count; ++b) {
-			if (table.binding_count == kMaxBindings) {
+			if (table.binding_count >= table.binding_capacity) {
+				// The table is sized from the counts, capped at the limit.
 				return reject("more than %zu bindings in all sources", kMaxBindings);
 			}
 			const ExternalBindingSpec& in = spec.bindings[b];
@@ -519,7 +587,7 @@ bool ExternalValues::fill_json(Table& table, const char* text, size_t length) {
 	size_t index = 0;
 	while (json_next_item(sources, position, item)) {
 		++index;
-		if (index > kMaxSources) {
+		if (index > kMaxSources || index > table.source_capacity) {
 			return reject("more than %zu sources", kMaxSources);
 		}
 		if (item.kind != JsonSpan::Kind::object) {
@@ -586,7 +654,8 @@ bool ExternalValues::fill_json(Table& table, const char* text, size_t length) {
 		size_t number = 0;
 		while (json_next_item(bindings, binding_position, entry)) {
 			++number;
-			if (table.binding_count == kMaxBindings) {
+			if (table.binding_count >= table.binding_capacity) {
+				// The table is sized from the counts, capped at the limit.
 				return reject("more than %zu bindings in all sources", kMaxBindings);
 			}
 			if (entry.kind != JsonSpan::Kind::object) {
@@ -765,11 +834,11 @@ bool ExternalValues::commit(Table* table, const char** error) {
 		if (status != DatapointStatus::ok) {
 			// Checked before; only a model in a listener call gets here.
 			reject("cannot bind datapoint '%s': %s", table->bindings[b].datapoint_name, datapoint_status_name(status));
-			delete table;
+			Table::destroy(table);
 			return refuse(error);
 		}
 	}
-	delete table_;
+	Table::destroy(table_);
 	table_ = table;
 	++generation_;
 	uint64_t now = time_.monotonic_ms();
@@ -790,13 +859,19 @@ bool ExternalValues::configure(const ExternalSourceSpec* specs, size_t count, co
 		reject("called from a datapoint listener");
 		return refuse(error);
 	}
-	Table* table = new (std::nothrow) Table;
+	size_t bindings = 0;
+	for (size_t i = 0; specs != nullptr && i < count; ++i) {
+		bindings += specs[i].binding_count;
+	}
+	size_t bytes = 0;
+	Table* table = Table::create(count < kMaxSources ? count : kMaxSources,
+		bindings < kMaxBindings ? bindings : kMaxBindings, bytes);
 	if (table == nullptr) {
-		reject("no memory for the source table (%zu bytes)", sizeof(Table));
+		reject("no memory for the source table (%zu bytes)", bytes);
 		return refuse(error);
 	}
 	if (!fill(*table, specs, count) || !finish(*table)) {
-		delete table;
+		Table::destroy(table);
 		return refuse(error);
 	}
 	return commit(table, error);
@@ -807,13 +882,40 @@ bool ExternalValues::configure_json(const char* text, size_t length, const char*
 		reject("called from a datapoint listener");
 		return refuse(error);
 	}
-	Table* table = new (std::nothrow) Table;
+	// Count first, so the table holds exactly what the member declares (capped at the limits; a
+	// larger count is refused by fill_json() with its reason).
+	size_t sources = 0;
+	size_t bindings = 0;
+	{
+		JsonSpan root;
+		JsonSpan list;
+		if (json_parse(text, length, root) && root.kind == JsonSpan::Kind::object && json_member(root, "sources", list) &&
+			list.kind == JsonSpan::Kind::array) {
+			size_t position = 0;
+			JsonSpan item;
+			while (json_next_item(list, position, item)) {
+				++sources;
+				JsonSpan entries;
+				if (item.kind == JsonSpan::Kind::object && json_member(item, "bindings", entries) &&
+					entries.kind == JsonSpan::Kind::array) {
+					size_t at = 0;
+					JsonSpan entry;
+					while (json_next_item(entries, at, entry)) {
+						++bindings;
+					}
+				}
+			}
+		}
+	}
+	size_t bytes = 0;
+	Table* table = Table::create(sources < kMaxSources ? sources : kMaxSources,
+		bindings < kMaxBindings ? bindings : kMaxBindings, bytes);
 	if (table == nullptr) {
-		reject("no memory for the source table (%zu bytes)", sizeof(Table));
+		reject("no memory for the source table (%zu bytes)", bytes);
 		return refuse(error);
 	}
 	if (!fill_json(*table, text, length) || !finish(*table)) {
-		delete table;
+		Table::destroy(table);
 		return refuse(error);
 	}
 	return commit(table, error);
@@ -822,7 +924,7 @@ bool ExternalValues::configure_json(const char* text, size_t length, const char*
 void ExternalValues::clear() {
 	loop_.cancel(timer_);
 	timer_ = TimerHandle();
-	delete table_;
+	Table::destroy(table_);
 	table_ = nullptr;
 	++generation_;
 }
@@ -1018,6 +1120,7 @@ void ExternalValues::service() {
 			return;
 		}
 		in_flight_ = false;
+		free_response();
 		if (table_ != nullptr && in_flight_generation_ == generation_) {
 			char reason[80];
 			std::snprintf(reason, sizeof(reason), "no result within %lu s",
@@ -1070,7 +1173,16 @@ bool ExternalValues::start(Source& source, uint64_t now) {
 	source.last_attempt = now;
 	source.attempted = true;
 	const char* error = nullptr;
-	if (!fill_url(source, url_, sizeof(url_), &error) || !fetcher_.fetch(url_, kMaxBody, *this, &error)) {
+	if (response_ == nullptr) {
+		response_ = new (std::nothrow) char[kMaxBody];
+	}
+	if (response_ == nullptr) {
+		error = "no memory for the response buffer (8192 bytes)";
+	} else {
+		body_ = FetchBody(response_, kMaxBody, "the response");
+	}
+	if (response_ == nullptr || !fill_url(source, url_, sizeof(url_), &error) || !fetcher_.fetch(url_, *this, &error)) {
+		free_response();
 		char reason[96];
 		std::snprintf(reason, sizeof(reason), "fetch not started: %s", error != nullptr ? error : "?");
 		fail(source, reason, true);
@@ -1084,7 +1196,26 @@ bool ExternalValues::start(Source& source, uint64_t now) {
 	return true;
 }
 
-void ExternalValues::fetch_done(const FetchResult& result) {
+void ExternalValues::free_response() {
+	delete[] response_;
+	response_ = nullptr;
+	body_ = FetchBody(nullptr, 0, "the response");
+}
+
+bool ExternalValues::wanted() const {
+	return in_flight_ && table_ != nullptr && in_flight_generation_ == generation_ && response_ != nullptr;
+}
+
+bool ExternalValues::fetch_begin(int http_status, size_t content_length) {
+	// Only a 200 is read; fetch_end() names another status, and the body's refusal below.
+	return wanted() && http_status == 200 && body_.begin(content_length);
+}
+
+bool ExternalValues::fetch_chunk(const char* data, size_t size) {
+	return wanted() && body_.append(data, size);
+}
+
+void ExternalValues::fetch_end(const FetchResult& result) {
 	if (!in_flight_) {
 		Log::warn(kTag, "a fetch result arrived after its timeout: ignored");
 		return;
@@ -1092,21 +1223,25 @@ void ExternalValues::fetch_done(const FetchResult& result) {
 	in_flight_ = false;
 	if (table_ == nullptr || in_flight_generation_ != generation_) {
 		Log::info(kTag, "the result of a fetch for a replaced configuration is dropped");
+		free_response();
 		arm();
 		return;
 	}
 	Source& source = table_->sources[in_flight_source_];
 	if (!result.ok) {
 		char reason[112];
-		if (result.error != nullptr && result.error[0] != '\0') {
+		if (result.aborted && body_.refusal()[0] != '\0') {
+			std::snprintf(reason, sizeof(reason), "%s", body_.refusal());
+		} else if (result.error != nullptr && result.error[0] != '\0') {
 			std::snprintf(reason, sizeof(reason), "%s", result.error);
 		} else {
 			std::snprintf(reason, sizeof(reason), "HTTP status %d", result.http_status);
 		}
 		fail(source, reason, true);
 	} else {
-		process(source, result.body, result.length);
+		process(source, body_.data(), body_.length());
 	}
+	free_response();
 	arm();
 }
 

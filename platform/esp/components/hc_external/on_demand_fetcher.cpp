@@ -40,7 +40,7 @@ bool OnDemandFetcher::prepare(FetchReceiver& receiver, const char** error) {
 	if (impl_ == nullptr) {
 		impl_ = create_fetcher(queue_);
 		if (impl_ == nullptr) {
-			*error = "no memory for the HTTP fetcher (8 KB)";
+			*error = "no memory for the HTTP fetcher (3 KB)";
 			return false;
 		}
 	}
@@ -50,34 +50,42 @@ bool OnDemandFetcher::prepare(FetchReceiver& receiver, const char** error) {
 	return true;
 }
 
-bool OnDemandFetcher::fetch(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) {
+bool OnDemandFetcher::fetch(const char* url, FetchReceiver& receiver, const char** error) {
 	if (!prepare(receiver, error)) {
 		return false;
 	}
-	if (!impl_->fetch(url, max_bytes, *this, error)) {
+	if (!impl_->fetch(url, *this, error)) {
 		receiver_ = nullptr;
 		return false;
 	}
 	return true;
 }
 
-bool OnDemandFetcher::post(const char* url, const char* body, size_t length, size_t max_bytes, FetchReceiver& receiver,
+bool OnDemandFetcher::post(const char* url, const char* body, size_t length, FetchReceiver& receiver,
 	const char** error) {
 	if (!prepare(receiver, error)) {
 		return false;
 	}
-	if (!impl_->post(url, body, length, max_bytes, *this, error)) {
+	if (!impl_->post(url, body, length, *this, error)) {
 		receiver_ = nullptr;
 		return false;
 	}
 	return true;
 }
 
-void OnDemandFetcher::fetch_done(const FetchResult& result) {
+bool OnDemandFetcher::fetch_begin(int http_status, size_t content_length) {
+	return receiver_ != nullptr && receiver_->fetch_begin(http_status, content_length);
+}
+
+bool OnDemandFetcher::fetch_chunk(const char* data, size_t size) {
+	return receiver_ != nullptr && receiver_->fetch_chunk(data, size);
+}
+
+void OnDemandFetcher::fetch_end(const FetchResult& result) {
 	FetchReceiver* receiver = receiver_;
 	receiver_ = nullptr;
 	if (receiver != nullptr) {
-		receiver->fetch_done(result);
+		receiver->fetch_end(result);
 	}
 	// Still busy here (until this call returns): free it from the loop a little later, unless the
 	// receiver fetches again meanwhile.

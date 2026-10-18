@@ -34,8 +34,10 @@ REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 BASE = os.path.join(REPO, 'web', 'ui', 'dist', 'lang', 'en.json')
 PACKS = os.path.join(REPO, 'web', 'ui', 'lang')
 
-# LanguagePacks::kMaxPack (core/include/hc/language_packs.h): the device's fetch buffer.
-MAX_PACK = 12288
+# A soft bound on the download (issue #43): the device streams a pack into its blob store, so the
+# limit there is the storage partition's free space; a pack above this size is published with a
+# warning, because every device downloads it after each update.
+WARN_PACK = 32768
 TAG = re.compile(r'^[a-z]{2}(-[A-Z]{2})?$')
 PLACEHOLDER = re.compile(r'\{(\w+)\}')
 
@@ -188,10 +190,9 @@ def cmd_manifest(args):
 			continue
 		raw = json.dumps(pack, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
 		packed = gzip.compress(raw, compresslevel=9, mtime=0)
-		if len(packed) > MAX_PACK:
-			print('%s.json: refused: %d bytes compressed, the device takes at most %d' % (code, len(packed), MAX_PACK))
-			failed = True
-			continue
+		if len(packed) > WARN_PACK:
+			print('%s.json: warning: %d bytes compressed, more than %d (each device downloads it after every '
+				'update; the device takes any pack its storage has room for)' % (code, len(packed), WARN_PACK))
 		name = 'lang-%s.json.gz' % code
 		with open(os.path.join(out, name), 'wb') as f:
 			f.write(packed)

@@ -6,6 +6,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 #include "hc/sha.h"
 
@@ -110,6 +111,7 @@ LanguagePacks::LanguagePacks(EventLoop& loop, const TimeSource& time, const Sett
 
 LanguagePacks::~LanguagePacks() {
 	loop_.cancel(timer_);
+	drop_transfer();
 }
 
 bool LanguagePacks::blob_name(const char* lang, char* out, size_t size) {
@@ -177,6 +179,7 @@ void LanguagePacks::timer_due() {
 		if (now >= deadline_) {
 			phase_ = Phase::idle;
 			restart_ = false;
+			drop_transfer();
 			fail("no answer to the fetch of %s within %u s", url_, static_cast<unsigned>(kFetchTimeoutMs / 1000));
 		} else {
 			arm(deadline_);
@@ -185,13 +188,7 @@ void LanguagePacks::timer_due() {
 	}
 	if (pack_due_) {
 		pack_due_ = false;
-		if (std::snprintf(url_, sizeof(url_), "%s%s", base_, wanted_.path) >= static_cast<int>(sizeof(url_))) {
-			fail("the pack URL is longer than %u bytes", static_cast<unsigned>(HttpFetcher::kMaxUrl));
-			return;
-		}
-		if (begin_fetch(url_, wanted_.size)) {
-			phase_ = Phase::pack;
-		}
+		start_pack();
 		return;
 	}
 	if (pending_) {
@@ -258,17 +255,42 @@ void LanguagePacks::run_pass() {
 		wait("the HTTP fetcher is busy");
 		return;
 	}
-	if (begin_fetch(url_, kMaxManifest)) {
-		phase_ = Phase::manifest;
+	if (manifest_ == nullptr) {
+		manifest_ = new (std::nothrow) char[kMaxManifest];
+		if (manifest_ == nullptr) {
+			fail("no memory for the manifest (%u bytes)", static_cast<unsigned>(kMaxManifest));
+			return;
+		}
+	}
+	body_ = FetchBody(manifest_, kMaxManifest, "the manifest");
+	if (!begin_fetch(url_, Phase::manifest)) {
+		drop_transfer();
 	}
 }
 
-bool LanguagePacks::begin_fetch(const char* url, size_t max_bytes) {
+void LanguagePacks::start_pack() {
+	if (std::snprintf(url_, sizeof(url_), "%s%s", base_, wanted_.path) >= static_cast<int>(sizeof(url_))) {
+		fail("the pack URL is longer than %u bytes", static_cast<unsigned>(HttpFetcher::kMaxUrl));
+		return;
+	}
+	// The pack must fit beside the stored one (the replace is atomic: both exist until the rename).
+	size_t free = 0;
+	if (store_.free_space(free) && wanted_.size > free) {
+		fail("pack %s refused: %u bytes, the blob store has %u bytes free", url_, static_cast<unsigned>(wanted_.size),
+			static_cast<unsigned>(free));
+		return;
+	}
+	begin_fetch(url_, Phase::pack);
+}
+
+bool LanguagePacks::begin_fetch(const char* url, Phase phase) {
 	const char* error = "";
-	if (!fetcher_.fetch(url, max_bytes, *this, &error)) {
+	abort_[0] = '\0';
+	if (!fetcher_.fetch(url, *this, &error)) {
 		fail("cannot fetch %s: %s", url, error);
 		return false;
 	}
+	phase_ = phase;
 	pending_ = false;
 	restart_ = false;
 	state_ = LanguagePackState::fetching;
@@ -278,28 +300,114 @@ bool LanguagePacks::begin_fetch(const char* url, size_t max_bytes) {
 	return true;
 }
 
-void LanguagePacks::fetch_done(const FetchResult& result) {
+bool LanguagePacks::abort(const char* fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+	std::vsnprintf(abort_, sizeof(abort_), fmt, args);
+	va_end(args);
+	return false;
+}
+
+void LanguagePacks::drop_transfer() {
+	if (writer_ != nullptr) {
+		writer_->discard();
+		writer_ = nullptr;
+	}
+	delete[] manifest_;
+	manifest_ = nullptr;
+	body_ = FetchBody(nullptr, 0, "the manifest");
+}
+
+bool LanguagePacks::fetch_begin(int http_status, size_t content_length) {
+	if (phase_ == Phase::idle || restart_) {
+		return false; // timed out, or the language changed: the end is discarded
+	}
+	if (http_status != 200) {
+		return false; // fetch_end() names the status
+	}
+	if (phase_ == Phase::manifest) {
+		return body_.begin(content_length) || abort("manifest %s refused: %s", url_, body_.refusal());
+	}
+	return begin_pack(content_length);
+}
+
+bool LanguagePacks::fetch_chunk(const char* data, size_t size) {
+	if (phase_ == Phase::idle || restart_) {
+		return false;
+	}
+	if (phase_ == Phase::manifest) {
+		return body_.append(data, size) || abort("manifest %s refused: %s", url_, body_.refusal());
+	}
+	return take_pack(data, size);
+}
+
+bool LanguagePacks::begin_pack(size_t content_length) {
+	if (content_length != FetchReceiver::kUnknownLength && content_length != wanted_.size) {
+		return abort("pack %s refused: the server announces %u bytes, the manifest says %u", url_,
+			static_cast<unsigned>(content_length), static_cast<unsigned>(wanted_.size));
+	}
+	char name[BlobStore::kMaxNameLength + 1];
+	blob_name(lang_, name, sizeof(name));
+	BlobStatus status = BlobStatus::ok;
+	writer_ = store_.open_writer(name, wanted_.size, status);
+	if (writer_ == nullptr) {
+		return abort("cannot store the pack %s: %s", name, blob_status_name(status));
+	}
+	sha_ = Sha256();
+	received_ = 0;
+	return true;
+}
+
+bool LanguagePacks::take_pack(const char* data, size_t size) {
+	if (writer_ == nullptr) {
+		return false;
+	}
+	if (size > wanted_.size - received_) {
+		return abort("pack %s refused: longer than the %u bytes the manifest says", url_,
+			static_cast<unsigned>(wanted_.size));
+	}
+	BlobStatus status = writer_->append(data, size);
+	if (status != BlobStatus::ok) {
+		return abort("cannot store the pack %s after %u bytes: %s", url_, static_cast<unsigned>(received_),
+			blob_status_name(status));
+	}
+	sha_.update(data, size);
+	received_ += size;
+	return true;
+}
+
+void LanguagePacks::fetch_end(const FetchResult& result) {
 	Phase phase = phase_;
 	if (phase == Phase::idle) {
-		return; // timed out meanwhile
+		return; // timed out meanwhile (the transfer was dropped then)
 	}
 	phase_ = Phase::idle;
 	loop_.cancel(timer_);
 	timer_ = TimerHandle();
 	if (restart_) {
 		restart_ = false;
+		drop_transfer();
 		pending_ = true;
 		arm(time_.monotonic_ms() + kChangeDelayMs);
 		return;
 	}
 	if (!result.ok) {
-		fail("fetch of %s failed: %s", url_, result.error != nullptr && result.error[0] != '\0' ? result.error : "no reason");
+		drop_transfer();
+		if (result.aborted && abort_[0] != '\0') {
+			fail("%s", abort_);
+		} else {
+			fail("fetch of %s failed: %s", url_,
+				result.error != nullptr && result.error[0] != '\0' ? result.error : "no reason");
+		}
 		return;
 	}
 	if (phase == Phase::manifest) {
-		manifest_arrived(result.body, result.length);
+		manifest_arrived(body_.data(), body_.length());
+		delete[] manifest_;
+		manifest_ = nullptr;
+		body_ = FetchBody(nullptr, 0, "the manifest");
 	} else {
-		pack_arrived(result.body, result.length);
+		pack_arrived();
 	}
 }
 
@@ -356,8 +464,8 @@ bool LanguagePacks::parse_manifest(const char* body, size_t length, Entry& wante
 				std::strlen(entry.sha256) != 64) {
 				refusal = "\"sha256\" must be 64 hex digits";
 			} else if (!json_member(value, "size", field) || !json_number(field, size) || size < 1 ||
-				size > static_cast<double>(kMaxPack) || size != static_cast<double>(static_cast<uint32_t>(size))) {
-				refusal = "\"size\" must be 1 to 12288 bytes";
+				size > 4294967295.0 || size != static_cast<double>(static_cast<uint32_t>(size))) {
+				refusal = "\"size\" must be a whole number of bytes, at least 1";
 			} else {
 				for (char& c : entry.sha256) {
 					if (c == '\0') {
@@ -437,24 +545,31 @@ void LanguagePacks::manifest_arrived(const char* body, size_t length) {
 	arm(time_.monotonic_ms());
 }
 
-void LanguagePacks::pack_arrived(const char* body, size_t length) {
-	if (length != wanted_.size) {
-		fail("pack %s refused: %u bytes, the manifest says %u", url_, static_cast<unsigned>(length),
+void LanguagePacks::pack_arrived() {
+	if (writer_ == nullptr) {
+		fail("pack %s: no body arrived", url_); // fetch_begin() was not called
+		return;
+	}
+	if (received_ != wanted_.size) {
+		drop_transfer();
+		fail("pack %s refused: %u bytes, the manifest says %u", url_, static_cast<unsigned>(received_),
 			static_cast<unsigned>(wanted_.size));
 		return;
 	}
 	uint8_t digest[Sha256::kDigestSize];
-	Sha256::hash(body, length, digest);
+	sha_.finish(digest);
 	char hex[65];
 	to_hex(digest, sizeof(digest), hex);
 	if (std::strcmp(hex, wanted_.sha256) != 0) {
+		drop_transfer();
 		fail("pack %s refused: its SHA-256 %.16s... does not match the manifest's %.16s...", url_, hex, wanted_.sha256);
 		return;
 	}
 	char name[BlobStore::kMaxNameLength + 1];
 	blob_name(lang_, name, sizeof(name));
-	BlobChunk chunk{body, length};
-	BlobStatus status = store_.write(name, &chunk, 1);
+	size_t length = received_;
+	BlobStatus status = writer_->commit();
+	writer_ = nullptr;
 	if (status != BlobStatus::ok) {
 		fail("cannot store the pack %s: %s", name, blob_status_name(status));
 		return;

@@ -4,6 +4,7 @@
 // Internationalization (issue #24, doc/i18n.md): the ui.lang setting, the language pack sync under
 // the fake clock with a scripted fetcher, and the key sets of the web UI's packs.
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <regex>
 #include <set>
@@ -13,6 +14,7 @@
 
 #include "doctest.h"
 #include "fake_blob_store.h"
+#include "fake_fetch.h"
 #include "hc/language_packs.h"
 #include "hc/network_settings.h"
 #include "hc/sha.h"
@@ -38,13 +40,12 @@ namespace {
 /// Records the fetches; the test completes them.
 class ScriptedFetcher : public hc::HttpFetcher {
 public:
-	bool fetch(const char* url, size_t max_bytes, hc::FetchReceiver& receiver, const char** error) override {
+	bool fetch(const char* url, hc::FetchReceiver& receiver, const char** error) override {
 		if (receiver_ != nullptr) {
 			*error = "busy: a fetch is in flight";
 			return false;
 		}
 		urls.push_back(url);
-		limits.push_back(max_bytes);
 		receiver_ = &receiver;
 		return true;
 	}
@@ -53,34 +54,41 @@ public:
 
 	bool pending() const { return receiver_ != nullptr; }
 
-	void ok(const std::string& body) {
+	/// A 200 response with `body` in pieces of `piece` bytes (announced unless `announce` is false).
+	hc::FetchResult ok(const std::string& body, size_t piece = 1024, bool announce = true) {
 		REQUIRE(receiver_ != nullptr);
-		hc::FetchResult result;
-		result.ok = true;
-		result.http_status = 200;
-		result.body = body.data();
-		result.length = body.size();
-		deliver(result);
+		hc_test::Delivery delivery;
+		delivery.piece = piece;
+		delivery.announce = announce;
+		// Like the platforms: busy until the receiver returned.
+		hc::FetchResult result = hc_test::respond(*receiver_, 200, body, delivery);
+		receiver_ = nullptr;
+		pieces = delivery.pieces;
+		return result;
 	}
 
 	void fail(int status, const char* error) {
 		REQUIRE(receiver_ != nullptr);
-		hc::FetchResult result;
-		result.http_status = status;
-		result.error = error;
-		deliver(result);
+		if (status != 0) {
+			hc_test::respond(*receiver_, status, "<html>error</html>");
+		} else {
+			hc_test::respond_failure(*receiver_, error);
+		}
+		receiver_ = nullptr;
+	}
+
+	/// Hands the receiver to the test, which drives the response itself (the fetcher is idle then).
+	hc::FetchReceiver& take() {
+		REQUIRE(receiver_ != nullptr);
+		hc::FetchReceiver* receiver = receiver_;
+		receiver_ = nullptr;
+		return *receiver;
 	}
 
 	std::vector<std::string> urls;
-	std::vector<size_t> limits;
+	size_t pieces = 0;
 
 private:
-	void deliver(const hc::FetchResult& result) {
-		// Like the platforms: busy until the receiver returned.
-		hc::FetchReceiver* receiver = receiver_;
-		receiver->fetch_done(result);
-		receiver_ = nullptr;
-	}
 
 	hc::FetchReceiver* receiver_ = nullptr;
 };
@@ -282,7 +290,6 @@ TEST_CASE("Lang: nothing is fetched before the network, the clock and an update 
 	f.run_for(LanguagePacks::kReadyPollMs);
 	REQUIRE(f.fetcher.urls.size() == 1);
 	CHECK(f.fetcher.urls[0] == kManifestUrl);
-	CHECK(f.fetcher.limits[0] == LanguagePacks::kMaxManifest);
 	CHECK(f.packs.state() == LanguagePackState::fetching);
 }
 
@@ -300,7 +307,6 @@ TEST_CASE("Lang: a German device downloads its pack once, verifies it and keeps 
 	f.run_for(1);
 	REQUIRE(f.fetcher.urls.size() == 2);
 	CHECK(f.fetcher.urls[1] == kPackUrl);
-	CHECK(f.fetcher.limits[1] == kGermanPack.size());
 	f.fetcher.ok(kGermanPack);
 	CHECK(f.packs.state() == LanguagePackState::installed);
 	CHECK(f.blob("i18n.de.json.gz") == kGermanPack);
@@ -412,9 +418,10 @@ TEST_CASE("Lang: the wanted language's malformed entry and a manifest of another
 
 	f.run_for(2 * LanguagePacks::kRetryInitialMs);
 	REQUIRE(f.fetcher.urls.size() == 3);
-	std::string big(LanguagePacks::kMaxPack + 1, 'x');
-	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", big)));
-	CHECK(std::string(f.packs.detail()).find("\"size\" must be 1 to 12288 bytes") != std::string::npos);
+	std::string bad = manifest(entry("de", "Deutsch", "lang-de.json.gz", kGermanPack));
+	bad.replace(bad.find("\"size\": ") + 8, std::to_string(kGermanPack.size()).size(), "12.5");
+	f.fetcher.ok(bad);
+	CHECK(std::string(f.packs.detail()).find("\"size\" must be a whole number of bytes") != std::string::npos);
 
 	f.run_for(4 * LanguagePacks::kRetryInitialMs);
 	REQUIRE(f.fetcher.urls.size() == 4);
@@ -493,6 +500,265 @@ TEST_CASE("Lang: a store that cannot write fails the pass with its reason") {
 	f.fetcher.ok(kGermanPack);
 	CHECK(f.packs.state() == LanguagePackState::failed);
 	CHECK(std::string(f.packs.detail()).find("cannot store the pack i18n.de.json.gz: storage error") != std::string::npos);
+}
+
+// ---- Streaming (issue #43) -------------------------------------------------------------------
+
+namespace {
+
+/// A pack of `size` bytes that does not compress (the device never looks inside).
+std::string big_pack(size_t size) {
+	std::string pack(size, '\0');
+	uint32_t x = 2463534242u;
+	for (char& c : pack) {
+		x ^= x << 13;
+		x ^= x >> 17;
+		x ^= x << 5;
+		c = static_cast<char>(x);
+	}
+	return pack;
+}
+
+/// Lists the blobs the store shows (what the web server and every reader see).
+struct Listing : hc::BlobVisitor {
+	std::map<std::string, size_t> names;
+	void blob(const char* name, size_t size) override { names[name] = size; }
+};
+
+} // namespace
+
+TEST_CASE("Lang: a 40 KB pack streams in 1 KB pieces into the store, hashed on the way") {
+	Fixture f;
+	f.settings.set_string(hc::setting::kUiLang, "de");
+	std::string pack = big_pack(40 * 1024);
+	f.boot();
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	REQUIRE(f.fetcher.urls.size() == 2);
+	hc::FetchResult result = f.fetcher.ok(pack, 1024);
+	CHECK(result.ok);
+	CHECK(f.fetcher.pieces == 40);
+	CHECK(f.store.opens == 1);
+	CHECK(f.store.appends == 40);
+	CHECK(f.store.appended_bytes == pack.size());
+	CHECK(f.store.commits == 1);
+	CHECK(f.store.temporaries.empty());
+	CHECK(f.packs.state() == LanguagePackState::installed);
+	CHECK(f.blob("i18n.de.json.gz") == pack);
+	CHECK(std::string(f.packs.detail()) == "pack 'de' of release 0.1.0-dev installed (40960 bytes)");
+
+	// The stored pack's hash is the manifest's: the next pass fetches nothing.
+	REQUIRE(f.packs.sync_now(nullptr));
+	f.run_for(1);
+	REQUIRE(f.fetcher.urls.size() == 3);
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1000);
+	CHECK(f.fetcher.urls.size() == 3);
+	CHECK(std::string(f.packs.detail()).find("up to date") != std::string::npos);
+}
+
+TEST_CASE("Lang: while the pack streams, only its temporary blob grows; readers see the old pack") {
+	Fixture f;
+	f.settings.set_string(hc::setting::kUiLang, "de");
+	f.store.blobs["i18n.de.json.gz"] = {'o', 'l', 'd'};
+	std::string pack = big_pack(5000);
+	f.boot();
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	hc::FetchReceiver& receiver = f.fetcher.take();
+	REQUIRE(receiver.fetch_begin(200, pack.size()));
+	REQUIRE(receiver.fetch_chunk(pack.data(), 3000));
+	// Mid-stream: the pack's name still lists the old content; the temporary name is not listed.
+	Listing listing;
+	f.store.visit(listing);
+	CHECK(listing.names.size() == 1);
+	CHECK(listing.names["i18n.de.json.gz"] == 3);
+	CHECK(f.blob("i18n.de.json.gz") == "old");
+	REQUIRE(f.store.temporaries.count(".i18n.de.json.gz.tmp") == 1);
+	CHECK(f.store.temporaries[".i18n.de.json.gz.tmp"].size() == 3000);
+	REQUIRE(receiver.fetch_chunk(pack.data() + 3000, pack.size() - 3000));
+	CHECK(f.blob("i18n.de.json.gz") == "old"); // not before the end and the hash check
+	hc::FetchResult end;
+	end.ok = end.complete = true;
+	end.http_status = 200;
+	end.length = pack.size();
+	receiver.fetch_end(end);
+	CHECK(f.blob("i18n.de.json.gz") == pack);
+	CHECK(f.store.temporaries.empty());
+}
+
+TEST_CASE("Lang: a hash mismatch discards the temporary blob and keeps the previous pack") {
+	Fixture f;
+	f.settings.set_string(hc::setting::kUiLang, "de");
+	f.store.blobs["i18n.de.json.gz"] = {'o', 'l', 'd'};
+	std::string pack = big_pack(40 * 1024);
+	f.boot();
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	std::string tampered = pack;
+	tampered[20000] ^= 0x01;
+	CHECK(f.fetcher.ok(tampered, 1024).ok);
+	CHECK(f.store.appended_bytes == pack.size());
+	CHECK(f.store.discards == 1);
+	CHECK(f.store.commits == 0);
+	CHECK(f.store.temporaries.empty());
+	CHECK(f.blob("i18n.de.json.gz") == "old");
+	CHECK(f.packs.state() == LanguagePackState::failed);
+	CHECK(std::string(f.packs.detail()).find("does not match the manifest") != std::string::npos);
+}
+
+TEST_CASE("Lang: a pack larger than the free space is refused before a byte is written") {
+	Fixture f;
+	f.settings.set_string(hc::setting::kUiLang, "de");
+	f.store.free_bytes = 10000;
+	std::string pack = big_pack(40 * 1024);
+	f.boot();
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	CHECK(f.fetcher.urls.size() == 1); // not even fetched
+	CHECK(f.store.opens == 0);
+	CHECK(f.store.appended_bytes == 0);
+	CHECK(f.packs.state() == LanguagePackState::failed);
+	CHECK(std::string(f.packs.detail()) ==
+		"pack " + kPackUrl + " refused: 40960 bytes, the blob store has 10000 bytes free");
+	CHECK(f.capture.sink.contains("the blob store has 10000 bytes free"));
+}
+
+TEST_CASE("Lang: a body longer than the manifest's size is refused where it crosses it") {
+	Fixture f;
+	f.settings.set_string(hc::setting::kUiLang, "de");
+	f.store.blobs["i18n.de.json.gz"] = {'o', 'l', 'd'};
+	std::string pack = big_pack(4000);
+	f.boot();
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	// Chunked (no Content-Length): the receiver counts.
+	hc::FetchResult result = f.fetcher.ok(pack + big_pack(3000), 1024, false);
+	CHECK(result.aborted);
+	CHECK(f.store.appended_bytes <= pack.size());
+	CHECK(f.store.discards == 1);
+	CHECK(f.blob("i18n.de.json.gz") == "old");
+	CHECK(std::string(f.packs.detail()) == "pack " + kPackUrl + " refused: longer than the 4000 bytes the manifest says");
+
+	// Announced: refused at the begin, nothing opened.
+	f.run_for(LanguagePacks::kRetryInitialMs);
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	int opens = f.store.opens;
+	result = f.fetcher.ok(pack + "x");
+	CHECK(result.aborted);
+	CHECK(result.length == 0);
+	CHECK(f.store.opens == opens);
+	CHECK(std::string(f.packs.detail()) ==
+		"pack " + kPackUrl + " refused: the server announces 4001 bytes, the manifest says 4000");
+}
+
+TEST_CASE("Lang: a store that fills up during the stream fails with its reason and keeps the old pack") {
+	Fixture f;
+	f.settings.set_string(hc::setting::kUiLang, "de");
+	f.store.blobs["i18n.de.json.gz"] = {'o', 'l', 'd'};
+	std::string pack = big_pack(8000);
+	f.boot();
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	// The space shrinks between the check and the open (another writer): the store refuses the open.
+	f.store.free_bytes = 5000;
+	CHECK(f.fetcher.ok(pack, 1024).aborted);
+	CHECK(f.store.opens == 0);
+	CHECK(std::string(f.packs.detail()) == "cannot store the pack i18n.de.json.gz: no space");
+
+	// It shrinks during the stream: the append fails, the temporary blob goes.
+	f.store.free_bytes = SIZE_MAX;
+	f.run_for(LanguagePacks::kRetryInitialMs);
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	hc::FetchReceiver& receiver = f.fetcher.take();
+	REQUIRE(receiver.fetch_begin(200, pack.size()));
+	REQUIRE(receiver.fetch_chunk(pack.data(), 4096));
+	f.store.free_bytes = 5000;
+	CHECK_FALSE(receiver.fetch_chunk(pack.data() + 4096, 1024));
+	hc::FetchResult end;
+	end.aborted = true;
+	end.http_status = 200;
+	end.error = "aborted by the receiver";
+	receiver.fetch_end(end);
+	CHECK(f.store.discards == 1);
+	CHECK(f.store.temporaries.empty());
+	CHECK(f.blob("i18n.de.json.gz") == "old");
+	CHECK(std::string(f.packs.detail()) == "cannot store the pack " + kPackUrl + " after 4096 bytes: no space");
+}
+
+TEST_CASE("Lang: the manifest reader refuses an oversize manifest with its own limit") {
+	Fixture f;
+	f.settings.set_string(hc::setting::kUiLang, "de");
+	f.boot();
+	std::string padded = manifest(entry("de", "Deutsch", "lang-de.json.gz", kGermanPack));
+	padded.insert(1, "\"pad\": \"" + std::string(LanguagePacks::kMaxManifest, ' ') + "\", ");
+	hc::FetchResult result = f.fetcher.ok(padded);
+	CHECK(result.aborted);
+	CHECK(std::string(f.packs.detail()) == "manifest " + kManifestUrl +
+		" refused: the manifest is larger than 4096 bytes (" + std::to_string(padded.size()) + " announced)");
+	f.run_for(LanguagePacks::kRetryInitialMs);
+	REQUIRE(f.fetcher.urls.size() == 2);
+	result = f.fetcher.ok(padded, 512, false);
+	CHECK(result.aborted);
+	CHECK(result.length == LanguagePacks::kMaxManifest);
+	CHECK(std::string(f.packs.detail()) == "manifest " + kManifestUrl + " refused: the manifest is larger than 4096 bytes");
+	// A manifest in many small pieces is put together.
+	f.run_for(2 * LanguagePacks::kRetryInitialMs);
+	REQUIRE(f.fetcher.urls.size() == 3);
+	CHECK(f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", kGermanPack)), 5, false).ok);
+	f.run_for(1);
+	REQUIRE(f.fetcher.urls.size() == 4);
+	f.fetcher.ok(kGermanPack, 3);
+	CHECK(f.packs.state() == LanguagePackState::installed);
+}
+
+TEST_CASE("Lang: a language change during the pack's stream aborts it and discards the temporary blob") {
+	Fixture f;
+	f.settings.set_string(hc::setting::kUiLang, "de");
+	std::string pack = big_pack(5000);
+	f.boot();
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	hc::FetchReceiver& receiver = f.fetcher.take();
+	REQUIRE(receiver.fetch_begin(200, pack.size()));
+	REQUIRE(receiver.fetch_chunk(pack.data(), 1000));
+	f.settings.set_string(hc::setting::kUiLang, "fr");
+	f.packs.language_changed();
+	CHECK_FALSE(receiver.fetch_chunk(pack.data() + 1000, 1000));
+	hc::FetchResult end;
+	end.aborted = true;
+	end.http_status = 200;
+	end.error = "aborted by the receiver";
+	receiver.fetch_end(end);
+	CHECK(f.store.temporaries.empty());
+	CHECK(f.store.discards == 1);
+	CHECK(f.store.blobs.count("i18n.de.json.gz") == 0);
+	f.run_for(LanguagePacks::kChangeDelayMs + 1);
+	CHECK(f.fetcher.urls.size() == 3); // the new language's manifest
+}
+
+TEST_CASE("Lang: a lost pack fetch drops its temporary blob at the guard time") {
+	Fixture f;
+	f.settings.set_string(hc::setting::kUiLang, "de");
+	std::string pack = big_pack(5000);
+	f.boot();
+	f.fetcher.ok(manifest(entry("de", "Deutsch", "lang-de.json.gz", pack)));
+	f.run_for(1);
+	hc::FetchReceiver& receiver = f.fetcher.take();
+	REQUIRE(receiver.fetch_begin(200, pack.size()));
+	REQUIRE(receiver.fetch_chunk(pack.data(), 1000));
+	f.run_for(LanguagePacks::kFetchTimeoutMs);
+	CHECK(f.store.temporaries.empty());
+	CHECK(f.store.discards == 1);
+	CHECK(std::string(f.packs.detail()).find("no answer to the fetch") != std::string::npos);
+	// The late pieces and end are refused or ignored.
+	CHECK_FALSE(receiver.fetch_chunk(pack.data() + 1000, 1000));
+	hc::FetchResult end;
+	end.aborted = true;
+	receiver.fetch_end(end);
+	CHECK(f.store.commits == 0);
 }
 
 // ---- The web UI's packs ---------------------------------------------------------------------

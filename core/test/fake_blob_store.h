@@ -6,6 +6,7 @@
 #define HC_FAKE_BLOB_STORE_H
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -16,9 +17,25 @@
 
 namespace hc_test {
 
-/// Keeps the contract of hc::BlobStore (name rule, size limit, atomic replace) in a map.
+/// Keeps the contract of hc::BlobStore (name rule, size limit, atomic replace) in a map. A
+/// streaming write (open_writer()) collects into `temporaries` under the LittleFS store's temporary name
+/// (`.<name>.tmp`), which visit() does not list, and moves it into `blobs` on commit.
 class FakeBlobStore : public hc::BlobStore {
 public:
+	FakeBlobStore() : writer_(*this) {}
+	/// Copies the content (blobs, counters, settings); an open streaming write stays behind.
+	FakeBlobStore(const FakeBlobStore& other) : writer_(*this) { *this = other; }
+	FakeBlobStore& operator=(const FakeBlobStore& other) {
+		if (this != &other) {
+			blobs = other.blobs;
+			writes_of = other.writes_of;
+			writes = other.writes;
+			fail_writes = other.fail_writes;
+			free_bytes = other.free_bytes;
+		}
+		return *this;
+	}
+
 	hc::BlobStatus write(const char* name, const hc::BlobChunk* chunks, size_t count) override {
 		hc::BlobStatus status = check_name(name);
 		if (status != hc::BlobStatus::ok) {
@@ -85,10 +102,100 @@ public:
 		}
 	}
 
+	hc::BlobWriter* open_writer(const char* name, size_t expected, hc::BlobStatus& status) override {
+		status = check_name(name);
+		if (status != hc::BlobStatus::ok) {
+			return nullptr;
+		}
+		if (writer_.open) {
+			status = hc::BlobStatus::busy;
+			return nullptr;
+		}
+		if (expected > free_bytes) {
+			status = hc::BlobStatus::no_space;
+			return nullptr;
+		}
+		++opens;
+		writer_.open = true;
+		writer_.name = name;
+		writer_.temporary = std::string(".") + name + ".tmp";
+		temporaries[writer_.temporary].clear();
+		return &writer_;
+	}
+
+	bool free_space(size_t& bytes) const override {
+		bytes = free_bytes;
+		return true;
+	}
+
+	/// Whether a streaming write is open.
+	bool writing() const { return writer_.open; }
+
 	std::map<std::string, std::vector<uint8_t>> blobs;
+	/// The streaming writes in progress, by temporary name.
+	std::map<std::string, std::vector<uint8_t>> temporaries;
+	/// What free_space() reports and open_writer() checks `expected` against; appends beyond it fail with
+	/// no_space.
+	size_t free_bytes = SIZE_MAX;
+	int opens = 0;
+	int appends = 0;
+	size_t appended_bytes = 0;
+	int commits = 0;
+	int discards = 0;
 	std::map<std::string, int> writes_of;
 	int writes = 0;
 	bool fail_writes = false;
+
+private:
+	class Writer : public hc::BlobWriter {
+	public:
+		explicit Writer(FakeBlobStore& store) : store_(store) {}
+
+		hc::BlobStatus append(const void* data, size_t size) override {
+			std::vector<uint8_t>& content = store_.temporaries[temporary];
+			if (size > store_.free_bytes || content.size() > store_.free_bytes - size) {
+				return hc::BlobStatus::no_space;
+			}
+			const uint8_t* p = static_cast<const uint8_t*>(data);
+			content.insert(content.end(), p, p + size);
+			++store_.appends;
+			store_.appended_bytes += size;
+			return hc::BlobStatus::ok;
+		}
+
+		hc::BlobStatus commit() override {
+			open = false;
+			std::vector<uint8_t> content = std::move(store_.temporaries[temporary]);
+			store_.temporaries.erase(temporary);
+			if (store_.fail_writes) {
+				return hc::BlobStatus::storage_error;
+			}
+			store_.blobs[name] = std::move(content);
+			++store_.commits;
+			++store_.writes_of[name];
+			return hc::BlobStatus::ok;
+		}
+
+		void discard() override {
+			open = false;
+			store_.temporaries.erase(temporary);
+			++store_.discards;
+		}
+
+		size_t written() const override {
+			auto it = store_.temporaries.find(temporary);
+			return it != store_.temporaries.end() ? it->second.size() : 0;
+		}
+
+		bool open = false;
+		std::string name;
+		std::string temporary;
+
+	private:
+		FakeBlobStore& store_;
+	};
+
+	Writer writer_;
 };
 
 } // namespace hc_test

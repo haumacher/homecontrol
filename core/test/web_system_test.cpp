@@ -55,7 +55,7 @@ struct SystemFixture : WebFixture {
 /// Records the fetches; the test completes them.
 class FakeFetcher : public hc::HttpFetcher {
 public:
-	bool fetch(const char* url, size_t, hc::FetchReceiver& receiver, const char** error) override {
+	bool fetch(const char* url, hc::FetchReceiver& receiver, const char** error) override {
 		if (receiver_ != nullptr) {
 			*error = "busy: a fetch is in flight";
 			return false;

@@ -99,6 +99,7 @@ list(APPEND HC_CORE_SOURCES
 )
 # External values: HTTP JSON sources as datapoints, Open-Meteo as the first (issue #17, doc/external.md).
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/external_values.cpp")
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/fetch_body.cpp")
 # The Zigbee coordinator's portable half: device database, cluster mapping, adapter (issue #15, doc/zigbee.md).
 list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/zigbee/zcl.cpp"

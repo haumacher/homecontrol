@@ -12,11 +12,12 @@
 namespace hc {
 namespace esp {
 
-/// An HttpFetcher that creates its EspHttpFetcher (an 8 KB response buffer) on the heap for a fetch
-/// and frees it again once nothing is in flight: the language packs sync once per boot and on a
-/// language change, the E-Home enrollment happens once (doc/ehome.md), so the buffer is not worth
-/// keeping in RAM. The release runs from the event loop a moment after a result was delivered (the
-/// fetcher is busy until its receiver returned).
+/// An HttpFetcher that creates its EspHttpFetcher (about 3 KB with its 2 KB piece buffer) on the
+/// heap for a fetch and frees it again once nothing is in flight: the language packs sync once per
+/// boot and on a language change, the E-Home enrollment happens once (doc/ehome.md), the external
+/// sources fetch every few minutes at most (issue #44), so none of them keeps a fetcher in RAM. The
+/// release runs from the event loop a moment after the end was delivered (the fetcher is busy until
+/// its receiver returned). The response's pieces pass through to the receiver.
 class OnDemandFetcher : public HttpFetcher, public FetchReceiver {
 public:
 	/// Idle time after a result before the fetcher is freed.
@@ -28,16 +29,17 @@ public:
 	OnDemandFetcher(const OnDemandFetcher&) = delete;
 	OnDemandFetcher& operator=(const OnDemandFetcher&) = delete;
 
-	bool fetch(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) override;
-	bool post(const char* url, const char* body, size_t length, size_t max_bytes, FetchReceiver& receiver,
-		const char** error) override;
+	bool fetch(const char* url, FetchReceiver& receiver, const char** error) override;
+	bool post(const char* url, const char* body, size_t length, FetchReceiver& receiver, const char** error) override;
 	bool busy() const override { return impl_ != nullptr && impl_->busy(); }
 
-	/// Whether the fetcher is allocated (for `lang status`).
+	/// Whether the fetcher is allocated (for `lang status`, `external status`).
 	bool allocated() const { return impl_ != nullptr; }
 
 	// FetchReceiver
-	void fetch_done(const FetchResult& result) override;
+	bool fetch_begin(int http_status, size_t content_length) override;
+	bool fetch_chunk(const char* data, size_t size) override;
+	void fetch_end(const FetchResult& result) override;
 
 private:
 	bool prepare(FetchReceiver& receiver, const char** error);

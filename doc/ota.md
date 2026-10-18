@@ -98,7 +98,10 @@ instruction as corrupt` keeps the old reader's logic and checks both instruction
 
 ## The manifest
 
-`<update.url>/manifest.json`, a flat JSON object of at most 1024 bytes:
+`<update.url>/manifest.json`, a flat JSON object of at most 1024 bytes (`UpdateManifest::kMaxLength`,
+the manifest's own limit: the OTA service reads it with its own esp_http_client into a buffer of
+that size and the parser refuses anything longer; it does not use the streaming `HttpFetcher` of
+issue #43, which carries the language packs, the external values and the E-Home enrollment):
 
 ```json
 {"version": "0.2.0", "url": "homecontrol.bin", "sha256": "<64 hex digits>", "size": 1239776,

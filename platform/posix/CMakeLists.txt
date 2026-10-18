@@ -52,6 +52,7 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/network_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/improv_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/backoff_test.cpp"
+	"${HC_REPO_DIR}/core/test/blob_writer_test.cpp"
 	"${HC_REPO_DIR}/core/test/connectivity_test.cpp"
 	"${HC_REPO_DIR}/core/test/settings_test.cpp"
 	"${HC_REPO_DIR}/core/test/tz_test.cpp"
@@ -215,7 +216,7 @@ target_sources(hc_tests PRIVATE
 # its test against an in-process broker speaking the core's codec.
 target_sources(hc_posix_web PRIVATE src/mqtt_client.cpp)
 add_executable(hc_posix_mqtt_tests "${HC_REPO_DIR}/core/test/test_main.cpp" test/posix_mqtt_client_test.cpp
-	test/posix_websocket_client_test.cpp)
+	test/posix_websocket_client_test.cpp test/posix_http_fetcher_test.cpp)
 target_include_directories(hc_posix_mqtt_tests SYSTEM PRIVATE "${HC_REPO_DIR}/third_party/doctest")
 target_include_directories(hc_posix_mqtt_tests PRIVATE "${HC_REPO_DIR}/core/test")
 target_link_libraries(hc_posix_mqtt_tests PRIVATE hc_posix_web)
@@ -225,4 +226,5 @@ doctest_discover_tests(hc_posix_mqtt_tests)
 target_sources(hc_posix PRIVATE src/posix_system_info.cpp)
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/web_diagnostics_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/web_diagnostics_probe_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/streaming_probe_test.cpp")
 target_sources(hc_tests PRIVATE test/posix_system_info_test.cpp)

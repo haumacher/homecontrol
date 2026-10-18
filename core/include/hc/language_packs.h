@@ -10,12 +10,14 @@
 #include "hc/backoff.h"
 #include "hc/connectivity.h"
 #include "hc/event_loop.h"
+#include "hc/fetch_body.h"
 #include "hc/json.h"
 #include "hc/log.h"
 #include "hc/network_settings.h"
 #include "hc/platform/blob_store.h"
 #include "hc/platform/http_fetcher.h"
 #include "hc/platform/settings.h"
+#include "hc/sha.h"
 #include "hc/time_service.h"
 #include "hc/update_check.h"
 
@@ -50,7 +52,7 @@ const char* language_pack_state_name(LanguagePackState state);
 ///                       "size": 5321}}}
 ///
 /// `version` must be the running firmware's (without build metadata), `path` a plain file name in
-/// the same directory, `size` at most kMaxPack. The pack is the gzip-compressed key/string JSON the
+/// the same directory, `size` its exact length in bytes. The pack is the gzip-compressed key/string JSON the
 /// browser loads; the device stores it as the blob `i18n.<lang>.json.gz` (blob_name()) and the web
 /// server serves it at `/i18n/<lang>.json` with Content-Encoding: gzip. The manifest is not signed:
 /// the strings are display text only, the SHA-256 protects against a truncated or corrupted
@@ -69,8 +71,12 @@ const char* language_pack_state_name(LanguagePackState state);
 /// - the manifest offers no valid pack for ui.lang: not_offered, stored packs are removed (a pack
 ///   of an older release must not shadow the new UI's bundled one);
 /// - the stored pack has the manifest's SHA-256: installed, nothing fetched;
-/// - otherwise the pack is fetched, its size and SHA-256 checked against the manifest (a mismatch
-///   is refused and the stored pack kept), stored, and every other pack removed.
+/// - otherwise the pack is fetched and streamed into a BlobWriter while it is hashed (issue #43:
+///   no pack is ever held in RAM as a whole): a pack larger than the blob store's free space is
+///   refused before the fetch, a body longer than the manifest's size as soon as it gets there, a
+///   short body or a SHA-256 that differs from the manifest's at the end; each refusal discards the
+///   temporary blob and keeps the stored pack. A pack that passes replaces the stored one
+///   atomically, and every other pack is removed.
 ///
 /// A failure is logged with its reason and retried after a Backoff of kRetryInitialMs doubling up
 /// to kRetryCapMs; a success ends the pass (no periodic re-sync: a release's bundle changes only
@@ -78,14 +84,12 @@ const char* language_pack_state_name(LanguagePackState state);
 /// language tag, a path with a directory, a bad checksum or size) are refused one by one with a
 /// log line; the others stay usable.
 ///
-/// Memory: fixed, about 0.7 KB plus the manifest text the fetcher delivers. Threading: the event
-/// loop's thread.
+/// Memory: fixed, about 1 KB, plus a kMaxManifest buffer on the heap while the manifest is fetched.
+/// Threading: the event loop's thread.
 class LanguagePacks : public FetchReceiver {
 public:
-	/// The longest manifest accepted.
+	/// The longest manifest accepted (it is parsed as a whole: 16 languages take about 2 KB).
 	static constexpr size_t kMaxManifest = 4096;
-	/// The largest pack accepted (gzip-compressed bytes): the device's fetch buffer, a BlobStore blob.
-	static constexpr size_t kMaxPack = 12288;
 	/// Languages remembered from the manifest.
 	static constexpr size_t kMaxOffers = 16;
 	/// The blob name prefix of the packs.
@@ -145,7 +149,9 @@ public:
 	void write_json(JsonWriter& json) const;
 
 	// FetchReceiver
-	void fetch_done(const FetchResult& result) override;
+	bool fetch_begin(int http_status, size_t content_length) override;
+	bool fetch_chunk(const char* data, size_t size) override;
+	void fetch_end(const FetchResult& result) override;
 
 private:
 	enum class Phase : uint8_t { idle, manifest, pack };
@@ -162,9 +168,14 @@ private:
 	void timer_due();
 	void run_pass();
 	const char* blocked() const;
-	bool begin_fetch(const char* url, size_t max_bytes);
+	bool begin_fetch(const char* url, Phase phase);
+	void start_pack();
+	bool begin_pack(size_t content_length);
+	bool take_pack(const char* data, size_t size);
 	void manifest_arrived(const char* body, size_t length);
-	void pack_arrived(const char* body, size_t length);
+	void pack_arrived();
+	bool abort(const char* fmt, ...) HC_PRINTF_FORMAT(2, 3);
+	void drop_transfer();
 	bool parse_manifest(const char* body, size_t length, Entry& wanted, bool& found, const char** error);
 	bool stored_sha256(const char* name, char (&hex)[65]) const;
 	void prune(const char* keep);
@@ -199,6 +210,15 @@ private:
 	char base_[HttpFetcher::kMaxUrl + 1] = {};
 	char url_[HttpFetcher::kMaxUrl + 1] = {};
 	Entry wanted_ = {};
+	/// The manifest's buffer (kMaxManifest, on the heap while it is fetched) and its filling.
+	char* manifest_ = nullptr;
+	FetchBody body_{nullptr, 0, "the manifest"};
+	/// The pack's streaming write, its hash and length while it is fetched.
+	BlobWriter* writer_ = nullptr;
+	Sha256 sha_;
+	size_t received_ = 0;
+	/// Why this pass's receiver aborted the fetch ("" if it did not).
+	char abort_[160] = {};
 	LanguageOffer offers_[kMaxOffers];
 	size_t offer_count_ = 0;
 };

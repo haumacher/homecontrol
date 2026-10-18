@@ -11,6 +11,7 @@
 
 #include "doctest.h"
 #include "fake_blob_store.h"
+#include "fake_fetch.h"
 #include "hc/ehome_link.h"
 #include "hc/image/image_service.h"
 #include "hc/knx/adapter.h"
@@ -132,11 +133,11 @@ public:
 /// An HTTP client whose POST answers the test delivers.
 class FakeFetcher : public hc::HttpFetcher {
 public:
-	bool fetch(const char*, size_t, hc::FetchReceiver&, const char** error) override {
+	bool fetch(const char*, hc::FetchReceiver&, const char** error) override {
 		*error = "GET is not used here";
 		return false;
 	}
-	bool post(const char* url, const char* body, size_t length, size_t, hc::FetchReceiver& receiver,
+	bool post(const char* url, const char* body, size_t length, hc::FetchReceiver& receiver,
 		const char** error) override {
 		if (busy_) {
 			*error = "busy: a fetch is in flight";
@@ -151,21 +152,15 @@ public:
 
 	void answer(int status, const std::string& body) {
 		REQUIRE(busy_);
-		hc::FetchResult result;
-		result.http_status = status;
-		result.ok = status == 200;
-		result.body = body.data();
-		result.length = body.size();
-		result.error = status == 200 ? "" : "HTTP error";
 		busy_ = false;
-		receiver_->fetch_done(result);
+		hc_test::Delivery delivery;
+		delivery.piece = 64; // the answer arrives in pieces
+		hc_test::respond(*receiver_, status, body, delivery);
 	}
 	void unreachable(const char* why) {
 		REQUIRE(busy_);
-		hc::FetchResult result;
-		result.error = why;
 		busy_ = false;
-		receiver_->fetch_done(result);
+		hc_test::respond_failure(*receiver_, why);
 	}
 
 	struct Post {
@@ -592,6 +587,31 @@ TEST_CASE("E-Home: every refusal of the enrollment comes through with its code")
 	CHECK(f.capture.sink.contains("W hc.ehome: enrollment with https://ehome.example failed: no answer from E-Home within 30 s"));
 	CHECK_FALSE(hc::ehome_enrolled(f.fake.settings));
 	CHECK(f.client.connects == 0);
+}
+
+TEST_CASE("E-Home: the enrollment answer streams in; an oversize answer is refused with the limit") {
+	EhomeFixture f(false);
+	// An answer longer than kMaxEnrollAnswer (padding in a member E-Home does not send today).
+	std::string padded = std::string(kEnrollAnswer);
+	padded.insert(1, "\"pad\":\"" + std::string(hc::EhomeLink::kMaxEnrollAnswer, ' ') + "\",");
+	auto r = f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"ABCD-EFGH\"}",
+		[&] { f.fetcher.answer(200, padded); });
+	CHECK(r.status == 502);
+	CHECK(r.json["code"].text == "ehome.bad_answer");
+	CHECK(r.json["error"].text ==
+		"E-Home's answer is not usable: E-Home's answer is larger than 2048 bytes (" + std::to_string(padded.size()) +
+		" announced)");
+	CHECK_FALSE(hc::ehome_enrolled(f.fake.settings));
+	// A refusal document that does not fit still has its status.
+	r = f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"WRONG\"}",
+		[&] { f.fetcher.answer(404, "{\"error\":\"" + std::string(3000, 'x') + "\"}"); });
+	CHECK(r.status == 404);
+	CHECK(r.json["code"].text == "ehome.code_unknown");
+	// The regular answer (in 64-byte pieces) still enrolls.
+	r = f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"ABCD-EFGH\"}",
+		[&] { f.fetcher.answer(200, kEnrollAnswer); });
+	CHECK(r.status == 200);
+	CHECK(hc::ehome_enrolled(f.fake.settings));
 }
 
 TEST_CASE("E-Home: DELETE /api/ehome erases the settings and closes the link") {

@@ -48,6 +48,8 @@ budget in bytes. Not specified in this package.
 | `size(name, size)` | The size, `not_found` if there is none. |
 | `remove(name)` | Deletes; `not_found` if there is none. |
 | `visit(visitor)` | Every blob with its size; the visitor must not modify the store. |
+| `open_writer(name, expected, status)` | A streaming write (issue #43): a `BlobWriter` with `append(data, size)`, `commit()` (the same atomic replace as `write()`) and `discard()` (the old content stays), for content that arrives piece by piece and is never held as a whole (the language packs). Bounded by the free space, not by `kMaxBlobSize`: `expected` above the free space is refused (`no_space`) before anything is written, an `append()` that finds the store full returns `no_space` and the caller discards. One writer per store at a time (`busy`); the writer belongs to the store and lives until `commit()` or `discard()`. A store without streaming refuses (`unsupported`, the default: the Zigbee NVS store). |
+| `free_space(bytes)` | The bytes a new blob can take now; false if the store cannot tell. |
 
 Names are 1..31 characters of `[A-Za-z0-9._-]`, not starting with a dot (`check_name()`), in a flat
 namespace of the store's own (a directory nobody else writes); a name is never a path. Failures
@@ -62,6 +64,15 @@ blob), syncs and closes it, and renames it over `<name>`. A power cut leaves the
 blob plus, at worst, an orphaned temporary file, which the store deletes when it opens the
 directory (logged: "deleted N unfinished write(s)"). `visit()` lists only names that pass
 `check_name()` and are regular files: dot files, subdirectories and foreign names are ignored.
+The streaming write uses the same temporary file: `open_writer()` creates `.<name>.tmp`, each
+`append()` writes to it, `commit()` syncs, closes and renames it exactly as `write()` does,
+`discard()` closes and deletes it. Until the rename the blob's name shows the old content to every
+reader (the web server serves the old language pack meanwhile), and the temporary file never shows
+under the blob's name; a power cut mid-stream leaves only the orphaned temporary file. The free
+space is the partition's (`esp_littlefs_info`) on the ESP and the file system's (`statvfs`) on
+POSIX. `MemoryBlobStore` collects into a heap buffer (sized from `expected`, doubled when it is
+exceeded) that `commit()` installs as the blob; the tests' `FakeBlobStore` keeps the temporary
+content under the LittleFS name in `temporaries`, which `visit()` does not list.
 
 The directory is opened by `start()` or the first call. If that fails (the partition is not
 mounted, the directory cannot be created or opened), every call refuses with `storage_error` and
@@ -358,6 +369,9 @@ damaged blob, a clock going back.
 the round trip with chunks and reads at offsets, replace and remove, `visit()` skipping foreign
 files, a crash's temporary files ignored and deleted while the old blob is still served, a blob
 named `x.tmp`, the name and size refusals before anything is touched, an unusable directory refusing
-every call (logged once), the default directory. `no_space` is not tested (it needs a full file
+every call (logged once), the default directory, the streaming write (a 50 KB blob in 1 KB pieces:
+the temporary file is not listed and the old content is served until the commit, `busy`, `discard()`
+keeps the old blob, the free-space refusal). `core/test/blob_writer_test.cpp` runs the same for
+`MemoryBlobStore` and the fake. `no_space` from the file system is not tested (it needs a full file
 system). The ESP store shares the algorithm; it is verified on the board (`storage status`, a
 reboot keeps the values).

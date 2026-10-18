@@ -16,15 +16,14 @@
 namespace hc {
 namespace posix {
 
-/// The POSIX HttpFetcher (doc/external.md): cpp-httplib's client on a worker thread; the result is
-/// handed to the receiver on the event loop's thread through the LoopExecutor the web server uses
-/// (the main loop already wakes for it). HTTPS needs a build with OpenSSL (CMake finds its
+/// The POSIX HttpFetcher (doc/external.md): cpp-httplib's client on a worker thread; the response is
+/// handed to the receiver on the event loop's thread piece by piece (httplib's response handler and
+/// content receiver, each piece through the LoopExecutor the web server uses, which waits until the
+/// loop ran it: the main loop already wakes for it). No body buffer. HTTPS needs a build with OpenSSL (CMake finds its
 /// development files); without, https:// URLs are refused with that reason and plain http:// works
 /// (the development loop can serve spec/fixtures/external with `python3 -m http.server`).
 class HttplibFetcher : public HttpFetcher {
 public:
-	/// The response buffer: the same bound as the device's.
-	static constexpr size_t kBufferBytes = 8192;
 	static constexpr int kConnectTimeoutS = 10;
 	static constexpr int kReadTimeoutS = 15;
 
@@ -38,17 +37,16 @@ public:
 	/// Whether this build can fetch https:// URLs.
 	static bool https_supported();
 
-	bool fetch(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) override;
-	/// The E-Home enrollment's POST (doc/ehome.md): the body of every status is delivered.
-	bool post(const char* url, const char* body, size_t length, size_t max_bytes, FetchReceiver& receiver,
-		const char** error) override;
+	bool fetch(const char* url, FetchReceiver& receiver, const char** error) override;
+	/// The E-Home enrollment's POST (doc/ehome.md).
+	bool post(const char* url, const char* body, size_t length, FetchReceiver& receiver, const char** error) override;
 	bool busy() const override { return busy_.load(); }
 
 	/// Longest POST body.
 	static constexpr size_t kMaxPostBody = 1024;
 
 private:
-	bool start(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error);
+	bool start(const char* url, FetchReceiver& receiver, const char** error);
 	void worker();
 	void run_request();
 
@@ -62,9 +60,7 @@ private:
 
 	// The request, owned by the worker while busy_.
 	char url_[kMaxUrl + 1] = {};
-	size_t max_bytes_ = 0;
 	FetchReceiver* receiver_ = nullptr;
-	char body_[kBufferBytes] = {};
 	char error_[160] = {};
 	bool post_ = false;
 	char post_body_[kMaxPostBody] = {};

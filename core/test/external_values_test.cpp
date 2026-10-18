@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "doctest.h"
+#include "fake_fetch.h"
 #include "hc/external_values.h"
 #include "test_support.h"
 
@@ -47,13 +48,12 @@ class FakeFetcher : public hc::HttpFetcher {
 public:
 	struct Request {
 		std::string url;
-		size_t max_bytes;
 		uint64_t at;
 	};
 
 	explicit FakeFetcher(const FakeClock& clock) : clock_(clock) {}
 
-	bool fetch(const char* url, size_t max_bytes, hc::FetchReceiver& receiver, const char** error) override {
+	bool fetch(const char* url, hc::FetchReceiver& receiver, const char** error) override {
 		if (refuse != nullptr) {
 			*error = refuse;
 			return false;
@@ -62,35 +62,34 @@ public:
 			*error = "busy: a fetch is in flight";
 			return false;
 		}
-		requests.push_back(Request{url, max_bytes, clock_.now_ms});
+		requests.push_back(Request{url, clock_.now_ms});
 		receiver_ = &receiver;
 		return true;
 	}
 
 	bool busy() const override { return receiver_ != nullptr; }
 
-	void ok(const std::string& body) {
+	/// A 200 response in pieces of `piece` bytes, announced unless `announce` is false.
+	hc::FetchResult ok(const std::string& body, size_t piece = 1024, bool announce = true) {
 		REQUIRE(receiver_ != nullptr);
-		hc::FetchResult result;
-		result.ok = true;
-		result.http_status = 200;
-		result.body = body.data();
-		result.length = body.size();
-		deliver(result);
-	}
-
-	void fail(int status, const char* error = "") {
-		REQUIRE(receiver_ != nullptr);
-		hc::FetchResult result;
-		result.http_status = status;
-		result.error = error;
-		deliver(result);
-	}
-
-	void deliver(const hc::FetchResult& result) {
 		hc::FetchReceiver* receiver = receiver_;
 		receiver_ = nullptr;
-		receiver->fetch_done(result);
+		hc_test::Delivery delivery;
+		delivery.piece = piece;
+		delivery.announce = announce;
+		return hc_test::respond(*receiver, 200, body, delivery);
+	}
+
+	/// A response with `status` (its body an error page), or none with `error` for status 0.
+	void fail(int status, const char* error = "") {
+		REQUIRE(receiver_ != nullptr);
+		hc::FetchReceiver* receiver = receiver_;
+		receiver_ = nullptr;
+		if (status == 0) {
+			hc_test::respond_failure(*receiver, error);
+		} else {
+			hc_test::respond(*receiver, status, "<html>error</html>");
+		}
 	}
 
 	std::vector<Request> requests;
@@ -291,7 +290,6 @@ TEST_CASE("ExternalValues: the Open-Meteo preset fills every datapoint from the 
 		"https://api.open-meteo.com/v1/forecast?latitude=48.10&longitude=11.60&current=temperature_2m,"
 		"apparent_temperature,relative_humidity_2m,precipitation,rain,wind_speed_10m,wind_direction_10m,cloud_cover,"
 		"pressure_msl,weather_code&hourly=temperature_2m,precipitation&forecast_hours=7&wind_speed_unit=ms&timezone=UTC");
-	CHECK(f.fetcher.requests[0].max_bytes == ExternalValues::kMaxBody);
 	CHECK(f.ext.fetching());
 
 	f.fetcher.ok(read_fixture("open-meteo-example.json"));
@@ -602,11 +600,14 @@ TEST_CASE("ExternalValues: the body bound, a fetcher refusal, a lost result") {
 	CHECK(f.capture.sink.contains("source 'pv': fetch not started: busy: a fetch is in flight"));
 	f.fetcher.refuse = nullptr;
 
-	// The platform names the size it refused.
+	// The reader names its own limit: a body announced larger than kMaxBody is refused before a
+	// byte arrives.
 	f.run_until(t0 + 65000);
 	REQUIRE(f.fetcher.requests.size() == 1);
-	f.fetcher.fail(200, "body larger than 8192 bytes");
-	CHECK(f.capture.sink.contains("source 'pv': body larger than 8192 bytes"));
+	hc::FetchResult refused = f.fetcher.ok(std::string(ExternalValues::kMaxBody + 1, ' '));
+	CHECK(refused.aborted);
+	CHECK(refused.length == 0);
+	CHECK(f.capture.sink.contains("source 'pv': the response is larger than 8192 bytes (8193 announced)"));
 
 	// No result within the guard time: a failure; the late result is ignored.
 	f.run_until(t0 + 185000);
@@ -885,4 +886,92 @@ TEST_CASE("ExternalValues: a read fetches the source again, within the rate limi
 	REQUIRE(f.model.bind(f.dp("pv.count").id(), f.ext) == DatapointStatus::ok);
 	CHECK(f.model.read(f.dp("pv.count").id()) == DatapointStatus::refused);
 	CHECK(f.capture.sink.contains("refusing read of 'pv.count': no source feeds it"));
+}
+
+// ---- Issue #43/#44: the streamed response and the table sized from the counts ----------------
+
+TEST_CASE("ExternalValues: the response arrives in pieces; an unannounced oversize body is refused with the limit") {
+	Fixture f;
+	const ExternalBindingSpec bindings[] = {bind_path("pv.power", "inverters[0].ac.power", 0.001),
+		bind_path("pv.online", "online"), bind_path("pv.serial", "inverters[0].serial")};
+	REQUIRE(f.configure_pv(bindings, 3));
+	uint64_t t0 = f.clock.now_ms;
+	f.run_until(t0 + 5000);
+	REQUIRE(f.fetcher.requests.size() == 1);
+	// Seven bytes per piece, no Content-Length: the reader puts them together.
+	hc::FetchResult result = f.fetcher.ok(kPvBody, 7, false);
+	CHECK(result.ok);
+	CHECK(f.dp("pv.power").value().as_real() == doctest::Approx(2.35));
+	CHECK(f.dp("pv.serial").quality() == Quality::good);
+
+	// A chunked body beyond kMaxBody: refused at the piece that crosses it, with the reader's reason.
+	f.run_until(t0 + 305000);
+	REQUIRE(f.fetcher.requests.size() == 2);
+	std::string big = std::string("{\"pad\": \"") + std::string(ExternalValues::kMaxBody, 'x') + "\"}";
+	result = f.fetcher.ok(big, 1024, false);
+	CHECK(result.aborted);
+	CHECK(result.length == ExternalValues::kMaxBody);
+	CHECK(f.capture.sink.contains("source 'pv': the response is larger than 8192 bytes"));
+	CHECK(f.dp("pv.power").quality() == Quality::good); // one failure: not stale yet
+
+	// An error status is not read: the status is the reason.
+	f.run_for(ExternalValues::kRetryInitialMs);
+	REQUIRE(f.fetcher.requests.size() == 3);
+	f.fetcher.fail(404);
+	CHECK(f.capture.sink.contains("source 'pv': HTTP status 404"));
+}
+
+TEST_CASE("ExternalValues: the table is sized from the configuration, not from the limits") {
+	Fixture f;
+	const ExternalBindingSpec bindings[] = {bind_path("pv.power", "inverters[0].ac.power", 0.001),
+		bind_path("pv.online", "online"), bind_path("pv.serial", "inverters[0].serial"),
+		bind_path("pv.count", "count")};
+	CHECK(f.ext.table_bytes() == 0);
+	REQUIRE(f.configure_pv(bindings, 4));
+	size_t one = f.ext.table_bytes();
+	MESSAGE("table of one source with four bindings: " << one << " bytes");
+	CHECK(one > 0);
+	CHECK(one < 2048); // the fixed table was 11 KB on the ESP32 (more on a 64-bit host)
+
+	// The same from the image's JSON: counted first, then filled.
+	const char* json = R"({"sources": [{"id": "pv", "url": "http://pv.example/status", "interval": 300,
+		"bindings": [{"datapoint": "pv.power", "path": "inverters[0].ac.power", "scale": 0.001},
+		             {"datapoint": "pv.online", "path": "online"},
+		             {"datapoint": "pv.serial", "path": "inverters[0].serial"},
+		             {"datapoint": "pv.count", "path": "count"}]}]})";
+	REQUIRE(f.ext.configure_json(json, std::strlen(json)));
+	CHECK(f.ext.table_bytes() == one);
+
+	// Twice the sources and bindings: about twice the table.
+	const char* two = R"({"sources": [
+		{"id": "pv", "url": "http://pv.example/status", "bindings": [{"datapoint": "pv.power", "path": "a"},
+			{"datapoint": "pv.online", "path": "b"}, {"datapoint": "pv.serial", "path": "c"}, {"datapoint": "pv.count", "path": "d"}]},
+		{"id": "wx", "preset": "open-meteo", "bindings": [{"datapoint": "weather.temperature", "variable": "temperature"},
+			{"datapoint": "weather.humidity", "variable": "humidity"}, {"datapoint": "weather.wind", "variable": "wind_speed"},
+			{"datapoint": "weather.rain", "variable": "rain"}]}]})";
+	REQUIRE(f.ext.configure_json(two, std::strlen(two)));
+	CHECK(f.ext.table_bytes() > one);
+	CHECK(f.ext.table_bytes() < 2 * one + 64);
+
+	// The limits stay limits: 33 bindings are refused, the previous table kept.
+	std::string many = R"({"sources": [{"id": "pv", "url": "http://pv.example/status", "bindings": [)";
+	for (int i = 0; i < 33; ++i) {
+		many += std::string(i > 0 ? "," : "") + "{\"datapoint\": \"pv.power\", \"path\": \"p" + std::to_string(i) + "\"}";
+	}
+	many += "]}]}";
+	size_t before = f.ext.table_bytes();
+	const char* error = nullptr;
+	CHECK_FALSE(f.ext.configure_json(many.data(), many.size(), &error));
+	CHECK(std::string(error) == "more than 32 bindings in all sources");
+	CHECK(f.ext.table_bytes() == before);
+	std::string nine = R"({"sources": [)";
+	for (int i = 0; i < 9; ++i) {
+		nine += std::string(i > 0 ? "," : "") + "{\"id\": \"s" + std::to_string(i) +
+			"\", \"url\": \"http://x.example/\", \"bindings\": []}";
+	}
+	nine += "]}";
+	CHECK_FALSE(f.ext.configure_json(nine.data(), nine.size(), &error));
+	CHECK(std::string(error) == "more than 8 sources");
+	f.ext.clear();
+	CHECK(f.ext.table_bytes() == 0);
 }

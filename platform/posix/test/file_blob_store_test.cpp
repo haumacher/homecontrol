@@ -293,3 +293,88 @@ TEST_CASE("FileBlobStore: the default directory sits beside the settings file") 
 	CHECK(FileBlobStore::directory_for_settings("dir.settings/x") == "dir.settings/x.state");
 	CHECK(FileBlobStore::directory_for_settings("/a/.settings") == "/a/.settings.state");
 }
+
+TEST_CASE("FileBlobStore: a streaming write grows a temporary file nobody lists, then replaces the blob") {
+	ScopedCapture capture;
+	TempDir dir;
+	FileBlobStore store(dir.state);
+	REQUIRE(put(store, "i18n.de.json.gz", "old") == BlobStatus::ok);
+	std::string content(50000, '\0');
+	for (size_t i = 0; i < content.size(); ++i) {
+		content[i] = static_cast<char>(i * 31 + 7);
+	}
+	BlobStatus status = BlobStatus::storage_error;
+	hc::BlobWriter* writer = store.open_writer("i18n.de.json.gz", content.size(), status);
+	REQUIRE(status == BlobStatus::ok);
+	REQUIRE(writer != nullptr);
+	// A second writer waits for the first.
+	BlobStatus second = BlobStatus::ok;
+	CHECK(store.open_writer("other", 10, second) == nullptr);
+	CHECK(second == BlobStatus::busy);
+	for (size_t at = 0; at < content.size(); at += 1024) {
+		size_t n = content.size() - at < 1024 ? content.size() - at : 1024;
+		REQUIRE(writer->append(content.data() + at, n) == BlobStatus::ok);
+		if (at == 20 * 1024) {
+			// Mid-stream: the blob is the old one, the temporary file is not listed.
+			Collect collect;
+			store.visit(collect);
+			CHECK(collect.blobs.size() == 1);
+			CHECK(collect.blobs["i18n.de.json.gz"] == 3);
+			CHECK(get(store, "i18n.de.json.gz") == "old");
+			CHECK(dir.exists(".i18n.de.json.gz.tmp"));
+		}
+	}
+	CHECK(writer->written() == content.size());
+	REQUIRE(writer->commit() == BlobStatus::ok);
+	CHECK_FALSE(dir.exists(".i18n.de.json.gz.tmp"));
+	size_t size = 0;
+	REQUIRE(store.size("i18n.de.json.gz", size) == BlobStatus::ok);
+	CHECK(size == content.size()); // above kMaxBlobSize: a streamed blob is bounded by the space only
+	std::string back(content.size(), '\0');
+	size_t length = 0;
+	REQUIRE(store.read("i18n.de.json.gz", 0, &back[0], back.size(), length) == BlobStatus::ok);
+	CHECK(length == content.size());
+	CHECK(back == content);
+
+	// discard() keeps the previous content and removes the temporary file.
+	writer = store.open_writer("i18n.de.json.gz", 0, status);
+	REQUIRE(writer != nullptr);
+	REQUIRE(writer->append("new", 3) == BlobStatus::ok);
+	writer->discard();
+	CHECK_FALSE(dir.exists(".i18n.de.json.gz.tmp"));
+	REQUIRE(store.size("i18n.de.json.gz", size) == BlobStatus::ok);
+	CHECK(size == content.size());
+	// The writer is free again; an invalid name or more than the free space is refused before a file exists.
+	CHECK(store.open_writer(".hidden", 1, status) == nullptr);
+	CHECK(status == BlobStatus::invalid_name);
+	size_t free = 0;
+	REQUIRE(store.free_space(free));
+	CHECK(free > 0);
+	if (free < SIZE_MAX) {
+		CHECK(store.open_writer("huge", free + 1, status) == nullptr);
+		CHECK(status == BlobStatus::no_space);
+	}
+	CHECK(dir.files().size() == 1);
+}
+
+TEST_CASE("FileBlobStore: a streaming write interrupted by a crash leaves only a temporary file, deleted at start") {
+	ScopedCapture capture;
+	TempDir dir;
+	{
+		FileBlobStore store(dir.state);
+		REQUIRE(put(store, "pack", "old") == BlobStatus::ok);
+		BlobStatus status = BlobStatus::ok;
+		hc::BlobWriter* writer = store.open_writer("pack", 0, status);
+		REQUIRE(writer != nullptr);
+		REQUIRE(writer->append("half", 4) == BlobStatus::ok);
+		// The process ends with the writer open (the destructor stands in for the crash's cleanup
+		// only as far as the descriptor goes): simulate the crash by leaving a copy of the file.
+		dir.put(".other.tmp", "crashed");
+		writer->discard();
+	}
+	FileBlobStore again(dir.state);
+	REQUIRE(again.start());
+	CHECK(get(again, "pack") == "old");
+	CHECK_FALSE(dir.exists(".other.tmp"));
+	CHECK(capture.sink.contains("deleted 1 unfinished write(s)"));
+}

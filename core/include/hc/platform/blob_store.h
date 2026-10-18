@@ -18,9 +18,11 @@ enum class BlobStatus : uint8_t {
 	too_large,     ///< The blob would exceed BlobStore::kMaxBlobSize.
 	no_space,      ///< The backing store is full; the previous content of the blob is unchanged.
 	storage_error, ///< The backing store failed (flash, file system); the platform logged the cause.
+	busy,          ///< A streaming write (BlobStore::open_writer()) is open already.
+	unsupported,   ///< This store has no streaming write.
 };
 
-/// "ok", "not found", "name invalid", "too large", "no space", "storage error".
+/// "ok", "not found", "name invalid", "too large", "no space", "storage error", "busy", "unsupported".
 inline const char* blob_status_name(BlobStatus status) {
 	switch (status) {
 		case BlobStatus::ok: return "ok";
@@ -29,6 +31,8 @@ inline const char* blob_status_name(BlobStatus status) {
 		case BlobStatus::too_large: return "too large";
 		case BlobStatus::no_space: return "no space";
 		case BlobStatus::storage_error: return "storage error";
+		case BlobStatus::busy: return "busy";
+		case BlobStatus::unsupported: return "unsupported";
 	}
 	return "?";
 }
@@ -38,6 +42,32 @@ inline const char* blob_status_name(BlobStatus status) {
 struct BlobChunk {
 	const void* data;
 	size_t size;
+};
+
+/// A streaming write of one blob (BlobStore::open_writer(), issue #43): the content arrives piece by
+/// piece (a download) and is never held as a whole. append() writes to a temporary place that no
+/// reader sees (LittleFS and POSIX: the dot file `.<name>.tmp`, which visit() skips); commit()
+/// replaces the blob atomically, exactly as write() does; discard() drops what was written and keeps
+/// the previous content. The writer belongs to the store; it is valid from open_writer() until
+/// commit() or discard(), one of which the caller must call (also after a failed append()).
+class BlobWriter {
+public:
+	/// Appends `size` bytes. A failure (no_space when the store is full, storage_error) leaves the
+	/// writer open for discard().
+	virtual BlobStatus append(const void* data, size_t size) = 0;
+
+	/// Replaces the blob by what was appended and ends the writer, whatever the outcome; on a failure
+	/// the previous content stays.
+	virtual BlobStatus commit() = 0;
+
+	/// Drops what was appended and ends the writer; the previous content stays.
+	virtual void discard() = 0;
+
+	/// Bytes appended so far.
+	virtual size_t written() const = 0;
+
+protected:
+	~BlobWriter() = default;
 };
 
 /// Receives the names of BlobStore::visit().
@@ -65,8 +95,9 @@ protected:
 ///   never a mix or a truncation (LittleFS: write a temporary file and rename it over the old one;
 ///   POSIX: write, fsync, rename, fsync the directory). When write() returns ok the content is
 ///   durable.
-/// - Blobs are at most kMaxBlobSize bytes; a larger write is refused (too_large) before anything
-///   changes. A full store refuses with no_space and keeps the previous content.
+/// - Blobs written with write() are at most kMaxBlobSize bytes; a larger write is refused
+///   (too_large) before anything changes. A streamed blob (open_writer()) is bounded only by the
+///   free space. A full store refuses with no_space and keeps the previous content.
 /// - read() returns the bytes at `offset` (fewer at the end of the blob; 0 at or past the end).
 /// - Failures return a status, never abort; the implementation logs their cause.
 ///
@@ -95,6 +126,25 @@ public:
 
 	/// Calls `visitor` for every blob (order unspecified). The visitor must not modify the store.
 	virtual void visit(BlobVisitor& visitor) const = 0;
+
+	/// Opens a streaming write of the blob `name` (BlobWriter) for content of `expected` bytes (0:
+	/// not known in advance). Refuses (nullptr, `status`) before anything is written: an invalid
+	/// name, `expected` above the free space (no_space), a writer open already (busy, one at a time
+	/// per store), a store without streaming (unsupported: the default). Meanwhile the blob keeps its
+	/// previous content for readers; a write() or remove() of the same name is not allowed until the
+	/// writer ended.
+	virtual BlobWriter* open_writer(const char* name, size_t expected, BlobStatus& status) {
+		(void)name;
+		(void)expected;
+		status = BlobStatus::unsupported;
+		return nullptr;
+	}
+
+	/// The bytes a new blob can take now; false if the store cannot tell (the default).
+	virtual bool free_space(size_t& bytes) const {
+		(void)bytes;
+		return false;
+	}
 
 	/// The name rule every implementation applies before it touches its store.
 	static BlobStatus check_name(const char* name) {

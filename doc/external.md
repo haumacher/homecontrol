@@ -12,10 +12,11 @@ on `weather.temperature`.
 | Who | What |
 |---|---|
 | core: `ExternalValues` | The sources and bindings, when to fetch, the conditions, the backoff, parsing (`json_parse`, `JsonSpan`), extraction, conversion, reporting, the stale rule, the refusals. |
-| platform: `hc::HttpFetcher` (`core/include/hc/platform/http_fetcher.h`) | One GET at a time: `fetch(url, max_bytes, receiver, error)`; the outcome (`FetchResult`: ok, HTTP status, body, reason) arrives on the event loop's thread, never from within `fetch()`. |
-| ESP: `hc::esp::EspHttpFetcher` (component `hc_external`) | esp_http_client with the IDF certificate bundle, a short-lived worker task per fetch (8 KB stack, the OTA update check's pattern), an 8 KB response buffer, the outcome posted through the `LoopQueue`. |
-| POSIX: `hc::posix::HttplibFetcher` | cpp-httplib's client on a worker thread, the outcome through the web server's `LoopExecutor`. HTTPS only when the build finds OpenSSL's development files (CMake prints which); otherwise `https://` is refused with that reason and `http://` works. |
-| tests: `FakeFetcher` (`core/test/external_values_test.cpp`) | Records the requests; the test answers them. |
+| platform: `hc::HttpFetcher` (`core/include/hc/platform/http_fetcher.h`) | One GET (or POST) at a time: `fetch(url, receiver, error)`. The response streams to the `FetchReceiver` on the event loop's thread, never from within `fetch()` (issue #43): `fetch_begin(status, content_length or kUnknownLength)`, `fetch_chunk(data, size)` per piece of the body, then always one `fetch_end(FetchResult)` (ok, complete, HTTP status, length, aborted, reason); `false` from begin or a chunk aborts. The platform holds no body: every limit is the receiver's. |
+| core: `FetchBody` (`core/include/hc/fetch_body.h`) | The JSON consumers' accumulator over a buffer of their own size: refuses an announced or delivered body above it with a reason that names the limit ("the response is larger than 8192 bytes"). |
+| ESP: `hc::esp::EspHttpFetcher` (component `hc_external`) | esp_http_client with the IDF certificate bundle, a short-lived worker task per fetch (8 KB stack, the OTA update check's pattern). The task reads at most 2 KB into its piece buffer, posts the piece through the `LoopQueue` and waits on a semaphore until the loop ran the receiver (the hand-over of `hc_ehome`'s WebSocket client); the receiver's answer decides whether it reads on. About 3 KB, created on the heap by `OnDemandFetcher` for a fetch and freed 2 s after the end. |
+| POSIX: `hc::posix::HttplibFetcher` | cpp-httplib's client on a worker thread; its response handler and content receiver run each receiver call through the web server's `LoopExecutor` (which waits for the loop). HTTPS only when the build finds OpenSSL's development files (CMake prints which); otherwise `https://` is refused with that reason and `http://` works. |
+| tests: `FakeFetcher` (`core/test/external_values_test.cpp`), `respond()` (`core/test/fake_fetch.h`) | Records the requests; the test answers them in pieces as the platforms do. |
 
 ## When a source is fetched
 
@@ -43,8 +44,9 @@ on `weather.temperature`.
 ## A fetch
 
 A failure is anything of: the fetch could not start (busy, URL), no connection or TLS failure, an
-HTTP status other than 200, a body larger than 12288 bytes (the reason names the limit), a body
-that is not JSON, a path that is missing, an index out of range, a value of the wrong kind
+HTTP status other than 200 (its body is not read), a body larger than `kMaxBody` (8192 bytes:
+refused before a byte when the server announces it, else at the piece that crosses it; "the response
+is larger than 8192 bytes"), a body that is not JSON, a path that is missing, an index out of range, a value of the wrong kind
 (`null`, an object, a string for a number datapoint, a number out of an integer datapoint's range).
 Every binding is extracted and converted before any is reported: a response reports all its values
 with quality good, or none (values of one response belong together).
@@ -73,21 +75,30 @@ more of the house's position.
 
 ## Memory
 
-`configure()` allocates one table (sources, bindings, the values of one response) of 11,216 bytes on
-the ESP32 at the capacities of 8 sources and 32 bindings, and frees the previous table (during a
-reconfiguration both exist); nothing is allocated in steady state. The `ExternalValues` object itself
-is 640 bytes; it uses one event-loop timer. The ESP fetcher has its buffers in the object (about
-8.7 KB, static); each fetch creates a worker task (8 KB stack) and esp_http_client with
-mbedTLS allocates its TLS buffers for the duration of the request, as the OTA update check does.
+`configure()` allocates one block sized for the configuration (issue #44): the table header, the
+sources (about 600 bytes each), the bindings (about 170 bytes each) and one pending value per
+binding (about 30 bytes). `configure_json()` counts the sources and bindings of the member first.
+One source with four bindings takes about 1.4 KB (1480 bytes on the 64-bit host,
+`ExternalValues::table_bytes()`, shown by `external status`); the limits (8 sources, 32 bindings)
+stay limits and cap the table at the 11 KB it used to take always. The previous table is freed
+(during a reconfiguration both exist). Each fetch takes a `kMaxBody` (8 KB) buffer on the heap for
+the response while it is in flight (the JSON is parsed as a whole) and frees it at the end. The
+`ExternalValues` object itself is about 700 bytes; it uses one event-loop timer. On the device the
+service holds an `OnDemandFetcher`: no fetcher exists without a fetch, so an installation without
+sources pays nothing (the static `EspHttpFetcher` with its 12 KB body buffer, 12.5 KB of .bss, is
+gone); each fetch creates the fetcher (3 KB) and a worker task (8 KB stack), and esp_http_client
+with mbedTLS allocates its TLS buffers for the duration of the request, as the OTA update check
+does.
 
 ## Device wiring and console
 
-`hc::esp::ExternalService` (component `hc_external`) owns the fetcher and the `ExternalValues`, wired
+`hc::esp::ExternalService` (component `hc_external`) owns the `OnDemandFetcher` and the `ExternalValues`, wired
 to the controller's loop, time service, settings and connectivity and to the datapoint model; the
 image loader (issue #8) calls `values().configure_json()`. Console:
 
 ```
 hc> external status
+table <bytes> B, fetcher free
 weather: preset open-meteo every 900 s, 12 fetch(es), 0 failure(s) in a row
   url   https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m&...
   last  ok 312 s ago

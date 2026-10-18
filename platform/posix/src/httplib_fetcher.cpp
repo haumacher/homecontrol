@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <string>
 
 #include "hc/log.h"
@@ -42,12 +43,16 @@ bool HttplibFetcher::https_supported() {
 #endif
 }
 
-bool HttplibFetcher::fetch(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) {
+bool HttplibFetcher::fetch(const char* url, FetchReceiver& receiver, const char** error) {
+	if (busy_.load()) {
+		*error = "busy: a fetch is in flight";
+		return false;
+	}
 	post_ = false;
-	return start(url, max_bytes, receiver, error);
+	return start(url, receiver, error);
 }
 
-bool HttplibFetcher::post(const char* url, const char* body, size_t length, size_t max_bytes, FetchReceiver& receiver,
+bool HttplibFetcher::post(const char* url, const char* body, size_t length, FetchReceiver& receiver,
 	const char** error) {
 	if (busy_.load()) {
 		*error = "busy: a fetch is in flight";
@@ -60,10 +65,10 @@ bool HttplibFetcher::post(const char* url, const char* body, size_t length, size
 	std::memcpy(post_body_, body, length);
 	post_length_ = length;
 	post_ = true;
-	return start(url, max_bytes, receiver, error);
+	return start(url, receiver, error);
 }
 
-bool HttplibFetcher::start(const char* url, size_t max_bytes, FetchReceiver& receiver, const char** error) {
+bool HttplibFetcher::start(const char* url, FetchReceiver& receiver, const char** error) {
 	if (busy_.load()) {
 		*error = "busy: a fetch is in flight";
 		return false;
@@ -84,7 +89,6 @@ bool HttplibFetcher::start(const char* url, size_t max_bytes, FetchReceiver& rec
 		return false;
 	}
 	std::memcpy(url_, url, length + 1);
-	max_bytes_ = max_bytes < kBufferBytes ? max_bytes : kBufferBytes;
 	receiver_ = &receiver;
 	busy_.store(true);
 	{
@@ -116,10 +120,37 @@ void HttplibFetcher::run_request() {
 	std::string origin = slash != nullptr ? std::string(url_, static_cast<size_t>(slash - url_)) : std::string(url_);
 	std::string path = slash != nullptr ? std::string(slash) : std::string("/");
 
-	FetchResult result;
+	FetchReceiver* receiver = receiver_;
+	int status = 0;
+	size_t announced = FetchReceiver::kUnknownLength;
 	size_t length = 0;
-	bool too_large = false;
+	bool begun = false;   // fetch_begin() ran
+	bool aborted = false; // the receiver said no
+	bool stopped = false; // the loop stopped: nothing more is delivered
+	bool transported = false;
 	error_[0] = '\0';
+
+	// Runs one receiver call on the loop and waits for it.
+	auto on_loop = [&](const std::function<bool()>& call) {
+		bool go = false;
+		if (!executor_.run([&] { go = call(); })) {
+			stopped = true;
+			return false;
+		}
+		if (!go) {
+			aborted = true;
+		}
+		return go;
+	};
+	auto begin = [&](const httplib::Response& head) {
+		status = head.status;
+		if (head.has_header("Content-Length")) {
+			announced = static_cast<size_t>(head.get_header_value_u64("Content-Length"));
+		}
+		begun = true;
+		return on_loop([&] { return receiver->fetch_begin(status, announced); });
+	};
+
 	httplib::Client client(origin);
 	if (!client.is_valid()) {
 		std::snprintf(error_, sizeof(error_), "URL refused by the HTTP client");
@@ -127,69 +158,57 @@ void HttplibFetcher::run_request() {
 		client.set_connection_timeout(kConnectTimeoutS);
 		client.set_read_timeout(kReadTimeoutS);
 		client.set_follow_location(true);
-		int status = 0;
+		httplib::Request request;
+		request.method = post_ ? "POST" : "GET";
+		request.path = path;
 		if (post_) {
-			// The enrollment: the answer's body whatever the status (E-Home's refusal document).
-			httplib::Result answer = client.Post(path, std::string(post_body_, post_length_), "application/json");
-			if (!answer) {
-				std::snprintf(error_, sizeof(error_), "cannot connect: %s", httplib::to_string(answer.error()).c_str());
-			} else {
-				status = answer->status;
-				length = answer->body.size() < max_bytes_ ? answer->body.size() : max_bytes_;
-				std::memcpy(body_, answer->body.data(), length);
-				if (status != 200) {
-					std::snprintf(error_, sizeof(error_), "HTTP status %d", status);
-				} else if (answer->body.size() > max_bytes_) {
-					std::snprintf(error_, sizeof(error_), "body larger than %zu bytes", max_bytes_);
-				}
-			}
-			result.http_status = status;
-			result.ok = error_[0] == '\0';
-			result.body = body_;
-			result.length = length;
-			result.error = error_;
-			FetchReceiver* receiver = receiver_;
-			if (!executor_.run([&] {
-					receiver->fetch_done(result);
-					busy_.store(false);
-				})) {
-				busy_.store(false);
-			}
-			return;
+			request.body.assign(post_body_, post_length_);
+			request.set_header("Content-Type", "application/json");
 		}
-		httplib::Result response = client.Get(
-			path,
-			[&](const httplib::Response& head) {
-				status = head.status;
-				// The body of an error status is not read (a redirect is followed).
-				return status == 200 || (status >= 300 && status < 400);
-			},
-			[&](const char* data, size_t n) {
-				if (length + n > max_bytes_) {
-					too_large = true;
-					return false;
-				}
-				std::memcpy(body_ + length, data, n);
-				length += n;
-				return true;
-			});
-		result.http_status = status;
-		if (status != 0 && status != 200) {
-			std::snprintf(error_, sizeof(error_), "HTTP status %d", status);
-		} else if (too_large) {
-			std::snprintf(error_, sizeof(error_), "body larger than %zu bytes", max_bytes_);
-		} else if (!response) {
-			std::snprintf(error_, sizeof(error_), "cannot fetch: %s", httplib::to_string(response.error()).c_str());
+		// Not called for a redirect that is followed, nor for a response without a body (204).
+		request.response_handler = [&](const httplib::Response& head) { return begin(head); };
+		request.content_receiver = [&](const char* data, size_t n, size_t, size_t) {
+			if (!on_loop([&] { return receiver->fetch_chunk(data, n); })) {
+				return false;
+			}
+			length += n;
+			return true;
+		};
+		httplib::Result response = client.send(request);
+		if (response && !begun && !stopped) {
+			begin(*response);
+		}
+		transported = static_cast<bool>(response);
+		if (!response && !aborted && !stopped) {
+			std::snprintf(error_, sizeof(error_), "%s: %s", begun ? "read error" : "cannot connect",
+				httplib::to_string(response.error()).c_str());
 		}
 	}
-	result.ok = error_[0] == '\0';
-	result.body = result.ok ? body_ : nullptr;
-	result.length = result.ok ? length : 0;
+	if (stopped) {
+		busy_.store(false);
+		Log::info(kTag, "fetch result not delivered: the loop stopped");
+		return;
+	}
+	FetchResult result;
+	result.http_status = status;
+	result.length = length;
+	result.aborted = aborted;
+	result.complete = transported && begun && !aborted &&
+		(announced == FetchReceiver::kUnknownLength || length == announced);
+	if (error_[0] == '\0') {
+		if (transported && begun && !aborted && !result.complete) {
+			std::snprintf(error_, sizeof(error_), "body ended after %zu of %zu bytes", length, announced);
+		} else if (begun && status != 200) {
+			std::snprintf(error_, sizeof(error_), "HTTP status %d", status);
+		} else if (aborted) {
+			std::snprintf(error_, sizeof(error_), "aborted by the receiver");
+		}
+	}
+	result.ok = result.complete && status == 200 && error_[0] == '\0';
 	result.error = error_;
-	FetchReceiver* receiver = receiver_;
 	bool delivered = executor_.run([&] {
-		receiver->fetch_done(result);
-		busy_.store(false); // busy until the receiver returned: the body stays valid during its call
+		receiver->fetch_end(result);
+		busy_.store(false); // busy until the receiver returned
 	});
 	if (!delivered) {
 		busy_.store(false);
