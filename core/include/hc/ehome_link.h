@@ -15,6 +15,7 @@
 #include "hc/platform/http_fetcher.h"
 #include "hc/platform/settings.h"
 #include "hc/platform/websocket_client.h"
+#include "hc/signature.h"
 #include "hc/web_api.h"
 
 namespace hc {
@@ -84,6 +85,14 @@ const char* ehome_state_name(EhomeState state);
 /// streamed answer (GET /api/image) goes back in binary frames, a piece per loop turn. It pings
 /// every kPingMs and closes when the pong does not come within kPongTimeoutMs.
 ///
+/// The installation key (issue #35, doc/ehome.md "Installation key"): the enrollment answer's
+/// `public_key` is stored as ehome.key (images then need its signature, ImageService::load); a `key`
+/// message over the authenticated socket offers a new one, which stays pending in RAM until the
+/// owner accepts it (POST /api/ehome/key/accept, the console's `ehome key accept`); the old key stays
+/// in force until then, and a pending key is dropped when the socket ends. DELETE /api/ehome erases
+/// the enrollment but keeps the key in force: only the factory reset or a new enrollment's answer
+/// replaces it.
+///
 /// Every state change is one log line under the tag "hc.ehome"; the secret never reaches the log.
 ///
 /// Threading: the event loop's thread.
@@ -123,7 +132,7 @@ public:
 	void enabled_changed();
 
 	/// The routes /api/ehome (WebApi forwards them): POST /api/ehome/enroll (answered deferred:
-	/// WebResponse::deferred, then poll_enroll()), DELETE /api/ehome.
+	/// WebResponse::deferred, then poll_enroll()), DELETE /api/ehome, POST /api/ehome/key/accept.
 	void handle_route(const char* rest, const WebRequest& request, WebResponse& response);
 
 	/// The deferred answer of the enrollment: false while E-Home has not answered; true when
@@ -132,6 +141,16 @@ public:
 
 	/// The `ehome` member of the status (its value: an object).
 	void write_status(JsonWriter& json) const;
+
+	/// Accepts the pending installation key: stores it as ehome.key (in force for the next image),
+	/// tells E-Home (`key_accepted`) and logs it. `fingerprint` (nullptr: the console, which showed it)
+	/// must be the pending key's, so that the owner accepts the key they saw. False with an API code
+	/// and the reason: no key pending, another fingerprint, the storage failed.
+	bool accept_key(const char* fingerprint, const char** code, const char** error);
+	/// The pending key's fingerprint into `out` (kFingerprintSize); false if none is pending.
+	bool pending_key(char* out) const;
+	/// The stored key's fingerprint into `out`; the key's state (none, ok, damaged).
+	KeyState stored_key(char* out) const;
 
 	EhomeState state() const { return state_; }
 	bool enrolled() const { return enrolled_; }
@@ -182,6 +201,10 @@ private:
 	void finish_enroll(int status, const char* code, const char* text);
 	void enroll_timeout();
 	bool send_text(const char* text, size_t length);
+	void key_message(const JsonSpan& message);
+	void key_route(const WebRequest& request, WebResponse& response);
+	void drop_pending_key(const char* why);
+	void send_key_message(const char* type, const char* fingerprint);
 
 	WebApi& api_;
 	LiveFeed& feed_;
@@ -207,8 +230,15 @@ private:
 	bool socket_ = false;   ///< A session of the client runs (connect() called, no close since).
 	char last_logged_[128] = {}; ///< The last failure logged as a warning (repeats go to info).
 
+	/// A new installation key E-Home offered, awaiting the owner's acceptance (RAM only).
+	uint8_t pending_key_[kEd25519KeySize] = {};
+	bool has_pending_key_ = false;
+
 	// The request in progress (one at a time).
 	bool busy_ = false;
+	/// The request's `signature` (an image's, 128 hex digits; longer text fails the API's check).
+	char signature_[2 * kEd25519SignatureSize + 2] = {};
+	bool has_signature_ = false;
 	char request_id_[40] = {};     ///< The id's JSON text, echoed.
 	HttpMethod method_ = HttpMethod::get;
 	char path_[256] = {};           ///< The path; the query follows its NUL.

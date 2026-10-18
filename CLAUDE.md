@@ -93,7 +93,8 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   firmware upload, `doc/i18n.md` for the UI languages and language packs, `doc/ehome.md` for the
   E-Home connection.
 - `third_party/` — vendored code with its license (doctest, the unit test framework; cpp-httplib,
-  the POSIX build's HTTP server).
+  the POSIX build's HTTP server; Monocypher 4.0.2, the core's Ed25519 for signed runtime images and
+  update manifests, compiled as C into both builds).
 - `.github/workflows/ci.yml` — host build with tests; the esp32c6 firmware build (partition table
   check, application, updater).
 

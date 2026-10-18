@@ -14,6 +14,7 @@
 #include "esp_crt_bundle.h"
 #endif
 #include "hc/log.h"
+#include "hc/signature.h"
 
 namespace hc {
 namespace esp {
@@ -27,8 +28,8 @@ int ImageConsole::command(int argc, char** argv) {
 	if (argc == 2 && std::strcmp(argv[1], "status") == 0) {
 		return status();
 	}
-	if (argc == 3 && std::strcmp(argv[1], "load") == 0) {
-		return load(argv[2]);
+	if ((argc == 3 || argc == 4) && std::strcmp(argv[1], "load") == 0) {
+		return load(argv[2], argc == 4 ? argv[3] : nullptr);
 	}
 	if (argc == 2 && std::strcmp(argv[1], "clear") == 0) {
 		return clear();
@@ -78,7 +79,7 @@ int ImageConsole::status() {
 	return 0;
 }
 
-int ImageConsole::load(const char* url) {
+int ImageConsole::load(const char* url, const char* signature) {
 	if (std::strncmp(url, "http://", 7) != 0 && std::strncmp(url, "https://", 8) != 0) {
 		std::printf("refused: the URL must start with http:// or https://\n");
 		return 1;
@@ -87,9 +88,19 @@ int ImageConsole::load(const char* url) {
 		std::printf("refused: the URL is longer than %u characters\n", static_cast<unsigned>(kMaxUrl));
 		return 1;
 	}
+	uint8_t parsed[kEd25519SignatureSize];
+	if (signature != nullptr &&
+		(std::strlen(signature) != 2 * kEd25519SignatureSize || !parse_signature(signature, std::strlen(signature), parsed))) {
+		std::printf("refused: the signature is the image's Ed25519 signature in 128 hex digits\n");
+		return 1;
+	}
 	if (busy_.exchange(true)) {
 		std::printf("refused: a download is in progress (%s)\n", url_);
 		return 1;
+	}
+	has_signature_ = signature != nullptr;
+	if (has_signature_) {
+		std::memcpy(signature_, parsed, sizeof(signature_));
 	}
 	std::snprintf(url_, sizeof(url_), "%s", url);
 	buffer_ = nullptr;
@@ -191,7 +202,7 @@ void ImageConsole::finish() {
 		Log::warn(kTag, "image download from %s failed: %s", url_, error_);
 	} else {
 		Log::info(kTag, "image downloaded from %s: %u bytes", url_, static_cast<unsigned>(length_));
-		if (!service_.load(buffer_, length_, image::Source::console, true)) {
+		if (!service_.load(buffer_, length_, image::Source::console, true, has_signature_ ? signature_ : nullptr)) {
 			Log::warn(kTag, "the downloaded image was refused (`image status` lists the problems)");
 		}
 	}

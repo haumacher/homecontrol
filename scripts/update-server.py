@@ -20,6 +20,16 @@
 # publishes them: <base>/<version>/i18n/manifest.json and lang-<code>.json.gz, made from web/ui/lang
 # by scripts/i18n-pack.py. A device with `update url set <base>` downloads the pack of its ui.lang
 # from there (console `lang status`, `lang sync`). --no-i18n leaves them out.
+#
+# The manifest is signed (doc/ota.md "Manifest signature"): manifest.sig beside it holds the Ed25519
+# signature of manifest.json's exact bytes. The device accepts only manifests of the release key its
+# firmware carries (HC_RELEASE_KEY at build time, default platform/esp/release-key.pub). By default the
+# server signs with a development key, generated on first use into scripts/dev-release-key (git-ignored;
+# the public half in scripts/dev-release-key.pub): build the firmware that should take these updates with
+#   idf.py -B build-esp32c6 -DHC_RELEASE_KEY=<repo>/scripts/dev-release-key.pub build
+# --key <secret-file> signs with another key (the release key, for a release-like test); --unsigned
+# serves no manifest.sig (to see the device refuse it). Needs python3-cryptography or python3-nacl
+# (scripts/sign.py).
 
 import argparse
 import hashlib
@@ -67,7 +77,22 @@ def main():
 						help='application build directory (default: platform/esp/build-esp32c6)')
 	parser.add_argument('--port', type=int, default=8070, help='HTTP port (default 8070)')
 	parser.add_argument('--no-i18n', action='store_true', help='do not serve the language packs')
+	parser.add_argument('--key', help='private key file to sign the manifest with (default: the development key '
+						'scripts/dev-release-key, generated on first use)')
+	parser.add_argument('--unsigned', action='store_true', help='serve the manifest without manifest.sig')
 	args = parser.parse_args()
+
+	spec = importlib.util.spec_from_file_location('hc_sign', os.path.join(REPO, 'scripts', 'sign.py'))
+	sign = importlib.util.module_from_spec(spec)
+	spec.loader.exec_module(sign)
+	key = None
+	if not args.unsigned:
+		key_path = args.key or os.path.join(REPO, 'scripts', 'dev-release-key')
+		if args.key is None and not os.path.exists(key_path):
+			public = sign.keygen(key_path)
+			print('generated the development release key %s (public key %s, fingerprint %s)'
+				  % (key_path, public.hex(), sign.fingerprint(public)))
+		key = sign.signer(key_path)
 
 	image_path = os.path.join(args.build, 'homecontrol.bin')
 	if not os.path.isfile(image_path):
@@ -88,9 +113,15 @@ def main():
 		'sha256': hashlib.sha256(data).hexdigest(),
 		'size': len(data),
 	}
-	with open(os.path.join(serve, 'manifest.json'), 'w') as f:
-		json.dump(manifest, f, indent=2)
-		f.write('\n')
+	manifest_bytes = (json.dumps(manifest, indent=2) + '\n').encode('utf-8')
+	with open(os.path.join(serve, 'manifest.json'), 'wb') as f:
+		f.write(manifest_bytes)
+	signature_path = os.path.join(serve, 'manifest.sig')
+	if key is not None:
+		with open(signature_path, 'w') as f:
+			f.write(sign.sign_manifest(key, manifest_bytes).hex() + '\n')
+	elif os.path.exists(signature_path):
+		os.remove(signature_path)
 
 	release = version.split('+')[0]
 	i18n_dir = os.path.join(serve, release, 'i18n')
@@ -106,6 +137,13 @@ def main():
 	base = 'http://%s:%d' % (local_address(), args.port)
 	print('serving %s (%s, %d bytes, sha256 %s...) from %s' % (image_path, version, len(data),
 															   manifest['sha256'][:16], serve))
+	if key is not None:
+		print('manifest signed with the key %s (fingerprint %s): the firmware must carry it (HC_RELEASE_KEY)'
+			  % (key.public.hex(), sign.fingerprint(key.public)))
+		if args.key is None:
+			print('  idf.py -B build-esp32c6 -DHC_RELEASE_KEY=%s.pub build' % os.path.join(REPO, 'scripts', 'dev-release-key'))
+	else:
+		print('manifest NOT signed (--unsigned): the device refuses it')
 	print('on the device console:')
 	print('  update now %s            install this build, whatever its version' % base)
 	print('  update url set %s        then: update check (installs only a newer version)' % base)

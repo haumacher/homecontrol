@@ -88,8 +88,10 @@ struct Report {
 	};
 
 	/// What kind of failure: none, the JSON does not parse, the schema version is newer, the
-	/// content is invalid, the device cannot hold it (memory), or applying it failed.
-	enum class Kind : uint8_t { none, syntax, version, invalid, too_large, no_memory, apply };
+	/// content is invalid, the device cannot hold it (memory), applying it failed, or the device
+	/// holds the installation key and the image comes without a signature or with one that does
+	/// not verify (issue #35, spec/api.md "Signed runtime images").
+	enum class Kind : uint8_t { none, syntax, version, invalid, too_large, no_memory, apply, unsigned_image, bad_signature };
 
 	Report() = default;
 	~Report() { delete[] more_; }
@@ -121,7 +123,7 @@ private:
 	Refusal* more_ = nullptr;
 };
 
-/// "none", "syntax", "version", "invalid", "too large", "no memory", "apply".
+/// "none", "syntax", "version", "invalid", "too large", "no memory", "apply", "unsigned", "bad signature".
 const char* report_kind_name(Report::Kind kind);
 
 } // namespace image

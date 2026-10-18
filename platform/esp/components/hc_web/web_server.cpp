@@ -23,6 +23,7 @@
 #include "mbedtls/pkcs5.h"
 #include "hc/log.h"
 #include "hc/network_settings.h"
+#include "hc/signature.h"
 #include "hc/update_check.h"
 #include "hc/websocket.h"
 #include "hc/language_packs.h"
@@ -229,6 +230,8 @@ struct WebServer::Job {
 	char cookie[48] = {};
 	char authorization[kMaxAuthorization] = {};
 	char requested_with[kMaxRequestedWith] = {};
+	/// X-Image-Signature (128 hex digits; a longer value becomes "invalid", which the API refuses).
+	char image_signature[2 * kEd25519SignatureSize + 1] = {};
 	char source[Auth::kMaxSource] = {};
 	// The request body of an api job and the text of a ws_message job share their storage: the
 	// slot holds one job at a time (the httpd task waits for it), and the kinds exclude each other.
@@ -322,6 +325,12 @@ void WebServer::write_update_state(JsonWriter& json) const {
 		url[0] != '\0';
 	json.member("source", has_url ? url : "");
 	json.member("last", ota_.last_result());
+	// The release key the firmware trusts for manifests (doc/ota.md "Manifest signature").
+	if (const uint8_t* key = release_public_key()) {
+		char fingerprint[kFingerprintSize];
+		key_fingerprint(key, fingerprint);
+		json.member("release_key", fingerprint);
+	}
 	uint64_t now = controller_.clock().monotonic_ms();
 	if (ota_.last_result_ms() != 0) {
 		json.member("last_ago_s", (now - ota_.last_result_ms()) / 1000);
@@ -616,6 +625,9 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 	request.requested_with =
 		copy_header(req, "X-Requested-With", job.requested_with, sizeof(job.requested_with), "invalid")
 		? job.requested_with : nullptr;
+	request.image_signature =
+		copy_header(req, "X-Image-Signature", job.image_signature, sizeof(job.image_signature), "invalid")
+		? job.image_signature : nullptr;
 	peer_address(httpd_req_to_sockfd(req), job.source, sizeof(job.source));
 	request.source = job.source;
 	request.body = body;

@@ -55,6 +55,7 @@ function updateCard(status, app) {
 		rows([
 			[t("status.update.last"), update.checking ? t("system.update.checking") : (update.last || "—")],
 			[t("status.update.source"), update.source || t("status.none")],
+			update.release_key ? [t("status.update.release_key"), h("code", null, update.release_key)] : null,
 		]),
 		h("div", { class: "actions" },
 			actionButton(t("system.update.check"), feedback, () => api("POST", "/api/system/update/check"),

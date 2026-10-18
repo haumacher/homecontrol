@@ -23,9 +23,10 @@ namespace esp {
 ///   instruction (the update completed, or the updater gave up and booted this image).
 /// - Checks the update source (setting update.url) kFirstCheckMs after start and every
 ///   kCheckPeriodMs, and on request (console `update check`, `update now`): fetches
-///   `<update.url>/manifest.json` in a short-lived task, decides with hc::check_update(), and for an
-///   applicable update stores the instruction for the updater, makes the updater (the factory
-///   partition) the boot partition and restarts after kRestartGraceMs.
+///   `<update.url>/manifest.json` and its signature `manifest.sig` in a short-lived task, refuses a
+///   manifest the release key did not sign (hc::verify_manifest_signature), decides with
+///   hc::check_update(), and for an applicable update stores the instruction for the updater, makes
+///   the updater (the factory partition) the boot partition and restarts after kRestartGraceMs.
 ///
 /// Everything except the HTTP fetch runs on the event loop.
 class OtaService : public ConnectivityListener {
@@ -96,6 +97,11 @@ private:
 	char manifest_url_[Settings::kMaxStringLength + 16] = {};
 	char response_[UpdateManifest::kMaxLength + 1] = {};
 	size_t response_length_ = 0;
+	/// `<base>/manifest.sig` and what it held (doc/ota.md "Manifest signature").
+	char signature_url_[Settings::kMaxStringLength + 16] = {};
+	char signature_[kMaxManifestSignature] = {};
+	size_t signature_length_ = 0;
+	bool signature_missing_ = false; ///< 404: the manifest is not signed
 	char fetch_error_[96] = {};
 
 	char last_[160] = "none since start";

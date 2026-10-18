@@ -156,3 +156,21 @@ outside world (weather, external services).
   the updater, which serves `PUT /firmware` on the device's address and boots the old application
   after 10 minutes without an upload (doc/ota.md "Upload from the browser"). E-Home as the update
   server stays possible later through the existing manifest pull.
+- **2026-10-18 — Signed runtime images and update manifests: Ed25519 on vendored Monocypher (#35).**
+  The installation's public key comes with the E-Home enrollment answer (trusted by the one-time code
+  and TLS) and is stored as `ehome.key`; a rotation offered over the socket stays pending until the
+  owner accepts its fingerprint on the device; only the factory reset clears it and only a new
+  enrollment's answer replaces it, while forgetting E-Home keeps it (else a token alone could forget
+  E-Home and then push unsigned images). A device with
+  a key refuses every unsigned or mis-signed image (API, socket, console, file) before anything is
+  parsed or written. The image construction is plain Ed25519 over `"homecontrol-image-v1" ||
+  SHA-256(image)`: the device hashes the bytes it already holds and verifies a fixed 52-byte message,
+  every platform (JDK `Ed25519`, Python, OpenSSL) signs it without a pre-hash mode, and the prefix
+  keeps an image signature from meaning anything else; rejected: Ed25519ph (not in PyNaCl or
+  `cryptography`, and SHA-512 streaming buys nothing when the image is in RAM anyway) and plain
+  Ed25519 over the bare digest (no domain separation). The OTA manifest carries a detached signature
+  (`manifest.sig`, over the exact bytes served) by the release key, whose public half the firmware
+  carries (`platform/esp/release-key.pub`, `HC_RELEASE_KEY` for development); the binary stays bound
+  by the manifest's SHA-256, the updater unchanged. Ed25519 is Monocypher 4.0.2 (BSD-2/CC0, audited,
+  two C files, verify and sign) in `third_party/`: the core keeps no mbedTLS. spec/api.md "Signed
+  runtime images", doc/ota.md "Manifest signature".

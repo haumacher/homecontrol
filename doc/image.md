@@ -138,13 +138,21 @@ ESP serial console:
 
 ```
 image status        what is loaded, the stored copy, the last refusal, the loop's stack reserve
-image load <url>    download an image over http(s) and load it as PUT /api/image does
+image load <url> [<signature>]
+                    download an image over http(s) and load it as PUT /api/image does; the
+                    signature (128 hex digits) is needed once the device holds the installation key
 image clear         unload and remove the image with its persisted state
 ```
 
 POSIX: `homecontrol --image <file>` loads the file at start (exit status 1 with the refusals in the
-log when it is invalid); `PUT /api/image` replaces it while running. `--demo` and `--image`
-exclude each other.
+log when it is invalid), with the signature from `<file>.sig` when that file exists; `PUT /api/image`
+replaces it while running. `--demo` and `--image` exclude each other.
+
+**Signatures** (issue #35, spec/api.md "Signed runtime images"): while the device holds the
+installation key (`ehome.key`, from the E-Home enrollment) every load except the boot load of the
+stored image needs the image's Ed25519 signature: the header `X-Image-Signature`, the socket's
+`signature`, the console argument, the `.sig` file. `scripts/sign.py image <secret-file> <image>`
+writes `<image>.sig` (for tests; E-Home signs its deployments).
 
 ## Deploying by hand
 

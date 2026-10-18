@@ -41,6 +41,8 @@ const char* report_kind_name(Report::Kind kind) {
 		case Report::Kind::invalid: return "invalid";
 		case Report::Kind::too_large: return "too large";
 		case Report::Kind::no_memory: return "no memory";
+		case Report::Kind::unsigned_image: return "unsigned";
+		case Report::Kind::bad_signature: return "bad signature";
 		case Report::Kind::apply: return "apply";
 	}
 	return "?";

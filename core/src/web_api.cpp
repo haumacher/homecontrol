@@ -18,6 +18,7 @@
 #include "hc/language_packs.h"
 #include "hc/mqtt.h"
 #include "hc/network_settings.h"
+#include "hc/signature.h"
 #include "hc/tz.h"
 #include "hc/update_check.h"
 #include "hc/value_json.h"
@@ -1303,8 +1304,20 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 		refuse(response, 400, "image.missing", "the body must be the runtime image (JSON)");
 		return;
 	}
-	Log::info(kTag, "PUT /api/image from %s: %u bytes", request.source, static_cast<unsigned>(request.body_length));
-	bool ok = image_->load(request.body, request.body_length, image::Source::api, true);
+	uint8_t signature[kEd25519SignatureSize];
+	bool signed_image = request.image_signature != nullptr;
+	if (signed_image && (std::strlen(request.image_signature) != 2 * kEd25519SignatureSize ||
+		!parse_signature(request.image_signature, 2 * kEd25519SignatureSize, signature))) {
+		Log::warn(kTag, "PUT /api/image from %s refused: the signature is not 128 hex digits", request.source);
+		refuse(response, 400, "image.bad_signature",
+			request.ehome ? "\"signature\" is the image's Ed25519 signature in 128 hex digits"
+						  : "X-Image-Signature is the image's Ed25519 signature in 128 hex digits");
+		return;
+	}
+	Log::info(kTag, "PUT /api/image from %s: %u bytes%s", request.source, static_cast<unsigned>(request.body_length),
+		signed_image ? ", signed" : "");
+	bool ok = image_->load(request.body, request.body_length, image::Source::api, true,
+		signed_image ? signature : nullptr);
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object();
 	if (ok) {
@@ -1315,6 +1328,9 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 			case image::Report::Kind::too_large: response.status = 413; break;
 			case image::Report::Kind::no_memory: response.status = 507; break;
 			case image::Report::Kind::apply: response.status = 500; break;
+			// 403, not 401: the UI takes a 401 for an expired login.
+			case image::Report::Kind::unsigned_image: response.status = 403; break;
+			case image::Report::Kind::bad_signature: response.status = 403; break;
 			default: response.status = 422; break;
 		}
 		image_->write_report(json);

@@ -20,6 +20,10 @@ __pycache__/
 .idea/
 # Host settings file (may hold a WiFi key)
 homecontrol.settings
+# The development release key scripts/update-server.py generates (doc/ota.md "Manifest signature"):
+# a private key never enters the repository
+/scripts/dev-release-key
+/scripts/dev-release-key.pub
 # Web flasher: local copies of the firmware (scripts/flasher-local.sh), never versioned
 /web/flasher/firmware/
 # Language packs copied by the POSIX build from web/ui/lang (doc/i18n.md); only the base is versioned here

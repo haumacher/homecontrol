@@ -97,6 +97,37 @@ bool update_url_valid(const char* url, const char** error = nullptr);
 /// `<base>/manifest.json` (a trailing slash of `base` is dropped). False if it does not fit.
 bool update_manifest_url(const char* base, char* out, size_t size);
 
+/// `<base>/manifest.sig`, the manifest's detached signature (doc/ota.md "Manifest signature"; a
+/// trailing slash of `base` is dropped). False if it does not fit.
+bool update_signature_url(const char* base, char* out, size_t size);
+
+/// The longest `manifest.sig` read: 128 hex digits with a line end, or 64 raw bytes, fit easily.
+constexpr size_t kMaxManifestSignature = 256;
+
+/// The verdict on a manifest's signature.
+enum class ManifestSignature : uint8_t {
+	valid,     ///< The release key signed exactly these manifest bytes.
+	missing,   ///< No `manifest.sig` (or an empty one): the manifest is not signed.
+	malformed, ///< `manifest.sig` is neither 128 hex digits nor 64 bytes.
+	mismatch,  ///< A signature, but not by the release key over these bytes.
+	no_key,    ///< The firmware carries no usable release key.
+};
+
+/// "valid", "missing", "malformed", "mismatch", "no key".
+const char* manifest_signature_name(ManifestSignature verdict);
+
+/// Verifies the detached signature of a manifest (doc/ota.md "Manifest signature"): plain Ed25519
+/// (RFC 8032) by the release key over the manifest's exact bytes as served, `signature` being the
+/// content of `manifest.sig` (parse_signature(): 128 hex digits with white space around, or 64 raw
+/// bytes; nullptr or empty: missing). Writes the reason of every verdict but `valid` into `reason`
+/// (with the release key's fingerprint where it helps). `key` is release_public_key() on the device.
+ManifestSignature verify_manifest_signature(const char* manifest, size_t length, const char* signature,
+	size_t signature_length, const uint8_t* key, char* reason, size_t reason_size);
+
+/// The Ed25519 release public key compiled into this firmware (the file HC_RELEASE_KEY names at
+/// build time, default platform/esp/release-key.pub); nullptr if the build's key is unusable.
+const uint8_t* release_public_key();
+
 /// Resolves the manifest's `url` against the update source `base`: an absolute URL stays, one
 /// starting with `/` keeps the scheme and host of `base`, anything else is appended to `base`. The
 /// result must be a valid update URL that fits a setting (Settings::kMaxStringLength).

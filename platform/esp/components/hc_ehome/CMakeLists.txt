@@ -7,7 +7,7 @@
 idf_component_register(
 	SRCS "esp_ws_client.cpp" "ehome_service.cpp"
 	INCLUDE_DIRS "include"
-	REQUIRES hc_core hc_platform hc_external hc_web
+	REQUIRES hc_core hc_platform hc_external hc_web hc_console
 	PRIV_REQUIRES espressif__esp_websocket_client mbedtls esp-tls freertos log)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

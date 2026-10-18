@@ -14,15 +14,17 @@ export class ApiError extends Error {
 	}
 }
 
-/// Calls the API; resolves with the parsed body, rejects with an ApiError.
-export async function api(method, path, body) {
-	const options = { method, headers: {}, credentials: "same-origin" };
+/// Calls the API; resolves with the parsed body, rejects with an ApiError. `body` is serialized as
+/// JSON, unless `extra.raw` says it is sent as it is (the bytes of a file: a signed runtime image
+/// must arrive byte for byte); `extra.headers` adds request headers.
+export async function api(method, path, body, extra = {}) {
+	const options = { method, headers: { ...(extra.headers || {}) }, credentials: "same-origin" };
 	if (method !== "GET") {
 		options.headers["X-Requested-With"] = "HomeControl";
 	}
 	if (body !== undefined) {
 		options.headers["Content-Type"] = "application/json";
-		options.body = JSON.stringify(body);
+		options.body = extra.raw ? body : JSON.stringify(body);
 	}
 	let response;
 	try {

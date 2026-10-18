@@ -2,7 +2,9 @@
 // The E-Home card of the Settings page (issue #41, doc/ehome.md, spec/api.md "E-Home connection"):
 // the connection's state from the live status (its `ehome` member), the owner's switch
 // (ehome.enabled), "Connect to E-Home" with the address and the one-time code E-Home shows, and
-// "Disconnect", which forgets the enrollment. Every refusal shows its reason.
+// "Disconnect", which forgets the enrollment; the installation key's fingerprint and, when E-Home
+// offers a new key, its fingerprint with "Accept key" (issue #35, spec/api.md "Installation key").
+// Every refusal shows its reason.
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
@@ -55,6 +57,35 @@ function connectForm(onDone) {
 	feedback);
 }
 
+/// A new installation key E-Home offered: its fingerprint, to compare with E-Home's, and "Accept key".
+/// The fingerprint goes with the request, so the device accepts only the key the owner saw.
+function pendingKey(fingerprint, onDone) {
+	const feedback = h("p", { class: "hint", role: "status" });
+	const accept = h("button", { type: "button", class: "button small" }, t("ehome.key.accept"));
+	accept.addEventListener("click", async () => {
+		if (!window.confirm(t("ehome.key.accept.confirm", { fingerprint }))) {
+			return;
+		}
+		accept.disabled = true;
+		try {
+			await api("POST", "/api/ehome/key/accept", { fingerprint });
+			feedback.className = "hint";
+			feedback.textContent = t("ehome.key.accepted", { fingerprint });
+			onDone();
+		} catch (error) {
+			feedback.className = "error-text";
+			feedback.textContent = errorText(error);
+		} finally {
+			accept.disabled = false;
+		}
+	});
+	return h("div", { class: "ehome-key", role: "alert" },
+		h("dl", { class: "rows" }, h("dt", null, t("ehome.key.pending")), h("dd", null, h("code", null, fingerprint))),
+		h("p", { class: "hint" }, t("ehome.key.pending.hint")),
+		h("div", { class: "actions" }, accept),
+		feedback);
+}
+
 function enrolledControls(e, address, onDone) {
 	const feedback = h("p", { class: "hint", role: "status" });
 	const toggle = h("input", { type: "checkbox", role: "switch", checked: !!e.enabled });
@@ -76,7 +107,8 @@ function enrolledControls(e, address, onDone) {
 	});
 	const disconnect = h("button", { type: "button", class: "button small danger" }, t("ehome.disconnect"));
 	disconnect.addEventListener("click", async () => {
-		if (!window.confirm(t("ehome.disconnect.confirm", { installation: e.installation || "" }))) {
+		const kept = e.key && e.key !== "damaged" ? ` ${t("ehome.disconnect.key_kept", { fingerprint: e.key })}` : "";
+		if (!window.confirm(t("ehome.disconnect.confirm", { installation: e.installation || "" }) + kept)) {
 			return;
 		}
 		disconnect.disabled = true;
@@ -90,10 +122,13 @@ function enrolledControls(e, address, onDone) {
 			disconnect.disabled = false;
 		}
 	});
+	const keyText = e.key === "damaged" ? t("ehome.key.damaged") : e.key ? h("code", null, e.key) : t("ehome.key.none");
 	return [
 		h("dl", { class: "rows" },
 			h("dt", null, t("ehome.installation")), h("dd", null, e.installation || "—"),
-			h("dt", null, t("ehome.address")), h("dd", null, address || "—")),
+			h("dt", null, t("ehome.address")), h("dd", null, address || "—"),
+			h("dt", null, t("ehome.key")), h("dd", null, keyText)),
+		e.pending_key ? pendingKey(e.pending_key, onDone) : null,
 		h("label", { class: "switch" }, toggle, h("span", { class: "switch-track", "aria-hidden": "true" }), label),
 		h("p", { class: "hint" }, t("ehome.switch.hint")),
 		h("div", { class: "actions" }, disconnect),
@@ -113,12 +148,16 @@ export function ehomeCard(reloadSettings) {
 	let last = null;
 	const render = () => {
 		const e = last || {};
-		const key = `${!!e.enrolled}/${!!e.enabled}/${e.installation || ""}/${address}`;
+		const key = `${!!e.enrolled}/${!!e.enabled}/${e.installation || ""}/${address}/${e.key || ""}/${e.pending_key || ""}`;
 		if (key === shown) {
 			return;
 		}
 		shown = key;
-		replace(body, e.enrolled ? enrolledControls(e, address, reloadSettings) : connectForm(reloadSettings));
+		// A key kept from an earlier pairing stays in force after "Disconnect" (spec/api.md "What clears the key").
+		const keptKey = !e.enrolled && e.key
+			? h("p", { class: "hint" }, e.key === "damaged" ? t("ehome.key.damaged") : t("ehome.key.kept", { fingerprint: e.key }))
+			: null;
+		replace(body, e.enrolled ? enrolledControls(e, address, reloadSettings) : [keptKey, connectForm(reloadSettings)]);
 	};
 	return {
 		element,

@@ -7,8 +7,10 @@ include("${CMAKE_CURRENT_LIST_DIR}/../../../../core/hc_core.cmake")
 
 idf_component_register(
 	SRCS ${HC_CORE_SOURCES}
-	INCLUDE_DIRS "${HC_CORE_INCLUDE_DIR}")
+	INCLUDE_DIRS "${HC_CORE_INCLUDE_DIR}"
+	PRIV_INCLUDE_DIRS ${HC_CORE_PRIVATE_INCLUDE_DIRS})
 
 # The same strictness as on the host (the IDF adds its own warning set on top).
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
 hc_core_add_build_id(${COMPONENT_LIB})
+hc_core_add_release_key(${COMPONENT_LIB})

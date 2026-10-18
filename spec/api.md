@@ -125,7 +125,9 @@ Each appears when the build has the service.
 
 `update` is platform-specific: always `available` (whether the device updates itself), the ESP
 build adds `partition`, `confirmed`, `checking`, `source` (update.url, `""` if none), `last`,
-`last_ago_s` and, with a source, `next_check_s` (doc/ota.md).
+`last_ago_s`, with a source `next_check_s`, and `release_key`: the fingerprint of the release key
+the firmware accepts manifests from (doc/ota.md "Manifest signature"; an unsigned or mis-signed
+manifest shows in `last` as `manifest refused: <reason>`).
 
 ## Datapoints
 
@@ -531,7 +533,11 @@ Authenticated like every endpoint: a bearer token, or the session cookie with th
 ### `PUT /api/image`
 
 The body is the image (JSON, at most 256 KB; larger: 413 `api.body_too_large` before it is read).
-The device validates it completely, then swaps it in on the event loop and stores it. 200:
+The header `X-Image-Signature: <128 hex digits>` carries the image's detached Ed25519 signature
+(E-Home connection: the request's `signature` member; section "Signed runtime images" below). While
+the device holds the installation key it checks the signature over the body's exact bytes before
+anything is parsed or written; without a key the header is not checked. The device validates the
+image completely, then swaps it in on the event loop and stores it. 200:
 
 ```json
 {"ok": true,
@@ -557,7 +563,14 @@ code: 400 `image.bad_json` (not JSON; the reason names the byte), 422 `image.ver
 major schema version), 422 `image.invalid`, 413 `image.too_large`, 507 `image.no_memory` (also
 `api.no_memory` from the ESP server when no heap block holds the body), 500 `image.apply_failed`
 (valid, but refused while applied; the stored image was loaded again), 400 `image.missing` (empty
-body). A load takes up to a few hundred milliseconds on the device; requests meanwhile wait.
+body), 403 `image.unsigned` (the device holds the installation key and the image comes without a
+signature), 403 `image.bad_signature` (the signature does not verify under the installation key,
+or the stored key is damaged), 400 `image.bad_signature` (the header is not 128 hex digits, with or
+without a key). Both 403 refusals name the fingerprint of the key the device expects in
+`refusals[0].reason`; they are 403, not 401, because a 401 means an expired login to the UI. The size
+limit comes first (413), then the signature, then the loader's refusals: a correctly signed image
+with invalid content gets the loader's code. A load takes up to a few hundred milliseconds on the
+device; requests meanwhile wait.
 
 ### `GET /api/image`
 
@@ -726,12 +739,16 @@ controller's side is described in doc/ehome.md.
 | `ehome.secret` | secret, 64 hex digits | empty | The controller's credential (received at the enrollment; never shown, listed or logged). |
 | `ehome.socket` | string, `wss://…`, at most 127 bytes | empty | The socket address of the enrollment's answer (not listed; `ws://` only with an `http://` `ehome.url`). |
 | `ehome.enabled` | boolean | `false` | The owner's switch: while true the controller keeps the connection up (with the backoff of doc/network.md, 1 s doubling to 60 s); while false it never connects, and switching it off closes an open connection at once. |
+| `ehome.key` | 64 hex digits | empty | The installation's Ed25519 public key (issue #35): from the enrollment answer's `public_key`, or a rotated key the owner accepted. While stored, every runtime image needs its signature. Not listed (the status shows its fingerprint), masked on the console. Survives "Disconnect" (below, "What clears the key"). |
 
 The settings list shows `ehome.url`, `ehome.id` and `ehome.name` read-only and `ehome.enabled`
 editable (`PUT /api/settings/ehome.enabled` with `true`/`false`, the switch on the Settings page;
 switching on without an enrollment is refused 422 `ehome.not_enrolled`). "Disconnect from E-Home"
 (`DELETE /api/ehome`, `{"ok": true}`; 409 `ehome.enrolling` while an enrollment runs) closes the
-connection and erases all six.
+connection and erases the enrollment (`ehome.url`, `ehome.id`, `ehome.name`, `ehome.secret`,
+`ehome.socket`, `ehome.enabled`) and a pending key, but **not** `ehome.key`: a device once paired
+keeps refusing unsigned images (section "Signed runtime images", "What clears the key"). The
+factory reset erases all of them.
 
 ### Enrollment
 
@@ -743,9 +760,16 @@ token principal, CSRF header; the code has 1 to 32 of `[A-Za-z0-9-]`). The contr
 E-Home's `POST <url>/api/controllers/enroll` with `{"code": "ABCD-EFGH", "name": "<host name>",
 "version": "<firmware>", "build": "<build id>"}` (the name is the controller's mDNS host name) over
 TLS (the IDF certificate bundle; plain `http://` only for development) and expects
-`200 {"controller": "<id>", "installation": "<name>", "secret": "<64 hex digits>", "socket": "wss://ehome.example/api/controllers/<id>/socket"}`.
-It stores the six settings with `ehome.enabled` true, answers `200 {"ok": true, "installation":
-"<name>"}` and connects. The HTTP answer waits for E-Home's (at most 30 s).
+`200 {"controller": "<id>", "installation": "<name>", "secret": "<64 hex digits>", "socket": "wss://ehome.example/api/controllers/<id>/socket", "public_key": "<64 hex digits>"}`.
+`public_key` (optional; issue #35) is the installation's Ed25519 public key, the 32 bytes of RFC 8032
+section 5.1.5 in hex: the device stores it as `ehome.key` and from then on accepts only runtime
+images signed with it (section "Signed runtime images" below). The enrollment authenticates it:
+the one-time code proves the owner's intent and TLS proves E-Home's identity, so the key needs no
+further confirmation; it replaces a key kept from an earlier pairing. An answer without `public_key`
+(or with `null`) leaves the device without a key (a kept one is erased: the authenticated answer
+decides), accepting token-authenticated images as before. A failed enrollment keeps the old key. It stores the settings with `ehome.enabled`
+true, answers `200 {"ok": true, "installation": "<name>"}` and connects. The HTTP answer waits for
+E-Home's (at most 30 s).
 
 Refusals, each with the reason in `error`:
 
@@ -757,7 +781,7 @@ Refusals, each with the reason in `error`:
 | 404 | `ehome.code_unknown` | E-Home answered 404: wrong or used code. |
 | 410 | `ehome.code_expired` | E-Home answered 410. |
 | 502 | `ehome.unreachable` | No answer (DNS, TLS, refused, 30 s without an answer) or another HTTP status from E-Home. |
-| 502 | `ehome.bad_answer` | E-Home's 200 lacks a member or one is malformed (the socket not `wss://`, the secret not 64 hex digits). |
+| 502 | `ehome.bad_answer` | E-Home's 200 lacks a member or one is malformed (the socket not `wss://`, the secret not 64 hex digits, `public_key` not 64 hex digits). |
 
 For 404, 410 and 409 the controller passes E-Home's own `code` and `error` when its `code` starts
 with `ehome.`. The enrollment is not reachable over the E-Home connection itself.
@@ -768,10 +792,12 @@ With `ehome.enabled` true the controller opens the WebSocket of `socket` (TLS) a
 
 ```
 E-Home → {"type": "challenge", "nonce": "<32 to 128 hex digits>"}
-device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216"}
+device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "key": "ce7d 4a41 a476 9ee3"}
 E-Home → {"type": "ready", "installation": "<name>"}        or {"type": "refused", "code": "...", "error": "..."} and the close
 ```
 
+`key` (only while the device holds an installation key) is that key's fingerprint (below): E-Home
+learns at every connection which key the device accepts images from, and signs with it.
 `mac` is HMAC-SHA256 with the 32 bytes the secret's hex digits denote as the key, over the bytes the
 nonce's hex digits denote, written as 64 lower-case hex digits. Test vector: secret
 `00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff`, nonce
@@ -805,16 +831,109 @@ A request body that does not fit the 4 KB text message (the runtime image) is an
 "length": 10226}` followed by binary messages carrying the body (their number does not matter, only
 the byte count); the controller answers after the last byte. When `length` exceeds what the route
 accepts the answer is 413 `api.body_too_large`, when the controller has no memory for it 507
-`api.no_memory`; the announced bytes are then read and dropped. A malformed request is answered 400
+`api.no_memory`; the announced bytes are then read and dropped. A signed image always goes with
+`length` and binary frames; the inline `body` form is for unsigned images on a device without a key
+(a `PUT /api/image` with `body` and `signature` is refused 400 `image.bad_request`, below). A malformed request is answered 400
 `ehome.bad_request`; binary messages nobody announced are dropped.
 
 Requests run with the "E-Home" principal: everything a token may do, minus what is decided on site
 only. Refused with 403 `ehome.forbidden` (and logged): `/api/auth/*` (onboarding, login, password),
 `/api/tokens*`, `/api/system/wifi`, `/api/system/factory-reset`, `/api/system/update/upload`,
-`/api/ehome*` (enrollment and disconnect), and writing `update.url` or any `ehome.*` setting. One
+`/api/ehome*` (enrollment, disconnect, accepting a key), and writing `update.url` or any `ehome.*`
+setting. One
 request at a time per socket; a second before the response is refused 429 `ehome.busy` (a second
 that announces `length` closes the socket: its binary messages could not be told apart). The device
 pings every 30 s; a pong missing after 10 s closes the socket and the backoff reconnects it.
+
+### Signed runtime images (issue #35)
+
+**The installation key.** E-Home holds one Ed25519 key pair per installation; the private key never
+leaves E-Home. The device learns the public key from the enrollment answer (`public_key`, above) and
+stores it as `ehome.key`. Its **fingerprint**, which the Settings page, the console, the log and the
+messages below show, is the first 8 bytes of SHA-256 over the 32 public-key bytes, as 16 lower-case
+hex digits in four groups of four separated by a space: `ce7d 4a41 a476 9ee3`.
+
+**The signature construction.** A runtime image is signed with plain Ed25519 (RFC 8032 section
+5.1.6, "pure" Ed25519 with SHA-512, no context, not Ed25519ph) over the 52-byte message
+
+```
+M = "homecontrol-image-v1" || SHA-256(image)
+```
+
+where `"homecontrol-image-v1"` is those 20 ASCII bytes without a terminator and `SHA-256(image)` the
+32-byte digest of the image's exact bytes as deployed (the body of `PUT /api/image`, the bytes the
+binary frames carry, the file a user installs: the same bytes `GET /api/image` returns later). The
+signature is the 64-byte `R || S` of RFC 8032, written as 128 lower-case hex digits (the device also
+reads upper case). In Java: `Signature.getInstance("Ed25519")` over `M`; in Python
+`Ed25519PrivateKey.sign(M)` (scripts/sign.py does exactly this).
+
+**Where the signature travels.**
+
+- Over the socket: the request carries `"signature": "<128 hex digits>"` next to `length`:
+  `{"type": "request", "id": 8, "method": "PUT", "path": "/api/image", "length": 10226, "signature": "9f1c…"}`.
+  The signature belongs to that request only. A signed image always goes with `length` and binary
+  frames; the inline `body` form is for unsigned images on a device without a key. A `PUT
+  /api/image` request carrying both `body` and `signature` is refused up front, whatever the key, with
+  400 `image.bad_request` and the error `a signed image is sent with length and binary frames: the
+  signature covers its exact bytes` (the inline body is parsed JSON, not the exported bytes).
+- Over HTTP: the header `X-Image-Signature: <128 hex digits>`.
+- As a file: `<image>.sig` beside the image, holding the 128 hex digits (optionally followed by a line
+  end; white space around them is ignored) or, alternatively, the 64 raw bytes. The Settings page's
+  "Install project file" takes it in its second file field and sends it as the header; the POSIX
+  build's `--image <file>` reads `<file>.sig`; the console takes `image load <url> <128 hex digits>`.
+
+**What the device checks.** While `ehome.key` is stored, every image from the API, the socket, the
+console or a file needs a signature that verifies under that key over the bytes received; it is
+checked after the size limit and before anything is parsed or written, so a refused image changes
+nothing and the previous image keeps running. Refusals (the `PUT /api/image` answer, in the socket's
+`response` the same body): 403 `image.unsigned` (no signature), 403 `image.bad_signature` (it does
+not verify, or `ehome.key` is damaged), 400 `image.bad_signature` (the signature is not 128 hex
+digits); the reason names the fingerprint of the expected key, e.g. `the image is not signed; the
+device accepts only images signed with the installation key ce7d 4a41 a476 9ee3`. The stored image
+loads at boot without a new check (it passed the check when it was stored). Without a key the device
+accepts images as before (the API's token or session); a signature is then not checked.
+
+**What clears the key.** Only two things: the factory reset (erases it) and a new enrollment's
+authenticated answer (replaces it with its `public_key`, or removes it when the answer has none).
+"Disconnect" (`DELETE /api/ehome`) does not: it drops the enrollment and a pending key, and the
+stored key stays in force, so that a token alone cannot forget E-Home and then push unsigned images.
+The device logs `the installation key <fingerprint> stays in force` and the status keeps showing
+`ehome.key` while not enrolled.
+
+**Rotation.** E-Home offers a new key over the authenticated socket:
+
+```
+E-Home → {"type": "key", "public_key": "<64 hex digits>", "fingerprint": "90ae 3702 f3a9 63ab"}
+device → {"type": "key_pending", "fingerprint": "90ae 3702 f3a9 63ab"}
+           ... the owner compares the fingerprint and accepts on the device ...
+device → {"type": "key_accepted", "fingerprint": "90ae 3702 f3a9 63ab"}
+```
+
+`fingerprint` is optional; when given it must be the key's (otherwise, or for a malformed key, the
+device answers `{"type": "error", "code": "ehome.bad_key", "error": "..."}` and keeps everything as
+it was). The new key stays **pending** in the device's RAM: the old key stays in force, images signed
+with the new key are refused, until the owner accepts it on the Settings page ("Accept key", which
+shows the fingerprint) or on the console (`ehome key accept`). A pending key is dropped when the
+socket ends (disconnect, failure, switched off) and by a new enrollment; E-Home offers it again after
+the next `ready`. Offering the key already in force answers `key_accepted` at once. E-Home keeps
+signing with the old key until `key_accepted` arrives (or the `auth` of a later connection names the
+new fingerprint). A device enrolled before this protocol (no key) gets its first key the same way,
+by the owner's acceptance.
+
+`POST /api/ehome/key/accept` with `{"fingerprint": "90ae 3702 f3a9 63ab"}` (session or token, CSRF
+header; never over the E-Home connection: 403 `ehome.forbidden`) stores the pending key as
+`ehome.key`. 200 `{"ok": true, "key": "<fingerprint>"}`; 409 `ehome.no_pending_key` (nothing offered,
+or the socket ended since), 409 `ehome.key_changed` (another key is pending now than the one whose
+fingerprint was sent), 400 `api.bad_json` (no fingerprint), 500 `settings.storage_error`.
+
+**Test vectors** (`spec/fixtures/signatures/vectors.json`, TEST KEYS ONLY): the key pair
+"installation" (public key `13833fbfa81080cdb4c1210131a5bb3e98f17675236e66124aed84cc490bccb1`,
+fingerprint `ce7d 4a41 a476 9ee3`) signs `spec/fixtures/images/example.json`; its signature is
+`spec/fixtures/images/example.json.sig`, and the vectors file spells out the digest, the message `M`
+and the signature with the "rotated" key; the "release" key signs `spec/fixtures/signatures/
+manifest.json` (doc/ota.md); RFC 8032 section 7.1 test 1 checks the Ed25519 implementation itself.
+The device's tests verify all of them; E-Home's must produce the same signatures (Ed25519 is
+deterministic).
 
 ### What E-Home refuses on the socket
 
@@ -843,8 +962,11 @@ path and host as the reverse proxy presents it (`X-Forwarded-Proto`, `X-Forwarde
 ### Status
 
 `GET /api/status` gains `"ehome": {"enabled": true, "enrolled": true, "state": "connected" |
-"connecting" | "off" | "failed", "since_s": 812, "installation": "<name>", "error": "..."}`
-(`installation` when enrolled, `error` while failed; the address is the `ehome.url` setting); the
+"connecting" | "off" | "failed", "since_s": 812, "installation": "<name>", "key": "ce7d 4a41 a476 9ee3",
+"pending_key": "90ae 3702 f3a9 63ab", "error": "..."}` (`installation` when enrolled, `key` the
+installation key's fingerprint while one is stored (`"damaged"` for an unreadable one),
+`pending_key` while a rotation awaits the owner, `error` while failed; the address is the
+`ehome.url` setting); the
 WebSocket `status` message carries the same member; the Settings page shows it beside the switch.
 E-Home shows each controller of a project as online or offline with the last contact.
 

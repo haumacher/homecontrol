@@ -8,6 +8,7 @@
 
 #include "hc/log.h"
 #include "hc/sha.h"
+#include "hc/signature.h"
 
 namespace hc {
 
@@ -602,6 +603,63 @@ bool update_manifest_url(const char* base, char* out, size_t size) {
 	std::memcpy(out, base, length);
 	std::memcpy(out + length, kName, sizeof(kName));
 	return true;
+}
+
+bool update_signature_url(const char* base, char* out, size_t size) {
+	size_t length = std::strlen(base);
+	while (length > 0 && base[length - 1] == '/') {
+		--length;
+	}
+	static const char kName[] = "/manifest.sig";
+	if (length + sizeof(kName) > size) {
+		return false;
+	}
+	std::memcpy(out, base, length);
+	std::memcpy(out + length, kName, sizeof(kName));
+	return true;
+}
+
+const char* manifest_signature_name(ManifestSignature verdict) {
+	switch (verdict) {
+		case ManifestSignature::valid: return "valid";
+		case ManifestSignature::missing: return "missing";
+		case ManifestSignature::malformed: return "malformed";
+		case ManifestSignature::mismatch: return "mismatch";
+		case ManifestSignature::no_key: return "no key";
+	}
+	return "?";
+}
+
+ManifestSignature verify_manifest_signature(const char* manifest, size_t length, const char* signature,
+	size_t signature_length, const uint8_t* key, char* reason, size_t reason_size) {
+	auto say = [&](ManifestSignature verdict, const char* text, const char* fingerprint) {
+		if (reason != nullptr && reason_size > 0) {
+			std::snprintf(reason, reason_size, text, fingerprint);
+		}
+		return verdict;
+	};
+	if (reason != nullptr && reason_size > 0) {
+		reason[0] = '\0';
+	}
+	if (key == nullptr) {
+		return say(ManifestSignature::no_key, "this firmware carries no usable release key%s", "");
+	}
+	char fingerprint[kFingerprintSize];
+	key_fingerprint(key, fingerprint);
+	if (signature == nullptr || signature_length == 0) {
+		return say(ManifestSignature::missing,
+			"the manifest is not signed (no manifest.sig next to it; the release key is %s)", fingerprint);
+	}
+	uint8_t sig[kEd25519SignatureSize];
+	if (!parse_signature(signature, signature_length, sig)) {
+		return say(ManifestSignature::malformed, "manifest.sig is not a signature (128 hex digits or 64 bytes)%s", "");
+	}
+	if (manifest == nullptr || !ed25519_verify(sig, reinterpret_cast<const uint8_t*>(manifest), length, key)) {
+		return say(ManifestSignature::mismatch,
+			"the manifest's signature does not match the release key %s (another key, or the manifest changed)",
+			fingerprint);
+	}
+	return ManifestSignature::valid;
 }
 
 bool resolve_update_url(const char* base, const char* reference, char* out, size_t size, const char** error) {

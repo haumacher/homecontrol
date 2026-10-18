@@ -61,6 +61,37 @@ The enrollment's HTTP answer waits for E-Home's (`WebResponse::deferred`: the we
   accepted only together with an `http://` E-Home address, for development.
 - The connection exists only while the owner switches it on; E-Home cannot switch it on.
 
+## Installation key
+
+Signed runtime images (issue #35, spec/api.md "Signed runtime images"): E-Home holds an Ed25519 key
+pair per installation and signs every image it deploys (plain Ed25519 over `"homecontrol-image-v1"
+|| SHA-256(image)`).
+
+- **Pairing.** The enrollment answer's `public_key` is stored as `ehome.key` (64 hex digits, masked
+  like the secret, never listed; the status's `ehome.key` and the Settings page show its fingerprint,
+  the first 8 bytes of SHA-256 over the key in hex groups: `ce7d 4a41 a476 9ee3`). The enrollment
+  itself authenticates the key (the one-time code, TLS), so it is in force at once. The `auth`
+  message names the fingerprint, so E-Home knows which key a device holds.
+- **Enforcement** lives in the image service, not in the link: `ImageService::load()` refuses every
+  image from the API, the socket, the console or a file without a valid signature while `ehome.key`
+  is stored (`image.unsigned`, `image.bad_signature`, the expected key's fingerprint in the reason),
+  after the size limit and before the loader; the boot load of the stored image is not checked
+  again. Without a key nothing changes.
+- **Rotation.** A `key` message over the authenticated socket makes the offered key *pending* (RAM
+  only, `pending_key` in the status, the Settings page shows its fingerprint with "Accept key"); the
+  old key stays in force until the owner accepts on the device (`POST /api/ehome/key/accept` with the
+  fingerprint the page showed, or the console's `ehome key accept`). E-Home cannot accept for the
+  owner: `/api/ehome*` is forbidden to its principal. The pending key goes when the socket ends and
+  at an enrollment. The device confirms with `key_accepted`.
+- **What clears the key.** Only the factory reset (erases it) and a new enrollment's answer
+  (replaces it, or removes it when the answer carries no `public_key`; a failed enrollment keeps
+  it). "Disconnect" (`DELETE /api/ehome`) erases the enrollment and a pending key but keeps
+  `ehome.key` in force, so a token alone cannot forget E-Home and then push unsigned images; the
+  Settings page keeps showing the key's fingerprint while not enrolled.
+
+Console (`ehome`): `ehome status` (state, enrollment, key), `ehome key` (the key in force and an
+offered one, as fingerprints), `ehome key accept`.
+
 ## In the log
 
 Every state change is one line under the tag `hc.ehome`:

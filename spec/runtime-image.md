@@ -267,6 +267,13 @@ Each refusal has a **path** (`datapoints[3].knx.send`, `functions[1].datapoints.
 | too large | `image.too_large` | 413 | More than 256 KB. |
 | no memory | `image.no_memory` | 507 | The device could not allocate the tables. Nothing changed. |
 | apply | `image.apply_failed` | 500 | Valid, but a component refused while it was applied (section 6); the previous stored image was loaded again. |
+| unsigned | `image.unsigned` | 403 | The device holds the installation key and the image comes without its signature (`spec/api.md` "Signed runtime images"). |
+| bad signature | `image.bad_signature` | 403 | The signature does not verify under the installation key over the image's exact bytes (400: not 128 hex digits). |
+
+The signature is checked after the size limit and before the document is parsed: a signed image
+with invalid content reports the loader's kind, an unsigned one never reaches the loader. The
+signature is detached (the header `X-Image-Signature`, the socket's `signature`, a `.sig` file); the
+document itself does not change.
 
 Rules are validated last and only when everything before is valid, because their references are
 checked against the image's datapoints and schedules. Rule and schedule reasons start with the

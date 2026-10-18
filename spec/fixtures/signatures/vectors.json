@@ -1,0 +1,45 @@
+{
+	"_comment": "Test vectors of issue #35 (spec/api.md 'Signed runtime images', doc/ota.md 'Manifest signature'). The private keys here are TEST KEYS ONLY, derived from public labels (seed = SHA-256 of the label): never trust them on a real device or installation.",
+	"keys": {
+		"installation": {
+			"label": "homecontrol TEST ONLY installation key 1",
+			"private_seed_TEST_ONLY": "48613bb792f76c2201cb3521eaab920dad55d68982490274331eff6dc73a2fb3",
+			"public_key": "13833fbfa81080cdb4c1210131a5bb3e98f17675236e66124aed84cc490bccb1",
+			"fingerprint": "ce7d 4a41 a476 9ee3"
+		},
+		"rotated": {
+			"label": "homecontrol TEST ONLY installation key 2",
+			"private_seed_TEST_ONLY": "2bb9dbea0c0c160975dc5e23749d1891e42869b0b87f30c173d3155af920d817",
+			"public_key": "ed592207e3c3f843383c53d6d0b402b2b047323ca0eca31673655d6a940d96cd",
+			"fingerprint": "90ae 3702 f3a9 63ab"
+		},
+		"release": {
+			"label": "homecontrol TEST ONLY release key",
+			"private_seed_TEST_ONLY": "2af0349383f7407cb9ede16d2ae3fd2bba3a4046ea25035ba66830c8273c8079",
+			"public_key": "0e12ea41a92beace805bd36530b61d68c82cfe5079c949e28203064f78679432",
+			"fingerprint": "dfba 89a7 15ad 2217"
+		}
+	},
+	"image": {
+		"file": "../images/example.json",
+		"signature_file": "../images/example.json.sig",
+		"key": "installation",
+		"sha256": "d03d4ca401c051781a9b2f2035b519abbdb540e99b8a23587813ffcc5ac7106e",
+		"context": "homecontrol-image-v1",
+		"message": "686f6d65636f6e74726f6c2d696d6167652d7631d03d4ca401c051781a9b2f2035b519abbdb540e99b8a23587813ffcc5ac7106e",
+		"signature": "7309df7733d37adb248ce570433985b384394f647330d79c9bb4a4ed0e91f406ac0e2791327992118e08c761862adc17f3b1358f53d625abc811e063acffb606",
+		"signature_rotated_key": "8192d6a211f0fe20cce6af6162e5538d7f791942342212cdcf0e632e1899637bd8bfe788d694e2f1332946348cbe44220df3f3dc19ad5d9ff6ea5ee54ba39d06"
+	},
+	"manifest": {
+		"file": "manifest.json",
+		"signature_file": "manifest.sig",
+		"key": "release",
+		"signature": "285bb6d561d42213985ea13110234cc8db031b77734df4e59e5aa8914511960a084734030491faf035d5a955701b6c8e5d032a99c0afee0c6bf2e1a64a60a107"
+	},
+	"rfc8032_test1": {
+		"private_seed": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+		"public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+		"message": "",
+		"signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+	}
+}

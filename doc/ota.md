@@ -117,6 +117,38 @@ issue #43, which carries the language packs, the external values and the E-Home 
   first").
 - Unknown members are ignored. Anything malformed is refused with the reason in the log.
 
+## Manifest signature
+
+The manifest is signed with the **release key** (issue #35): `<update.url>/manifest.sig` beside it
+holds the detached Ed25519 signature (RFC 8032, plain Ed25519) over the manifest's **exact bytes as
+served**, as 128 hex digits with an optional line end (or the 64 raw bytes). The application fetches
+both in its check task and calls `hc::verify_manifest_signature` before it parses the manifest; the
+image itself stays guarded by the manifest's `sha256`, which the updater checks as before (the
+updater needs no key). Refused, with the reason in the log, the console's `update status` and the
+status's `update.last` (the System card on the Settings page):
+
+| Verdict | `last` |
+|---|---|
+| no `manifest.sig` (404) | `manifest refused: the manifest is not signed (no manifest.sig next to it; the release key is dfba 89a7 15ad 2217)` |
+| not 128 hex digits / 64 bytes | `manifest refused: manifest.sig is not a signature (128 hex digits or 64 bytes)` |
+| another key, or the manifest changed | `manifest refused: the manifest's signature does not match the release key ... (another key, or the manifest changed)` |
+| another HTTP error on `manifest.sig` | `check failed: manifest.sig: HTTP status <n>` |
+
+**The release key in the firmware.** The build reads the public key (64 hex digits) from the file
+the CMake variable `HC_RELEASE_KEY` names, default the committed `platform/esp/release-key.pub`,
+into `hc_generated/hc_release_key.h` (`hc::release_public_key()`); the status's `update.release_key`
+and `update status` show its fingerprint. The private half lives with the release owner, never in
+the repository (the author's copy: `~/.config/homecontrol/release-key.secret`, mode 600; sign a
+release's manifest with `scripts/sign.py manifest <secret-file> manifest.json`).
+
+**Development key.** `scripts/update-server.py` signs with a development key it generates on first
+use into the git-ignored `scripts/dev-release-key` (public half `scripts/dev-release-key.pub`) and
+prints the build line for a firmware that trusts it:
+`idf.py -B build-esp32c6 -DHC_RELEASE_KEY=$PWD/scripts/dev-release-key.pub build` (a changed key
+file reconfigures). `--key <secret-file>` signs with another key, `--unsigned` serves no
+`manifest.sig` (to watch the refusal). A firmware built with the committed release key refuses the
+development server's manifests, and vice versa: the browser upload (below) works with any build.
+
 **When an update applies** (`hc::check_update`): the manifest's version is newer by semver
 precedence (a pre-release is older than its release: `0.1.0-dev` < `0.1.0` < `0.1.1-dev`; build
 metadata does not count). `-dev` (pre-release) builds update to any newer release and ignore
@@ -292,10 +324,13 @@ interrupted otadata write leaves the previous selection.
 
 ## Security
 
-The update source is trusted: HTTPS servers are authenticated against the IDF certificate bundle
-(common CAs), plain HTTP is accepted for development, and the image itself is not signed - the
-SHA-256 in the manifest protects against corruption, not against a malicious source. The
-authenticity question (signed images, secure boot) is issue #20.
+HTTPS servers are authenticated against the IDF certificate bundle (common CAs), plain HTTP is
+accepted for development. The manifest is signed with the release key whose public half the
+firmware carries ("Manifest signature" above), and the SHA-256 in the signed manifest binds the
+image: a malicious or compromised update source can withhold updates but not install an image the
+release key did not announce. The binary itself is not signed separately, and secure boot and flash
+encryption stay off (irreversible on the chip, development boards are shared; #20). The browser
+upload is authorized by the device's own session or token, not by the release key.
 
 ## Development procedure
 
@@ -321,6 +356,10 @@ cd platform/esp/build-esp32c6 && esptool.py --chip esp32c6 --port /dev/ttyACM1 -
 ```bash
 scripts/update-server.py              # serves platform/esp/build-esp32c6 on port 8070, prints the URLs
 ```
+
+The firmware on the board must trust the server's signing key: build it with
+`-DHC_RELEASE_KEY=$PWD/scripts/dev-release-key.pub` (the server prints the line; "Manifest
+signature" above), or the check reports `manifest refused: ...`.
 
 **Upload from the browser instead of USB.** With an updater that serves uploads on the board (flashed
 once over USB with the procedure above), a new application build is installed from the browser:

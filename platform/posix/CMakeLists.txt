@@ -6,7 +6,7 @@
 #   cmake -S platform/posix -B build -G Ninja && cmake --build build && ctest --test-dir build
 
 cmake_minimum_required(VERSION 3.16)
-project(homecontrol_posix LANGUAGES CXX)
+project(homecontrol_posix LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,8 +17,10 @@ endif()
 
 get_filename_component(HC_REPO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.." REALPATH)
 
-# The core's rules apply to everything built here: no exceptions, no RTTI, warnings are errors.
-add_compile_options(-Wall -Wextra -Werror -fno-exceptions -fno-rtti)
+# The core's rules apply to everything built here: no exceptions, no RTTI, warnings are errors. The
+# only C is the vendored Ed25519 (third_party/monocypher), under the same warnings.
+set(CMAKE_C_STANDARD 99)
+add_compile_options(-Wall -Wextra -Werror "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions;-fno-rtti>")
 
 add_subdirectory("${HC_REPO_DIR}/core" core)
 
@@ -69,6 +71,7 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/dpt_corpus_test.cpp"
 	"${HC_REPO_DIR}/core/test/datapoint_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/sha_test.cpp"
+	"${HC_REPO_DIR}/core/test/signature_test.cpp"
 	"${HC_REPO_DIR}/core/test/json_test.cpp"
 	"${HC_REPO_DIR}/core/test/websocket_test.cpp"
 	"${HC_REPO_DIR}/core/test/log_ring_test.cpp"

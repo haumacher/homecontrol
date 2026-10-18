@@ -16,6 +16,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hc/signature.h"
 #include "hc/version.h"
 #if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
 #include "esp_crt_bundle.h"
@@ -221,7 +222,8 @@ bool OtaService::check(bool force, const char* base, const char** error) {
 		return false;
 	}
 	std::strcpy(base_, base);
-	if (!update_manifest_url(base_, manifest_url_, sizeof(manifest_url_))) {
+	if (!update_manifest_url(base_, manifest_url_, sizeof(manifest_url_)) ||
+		!update_signature_url(base_, signature_url_, sizeof(signature_url_))) {
 		*error = "manifest URL too long";
 		return false;
 	}
@@ -238,48 +240,75 @@ bool OtaService::check(bool force, const char* base, const char** error) {
 	return true;
 }
 
-void OtaService::fetch_task(void* context) {
-	OtaService* self = static_cast<OtaService*>(context);
+namespace {
+
+/// GETs `url` into `buffer` (at most `capacity` bytes; more is cut, and the parser refuses it). The
+/// HTTP status into `status` (0: no answer); false with the reason in `error` when there is no
+/// usable answer (a status other than 200 is an answer: the caller decides).
+bool fetch_document(const char* url, char* buffer, size_t capacity, size_t& length, int& status, char* error,
+	size_t error_size) {
+	length = 0;
+	status = 0;
 	esp_http_client_config_t config = {};
-	config.url = self->manifest_url_;
+	config.url = url;
 	config.timeout_ms = kHttpTimeoutMs;
 #if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
 	config.crt_bundle_attach = esp_crt_bundle_attach;
 #endif
 	esp_http_client_handle_t client = esp_http_client_init(&config);
 	if (client == nullptr) {
-		std::snprintf(self->fetch_error_, sizeof(self->fetch_error_), "HTTP client not created");
+		std::snprintf(error, error_size, "HTTP client not created");
+		return false;
+	}
+	bool ok = true;
+	esp_err_t err = esp_http_client_open(client, 0);
+	if (err != ESP_OK) {
+		std::snprintf(error, error_size, "cannot connect: %s", esp_err_to_name(err));
+		ok = false;
 	} else {
-		esp_err_t err = esp_http_client_open(client, 0);
-		if (err != ESP_OK) {
-			std::snprintf(self->fetch_error_, sizeof(self->fetch_error_), "cannot connect: %s", esp_err_to_name(err));
-		} else {
-			esp_http_client_fetch_headers(client);
-			int status = esp_http_client_get_status_code(client);
-			if (status != 200) {
-				std::snprintf(self->fetch_error_, sizeof(self->fetch_error_), "HTTP status %d", status);
-			} else {
-				size_t length = 0;
-				for (;;) {
-					int n = esp_http_client_read(client, self->response_ + length,
-						static_cast<int>(sizeof(self->response_) - length));
-					if (n < 0) {
-						std::snprintf(self->fetch_error_, sizeof(self->fetch_error_), "read error");
-						break;
-					}
-					if (n == 0) {
-						break;
-					}
-					length += static_cast<size_t>(n);
-					if (length == sizeof(self->response_)) {
-						break; // more than kMaxLength: the parser refuses it
-					}
-				}
-				self->response_length_ = length;
+		esp_http_client_fetch_headers(client);
+		status = esp_http_client_get_status_code(client);
+		while (status == 200 && length < capacity) {
+			int n = esp_http_client_read(client, buffer + length, static_cast<int>(capacity - length));
+			if (n < 0) {
+				std::snprintf(error, error_size, "read error");
+				ok = false;
+				break;
+			}
+			if (n == 0) {
+				break;
+			}
+			length += static_cast<size_t>(n);
+		}
+	}
+	esp_http_client_close(client);
+	esp_http_client_cleanup(client);
+	return ok;
+}
+
+} // namespace
+
+void OtaService::fetch_task(void* context) {
+	OtaService* self = static_cast<OtaService*>(context);
+	int status = 0;
+	if (fetch_document(self->manifest_url_, self->response_, sizeof(self->response_), self->response_length_, status,
+			self->fetch_error_, sizeof(self->fetch_error_)) &&
+		status != 200) {
+		std::snprintf(self->fetch_error_, sizeof(self->fetch_error_), "HTTP status %d", status);
+	}
+	// The manifest's detached signature beside it (doc/ota.md "Manifest signature"): 404 is "not
+	// signed", which the check refuses with that reason; another failure fails the check.
+	self->signature_length_ = 0;
+	self->signature_missing_ = false;
+	if (self->fetch_error_[0] == '\0') {
+		if (fetch_document(self->signature_url_, self->signature_, sizeof(self->signature_), self->signature_length_,
+				status, self->fetch_error_, sizeof(self->fetch_error_))) {
+			if (status == 404) {
+				self->signature_missing_ = true;
+			} else if (status != 200) {
+				std::snprintf(self->fetch_error_, sizeof(self->fetch_error_), "manifest.sig: HTTP status %d", status);
 			}
 		}
-		esp_http_client_close(client);
-		esp_http_client_cleanup(client);
 	}
 	if (!self->queue_.post(&OtaService::handle_fetched, self, 0, nullptr, "update check result")) {
 		self->busy_.store(false);
@@ -296,6 +325,17 @@ void OtaService::finish_check() {
 	if (fetch_error_[0] != '\0') {
 		ESP_LOGW(kTag, "update check failed: %s: %s", manifest_url_, fetch_error_);
 		set_last("check failed: %s", fetch_error_);
+		busy_.store(false);
+		return;
+	}
+	// The signature first: only the release key's manifest is read at all (doc/ota.md "Manifest
+	// signature"); the image stays guarded by the manifest's SHA-256.
+	char reason[128];
+	ManifestSignature signature = verify_manifest_signature(response_, response_length_,
+		signature_missing_ ? nullptr : signature_, signature_length_, release_public_key(), reason, sizeof(reason));
+	if (signature != ManifestSignature::valid) {
+		ESP_LOGW(kTag, "update check: manifest %s refused: %s", manifest_url_, reason);
+		set_last("manifest refused: %s", reason);
 		busy_.store(false);
 		return;
 	}
@@ -451,6 +491,11 @@ void OtaService::print_status() const {
 	esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
 	bool known = running != nullptr && esp_ota_get_state_partition(running, &state) == ESP_OK;
 	std::printf("version   %s (%s)\n", kVersion, build_id());
+	if (const uint8_t* key = release_public_key()) {
+		char fingerprint[kFingerprintSize];
+		key_fingerprint(key, fingerprint);
+		std::printf("release   key %s (manifests need its signature)\n", fingerprint);
+	}
 	std::printf("partition %s, state %s%s\n", running != nullptr ? running->label : "?",
 		known ? ota_state_name(state) : "unknown", confirmed_ ? "" : ", not yet confirmed");
 	char url[Settings::kMaxStringLength + 1];

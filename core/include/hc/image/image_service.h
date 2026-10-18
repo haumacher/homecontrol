@@ -93,7 +93,15 @@ public:
 	/// Validates and applies `text` (not NUL-terminated; it may be freed after the call). With
 	/// `store` the text is stored when the load succeeded (stored() and store_error() tell whether
 	/// that worked). False when it was refused or failed: report() says why.
-	bool load(const char* text, size_t length, Source source, bool store);
+	///
+	/// `signature` (64 bytes, or nullptr for none) is the image's detached Ed25519 signature (issue
+	/// #35, spec/api.md "Signed runtime images"). While the device holds the installation key
+	/// (setting ehome.key) every load but Source::boot and Source::restore (the stored image passed
+	/// this check when it was stored) needs it: without one the image is refused as `unsigned_image`,
+	/// with one that does not verify as `bad_signature`, both with the key's fingerprint in the
+	/// reason, before anything is parsed or written. An image above kMaxImageBytes is refused as too
+	/// large first. Without a key a signature is not checked (as before the key pairing).
+	bool load(const char* text, size_t length, Source source, bool store, const uint8_t* signature = nullptr);
 
 	/// Loads the stored image (the boot load). False without one or when it fails (logged).
 	bool load_stored(Source source);
@@ -185,6 +193,8 @@ private:
 	struct Composed;
 
 	bool apply(Plan& plan, Source source);
+	/// The signature gate of load(): true when the image may be parsed.
+	bool authorize(const char* text, size_t length, Source source, const uint8_t* signature);
 	bool compose(const Plan* plan, Composed& out, Report& report);
 	void bind_providers(const Plan* plan, const Composed& composed);
 	bool bind_persistence(const Plan& plan, Source source);

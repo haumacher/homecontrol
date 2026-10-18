@@ -313,6 +313,7 @@ bool WebServer::start() {
 		std::string cookie = req.get_header_value("Cookie");
 		std::string authorization = req.get_header_value("Authorization");
 		std::string requested_with = req.get_header_value("X-Requested-With");
+		std::string image_signature = req.get_header_value("X-Image-Signature");
 		WebRequest request;
 		request.method = method_of(req.method);
 		request.path = req.path.c_str();
@@ -320,6 +321,7 @@ bool WebServer::start() {
 		request.cookie = req.has_header("Cookie") ? cookie.c_str() : nullptr;
 		request.authorization = req.has_header("Authorization") ? authorization.c_str() : nullptr;
 		request.requested_with = req.has_header("X-Requested-With") ? requested_with.c_str() : nullptr;
+		request.image_signature = req.has_header("X-Image-Signature") ? image_signature.c_str() : nullptr;
 		request.source = req.remote_addr.c_str();
 		request.body = req.body.data();
 		request.body_length = req.body.size();

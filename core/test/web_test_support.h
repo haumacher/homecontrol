@@ -192,6 +192,8 @@ struct WebFixture {
 	hc::Auth auth{fake.settings, fake.clock, crypto};
 	hc::WebApi api{controller, model, auth, host};
 	char buffer[8192];
+	/// The X-Image-Signature of the requests that follow ("": none).
+	std::string image_signature;
 
 	struct Result {
 		int status = 0;
@@ -221,6 +223,7 @@ struct WebFixture {
 		req.cookie = cookie.empty() ? nullptr : cookie.c_str();
 		req.authorization = authorization.empty() ? nullptr : authorization.c_str();
 		req.requested_with = csrf ? "HomeControl" : nullptr;
+		req.image_signature = image_signature.empty() ? nullptr : image_signature.c_str();
 		req.source = source;
 		req.body = body.c_str();
 		req.body_length = body.size();

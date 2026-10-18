@@ -14,6 +14,7 @@
 
 #include "hc/json_document.h"
 #include "hc/network_settings.h"
+#include "hc/signature.h"
 
 namespace hc {
 namespace image {
@@ -44,6 +45,8 @@ const char* report_code(Report::Kind kind) {
 		case Report::Kind::too_large: return "image.too_large";
 		case Report::Kind::no_memory: return "image.no_memory";
 		case Report::Kind::apply: return "image.apply_failed";
+		case Report::Kind::unsigned_image: return "image.unsigned";
+		case Report::Kind::bad_signature: return "image.bad_signature";
 		default: return "image.invalid";
 	}
 }
@@ -55,6 +58,8 @@ const char* report_text(Report::Kind kind) {
 		case Report::Kind::too_large: return "the image is larger than the device accepts";
 		case Report::Kind::no_memory: return "the device has not enough memory for the image";
 		case Report::Kind::apply: return "the image was valid but could not be applied";
+		case Report::Kind::unsigned_image: return "the device holds the installation key: the image needs its signature";
+		case Report::Kind::bad_signature: return "the image's signature does not verify under the installation key";
 		default: return "the image is invalid";
 	}
 }
@@ -151,8 +156,55 @@ bool ImageService::load_stored(Source source) {
 	return ok;
 }
 
-bool ImageService::load(const char* text, size_t length, Source source, bool store) {
+bool ImageService::authorize(const char* text, size_t length, Source source, const uint8_t* signature) {
+	if (source == Source::boot || source == Source::restore) {
+		return true; // the stored image passed the gate when it was stored
+	}
+	uint8_t key[kEd25519KeySize];
+	KeyState state = load_installation_key(controller_.settings(), key);
+	if (state == KeyState::none) {
+		if (signature != nullptr) {
+			Log::info(kTag, "image from %s: its signature is not checked (the device holds no installation key)",
+				source_name(source));
+		}
+		return true;
+	}
+	report_.clear();
+	if (state == KeyState::damaged) {
+		report_.add(Report::Kind::bad_signature, "",
+			"the stored installation key (setting %s) is damaged: disconnect from E-Home and enroll again",
+			setting::kEhomeKey);
+	} else {
+		char fingerprint[kFingerprintSize];
+		key_fingerprint(key, fingerprint);
+		if (signature == nullptr) {
+			report_.add(Report::Kind::unsigned_image, "",
+				"the image is not signed; the device accepts only images signed with the installation key %s",
+				fingerprint);
+		} else {
+			uint64_t start = controller_.clock().monotonic_ms();
+			if (image_signature_valid(text, length, signature, key)) {
+				Log::info(kTag, "image from %s: signature verified (installation key %s, %u bytes in %u ms)",
+					source_name(source), fingerprint, static_cast<unsigned>(length),
+					static_cast<unsigned>(controller_.clock().monotonic_ms() - start));
+				return true;
+			}
+			report_.add(Report::Kind::bad_signature, "",
+				"the signature does not match the image under the installation key %s (another key, or the image "
+				"changed after signing)", fingerprint);
+		}
+	}
+	Log::warn(kTag, "image from %s refused (%s): %s; the %s", source_name(source), report_kind_name(report_.kind),
+		report_.refusals[0].reason, loaded_ ? "loaded image stays" : "device keeps no image");
+	return false;
+}
+
+bool ImageService::load(const char* text, size_t length, Source source, bool store, const uint8_t* signature) {
 	uint64_t begin = controller_.clock().monotonic_ms();
+	// An image above the limit is refused as too large by the loader, before its signature counts.
+	if (length <= kMaxImageBytes && !authorize(text, length, source, signature)) {
+		return false;
+	}
 	Plan* plan = new (std::nothrow) Plan();
 	if (plan == nullptr) {
 		report_.clear();

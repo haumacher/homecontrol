@@ -332,6 +332,7 @@ void EhomeLink::attempt() {
 
 void EhomeLink::stop_socket(uint16_t code, const char* reason) {
 	drop_request();
+	drop_pending_key("the connection ended");
 	feed_.detach_ehome();
 	if (socket_) {
 		socket_ = false;
@@ -480,6 +481,10 @@ void EhomeLink::ws_client_text(const char* text, size_t length) {
 		request(message);
 		return;
 	}
+	if (json_string_equals(type, "key")) {
+		key_message(message);
+		return;
+	}
 	feed_.ehome_message(text, length);
 }
 
@@ -502,15 +507,24 @@ void EhomeLink::handshake_message(const JsonSpan& message, const JsonSpan& type)
 			fail("cannot answer E-Home's challenge (a nonce of 32 to 128 hex digits, and the stored secret)");
 			return;
 		}
-		char auth[256];
+		char auth[320];
+		char fingerprint[kFingerprintSize];
+		uint8_t key[kEd25519KeySize];
+		bool has_key = load_installation_key(settings, key) == KeyState::ok;
+		if (has_key) {
+			key_fingerprint(key, fingerprint);
+		}
 		JsonWriter json(auth, sizeof(auth));
 		json.begin_object()
 			.member("type", "auth")
 			.member("controller", id)
 			.member("mac", mac)
 			.member("version", kVersion)
-			.member("build", build_id())
-			.end_object();
+			.member("build", build_id());
+		if (has_key) {
+			json.member("key", fingerprint); // the installation key the device holds
+		}
+		json.end_object();
 		bool sent = !json.overflowed() && send_text(auth, json.length());
 		std::memset(mac, 0, sizeof(mac));
 		std::memset(auth, 0, sizeof(auth));
@@ -567,6 +581,7 @@ void EhomeLink::ws_close(uint32_t client, uint16_t code, const char* reason) {
 // ---- Requests ---------------------------------------------------------------------------------
 
 void EhomeLink::drop_request() {
+	has_signature_ = false;
 	delete[] body_;
 	body_ = nullptr;
 	body_length_ = 0;
@@ -650,6 +665,10 @@ void EhomeLink::request(const JsonSpan& message) {
 	}
 	std::memcpy(request_id_, id, sizeof(request_id_));
 	method_ = m;
+	has_signature_ = json_member(message, "signature", member);
+	if (has_signature_ && !json_string(member, signature_, sizeof(signature_))) {
+		copy(signature_, sizeof(signature_), "invalid"); // not a string, or too long: the API refuses it
+	}
 	char* q = std::strchr(path_, '?');
 	if (q != nullptr) {
 		*q = '\0';
@@ -682,9 +701,19 @@ void EhomeLink::request(const JsonSpan& message) {
 		Log::info(kTag, "request %s: %s %s, receiving %u bytes", id, method, path_, static_cast<unsigned>(bytes));
 		return; // dispatched when the last byte arrived (ws_client_binary)
 	}
-	busy_ = true;
 	JsonSpan body;
-	if (json_member(message, "body", body)) {
+	bool inline_body = json_member(message, "body", body);
+	if (inline_body && has_signature_ && method_ == HttpMethod::put && std::strcmp(path_, "/api/image") == 0) {
+		// The inline body is a span of parsed JSON, not the exported file's bytes the signature covers.
+		static const char kText[] = "a signed image is sent with length and binary frames: the signature covers its "
+			"exact bytes";
+		Log::warn(kTag, "request %s PUT /api/image refused: %s", id, kText);
+		answer(id, 400, "image.bad_request", kText);
+		has_signature_ = false;
+		return;
+	}
+	busy_ = true;
+	if (inline_body) {
 		// The body is a span of the message, valid during this call: dispatch now.
 		WebRequest req;
 		req.method = method_;
@@ -693,6 +722,7 @@ void EhomeLink::request(const JsonSpan& message) {
 		req.requested_with = WebApi::kCsrfHeaderValue;
 		req.source = "E-Home";
 		req.ehome = true;
+		req.image_signature = has_signature_ ? signature_ : nullptr;
 		req.body = body.data;
 		req.body_length = body.length;
 		WebResponse response(out_ + kPrefix, kMaxResponseBody);
@@ -742,6 +772,7 @@ void EhomeLink::dispatch() {
 	req.requested_with = WebApi::kCsrfHeaderValue;
 	req.source = "E-Home";
 	req.ehome = true;
+	req.image_signature = has_signature_ ? signature_ : nullptr;
 	req.body = body_;
 	req.body_length = body_length_;
 	WebResponse response(out_ + kPrefix, kMaxResponseBody);
@@ -874,6 +905,14 @@ void EhomeLink::handle_route(const char* rest, const WebRequest& request, WebRes
 			return;
 		}
 		enroll(request, response);
+		return;
+	}
+	if (std::strcmp(rest, "/key/accept") == 0) {
+		if (request.method != HttpMethod::post) {
+			WebApi::refuse(response, 405, "api.method_not_allowed", "use POST");
+			return;
+		}
+		key_route(request, response);
 		return;
 	}
 	WebApi::refuse(response, 404, "api.not_found", "no such API endpoint");
@@ -1047,6 +1086,9 @@ void EhomeLink::fetch_end(const FetchResult& result) {
 		char name[Settings::kMaxStringLength + 1] = {};
 		char secret[Settings::kMaxStringLength + 1] = {};
 		char socket[Settings::kMaxStringLength + 1] = {};
+		char key_text[2 * kEd25519KeySize + 2] = {};
+		uint8_t key[kEd25519KeySize];
+		bool has_key = false;
 		const char* what = nullptr;
 		const char* why = nullptr;
 		if (!parsed) {
@@ -1063,6 +1105,13 @@ void EhomeLink::fetch_end(const FetchResult& result) {
 		} else if (!string_member(answer, "socket", socket, sizeof(socket)) ||
 			!ehome_socket_valid(socket, enroll_url_, &why)) {
 			what = "socket";
+		} else {
+			JsonSpan member;
+			has_key = json_member(answer, "public_key", member) && member.kind != JsonSpan::Kind::null;
+			if (has_key && (!json_string(member, key_text, sizeof(key_text)) || !parse_public_key(key_text, key))) {
+				what = "public_key";
+				why = "not an Ed25519 public key of 64 hex digits";
+			}
 		}
 		if (what != nullptr) {
 			std::memset(secret, 0, sizeof(secret));
@@ -1090,8 +1139,23 @@ void EhomeLink::fetch_end(const FetchResult& result) {
 		if (stored == SettingsStatus::ok) {
 			stored = settings.set_bool(setting::kEhomeEnabled, true);
 		}
+		if (stored == SettingsStatus::ok) {
+			// The installation key comes with the enrollment, trusted by the one-time code and TLS
+			// (spec/api.md "Signed runtime images"): it replaces a key kept from an earlier pairing; an
+			// answer without one leaves the device without. Written last, so that a failed enrollment
+			// keeps the old key in force.
+			if (has_key) {
+				char hex[2 * kEd25519KeySize + 1];
+				to_hex(key, sizeof(key), hex);
+				stored = settings.set_string(setting::kEhomeKey, hex);
+			} else {
+				SettingsStatus erased = settings.erase(setting::kEhomeKey);
+				stored = erased == SettingsStatus::not_found ? SettingsStatus::ok : erased;
+			}
+		}
 		std::memset(secret, 0, sizeof(secret));
 		if (stored != SettingsStatus::ok) {
+			// The enrollment goes; an installation key kept from before stays in force.
 			const char* keys[] = {setting::kEhomeUrl, setting::kEhomeId, setting::kEhomeName, setting::kEhomeSocket,
 				setting::kEhomeSecret, setting::kEhomeEnabled};
 			for (const char* key : keys) {
@@ -1105,8 +1169,16 @@ void EhomeLink::fetch_end(const FetchResult& result) {
 			return;
 		}
 		reload();
+		drop_pending_key("enrolled anew");
 		Log::info(kTag, "enrolled with %s as controller %s, installation \"%s\"; the connection is switched on",
 			enroll_url_, id, installation_);
+		if (has_key) {
+			char fingerprint[kFingerprintSize];
+			key_fingerprint(key, fingerprint);
+			Log::info(kTag, "installation key %s stored: runtime images need its signature from now on", fingerprint);
+		} else {
+			Log::info(kTag, "E-Home sent no installation key: runtime images are not signed");
+		}
 		finish_enroll(200, nullptr, nullptr);
 		backoff_.reset();
 		error_[0] = '\0';
@@ -1145,8 +1217,10 @@ void EhomeLink::disconnect(WebResponse& response) {
 		WebApi::refuse(response, 409, "ehome.enrolling", "an enrollment is under way");
 		return;
 	}
-	go_idle("disconnected by the owner");
+	go_idle("disconnected by the owner"); // drops a pending key with the socket
 	Settings& settings = api_.controller().settings();
+	// The installation key (ehome.key) stays: a device once paired keeps refusing unsigned images until
+	// a factory reset or a new enrollment's answer replaces it (spec/api.md "Signed runtime images").
 	const char* keys[] = {setting::kEhomeEnabled, setting::kEhomeSecret, setting::kEhomeSocket, setting::kEhomeId,
 		setting::kEhomeName, setting::kEhomeUrl};
 	SettingsStatus failed = SettingsStatus::ok;
@@ -1169,8 +1243,155 @@ void EhomeLink::disconnect(WebResponse& response) {
 	if (was[0] != '\0') {
 		Log::info(kTag, "disconnected from E-Home at %s: the enrollment is erased", was);
 	}
+	char fingerprint[kFingerprintSize];
+	if (stored_key(fingerprint) == KeyState::ok) {
+		Log::info(kTag, "the installation key %s stays in force: images still need its signature (until a factory "
+			"reset or a new enrollment)", fingerprint);
+	}
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object().member("ok", true).end_object();
+	response.length = json.overflowed() ? 0 : json.length();
+}
+
+// ---- The installation key ---------------------------------------------------------------------
+
+KeyState EhomeLink::stored_key(char* out) const {
+	uint8_t key[kEd25519KeySize];
+	KeyState state = load_installation_key(api_.controller().settings(), key);
+	if (state == KeyState::ok) {
+		key_fingerprint(key, out);
+	} else {
+		out[0] = '\0';
+	}
+	return state;
+}
+
+bool EhomeLink::pending_key(char* out) const {
+	if (!has_pending_key_) {
+		out[0] = '\0';
+		return false;
+	}
+	key_fingerprint(pending_key_, out);
+	return true;
+}
+
+void EhomeLink::drop_pending_key(const char* why) {
+	if (!has_pending_key_) {
+		return;
+	}
+	char fingerprint[kFingerprintSize];
+	key_fingerprint(pending_key_, fingerprint);
+	has_pending_key_ = false;
+	std::memset(pending_key_, 0, sizeof(pending_key_));
+	Log::info(kTag, "the offered installation key %s was not accepted and is dropped: %s", fingerprint, why);
+}
+
+void EhomeLink::send_key_message(const char* type, const char* fingerprint) {
+	char text[96];
+	JsonWriter json(text, sizeof(text));
+	json.begin_object().member("type", type).member("fingerprint", fingerprint).end_object();
+	if (json.overflowed() || !send_text(text, json.length())) {
+		Log::warn(kTag, "the message %s to E-Home was not sent", type);
+	}
+}
+
+void EhomeLink::key_message(const JsonSpan& message) {
+	char text[2 * kEd25519KeySize + 2] = {};
+	char announced[kFingerprintSize + 4] = {};
+	uint8_t key[kEd25519KeySize];
+	const char* refusal = nullptr;
+	if (!string_member(message, "public_key", text, sizeof(text)) || !parse_public_key(text, key)) {
+		refusal = "\"public_key\" is an Ed25519 public key of 64 hex digits";
+	}
+	char fingerprint[kFingerprintSize];
+	if (refusal == nullptr) {
+		key_fingerprint(key, fingerprint);
+		JsonSpan member;
+		if (json_member(message, "fingerprint", member) &&
+			(!json_string(member, announced, sizeof(announced)) || std::strcmp(announced, fingerprint) != 0)) {
+			refusal = "\"fingerprint\" is not the key's (the first 8 bytes of its SHA-256, hex in groups of four)";
+		}
+	}
+	if (refusal != nullptr) {
+		Log::warn(kTag, "E-Home offered an unusable installation key: %s", refusal);
+		char out[256];
+		JsonWriter json(out, sizeof(out));
+		json.begin_object().member("type", "error").member("error", refusal).member("code", "ehome.bad_key").end_object();
+		if (!json.overflowed()) {
+			send_text(out, json.length());
+		}
+		return;
+	}
+	uint8_t current[kEd25519KeySize];
+	if (load_installation_key(api_.controller().settings(), current) == KeyState::ok &&
+		constant_time_equal(current, key, sizeof(key))) {
+		drop_pending_key("E-Home offered the key in force again");
+		Log::info(kTag, "E-Home offered the installation key in force (%s): nothing to accept", fingerprint);
+		send_key_message("key_accepted", fingerprint);
+		return;
+	}
+	if (has_pending_key_ && constant_time_equal(pending_key_, key, sizeof(key))) {
+		send_key_message("key_pending", fingerprint);
+		return;
+	}
+	drop_pending_key("E-Home offered another one");
+	std::memcpy(pending_key_, key, sizeof(key));
+	has_pending_key_ = true;
+	Log::warn(kTag, "E-Home offers a new installation key %s: it takes effect when the owner accepts it (Settings "
+		"page, or `ehome key accept` on the console); until then the key in force stays", fingerprint);
+	send_key_message("key_pending", fingerprint);
+}
+
+bool EhomeLink::accept_key(const char* fingerprint, const char** code, const char** error) {
+	if (!has_pending_key_) {
+		*code = "ehome.no_pending_key";
+		*error = "E-Home has not offered a new installation key (or the connection ended since)";
+		return false;
+	}
+	char pending[kFingerprintSize];
+	key_fingerprint(pending_key_, pending);
+	if (fingerprint != nullptr && std::strcmp(fingerprint, pending) != 0) {
+		*code = "ehome.key_changed";
+		*error = "the offered key is not the one shown any more: look at its fingerprint again";
+		return false;
+	}
+	char hex[2 * kEd25519KeySize + 1];
+	to_hex(pending_key_, sizeof(pending_key_), hex);
+	SettingsStatus status = api_.controller().settings().set_string(setting::kEhomeKey, hex);
+	if (status != SettingsStatus::ok) {
+		Log::error(kTag, "the installation key %s was not stored (%s): the old key stays in force", pending,
+			settings_status_name(status));
+		*code = "settings.storage_error";
+		*error = "the device could not store the key";
+		return false;
+	}
+	has_pending_key_ = false;
+	std::memset(pending_key_, 0, sizeof(pending_key_));
+	Log::warn(kTag, "installation key %s accepted by the owner: runtime images need its signature from now on", pending);
+	if (phase_ == Phase::connected) {
+		send_key_message("key_accepted", pending);
+	}
+	return true;
+}
+
+void EhomeLink::key_route(const WebRequest& request, WebResponse& response) {
+	JsonSpan body;
+	const char* error = nullptr;
+	char fingerprint[kFingerprintSize + 4] = {};
+	if (!json_parse(request.body, request.body_length, body, &error) || body.kind != JsonSpan::Kind::object ||
+		!string_member(body, "fingerprint", fingerprint, sizeof(fingerprint))) {
+		WebApi::refuse(response, 400, "api.bad_json",
+			"the body needs {\"fingerprint\": \"...\"}: the fingerprint of the key the owner accepts");
+		return;
+	}
+	const char* code = nullptr;
+	if (!accept_key(fingerprint, &code, &error)) {
+		Log::warn(kTag, "accepting the installation key refused (%s): %s", request.source, error);
+		WebApi::refuse(response, std::strcmp(code, "settings.storage_error") == 0 ? 500 : 409, code, error);
+		return;
+	}
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object().member("ok", true).member("key", fingerprint).end_object();
 	response.length = json.overflowed() ? 0 : json.length();
 }
 
@@ -1185,6 +1406,16 @@ void EhomeLink::write_status(JsonWriter& json) const {
 		.member("since_s", (now - since_ms_) / 1000);
 	if (enrolled_) {
 		json.member("installation", installation_); // the address is the setting ehome.url
+	}
+	char fingerprint[kFingerprintSize];
+	KeyState key = stored_key(fingerprint);
+	if (key == KeyState::ok) {
+		json.member("key", fingerprint);
+	} else if (key == KeyState::damaged) {
+		json.member("key", "damaged");
+	}
+	if (pending_key(fingerprint)) {
+		json.member("pending_key", fingerprint);
 	}
 	if (error_[0] != '\0') {
 		json.member("error", error_);

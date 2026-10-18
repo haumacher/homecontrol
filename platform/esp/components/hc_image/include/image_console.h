@@ -8,6 +8,7 @@
 #include <cstddef>
 
 #include "hc/image/image_service.h"
+#include "hc/signature.h"
 #include "loop_queue.h"
 
 namespace hc {
@@ -43,7 +44,7 @@ public:
 
 private:
 	int status();
-	int load(const char* url);
+	int load(const char* url, const char* signature);
 	int clear();
 
 	static void download_task(void* context);
@@ -57,14 +58,18 @@ private:
 	char url_[kMaxUrl + 1] = {};
 	char* buffer_ = nullptr;
 	size_t length_ = 0;
+	/// The image's signature from the command line (spec/api.md "Signed runtime images").
+	uint8_t signature_[kEd25519SignatureSize] = {};
+	bool has_signature_ = false;
 	char error_[96] = {};
 };
 
 /// For the console's command table.
-constexpr const char* kImageCommandHint = "status | load <url> | clear";
+constexpr const char* kImageCommandHint = "status | load <url> [<signature>] | clear";
 constexpr const char* kImageCommandHelp =
-	"Runtime image (doc/image.md): show what is loaded, download and load an image from an http(s) URL, or "
-	"unload it and remove its persisted state";
+	"Runtime image (doc/image.md): show what is loaded, download and load an image from an http(s) URL (with "
+	"its Ed25519 signature in 128 hex digits once the device holds the installation key), or unload it and "
+	"remove its persisted state";
 
 } // namespace esp
 } // namespace hc

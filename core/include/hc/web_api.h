@@ -50,6 +50,9 @@ struct WebRequest {
 	const char* cookie = nullptr;     ///< Cookie
 	const char* authorization = nullptr; ///< Authorization
 	const char* requested_with = nullptr; ///< X-Requested-With
+	/// X-Image-Signature: the detached Ed25519 signature of a PUT /api/image body, 128 hex digits
+	/// (spec/api.md "Signed runtime images"); over the E-Home connection the request's `signature`.
+	const char* image_signature = nullptr;
 	const char* source = "";          ///< The client's address (rate limiting, log).
 	const char* body = nullptr;
 	size_t body_length = 0;

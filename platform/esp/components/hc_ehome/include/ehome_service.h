@@ -4,6 +4,7 @@
 #ifndef HC_ESP_EHOME_SERVICE_H
 #define HC_ESP_EHOME_SERVICE_H
 
+#include "console.h"
 #include "esp_ws_client.h"
 #include "hc/controller.h"
 #include "hc/ehome_link.h"
@@ -17,7 +18,8 @@ namespace esp {
 /// The E-Home connection on the device (issue #41, doc/ehome.md): the core's EhomeLink over the
 /// EspWebSocketClient (wss:// with the certificate bundle) and an OnDemandFetcher for the
 /// enrollment (its 8 KB buffer exists only while the enrollment's POST runs), wired to the web
-/// server's API and live feed.
+/// server's API and live feed. It carries the console command `ehome` (console_command(): the
+/// connection's state, the installation key, accepting a key E-Home offered).
 class EhomeService {
 public:
 	EhomeService(Controller& controller, LoopQueue& queue, WebServer& web);
@@ -30,11 +32,16 @@ public:
 	void start() { link_.start(); }
 
 	EhomeLink& link() { return link_; }
+	const ConsoleCommand* console_command() const { return &console_command_; }
 
 private:
+	static int console_entry(void* context, int argc, char** argv);
+	int console(int argc, char** argv);
+
 	EspWebSocketClient client_;
 	OnDemandFetcher fetcher_;
 	EhomeLink link_;
+	ConsoleCommand console_command_;
 };
 
 } // namespace esp

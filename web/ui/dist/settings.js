@@ -188,41 +188,66 @@ function languageRow(setting, i18n, ctx, reload) {
 	return h("div", { class: "field" }, h("label", { for: id }, t("settings.key.ui.lang")), select, feedback);
 }
 
+/// The signature in a `.sig` file as the header carries it: 128 hex digits (the file's text, white
+/// space around it ignored) or 64 raw bytes, turned into hex; null if it is neither.
+async function signatureHex(file) {
+	const bytes = new Uint8Array(await file.arrayBuffer());
+	if (bytes.length === 64) {
+		return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+	}
+	const text = new TextDecoder().decode(bytes).trim();
+	return /^[0-9a-fA-F]{128}$/.test(text) ? text.toLowerCase() : null;
+}
+
 /// Installs a runtime image from a file the owner picked (the field round trip of issue #40: the
 /// image E-Home exported, carried here without an E-Home on this network). PUT /api/image as E-Home
-/// does; a refusal lists the loader's reasons.
+/// does, with the file's exact bytes and, if picked, its signature from the `.sig` file beside it
+/// (header X-Image-Signature, spec/api.md "Signed runtime images"); a refusal lists the reasons.
 function installControls(rerender, feedback) {
 	const input = h("input", { type: "file", accept: ".json,application/json" });
+	const sigInput = h("input", { type: "file", accept: ".sig" });
 	const button = h("button", { type: "button", class: "button secondary", onclick: async () => {
 		const file = input.files && input.files[0];
 		if (!file) {
 			input.click();
 			return;
 		}
-		let image;
+		const bytes = await file.arrayBuffer();
 		try {
-			image = JSON.parse(await file.text());
+			JSON.parse(new TextDecoder().decode(bytes));
 		} catch (error) {
 			replace(feedback, t("image.install.invalid_file", { name: file.name }));
 			return;
 		}
+		const sigFile = sigInput.files && sigInput.files[0];
+		const headers = {};
+		if (sigFile) {
+			const hex = await signatureHex(sigFile);
+			if (!hex) {
+				replace(feedback, t("image.install.signature.invalid", { name: sigFile.name }));
+				return;
+			}
+			headers["X-Image-Signature"] = hex;
+		}
 		button.disabled = true;
 		replace(feedback, t("image.install.working", { name: file.name }));
 		try {
-			const result = await api("PUT", "/api/image", image);
+			const result = await api("PUT", "/api/image", bytes, { raw: true, headers });
 			replace(feedback, t("image.install.done", { name: result.image.name || result.image.projectId, revision: result.image.revision }));
 			rerender();
 		} catch (error) {
 			const refusals = (error.body && error.body.refusals) || [];
 			replace(feedback, h("span", null, errorText(error)),
-				refusals.length ? h("ul", { class: "refusals" }, refusals.map((r) => h("li", null, `${r.path}: ${r.reason}`))) : null,
+				refusals.length ? h("ul", { class: "refusals" }, refusals.map((r) => h("li", null, r.path ? `${r.path}: ${r.reason}` : r.reason))) : null,
 				error.body && error.body.total > refusals.length
 					? h("span", { class: "muted" }, t("image.install.more", { count: error.body.total - refusals.length })) : null);
 			button.disabled = false;
 		}
 	} }, t("image.install"));
 	return h("div", { class: "field" }, h("label", null, t("image.install.label")),
-		h("div", { class: "field-row" }, input, button), h("span", { class: "hint" }, t("image.install.hint")));
+		h("div", { class: "field-row" }, input, button), h("span", { class: "hint" }, t("image.install.hint")),
+		h("label", null, t("image.install.signature.label")), h("div", { class: "field-row" }, sigInput),
+		h("span", { class: "hint" }, t("image.install.signature.hint")));
 }
 
 /// The deployed image: project, revision, when and how it came; "forget image" removes it; a file

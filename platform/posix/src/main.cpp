@@ -10,9 +10,10 @@
 // server (doc/web.md) serves the API and the UI files of web/ui/dist on port 8080 (--http 0: off),
 // the WebSocket on the port above; --demo loads simulated datapoints for UI development. With the
 // setting knx.gateway it keeps a KNXnet/IP tunnel to that gateway (doc/knx.md). --image loads a
-// runtime image (spec/runtime-image.md) at start; PUT /api/image replaces it. The blobs (the stored
-// image, persisted values, history rings, the UI's language pack) live in a directory beside the
-// settings file (doc/persistence.md).
+// runtime image (spec/runtime-image.md) at start, with the signature in `<file>.sig` beside it if
+// there is one (needed once the device holds the installation key); PUT /api/image replaces it.
+// The blobs (the stored image, persisted values, history rings, the UI's language pack) live in a
+// directory beside the settings file (doc/persistence.md).
 
 #include <cerrno>
 #include <csignal>
@@ -34,6 +35,8 @@
 #include "hc/image/image_service.h"
 #include "hc/language_packs.h"
 #include "hc/mqtt.h"
+#include "hc/signature.h"
+#include "hc/update_check.h"
 #include "hc/posix/mqtt_client.h"
 #include "hc/version.h"
 #include "hc/posix/file_blob_store.h"
@@ -329,7 +332,22 @@ int main(int argc, char** argv) {
 			if (!read_image_file(image_path, text)) {
 				return 1;
 			}
-			if (!image.load(text.data(), text.size(), hc::image::Source::file, true)) {
+			// The image's detached signature, if a `<file>.sig` lies next to it (spec/api.md "Signed
+			// runtime images"): needed while the settings hold the installation key.
+			std::string sig_path = std::string(image_path) + ".sig";
+			uint8_t signature[hc::kEd25519SignatureSize];
+			bool has_signature = false;
+			if (std::FILE* sig_file = std::fopen(sig_path.c_str(), "rb")) {
+				char sig_text[hc::kMaxManifestSignature];
+				size_t n = std::fread(sig_text, 1, sizeof(sig_text), sig_file);
+				std::fclose(sig_file);
+				has_signature = hc::parse_signature(sig_text, n, signature);
+				if (!has_signature) {
+					hc::Log::error(kTag, "%s is not a signature (128 hex digits or 64 bytes)", sig_path.c_str());
+					return 1;
+				}
+			}
+			if (!image.load(text.data(), text.size(), hc::image::Source::file, true, has_signature ? signature : nullptr)) {
 				hc::Log::error(kTag, "the image %s was refused (the log above names each problem)", image_path);
 				return 1;
 			}

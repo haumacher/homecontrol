@@ -18,6 +18,7 @@
 #include "hc/knx/tunnel.h"
 #include "hc/live_feed.h"
 #include "hc/sha.h"
+#include "hc/signature.h"
 #include "hc/websocket.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
@@ -778,4 +779,326 @@ TEST_CASE("E-Home probe: the principal may change a setting a token may, not the
 	f.client.deliver("{\"type\":\"request\",\"id\":14,\"method\":\"GET\",\"path\":\"/api/status\"}");
 	f.run();
 	CHECK(f.client.sent("response").size() == responses);
+}
+
+// ---- The installation key (issue #35, spec/api.md "Signed runtime images") ---------------------
+
+namespace {
+
+// TEST KEYS ONLY (spec/fixtures/signatures/vectors.json).
+constexpr const char* kKeySeed = "48613bb792f76c2201cb3521eaab920dad55d68982490274331eff6dc73a2fb3";
+constexpr const char* kKey = "13833fbfa81080cdb4c1210131a5bb3e98f17675236e66124aed84cc490bccb1";
+constexpr const char* kKeyFingerprint = "ce7d 4a41 a476 9ee3";
+constexpr const char* kNewSeed = "2bb9dbea0c0c160975dc5e23749d1891e42869b0b87f30c173d3155af920d817";
+constexpr const char* kNewKey = "ed592207e3c3f843383c53d6d0b402b2b047323ca0eca31673655d6a940d96cd";
+constexpr const char* kNewFingerprint = "90ae 3702 f3a9 63ab";
+
+std::string signature_of(const char* seed_hex, const std::string& image) {
+	uint8_t seed[32];
+	REQUIRE(hc::from_hex(seed_hex, seed, sizeof(seed)));
+	uint8_t sig[64];
+	hc::sign_image(seed, image.data(), image.size(), sig);
+	char hex[129];
+	hc::to_hex(sig, sizeof(sig), hex);
+	return hex;
+}
+
+std::string enroll_answer_with_key(const std::string& key) {
+	std::string answer = kEnrollAnswer;
+	answer.insert(answer.size() - 1, ", \"public_key\": \"" + key + "\"");
+	return answer;
+}
+
+/// PUT /api/image over the socket: `length`, optionally `signature`, then the binary frames.
+Json socket_put_image(EhomeFixture& f, int id, const std::string& image, const std::string& signature) {
+	std::string request = "{\"type\":\"request\",\"id\":" + std::to_string(id) +
+		",\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" + std::to_string(image.size());
+	if (!signature.empty()) {
+		request += ",\"signature\":\"" + signature + "\"";
+	}
+	f.client.deliver(request + "}");
+	f.client.deliver_binary(image, 1024);
+	return f.response(id);
+}
+
+std::string stored_key(EhomeFixture& f) {
+	char value[130] = {};
+	return f.fake.settings.get_string("ehome.key", value, sizeof(value)) == hc::SettingsStatus::ok ? value : "";
+}
+
+} // namespace
+
+TEST_CASE("E-Home key: the enrollment answer's public_key is stored, its fingerprint shown; without one no key") {
+	{
+		EhomeFixture f(false);
+		auto r = f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"ABCD-EFGH\"}",
+			[&] { f.fetcher.answer(200, enroll_answer_with_key(kKey)); });
+		REQUIRE(r.status == 200);
+		CHECK(stored_key(f) == kKey);
+		CHECK(f.status()["key"].text == kKeyFingerprint);
+		CHECK_FALSE(f.status().has("pending_key"));
+		CHECK(f.capture.sink.contains("I hc.ehome: installation key ce7d 4a41 a476 9ee3 stored: runtime images need "
+			"its signature from now on"));
+		// The auth message names the key the device holds.
+		f.client.open();
+		f.client.deliver(std::string("{\"type\":\"challenge\",\"nonce\":\"") + kNonce + "\"}");
+		REQUIRE(f.client.sent("auth").size() == 1);
+		CHECK(f.client.sent("auth")[0]["key"].text == kKeyFingerprint);
+		// The key is never listed by the API.
+		CHECK(f.get("/api/settings", f.cookie).body.find(kKey) == std::string::npos);
+		// Disconnect erases the enrollment, not the key (the next test).
+		REQUIRE(f.del("/api/ehome").status == 200);
+		CHECK(stored_key(f) == kKey);
+		CHECK(f.status()["key"].text == kKeyFingerprint);
+	}
+	{
+		EhomeFixture f(false);
+		auto r = f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"ABCD-EFGH\"}",
+			[&] { f.fetcher.answer(200, kEnrollAnswer); });
+		REQUIRE(r.status == 200);
+		CHECK(stored_key(f).empty());
+		CHECK_FALSE(f.status().has("key"));
+		CHECK(f.capture.sink.contains("I hc.ehome: E-Home sent no installation key: runtime images are not signed"));
+		// An unsigned image goes in over the socket, as before.
+		f.handshake();
+		CHECK(f.client.sent("auth")[0].has("key") == false);
+		CHECK(socket_put_image(f, 3, image_fixture("minimal.json"), "")["status"].number == 200);
+	}
+	{
+		EhomeFixture f(false);
+		auto r = f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"ABCD-EFGH\"}",
+			[&] { f.fetcher.answer(200, enroll_answer_with_key("1234")); });
+		CHECK(r.status == 502);
+		CHECK(r.json["code"].text == "ehome.bad_answer");
+		CHECK(r.json["error"].text ==
+			"E-Home's answer is not usable: public_key (not an Ed25519 public key of 64 hex digits)");
+		CHECK_FALSE(hc::ehome_enrolled(f.fake.settings));
+		CHECK(stored_key(f).empty());
+	}
+}
+
+TEST_CASE("E-Home key: over the socket a signed image is accepted, an unsigned or mis-signed one refused") {
+	EhomeFixture f;
+	REQUIRE(f.fake.settings.set_string("ehome.key", kKey) == hc::SettingsStatus::ok);
+	f.handshake();
+	std::string example = image_fixture("example.json");
+	Json r = socket_put_image(f, 4, example, "");
+	CHECK(r["status"].number == 403);
+	CHECK(r["body"]["code"].text == "image.unsigned");
+	CHECK(r["body"]["refusals"].items[0]["reason"].text.find(kKeyFingerprint) != std::string::npos);
+	CHECK_FALSE(f.service.loaded());
+	r = socket_put_image(f, 5, example, signature_of(kNewSeed, example));
+	CHECK(r["status"].number == 403);
+	CHECK(r["body"]["code"].text == "image.bad_signature");
+	CHECK_FALSE(f.service.loaded());
+	r = socket_put_image(f, 6, example, "abc");
+	CHECK(r["status"].number == 400);
+	CHECK(r["body"]["error"].text == "\"signature\" is the image's Ed25519 signature in 128 hex digits");
+	r = socket_put_image(f, 7, example, signature_of(kKeySeed, example));
+	CHECK(r["status"].number == 200);
+	CHECK(f.service.info().revision == 7);
+	// The signature belongs to its request: the next one without it is unsigned again.
+	r = socket_put_image(f, 8, example, "");
+	CHECK(r["body"]["code"].text == "image.unsigned");
+	CHECK(f.link.state() == EhomeState::connected);
+}
+
+TEST_CASE("E-Home key: a rotation stays pending until the owner accepts it; then the old key is refused") {
+	EhomeFixture f;
+	REQUIRE(f.fake.settings.set_string("ehome.key", kKey) == hc::SettingsStatus::ok);
+	f.handshake();
+	std::string minimal = image_fixture("minimal.json");
+	std::string example = image_fixture("example.json");
+	f.client.deliver(std::string("{\"type\":\"key\",\"public_key\":\"") + kNewKey + "\",\"fingerprint\":\"" +
+		kNewFingerprint + "\"}");
+	auto pending = f.client.sent("key_pending");
+	REQUIRE(pending.size() == 1);
+	CHECK(pending[0]["fingerprint"].text == kNewFingerprint);
+	CHECK(f.status()["key"].text == kKeyFingerprint);
+	CHECK(f.status()["pending_key"].text == kNewFingerprint);
+	CHECK(f.capture.sink.contains("W hc.ehome: E-Home offers a new installation key 90ae 3702 f3a9 63ab: it takes "
+		"effect when the owner accepts it"));
+	CHECK(stored_key(f) == kKey);
+	// Until accepted: signed with the new key refused, the old key in force.
+	CHECK(socket_put_image(f, 10, minimal, signature_of(kNewSeed, minimal))["body"]["code"].text == "image.bad_signature");
+	CHECK(socket_put_image(f, 11, minimal, signature_of(kKeySeed, minimal))["status"].number == 200);
+	// E-Home cannot accept its own key.
+	f.client.deliver("{\"type\":\"request\",\"id\":12,\"method\":\"POST\",\"path\":\"/api/ehome/key/accept\","
+		"\"body\":{\"fingerprint\":\"90ae 3702 f3a9 63ab\"}}");
+	CHECK(f.response(12)["status"].number == 403);
+	CHECK(f.response(12)["body"]["code"].text == "ehome.forbidden");
+	// The owner accepts another fingerprint than the pending one: refused.
+	auto r = f.request(HttpMethod::post, "/api/ehome/key/accept", "{\"fingerprint\":\"0000 0000 0000 0000\"}", f.cookie);
+	CHECK(r.status == 409);
+	CHECK(r.json["code"].text == "ehome.key_changed");
+	r = f.request(HttpMethod::post, "/api/ehome/key/accept", "{}", f.cookie);
+	CHECK(r.status == 400);
+	// The owner accepts the key shown.
+	r = f.request(HttpMethod::post, "/api/ehome/key/accept",
+		std::string("{\"fingerprint\":\"") + kNewFingerprint + "\"}", f.cookie);
+	REQUIRE(r.status == 200);
+	CHECK(r.json["key"].text == kNewFingerprint);
+	CHECK(stored_key(f) == kNewKey);
+	auto accepted = f.client.sent("key_accepted");
+	REQUIRE(accepted.size() == 1);
+	CHECK(accepted[0]["fingerprint"].text == kNewFingerprint);
+	CHECK(f.status()["key"].text == kNewFingerprint);
+	CHECK_FALSE(f.status().has("pending_key"));
+	CHECK(f.capture.sink.contains("W hc.ehome: installation key 90ae 3702 f3a9 63ab accepted by the owner"));
+	// Now the old key is refused and the new one accepted.
+	CHECK(socket_put_image(f, 13, example, signature_of(kKeySeed, example))["body"]["code"].text == "image.bad_signature");
+	CHECK(socket_put_image(f, 14, example, signature_of(kNewSeed, example))["status"].number == 200);
+	// Nothing is pending any more.
+	r = f.request(HttpMethod::post, "/api/ehome/key/accept",
+		std::string("{\"fingerprint\":\"") + kNewFingerprint + "\"}", f.cookie);
+	CHECK(r.status == 409);
+	CHECK(r.json["code"].text == "ehome.no_pending_key");
+	// The key in force offered again: accepted at once, nothing pending.
+	f.client.deliver(std::string("{\"type\":\"key\",\"public_key\":\"") + kNewKey + "\"}");
+	CHECK(f.client.sent("key_accepted").size() == 2);
+	CHECK_FALSE(f.status().has("pending_key"));
+}
+
+TEST_CASE("E-Home key: a disconnect drops the pending key; a device without a key gets one only by acceptance") {
+	EhomeFixture f; // enrolled before the key pairing: no key
+	f.handshake();
+	f.client.deliver(std::string("{\"type\":\"key\",\"public_key\":\"") + kKey + "\"}");
+	CHECK(f.status()["pending_key"].text == kKeyFingerprint);
+	CHECK_FALSE(f.status().has("key"));
+	// Unsigned images still go in: the pending key is not in force.
+	CHECK(socket_put_image(f, 20, image_fixture("minimal.json"), "")["status"].number == 200);
+	f.client.drop("connection reset");
+	CHECK_FALSE(f.status().has("pending_key"));
+	CHECK(f.capture.sink.contains("I hc.ehome: the offered installation key ce7d 4a41 a476 9ee3 was not accepted and "
+		"is dropped: the connection ended"));
+	const char* code = nullptr;
+	const char* error = nullptr;
+	CHECK_FALSE(f.link.accept_key(nullptr, &code, &error));
+	CHECK(std::string(code) == "ehome.no_pending_key");
+	CHECK(stored_key(f).empty());
+	// Offered again after the reconnect, accepted on the console (no fingerprint: the console showed it).
+	f.advance(1100);
+	f.handshake();
+	f.client.deliver(std::string("{\"type\":\"key\",\"public_key\":\"") + kKey + "\"}");
+	CHECK(f.link.accept_key(nullptr, &code, &error));
+	CHECK(stored_key(f) == kKey);
+	CHECK(socket_put_image(f, 21, image_fixture("minimal.json"), "")["body"]["code"].text == "image.unsigned");
+}
+
+TEST_CASE("E-Home key: an unusable key message is answered ehome.bad_key and changes nothing") {
+	EhomeFixture f;
+	REQUIRE(f.fake.settings.set_string("ehome.key", kKey) == hc::SettingsStatus::ok);
+	f.handshake();
+	f.client.deliver("{\"type\":\"key\",\"public_key\":\"abcd\"}");
+	auto errors = f.client.sent("error");
+	REQUIRE(errors.size() == 1);
+	CHECK(errors[0]["code"].text == "ehome.bad_key");
+	f.client.deliver(std::string("{\"type\":\"key\",\"public_key\":\"") + kNewKey +
+		"\",\"fingerprint\":\"ce7d 4a41 a476 9ee3\"}"); // the fingerprint of another key
+	errors = f.client.sent("error");
+	REQUIRE(errors.size() == 2);
+	CHECK(errors[1]["code"].text == "ehome.bad_key");
+	CHECK_FALSE(f.status().has("pending_key"));
+	CHECK(stored_key(f) == kKey);
+	CHECK(f.link.state() == EhomeState::connected);
+}
+
+TEST_CASE("E-Home key: forgetting E-Home keeps the key in force; only a new enrollment's answer replaces it") {
+	EhomeFixture f(false);
+	REQUIRE(f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"ABCD-EFGH\"}",
+		[&] { f.fetcher.answer(200, enroll_answer_with_key(kKey)); }).status == 200);
+	f.handshake();
+	// A rotation is pending when the owner forgets E-Home: the pending key goes, the stored one stays.
+	f.client.deliver(std::string("{\"type\":\"key\",\"public_key\":\"") + kNewKey + "\"}");
+	REQUIRE(f.status()["pending_key"].text == kNewFingerprint);
+	REQUIRE(f.del("/api/ehome").status == 200);
+	CHECK_FALSE(hc::ehome_enrolled(f.fake.settings));
+	char value[130];
+	for (const char* key : {"ehome.id", "ehome.secret", "ehome.socket"}) {
+		CHECK(f.fake.settings.get_string(key, value, sizeof(value)) == hc::SettingsStatus::not_found);
+	}
+	CHECK_FALSE(f.status().has("pending_key"));
+	CHECK(f.status()["key"].text == kKeyFingerprint);
+	CHECK(f.capture.sink.contains("I hc.ehome: the installation key ce7d 4a41 a476 9ee3 stays in force"));
+	// With a token alone, forgetting E-Home does not open the door to unsigned images.
+	std::string minimal = image_fixture("minimal.json");
+	auto r = f.put("/api/image", minimal);
+	CHECK(r.status == 403);
+	CHECK(r.json["code"].text == "image.unsigned");
+	CHECK(r.json["refusals"].items[0]["reason"].text.find(kKeyFingerprint) != std::string::npos);
+	f.image_signature = signature_of(kNewSeed, minimal); // the never-accepted rotation's key
+	r = f.put("/api/image", minimal);
+	f.image_signature.clear();
+	CHECK(r.json["code"].text == "image.bad_signature");
+	CHECK_FALSE(f.service.loaded());
+	// A failed enrollment keeps the key.
+	r = f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"WRONG\"}", [&] { f.fetcher.answer(404, ""); });
+	CHECK(r.status == 404);
+	CHECK(stored_key(f) == kKey);
+	// A new enrollment with another key: the new key is in force, the old one refused.
+	REQUIRE(f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"ABCD-EFGH\"}",
+		[&] { f.fetcher.answer(200, enroll_answer_with_key(kNewKey)); }).status == 200);
+	CHECK(stored_key(f) == kNewKey);
+	CHECK(f.status()["key"].text == kNewFingerprint);
+	f.image_signature = signature_of(kKeySeed, minimal);
+	CHECK(f.put("/api/image", minimal).json["code"].text == "image.bad_signature");
+	f.image_signature = signature_of(kNewSeed, minimal);
+	CHECK(f.put("/api/image", minimal).status == 200);
+	f.image_signature.clear();
+	// A new enrollment without a key leaves the device without one (the authenticated answer decides).
+	REQUIRE(f.del("/api/ehome").status == 200);
+	REQUIRE(f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"ABCD-EFGH\"}",
+		[&] { f.fetcher.answer(200, kEnrollAnswer); }).status == 200);
+	CHECK(stored_key(f).empty());
+	CHECK(f.put("/api/image", minimal).status == 200);
+}
+
+// ---- Probe: the signature on the socket's text-body form, and a key offer that changes nothing ------
+
+TEST_CASE("E-Home key probe: a small image sent as the request's text body honours the signature too") {
+	EhomeFixture f;
+	REQUIRE(f.fake.settings.set_string("ehome.key", kKey) == hc::SettingsStatus::ok);
+	f.handshake();
+	std::string minimal = image_fixture("minimal.json");
+	REQUIRE(minimal.size() < 4096);
+	// Below the text limit E-Home may send the body inline (no length, no binary frames): the
+	// signature must count there exactly as with the frames.
+	auto text_put = [&](int id, const std::string& signature) {
+		std::string request = "{\"type\":\"request\",\"id\":" + std::to_string(id) +
+			",\"method\":\"PUT\",\"path\":\"/api/image\",\"body\":" + minimal;
+		if (!signature.empty()) {
+			request += ",\"signature\":\"" + signature + "\"";
+		}
+		f.client.deliver(request + "}");
+		return f.response(id);
+	};
+	Json r = text_put(20, "");
+	CHECK(r["status"].number == 403);
+	CHECK(r["body"]["code"].text == "image.unsigned");
+	CHECK_FALSE(f.service.loaded());
+	// Any signature on the inline form is refused up front, whichever key made it (the device cannot
+	// tell a wrong key from bytes it does not have).
+	r = text_put(21, signature_of(kNewSeed, minimal));
+	CHECK(r["status"].number == 400);
+	CHECK(r["body"]["code"].text == "image.bad_request");
+	// The inline form cannot carry the exact bytes a signature covers (the body is parsed JSON):
+	// a signed image goes as binary frames, and the device says so instead of failing the check.
+	r = text_put(22, signature_of(kKeySeed, minimal));
+	CHECK(r["status"].number == 400);
+	CHECK(r["body"]["code"].text == "image.bad_request");
+	CHECK(r["body"]["error"].text == "a signed image is sent with length and binary frames: the signature covers its exact bytes");
+	CHECK_FALSE(f.service.loaded());
+	CHECK(socket_put_image(f, 22, minimal, signature_of(kKeySeed, minimal))["status"].number == 200);
+	CHECK(f.service.loaded());
+
+	// E-Home offers the key the device already holds: nothing becomes pending, the answer says so,
+	// and images keep working with it.
+	f.client.deliver(std::string("{\"type\":\"key\",\"public_key\":\"") + kKey + "\",\"fingerprint\":\"" +
+		kKeyFingerprint + "\"}");
+	CHECK_FALSE(f.status().has("pending_key"));
+	CHECK(f.status()["key"].text == kKeyFingerprint);
+	CHECK(f.client.sent("key_pending").empty());
+	CHECK(f.client.sent("key_accepted").size() + f.client.sent("error").size() >= 1);
+	CHECK(socket_put_image(f, 23, image_fixture("example.json"), signature_of(kKeySeed, image_fixture("example.json")))["status"].number == 200);
+	CHECK(f.link.state() == EhomeState::connected);
 }

@@ -198,8 +198,9 @@ void loop_task(void*) {
 	// ---- end E-Home connection ----
 	if (serial_ready) {
 		// The commands other components contribute: the web server's, the storage's, the KNX
-		// service's, the Zigbee coordinator's, the image's and the external values'.
-		static hc::esp::ConsoleCommand extensions[8] = {
+		// service's, the Zigbee coordinator's, the image's, the external values', the language packs',
+		// MQTT's and the E-Home connection's.
+		static hc::esp::ConsoleCommand extensions[9] = {
 			*web.console_commands(),
 			*g_blobs.console_commands(),
 			{"knx", hc::esp::kKnxCommandHint, hc::esp::kKnxCommandHelp, &knx_console, nullptr},
@@ -209,6 +210,7 @@ void loop_task(void*) {
 			*external().console_command(),
 			*i18n().console_command(),
 			*mqtt().console_command(),
+			*ehome.console_command(),
 		};
 		static hc::esp::ConsoleContext console{ctl, g_queue, g_wifi, g_services, g_ota,
 			hc::esp::SerialMux::kConsoleInput, extensions, sizeof(extensions) / sizeof(extensions[0]), &g_diag, &g_blobs};

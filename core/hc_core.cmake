@@ -121,3 +121,55 @@ list(APPEND HC_CORE_SOURCES
 )
 # The System page: tasks, memory, temperature, the loop, the link, chip and storage facts (issue #42).
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/web_api_diagnostics.cpp")
+# Ed25519 signatures: the installation key of signed runtime images and the release key of signed
+# update manifests (issue #35, spec/api.md "Signed runtime images", doc/ota.md "Manifest signature").
+# Ed25519 itself is the vendored Monocypher 4.0.2 (third_party/monocypher, BSD-2-Clause or CC0,
+# https://github.com/LoupVaillant/Monocypher, tag 4.0.2, unmodified src/monocypher.c and
+# src/optional/monocypher-ed25519.c), compiled as C; only the core's signature.cpp includes it.
+list(APPEND HC_CORE_SOURCES
+	"${HC_CORE_DIR}/src/signature.cpp"
+	"${HC_CORE_DIR}/src/release_key.cpp"
+	"${HC_CORE_DIR}/../third_party/monocypher/monocypher.c"
+	"${HC_CORE_DIR}/../third_party/monocypher/optional/monocypher-ed25519.c"
+)
+set(HC_CORE_PRIVATE_INCLUDE_DIRS
+	"${HC_CORE_DIR}/../third_party/monocypher"
+	"${HC_CORE_DIR}/../third_party/monocypher/optional"
+)
+
+# The release public key the firmware trusts for update manifests (doc/ota.md "Manifest signature"):
+# the file HC_RELEASE_KEY names (64 hex digits, white space around them ignored; default the
+# committed platform/esp/release-key.pub). A development build points it at the key
+# scripts/update-server.py generated (`idf.py -DHC_RELEASE_KEY=<file> ...`). Written at configure
+# time into <binary dir>/hc_generated/hc_release_key.h; a change of the file reconfigures.
+set(HC_RELEASE_KEY "${HC_CORE_DIR}/../platform/esp/release-key.pub" CACHE FILEPATH
+	"The Ed25519 release public key (64 hex digits) the firmware trusts for update manifests")
+function(hc_core_add_release_key target)
+	get_filename_component(_hc_key_file "${HC_RELEASE_KEY}" ABSOLUTE)
+	if(NOT EXISTS "${_hc_key_file}")
+		message(FATAL_ERROR "HC_RELEASE_KEY: ${_hc_key_file} does not exist")
+	endif()
+	file(READ "${_hc_key_file}" _hc_key)
+	string(STRIP "${_hc_key}" _hc_key)
+	if(NOT _hc_key MATCHES "^[0-9a-fA-F]+$")
+		message(FATAL_ERROR "HC_RELEASE_KEY: ${_hc_key_file} does not hold 64 hex digits")
+	endif()
+	string(LENGTH "${_hc_key}" _hc_key_length)
+	if(NOT _hc_key_length EQUAL 64)
+		message(FATAL_ERROR "HC_RELEASE_KEY: ${_hc_key_file} does not hold 64 hex digits")
+	endif()
+	string(TOLOWER "${_hc_key}" _hc_key)
+	set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_hc_key_file}")
+	set(_hc_gen_dir "${CMAKE_BINARY_DIR}/hc_generated")
+	file(MAKE_DIRECTORY "${_hc_gen_dir}")
+	set(_hc_content "// Generated at configure time by core/hc_core.cmake from ${_hc_key_file}; do not edit.\n#define HC_RELEASE_KEY_HEX \"${_hc_key}\"\n")
+	set(_hc_old "")
+	if(EXISTS "${_hc_gen_dir}/hc_release_key.h")
+		file(READ "${_hc_gen_dir}/hc_release_key.h" _hc_old)
+	endif()
+	if(NOT _hc_old STREQUAL _hc_content)
+		file(WRITE "${_hc_gen_dir}/hc_release_key.h" "${_hc_content}")
+	endif()
+	target_include_directories(${target} PRIVATE "${_hc_gen_dir}")
+	message(STATUS "Release key: ${_hc_key_file}")
+endfunction()
