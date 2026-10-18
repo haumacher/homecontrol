@@ -800,6 +800,29 @@ request at a time per socket; a second before the response is refused 429 `ehome
 that announces `length` closes the socket: its binary messages could not be told apart). The device
 pings every 30 s; a pong missing after 10 s closes the socket and the backoff reconnects it.
 
+### What E-Home refuses on the socket
+
+`refused` carries one of `ehome.unknown_controller` (no controller of that id), `ehome.auth_failed`
+(the MAC does not match; also a replayed `auth`, since every connection has its own nonce),
+`ehome.auth_required` (a message before `auth`), `ehome.auth_timeout` (no `auth` within 10 s),
+`ehome.forgotten` (the controller was forgotten in E-Home while connected; the device shows it as
+`failed` with that reason and keeps retrying by backoff until the owner disconnects or enrolls
+again) and `ehome.replaced` (the same controller connected a second time; the older socket is
+closed). The socket URL E-Home hands out at the enrollment is complete, including E-Home's context
+path and host as the reverse proxy presents it (`X-Forwarded-Proto`, `X-Forwarded-Host`).
+
+### Framing details both sides implement
+
+- Binary bodies are sent in frames of at most 4096 bytes; the last frame completes the body.
+- An inline JSON `body` is re-serialized by the receiver (whitespace is not preserved), so a body
+  whose bytes matter, such as the runtime image whose stored copy must equal what E-Home exported,
+  always travels as `length` plus binary frames.
+- The enrollment request may carry `"controller": "<id>"` when the device believes it is already
+  enrolled with this E-Home (a retry after a lost answer); E-Home answers 409 `ehome.enrolled` for a
+  known id it did not just issue.
+- Keepalive: the device sends WebSocket ping frames; E-Home answers with pong frames and also
+  accepts a JSON `{"type": "ping"}` with a JSON `pong`, as the browser protocol does.
+
 ### Status
 
 `GET /api/status` gains `"ehome": {"enabled": true, "enrolled": true, "state": "connected" |
