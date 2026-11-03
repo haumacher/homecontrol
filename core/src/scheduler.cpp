@@ -399,6 +399,8 @@ struct Scheduler::Entry {
 	int64_t next = kNone;          ///< The next due occurrence (UTC), kNone if none.
 	uint16_t output = 0;
 	bool has_output = false;
+	/// The output took its first value since the load (a restored one, reported quietly, or a firing).
+	bool output_settled = false;
 	bool enabled = true;
 	bool persistable = true;
 	bool astro_refusal_logged = false;
@@ -1060,10 +1062,25 @@ void Scheduler::update_outputs(int64_t now) {
 		Date fired_on;
 		bool value = entry.last_fired != kNone && time_.local_date(entry.last_fired, fired_on) && fired_on == today;
 		const Datapoint* dp = model_->get(entry.output);
+		bool restoring = !entry.output_settled;
+		entry.output_settled = true;
 		if (dp != nullptr && dp->quality() == Quality::good && dp->value() == Value::of_bool(value)) {
 			continue;
 		}
-		model_->report(*this, entry.output, Value::of_bool(value));
+		if (restoring && quiet_ != nullptr) {
+			// Whether the entry fired today, after a load or reboot: restored state, no event (issue #67).
+			struct Report {
+				Scheduler* scheduler;
+				uint16_t output;
+				bool value;
+			} report{this, entry.output, value};
+			quiet_->quietly([](void* ctx) {
+				Report& r = *static_cast<Report*>(ctx);
+				r.scheduler->model_->report(*r.scheduler, r.output, Value::of_bool(r.value));
+			}, &report);
+		} else {
+			model_->report(*this, entry.output, Value::of_bool(value));
+		}
 	}
 }
 
@@ -1834,6 +1851,7 @@ void Scheduler::fire(Entry& entry, int64_t now, bool caught_up) {
 	} else {
 		Log::info(kTag, "schedule %s fired", entry.spec.id);
 	}
+	entry.output_settled = true;
 	if (entry.has_output && model_ != nullptr) {
 		model_->report(*this, entry.output, Value::of_bool(true));
 	}

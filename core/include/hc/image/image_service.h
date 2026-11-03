@@ -69,7 +69,7 @@ namespace image {
 /// applied plan's tables (the "load tables" of the log) for these reloads.
 ///
 /// Threading: everything on the event loop's thread.
-class ImageService : public LedInput, private ScheduleListener, private DynamicSpecListener {
+class ImageService : public LedInput, private ScheduleListener, private QuietReports, private DynamicSpecListener {
 public:
 	/// Most providers registered at the same time.
 	static constexpr size_t kMaxProviders = 4;
@@ -221,6 +221,7 @@ private:
 
 	// ScheduleListener
 	void schedule_fired(const char* id) override;
+	void quietly(void (*report)(void* ctx), void* ctx) override;
 
 	Controller& controller_;
 	DatapointModel& model_;

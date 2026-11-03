@@ -232,7 +232,8 @@ re-evaluated at once; missed firings are handled per 4.3.
 
 With `output`, the scheduler becomes the owning technology of that datapoint (`doc/datapoints.md`):
 it reports `true` at each firing and `false` at the next local midnight, and after a load or reboot
-it reports whether the entry fired today. Commands to the datapoint are refused (E-Home should
+it reports whether the entry fired today: that value is restored state, no event for the rules
+(`spec/rules.md` 7.6; issue #67), taken at the first evaluation with a synchronized wall clock. Commands to the datapoint are refused (E-Home should
 declare it not writable). The datapoint must be `boolean`, exist in the image and not be owned by
 another technology or named by another entry.
 

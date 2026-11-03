@@ -82,6 +82,7 @@ ImageService::ImageService(Controller& controller, DatapointModel& model, BlobSt
 	  time_master_(controller.loop(), controller.time(), model, adapter),
 	  store_(blobs) {
 	scheduler_.defer_time_reports(true); // published quietly after each load (bind_technologies)
+	scheduler_.set_quiet_reports(this); // the outputs' first values after a load (issue #67)
 }
 
 ImageService::~ImageService() {
@@ -925,6 +926,10 @@ bool ImageService::image_degraded() const {
 
 void ImageService::schedule_fired(const char* id) {
 	engine_.schedule_fired(id);
+}
+
+void ImageService::quietly(void (*report)(void* ctx), void* ctx) {
+	engine_.quietly([report, ctx] { report(ctx); });
 }
 
 void ImageService::write_status(JsonWriter& json) const {

@@ -218,6 +218,19 @@ protected:
 	~ScheduleListener() = default;
 };
 
+/// Makes the scheduler's reports of the "fired today" outputs no events for the rules (the image
+/// service: Engine::quietly()). The first value an output takes after a load, at the first
+/// evaluation with a synchronized wall clock, is restored state, not a firing (issue #67,
+/// spec/schedules.md 5).
+class QuietReports {
+public:
+	/// Calls `report(ctx)` so that the datapoint updates it makes are no events.
+	virtual void quietly(void (*report)(void* ctx), void* ctx) = 0;
+
+protected:
+	~QuietReports() = default;
+};
+
 /// Runs the schedule entries of the runtime image (spec/schedules.md, doc/time.md): computes each
 /// entry's next firing in local time from the TimeSource, keeps one event-loop timer for the
 /// earliest, fires the due entries to its listeners, handles missed firings by the entry's policy,
@@ -275,6 +288,10 @@ public:
 	/// taking the values at load is no event, as for the rule parameters' datapoints). Default false:
 	/// load() publishes them.
 	void defer_time_reports(bool defer) { defer_times_ = defer; }
+
+	/// The reports to make quiet: the first value of each output after a load (QuietReports).
+	/// Without one (the default) every report of an output is an ordinary report.
+	void set_quiet_reports(QuietReports* quiet) { quiet_ = quiet; }
 
 	/// Reports the effective time of every entry with a bound time datapoint where the datapoint
 	/// differs.
@@ -403,6 +420,7 @@ private:
 	bool waiting_logged_ = false;
 	bool commanding_ = false; ///< Within command(): the model stores the value, nothing may report.
 	bool defer_times_ = false;
+	QuietReports* quiet_ = nullptr;
 };
 
 } // namespace hc

@@ -760,6 +760,26 @@ const char* kAdjustableImage = R"({
 
 } // namespace
 
+TEST_CASE("WebApi.Schedules: an output takes its value at the load quietly (issue #67)") {
+	DashboardFixture f;
+	f.load(R"({
+		"image": {"schemaVersion": "1.2", "projectId": "output", "revision": 1},
+		"datapoints": [{"id": "fired", "type": "boolean", "virtual": {}},
+		               {"id": "seen", "type": "boolean", "writable": true, "virtual": {}}],
+		"schedules": [{"id": "evening", "label": "Evening", "kind": "weekly", "days": [1, 2, 3, 4, 5, 6, 7],
+		               "time": {"hour": 23, "minute": 59, "second": 59}, "output": "fired"}],
+		"rules": [{"id": "watch", "name": "Watch",
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "fired"}],
+				"actions": [{"kind": "write", "datapoint": "seen", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}]
+	})");
+	f.controller.run_once();
+	f.controller.run_once();
+	const hc::Datapoint* fired = f.model.find("fired");
+	REQUIRE(fired != nullptr);
+	CHECK(fired->quality() == hc::Quality::good);
+	CHECK(f.model.find("seen")->quality() == hc::Quality::unknown);
+}
+
 TEST_CASE("WebApi.Schedules: adjustable members, bounds, overrides and their refusals") {
 	DashboardFixture f;
 	f.load(kAdjustableImage);

@@ -748,6 +748,16 @@ datapoint, or one whose value type changed, starts unknown. After the swap the t
 the datapoints declared read-on-start again, the new ones among them (KNX: a GroupValueRead each,
 spread out as at boot), so new inputs get a value without waiting for the next report.
 
+Values the image itself sets (issue #67): the datapoints whose values follow from the image and the
+device's own persisted state, not from a technology's report, take their values at a load (a swap
+or the boot) as no event for the rules: the rule parameters' datapoints (8.6), the schedules' time
+datapoints and the schedules' output datapoints, whose value then says whether the entry fired
+today (`spec/schedules.md` 2.2, 5). No trigger matches on them, and rules see the values when they
+start with the reason `image` or `boot` (7.5). An output's value is taken at the first evaluation
+with a synchronized wall clock, so after a boot without one, at the synchronization, quietly as
+well. Every later change of these datapoints is an event: a parameter change, a changed time, a
+firing and the reset of the output at midnight.
+
 ### 7.7 Change tracking and time
 
 For every datapoint referenced by `sinceChange` or `changedWithin`, the engine records the

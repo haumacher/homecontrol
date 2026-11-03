@@ -307,6 +307,67 @@ TEST_CASE("Scheduler.WaitsForASynchronizedClock") {
 	CHECK(rig.loop.timer_count() == 0);
 }
 
+namespace {
+
+/// Records the output's updates and whether each came within QuietReports::quietly().
+struct QuietProbe : hc::QuietReports, hc::DatapointListener {
+	bool quiet = false;
+	std::vector<std::pair<bool, bool>> updates; ///< (value, quiet)
+
+	void quietly(void (*report)(void* ctx), void* ctx) override {
+		quiet = true;
+		report(ctx);
+		quiet = false;
+	}
+
+	void datapoint_updated(const hc::DatapointUpdate& update) override {
+		updates.emplace_back(update.datapoint.value() == hc::Value::of_bool(true), quiet);
+	}
+};
+
+} // namespace
+
+TEST_CASE("Scheduler.OutputRestoredQuietly") {
+	// Issue #67: the output's first value after a load or reboot is restored state, no event; the
+	// firing and the reset at midnight are events.
+	ScopedCapture capture;
+	Rig rig;
+	QuietProbe probe;
+	const hc::DatapointSpec datapoints[] = {{"evening.fired", hc::ValueType::boolean, 0}};
+	REQUIRE(rig.model.load(datapoints, 1) == hc::DatapointStatus::ok);
+	REQUIRE(rig.model.add_listener(probe) == hc::DatapointStatus::ok);
+	rig.scheduler->set_quiet_reports(&probe);
+	rig.time.set_utc(cest(2026, 10, 12, 12, 0));
+	ScheduleSpec spec = weekly("evening", Weekdays::kAll, at(19, 0));
+	spec.output = "evening.fired";
+	REQUIRE(rig.load({spec}) == ScheduleStatus::ok);
+	CHECK(probe.updates == std::vector<std::pair<bool, bool>>{{false, true}});
+	rig.run_until(cest(2026, 10, 12, 19, 0, 30));
+	rig.run_until(cest(2026, 10, 13, 0, 0, 5));
+	CHECK(probe.updates == std::vector<std::pair<bool, bool>>{{false, true}, {true, false}, {false, false}});
+
+	// A reboot on the day of a firing: true again, quietly.
+	rig.run_until(cest(2026, 10, 13, 20, 0));
+	probe.updates.clear();
+	rig.boot();
+	rig.scheduler->set_quiet_reports(&probe);
+	REQUIRE(rig.model.load(datapoints, 1) == hc::DatapointStatus::ok);
+	REQUIRE(rig.load({spec}) == ScheduleStatus::ok);
+	CHECK(probe.updates == std::vector<std::pair<bool, bool>>{{true, true}});
+
+	// Loaded before the wall clock is synchronized: the first value at the synchronization is quiet.
+	probe.updates.clear();
+	rig.time.synchronized = false;
+	rig.boot();
+	rig.scheduler->set_quiet_reports(&probe);
+	REQUIRE(rig.model.load(datapoints, 1) == hc::DatapointStatus::ok);
+	REQUIRE(rig.load({spec}) == ScheduleStatus::ok);
+	CHECK(probe.updates.empty());
+	rig.time.synchronized = true;
+	rig.scheduler->time_changed(hc::TimeEvents::kSynchronized);
+	CHECK(probe.updates == std::vector<std::pair<bool, bool>>{{true, true}});
+}
+
 TEST_CASE("Scheduler.FiredTodayOutputDatapoint") {
 	ScopedCapture capture;
 	Rig rig;
