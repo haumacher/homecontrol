@@ -1,8 +1,10 @@
 # Copyright (c) 2026 Bernhard Haumacher
 
 idf_component_register(
-	SRCS "main.cpp"
+	SRCS "main.cpp" "nothrow_new.cpp"
 	INCLUDE_DIRS "."
-	REQUIRES hc_core hc_platform hc_net hc_console hc_improv hc_ota hc_web hc_knx hc_image hc_storage hc_external hc_i18n hc_mqtt hc_zigbee hc_ehome nvs_flash esp_system log freertos)
+	REQUIRES hc_core hc_platform hc_net hc_console hc_improv hc_ota hc_web hc_knx hc_image hc_storage hc_external hc_i18n hc_mqtt hc_zigbee hc_ehome nvs_flash esp_system log freertos
+	# nothrow_new.cpp replaces global allocation functions: nothing references it by name.
+	WHOLE_ARCHIVE)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
