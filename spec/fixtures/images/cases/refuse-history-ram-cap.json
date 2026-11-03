@@ -1,0 +1,5 @@
+{"comment": "Without a budget the rings must fit the device's cap also when the image has a 'history' member (5 rings of 2048 samples: 81 920 bytes of RAM).",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [{"path": "history", "reason": "the histories need 81920 bytes of RAM, the device allows at most 65536"}]},
+ "image": {"schemaVersion": "1.2", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "t1", "type": "real", "history": {"retention": 122820, "spacing": 60}}, {"id": "t2", "type": "real", "history": {"retention": 122820, "spacing": 60}}, {"id": "t3", "type": "real", "history": {"retention": 122820, "spacing": 60}}, {"id": "t4", "type": "real", "history": {"retention": 122820, "spacing": 60}}, {"id": "t5", "type": "real", "history": {"retention": 122820, "spacing": 60}}],
+ "history": {}}

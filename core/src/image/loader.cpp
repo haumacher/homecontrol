@@ -2652,6 +2652,9 @@ void parse_history(Ctx& c, const JsonSpan& root, size_t cap, size_t archive_cap)
 			return;
 		}
 		plan.history_budget = static_cast<size_t>(bytes);
+	} else if (needed > cap) {
+		c.refuse("the histories need %u bytes of RAM, the device allows at most %u", static_cast<unsigned>(needed),
+			static_cast<unsigned>(cap));
 	}
 	JsonSpan archive_budget;
 	if (c.member(history, "archiveBudget", archive_budget)) {

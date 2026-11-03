@@ -270,7 +270,9 @@ addresses (after the image's own). The addresses must not be the sending address
   image, `doc/persistence.md` "Archives").
 
 Refused at `history` when the rings and archives need more than `budget`, or the archives more than
-`archiveBudget`; at `history.budget` or `history.archiveBudget` when it exceeds the device's cap.
+`archiveBudget`, or, where a budget is not given (with or without the member `history`), more than the
+device's cap; at `history.budget` or `history.archiveBudget` when it exceeds the device's cap
+(`refuse-history-ram-cap.json`).
 Example: a temperature with a ring of 2 days at 300 s (577 samples), an hourly archive of 31 days
 (745 slots, 6 segments) and a daily one of 2 years (731 slots, 6 segments), and a boolean with a
 ring of a day at 900 s (97 samples) and a daily archive of a year (366 slots, 3 segments): `budget`
