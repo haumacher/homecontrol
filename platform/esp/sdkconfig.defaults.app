@@ -10,6 +10,9 @@
 # (CONFIG_LWIP_MAX_SOCKETS in sdkconfig.defaults), next to mDNS, SNTP, the KNX tunnel, the E-Home
 # connection, MQTT and the fetchers.
 CONFIG_HTTPD_WS_SUPPORT=y
+# Since ESP-IDF 5.5 the URI handler is no longer called after the handshake; the live feed's client
+# is opened in the post-handshake callback instead (web_server.cpp, WebServer::handle_ws_open).
+CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1280
 
 # Diagnostics (issue #4, doc/diagnostics.md).

@@ -143,6 +143,7 @@ private:
 
 	static esp_err_t api_handler(httpd_req_t* req);
 	static esp_err_t ws_handler(httpd_req_t* req);
+	static esp_err_t ws_opened(httpd_req_t* req);
 	static esp_err_t file_handler(httpd_req_t* req);
 	static void close_handler(httpd_handle_t hd, int fd);
 	static void drain_work(void* arg);
@@ -155,6 +156,7 @@ private:
 	esp_err_t send_stream(httpd_req_t* req, size_t length, uint32_t token);
 	void wait_job();
 	esp_err_t handle_ws(httpd_req_t* req);
+	esp_err_t handle_ws_open(httpd_req_t* req);
 	esp_err_t handle_file(httpd_req_t* req);
 	void handle_close(int fd);
 	void drain();

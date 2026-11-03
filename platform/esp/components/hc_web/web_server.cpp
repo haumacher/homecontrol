@@ -12,6 +12,10 @@
 #include <cstring>
 
 #include "esp_heap_caps.h"
+#include "sdkconfig.h"
+#if !CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+#error "the live feed opens its clients in ws_post_handshake_cb: set CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT (sdkconfig.defaults.app)"
+#endif
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
@@ -472,6 +476,9 @@ bool WebServer::start() {
 	ws.method = HTTP_GET;
 	ws.handler = &WebServer::ws_handler;
 	ws.is_websocket = true;
+	// ESP-IDF 5.5 no longer calls the handler after the handshake (5.3 did, with HTTP_GET): the client
+	// is opened here, the handler gets the frames.
+	ws.ws_post_handshake_cb = &WebServer::ws_opened;
 	httpd_register_uri_handler(server_, &ws);
 	httpd_uri_t files = {};
 	files.uri = "/*";
@@ -741,6 +748,10 @@ esp_err_t WebServer::ws_handler(httpd_req_t* req) {
 	return g_server->handle_ws(req);
 }
 
+esp_err_t WebServer::ws_opened(httpd_req_t* req) {
+	return g_server->handle_ws_open(req);
+}
+
 namespace {
 
 /// Sends a close frame right away (httpd task, inside a handler) and lets httpd close the socket.
@@ -758,38 +769,44 @@ esp_err_t close_now(httpd_req_t* req, uint16_t code, const char* reason) {
 
 } // namespace
 
+// After the handshake (ws_post_handshake_cb): the feed decides whether the client may stay. Every
+// refusal is logged: a browser only sees the close.
+esp_err_t WebServer::handle_ws_open(httpd_req_t* req) {
+	int fd = httpd_req_to_sockfd(req);
+	Job& job = *job_;
+	WsSlot* slot = ws_find(-1);
+	if (slot == nullptr) {
+		Log::warn(kTag, "WebSocket refused: all %u connection slots taken", static_cast<unsigned>(kMaxWs));
+		return close_now(req, websocket::kCloseTryAgainLater, "too many WebSocket connections");
+	}
+	if (job_busy_.load()) {
+		Log::warn(kTag, "WebSocket refused: the controller is busy with a request");
+		return close_now(req, websocket::kCloseTryAgainLater, "the controller is busy; try again");
+	}
+	slot->fd = fd;
+	slot->generation = next_generation_++;
+	if (next_generation_ == 0) {
+		next_generation_ = 1;
+	}
+	slot->opened = false;
+	slot->dead = false;
+	job.kind = Job::Kind::ws_open;
+	job.handle = make_handle(fd, slot->generation);
+	job.has_cookie = copy_session_cookie(req, job.cookie, sizeof(job.cookie));
+	job.has_origin = copy_header(req, "Origin", job.origin, sizeof(job.origin), "invalid://");
+	job.has_host = copy_header(req, "Host", job.host, sizeof(job.host), "invalid");
+	if (!run_on_loop()) {
+		Log::warn(kTag, "WebSocket refused: the event loop did not take the open in time");
+		return close_now(req, websocket::kCloseTryAgainLater, "the controller is busy; try again");
+	}
+	slot->opened = true;
+	log_heap("WebSocket client connected");
+	return ESP_OK;
+}
+
 esp_err_t WebServer::handle_ws(httpd_req_t* req) {
 	int fd = httpd_req_to_sockfd(req);
 	Job& job = *job_;
-	if (req->method == HTTP_GET) {
-		// The handshake is done; the feed decides whether the client may stay.
-		WsSlot* slot = ws_find(-1);
-		if (slot == nullptr) {
-			return close_now(req, websocket::kCloseTryAgainLater, "too many WebSocket connections");
-		}
-		if (job_busy_.load()) {
-			return close_now(req, websocket::kCloseTryAgainLater, "the controller is busy; try again");
-		}
-		slot->fd = fd;
-		slot->generation = next_generation_++;
-		if (next_generation_ == 0) {
-			next_generation_ = 1;
-		}
-		slot->opened = false;
-		slot->dead = false;
-		job.kind = Job::Kind::ws_open;
-		job.handle = make_handle(fd, slot->generation);
-		job.has_cookie = copy_session_cookie(req, job.cookie, sizeof(job.cookie));
-		job.has_origin = copy_header(req, "Origin", job.origin, sizeof(job.origin), "invalid://");
-		job.has_host = copy_header(req, "Host", job.host, sizeof(job.host), "invalid");
-		if (!run_on_loop()) {
-			return close_now(req, websocket::kCloseTryAgainLater, "the controller is busy; try again");
-		}
-		slot->opened = true;
-		log_heap("WebSocket client connected");
-		return ESP_OK;
-	}
-
 	WsSlot* slot = ws_find(fd);
 	httpd_ws_frame_t frame = {};
 	esp_err_t err = httpd_ws_recv_frame(req, &frame, 0);
