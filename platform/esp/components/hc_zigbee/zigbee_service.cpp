@@ -34,7 +34,16 @@ constexpr const char* kTag = "hc.zigbee";
 
 /// The coordinator's own endpoint: the source of every request, the destination of the bindings.
 constexpr uint8_t kEndpoint = 1;
-constexpr uint32_t kTaskStack = 6144;
+/// Stack of the stack's task: the ZBOSS main loop and its callbacks (signals, ZCL frames copied into
+/// the ring). Measured on the C6 (2026-11-03, one device, 45 min up): 2236 B used (2384 B on
+/// 2026-10-18); 4608 B keep over 2 KB for the paths not measured on the desk (a join with the key
+/// exchange, a device's interview, a burst of reports). 6144 B before issue #45.
+constexpr uint32_t kTaskStack = 4608;
+/// The nodes the stack's tables are sized for (neighbours, routes, addresses, keys; 64 by default):
+/// the device database's limit, issue #45.
+constexpr uint16_t kNetworkSize = zigbee::DeviceDatabase::kMaxDevices;
+/// The stack's packet buffers (80 by default): 48 for a network of kNetworkSize nodes, issue #45.
+constexpr uint16_t kIoBuffers = 48;
 constexpr UBaseType_t kTaskPriority = 5;
 constexpr uint32_t kRetryMs = 1000;
 /// How long a request from the event loop waits for the stack's lock.
@@ -95,7 +104,10 @@ struct Event {
 	} payload;
 };
 
-constexpr size_t kRingSize = 16;
+/// Events between the stack's task and the event loop (each sizeof(Event), about 190 B). The loop
+/// drains the ring within a turn of its posting; a full ring drops the event (counted, logged once
+/// per burst: `hc.zigbee: ... dropped`, `zigbee status`). 16 before issue #45.
+constexpr size_t kRingSize = 8;
 
 class EspZigbeeDriver;
 
@@ -115,6 +127,7 @@ struct State {
 	size_t count = 0;
 	bool drain_posted = false;
 	std::atomic<uint32_t> dropped{0};
+	bool dropping = false; ///< The last claim found the ring full (under the mutex).
 	Event current; ///< The event being delivered, on the loop task.
 
 	/// Set once the network is formed or restored: requests before are refused.
@@ -154,10 +167,18 @@ void drain(void* context, const LoopMessage& message);
 Event* claim(Kind kind) {
 	xSemaphoreTake(g_state.mutex, portMAX_DELAY);
 	if (g_state.count == kRingSize) {
+		bool first = !g_state.dropping;
+		g_state.dropping = true;
 		xSemaphoreGive(g_state.mutex);
-		g_state.dropped.fetch_add(1);
+		uint32_t total = g_state.dropped.fetch_add(1) + 1;
+		if (first) {
+			// Once per burst (until an event fits again): the stack's task must not flood the log.
+			Log::warn(kTag, "Zigbee event dropped: the ring to the event loop is full (%u slots; %u dropped since boot)",
+				static_cast<unsigned>(kRingSize), static_cast<unsigned>(total));
+		}
 		return nullptr;
 	}
+	g_state.dropping = false;
 	Event* event = &g_state.ring[(g_state.head + g_state.count) % kRingSize];
 	xSemaphoreGive(g_state.mutex);
 	std::memset(event, 0, sizeof(Event));
@@ -541,6 +562,14 @@ void zigbee_task(void*) {
 	config.esp_zb_role = ESP_ZB_DEVICE_TYPE_COORDINATOR;
 	config.install_code_policy = false;
 	config.nwk_cfg.zczr_cfg.max_children = CONFIG_HC_ZIGBEE_MAX_CHILDREN;
+	// The table and buffer sizes take effect only before esp_zb_init() (esp_zigbee_core.h).
+	if (esp_zb_overall_network_size_set(kNetworkSize) != ESP_OK) {
+		Log::warn(kTag, "the stack refused the network size %u: its tables keep the default size",
+			static_cast<unsigned>(kNetworkSize));
+	}
+	if (esp_zb_io_buffer_size_set(kIoBuffers) != ESP_OK) {
+		Log::warn(kTag, "the stack refused %u I/O buffers: it keeps the default number", static_cast<unsigned>(kIoBuffers));
+	}
 	esp_zb_init(&config);
 	// Legacy devices (Zigbee Light Link and Home Automation 1.2 profiles, e.g. the Philips Hue motion
 	// sensor SML002) never request the trust-center link key after joining; with the Zigbee 3.0

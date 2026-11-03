@@ -296,7 +296,7 @@ bsd_udp.cpp`, compiled by both builds.
   the name server answers, acceptable on the host) and delivers through `EventLoop::post()`.
   `homecontrol` runs the tunnel when `knx.gateway` is set in its settings file
   (`knx.gateway=s:<host>:3671`, `knx.nat=b:1`).
-- **ESP** (`hc_knx`, `hc::esp::EspUdpSocket`): the reader task `hc_udp` (4 KB stack, priority 4)
+- **ESP** (`hc_knx`, `hc::esp::EspUdpSocket`): the reader task `hc_udp` (3 KB stack, priority 4)
   waits on the socket with `select` (100 ms), copies datagrams into a ring of 8 slots and posts one
   LoopQueue message, whose handler hands them to the tunnel on the loop's task; it also runs
   `getaddrinfo`. The loop retires a closed descriptor to the reader, which closes it (never one it

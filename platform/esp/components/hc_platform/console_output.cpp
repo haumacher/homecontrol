@@ -42,7 +42,9 @@ constexpr uint32_t kRxBuffer = 512;
 constexpr uint32_t kTxBuffer = 64;
 
 /// The writer: below the serial reader (4) and the event loop (5), so input is read first and the
-/// loop is never preempted by output. Its stack holds only the driver call.
+/// loop is never preempted by output. Its stack holds only the driver call: 304 B used on the C6
+/// (2026-11-03, 45 min of logging with a USB host attached). Kept at 2048 B: with 1536 B (issue #45)
+/// it overflowed in the marker's snprintf (since formatted without printf); a printf of the ROM reserves 1.25 KB at once (_svfprintf_r 1072 + snprintf 176 B), mostly never written, so the high-water mark does not show it (#48).
 constexpr uint32_t kWriterStack = 2048;
 constexpr UBaseType_t kWriterPriority = 3;
 

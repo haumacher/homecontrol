@@ -119,7 +119,7 @@ Every state change is one line under the tag `hc.ehome`:
 I hc.ehome: enrolling with https://ehome.example (the code from E-Home, entered by 192.0.2.10)
 I hc.ehome: enrolled with https://ehome.example as controller c-17, installation "Haus"; the connection is switched on
 I hc.ehome: connecting to wss://ehome.example/api/controllers/c-17/socket
-I hc.ws: WebSocket open: client task stack 1800 of 6144 B unused, free heap 41000 B (minimum 30000 B)
+I hc.ws: WebSocket open: client task stack 2500 of 5120 B unused, free heap 41000 B (minimum 30000 B)
 I hc.ehome: socket open, awaiting E-Home's challenge
 I hc.ehome: challenge answered as controller c-17
 I hc.ehome: connected to E-Home (installation "Haus")
@@ -161,10 +161,10 @@ Nothing is allocated while the controller is not enrolled or the connection is o
 | Response envelope (`EhomeLink`, heap per session) | 4194 |
 | Session: the text reassembly buffer and the hand-over slot (heap) | about 4400 |
 | Client receive and send buffers (`buffer_size` 1024 each) | 2048 |
-| Client task stack | 6144 |
+| Client task stack (issue #45: 2612 B used against the development CA) | 5120 |
 | Client structure, configuration, its event loop, locks | about 1500 |
 | TLS steady state with dynamic buffers (context, session, record buffers per record) | 3000 to 5000 |
-| **Connected, total** | **about 21 000 to 23 000** |
+| **Connected, total** | **about 20 000 to 22 000** |
 | A request body announced with `length` (heap, freed after the answer) | its length (the image: up to 256 KB, 507 when no block is that large) |
 
 The TLS handshake is the peak: with `CONFIG_MBEDTLS_DYNAMIC_BUFFER` the incoming record buffer is

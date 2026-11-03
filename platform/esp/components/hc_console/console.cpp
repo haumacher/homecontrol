@@ -591,8 +591,11 @@ constexpr int kMaxArgs = 8;
 constexpr size_t kMaxLine = 256;
 constexpr int kHistory = 32;
 
-/// The REPL task (the IDF REPL's defaults).
-constexpr uint32_t kReplStack = 4096;
+/// The REPL task: the line editor and the dispatch (command bodies run on the event loop). 1832 B
+/// used on the C6 (2026-11-03 and 2026-10-18 alike: the start, its terminal probe and the command
+/// registry). 3584 B: the commands print through printf, and a printf of the ROM reserves 1.25 KB at once (_svfprintf_r 1072 + snprintf 176 B), mostly never written, so the high-water mark does not show it (#48). 4096 B (the IDF REPL's
+/// default) before issue #45.
+constexpr uint32_t kReplStack = 3584;
 constexpr UBaseType_t kReplPriority = 2;
 
 /// The one command in flight: the REPL handles a line at a time, so a single slot suffices. If

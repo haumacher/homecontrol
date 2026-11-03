@@ -3,7 +3,6 @@
  */
 #include "hc/output_ring.h"
 
-#include <cstdio>
 #include <cstring>
 
 namespace hc {
@@ -53,14 +52,36 @@ size_t OutputRing::format_marker(char* out) const {
 	if (unreported_ == 0) {
 		return 0;
 	}
+	// By hand, not snprintf: this runs in out_write() on whichever task logs, inside its own printf
+	// and a critical section; a nested printf of the ROM needs another 1.25 KB of that task's stack,
+	// which once overflowed the IDF's sys_evt and the console writer (#48).
+	size_t n = 0;
+	auto add = [&](const char* text, size_t length) {
+		for (size_t i = 0; i < length && n + 1 < kMaxMarker; ++i) {
+			out[n++] = text[i];
+		}
+	};
 	const char* eol = crlf_ ? "\r\n" : "\n";
-	char text[kMaxMarker];
-	std::snprintf(text, sizeof(text), kMarkerText, static_cast<unsigned>(unreported_));
-	int n = std::snprintf(out, kMaxMarker, "%s%s%s", at_line_start_ ? "" : eol, text, eol);
-	if (n < 0) {
-		return 0;
+	size_t eol_length = crlf_ ? 2 : 1;
+	if (!at_line_start_) {
+		add(eol, eol_length);
 	}
-	return static_cast<size_t>(n) < kMaxMarker ? static_cast<size_t>(n) : kMaxMarker - 1;
+	const char* hole = std::strstr(kMarkerText, "%u");
+	add(kMarkerText, static_cast<size_t>(hole - kMarkerText));
+	char number[10];
+	size_t count = 0;
+	uint32_t value = unreported_;
+	do {
+		number[count++] = static_cast<char>('0' + value % 10);
+		value /= 10;
+	} while (value != 0);
+	while (count > 0) {
+		add(&number[--count], 1);
+	}
+	add(hole + 2, std::strlen(hole + 2));
+	add(eol, eol_length);
+	out[n] = '\0';
+	return n;
 }
 
 void OutputRing::put(uint8_t byte) {

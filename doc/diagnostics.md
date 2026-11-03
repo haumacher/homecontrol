@@ -219,6 +219,44 @@ logs. The driver stays installed for the receive side (the Improv reader and the
 `cat /dev/ttyACM<n>` attached for two minutes leaves `loop.missed` at its idle rate and
 `longest_turn_ms` below 100 ms; before, the board rebooted within half a minute.
 
+## Task stacks
+
+Every task's stack is its measured need plus a margin (issue #45): the size, the use measured on the
+C6 (2026-11-03: IDF 5.5.6, 45 minutes up with E-Home over wss, the KNX tunnel up and one Zigbee
+device; the size minus `stack_free` of `GET /api/system/diagnostics`, which is the high-water
+mark), and the path that may go deeper than the measurement. The setting is next to each figure in
+the code (`kLoopTaskStack`, `kStack`, `kTaskStack`, ...) or in `sdkconfig.defaults.app`.
+
+**The high-water mark underestimates a printf.** The ROM's formatter reserves its frame at once
+(`_svfprintf_r` 1072 B, `snprintf` 176 B) and mostly never writes it (its buffer for floats), so a
+task that prints may need about 1.25 KB more than its high-water mark shows, and the stack guard
+fires on the stack pointer alone. That was #48: the "lines dropped" marker of the console output was
+formatted with `snprintf` inside `out_write()`, i.e. inside the logging task's own printf, and
+overflowed `sys_evt` (2304 B then) and, with 1536 B, `hc_out`; the marker is now formatted by hand.
+Every task that may print keeps at least 1.3 KB over its high-water mark.
+
+| Task | Size (before) | Used | Not measured on the desk |
+|---|---|---|---|
+| `hc_loop` | 9216 (12288) | 3664; 5540 loading the largest fixture image (2026-10-18) | a rule set at the image limits, console commands |
+| `httpd` | 4608 (6144) | 2052; 2692 with page loads (2026-10-18) | |
+| `hc_ehome_ws` | 5120 (6144) | 2612 (TLS to the development CA) | the handshake with a public RSA chain through the certificate bundle |
+| `hc_zigbee` | 4608 (6144) | 2236 | a join with the key exchange, an interview |
+| `hc_udp` | 3072 (4096) | 784 (gateway by address) | `getaddrinfo` for a gateway by name |
+| `hc_console` | 3584 (4096) | 1832 | editing a line with the history; its commands print |
+| `hc_out` | 2048 (unchanged; 1536 overflowed, #48) | 304 | |
+| `mdns` | 3584 (4096) | 1712; 2120 (2026-10-18) | a name conflict |
+| `tiT` (lwIP) | 2560 (3072) | 688 | a log line's printf |
+| `esp_timer` | 2560 (3584) | none measurable | a callback that logs |
+| `Tmr Svc` | 2048 (unchanged) | 260 | a callback that logs |
+| `sys_evt` | 3584 (unchanged, issue #48) | 1192 | |
+| `wifi` | 6656 (the IDF's, with WPA3) | 2600 | WPS, a WPA3 handshake |
+| `IDLE` | 1536 (the IDF's) | 284 | |
+
+The short-lived workers (`hc_ota_fetch`, `hc_ext_fetch`, `hc_image_get`, `hc_ehome_reap`, the MQTT
+client's task, the Improv reader `hc_serial`) keep their sizes: they did not run during the
+measurement. The `hc.ws` line at every WebSocket open reports the E-Home client's reserve after the
+handshake.
+
 ## Testing on the board
 
 1. Flash the full image once (the partition table changed): `write_flash @flash_args`.

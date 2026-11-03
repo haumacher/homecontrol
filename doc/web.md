@@ -349,7 +349,9 @@ When the heap is exhausted the image still runs and `GET /api/model` refuses wit
 
 ## ESP specifics
 
-- esp_http_server on port 80, 10 sockets with least-recently-used purging, a 6 KB task stack,
+- esp_http_server on port 80, 10 sockets (4 for the live feed's WebSocket clients, 6 for a
+  browser's parallel page loads; 7 purged live-feed sockets during a page load, issue #45) with
+  least-recently-used purging, a 4.5 KB task stack,
   wildcard URI matching. `CONFIG_HTTPD_WS_SUPPORT`, request headers up to 1 KB
   (`CONFIG_HTTPD_MAX_REQ_HDR_LEN`; browsers exceed the default 512 B), `CONFIG_LWIP_MAX_SOCKETS=16`.
 - The httpd task never touches the core: requests, WebSocket opens and messages go through a static

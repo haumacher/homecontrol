@@ -52,6 +52,7 @@ public:
 		session = false;
 		connected = false;
 		queued = 0;
+		queued_bytes = 0;
 		subscriptions.clear();
 	}
 
@@ -61,12 +62,14 @@ public:
 			*error = "not connected";
 			return false;
 		}
-		if (queued >= capacity) {
+		if (queued >= capacity || (byte_capacity != SIZE_MAX && queued_bytes + length > byte_capacity)) {
 			*error = "outbox full";
+			++refused;
 			return false;
 		}
 		REQUIRE(hc::mqtt::topic_valid(topic));
 		++queued;
+		queued_bytes += length;
 		published.push_back(Publication{topic, std::string(payload, length), retain, qos});
 		if (retain) {
 			if (length == 0) {
@@ -180,6 +183,12 @@ public:
 	const char* refuse_connect = nullptr;
 	size_t capacity = SIZE_MAX;
 	size_t queued = 0;
+	/// A limit on the payload bytes queued, like esp-mqtt's outbox limit: a publication that would
+	/// exceed it is refused.
+	size_t byte_capacity = SIZE_MAX;
+	size_t queued_bytes = 0;
+	/// Publications refused because the queue was full.
+	size_t refused = 0;
 	bool session = false;
 	bool connected = false;
 	int connects = 0;

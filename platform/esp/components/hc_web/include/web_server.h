@@ -57,10 +57,18 @@ public:
 class WebServer : public WebHost, public WsTransport {
 public:
 	static constexpr uint16_t kPort = 80;
-	/// Sockets of the server: 4 WebSocket clients, a few page loads; the least recently used
-	/// connection is purged when all are taken.
+	/// Sockets of the server: the 4 WebSocket clients of the live feed (LiveFeed::kMaxClients) and 6
+	/// for page loads and API requests (a browser opens up to 6 at once); the least recently used
+	/// connection is purged when all are taken. E-Home does not take one: the controller connects out
+	/// to it (hc_ehome). Issue #45 tried 7: six parallel loads then purged three of four live-feed
+	/// sockets on the C6 (2026-11-03), so it stays 10.
 	static constexpr uint16_t kMaxSockets = 10;
-	static constexpr uint32_t kStack = 6144;
+	/// The httpd task's stack: request parsing and what runs there (the UI files read from LittleFS
+	/// in chunks, the body received into the job slot and handed to the loop, the WebSocket frames
+	/// and the queued sends; the API itself, the password check included, runs on the loop).
+	/// Measured on the C6: 2052 B used (2026-11-03), 2692 B (2026-10-18, with page loads and a
+	/// login); 4608 B keep 1.9 KB over that. 6144 B before issue #45.
+	static constexpr uint32_t kStack = 4608;
 	static constexpr uint32_t kJobTimeoutMs = 5000;
 	static constexpr size_t kSendBuffers = 8;
 	static constexpr size_t kResponseBuffer = 8192;

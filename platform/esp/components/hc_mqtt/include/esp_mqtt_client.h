@@ -35,8 +35,13 @@ namespace esp {
 class EspMqttClient : public MqttClient {
 public:
 	/// Bytes esp-mqtt's outbox may hold before publish() refuses. A state message costs about 150
-	/// bytes there (topic, payload, the outbox record), a discovery config about 1.1 KB.
-	static constexpr size_t kOutboxLimit = 16384;
+	/// bytes there (topic, payload, the outbox record), a discovery config about 1.1 KB: some 50
+	/// states or 7 configs. Every queued message is a heap block until the broker took it (QoS 1:
+	/// acknowledged), so the limit bounds the heap a burst scatters; 16 KB before issue #45. The
+	/// Home Assistant discovery of a larger image is paced by it: a refused config waits in the core
+	/// and goes out when the outbox has drained (Mqtt::kRetryPublishMs; core/test/mqtt_test.cpp
+	/// "MqttDiscoveryBurstIsPacedByTheOutbox").
+	static constexpr size_t kOutboxLimit = 8192;
 	/// esp-mqtt's receive and send buffer: a discovery config (about 1 KB) goes out in one piece.
 	static constexpr int kBufferBytes = 2048;
 	static constexpr int kTaskStack = 6144;

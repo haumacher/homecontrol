@@ -29,7 +29,11 @@ class ImageService;
 }
 
 /// One entry of the monitor (spec/api.md, "Monitor"): what the controller saw on a bus or did
-/// itself. Fixed size, stored in MonitorFeed's ring.
+/// itself. Fixed size (76 bytes, issue #45), stored in MonitorFeed's ring. Compact without losing
+/// anything the JSON shows: the monotonic time in 48 bits (8900 years), the wall time in 32 bits
+/// (seconds since the epoch, until 2106), the model generation in 8 bits (exact for every event the
+/// ring holds, see MonitorFeed::is_current()), the IEEE address as two halves (no 8-byte alignment),
+/// and an image event's revision and source in the place of the value it never carries.
 struct MonitorEvent {
 	static constexpr uint16_t kNoDatapoint = 0xFFFF;
 	/// Bytes of a copied text (a rule id, an image's project id) including the NUL; longer ones are cut.
@@ -70,34 +74,62 @@ struct MonitorEvent {
 		uint8_t data[knx::GroupData::kMaxData];
 	};
 	struct Zigbee {
-		uint64_t ieee;
+		uint32_t ieee_low;  ///< The IEEE address's lower 32 bits (see ieee()).
+		uint32_t ieee_high;
 		uint16_t short_addr;
 		uint16_t cluster;
 		uint16_t code; ///< The attribute of a report, the command id of an action or command.
 		uint8_t endpoint;
+
+		uint64_t ieee() const { return static_cast<uint64_t>(ieee_high) << 32 | ieee_low; }
+		void set_ieee(uint64_t ieee) {
+			ieee_low = static_cast<uint32_t>(ieee);
+			ieee_high = static_cast<uint32_t>(ieee >> 32);
+		}
 	};
 	struct Named {
 		char text[kMaxText]; ///< The rule id, the image's project id.
-		uint32_t revision;   ///< The image's revision.
-		uint8_t source;      ///< image::Source
+	};
+	/// An image event's revision and source (it carries no value).
+	struct Image {
+		uint32_t revision;
+		uint8_t source; ///< image::Source
 	};
 
-	uint64_t ms = 0;     ///< Monotonic.
-	int64_t wall = 0;    ///< Seconds since the epoch, with kWallTime.
+	uint32_t ms_low = 0;  ///< Monotonic milliseconds, lower 32 bits (see ms()).
+	uint32_t wall = 0;    ///< Seconds since the epoch, with kWallTime.
+	uint16_t ms_high = 0; ///< Bits 32..47 of the monotonic milliseconds.
+	uint16_t datapoint = kNoDatapoint;
+	uint8_t generation = 0; ///< The model generation `datapoint` refers to, modulo 256.
 	Kind kind = Kind::knx;
 	uint8_t sub = 0;
 	uint8_t flags = 0;
-	uint16_t generation = 0; ///< The model generation `datapoint` refers to.
-	uint16_t datapoint = kNoDatapoint;
-	Value value;
 	union {
 		Knx knx;
 		Zigbee zigbee;
 		Named named;
 	};
+	union {
+		Value value;  ///< With kHasValue.
+		Image image;  ///< Kind::image.
+	};
 
-	MonitorEvent() : named() {}
+	MonitorEvent() : named(), value() {}
+
+	/// Monotonic milliseconds.
+	uint64_t ms() const { return static_cast<uint64_t>(ms_high) << 32 | ms_low; }
+	void set_ms(uint64_t ms) {
+		ms_low = static_cast<uint32_t>(ms);
+		ms_high = static_cast<uint16_t>(ms >> 32);
+	}
+	/// Sets the wall time (seconds since the epoch) and kWallTime.
+	void set_wall(int64_t seconds) {
+		wall = static_cast<uint32_t>(seconds);
+		flags |= kWallTime;
+	}
 };
+
+static_assert(sizeof(MonitorEvent) == 76, "a MonitorEvent is 76 bytes (issue #45)");
 
 /// The monitor stream (issue #19): a ring of the last kCapacity MonitorEvents with sequence numbers,
 /// fed by
@@ -127,6 +159,7 @@ class MonitorFeed : public DatapointListener,
 	public rules::EngineObserver {
 public:
 	static constexpr size_t kCapacity = 128;
+	static_assert(kCapacity <= 256, "MonitorEvent::generation (8 bits) must outlast the ring");
 	/// Telegrams sent from the monitor that are remembered until the gateway confirms them (their
 	/// tx event carries "origin": "monitor").
 	static constexpr size_t kPendingSends = 4;
@@ -167,6 +200,10 @@ public:
 	/// The event with `sequence`; nullptr when overwritten or not written yet.
 	const MonitorEvent* find(uint32_t sequence) const;
 	uint16_t generation() const { return generation_; }
+	/// Whether `event` was recorded in the current model generation. The event keeps the generation
+	/// modulo 256, which is exact for every event the ring holds: each model change appends an event,
+	/// so an event still held is at most kCapacity - 1 generations old.
+	bool is_current(const MonitorEvent& event) const { return event.generation == static_cast<uint8_t>(generation_); }
 
 	/// Where a reader that asks for `since` starts: `since` itself, or first() when `since` lies
 	/// beyond next() (a sequence of an earlier run; `reset` is set then).

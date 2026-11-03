@@ -575,6 +575,39 @@ TEST_CASE("MqttDiscoveryOfEveryKind") {
 	CHECK(count == 24);
 }
 
+TEST_CASE("MqttDiscoveryBurstIsPacedByTheOutbox") {
+	// The device's outbox holds 8 KB (EspMqttClient::kOutboxLimit, issue #45): the discovery configs
+	// of a larger image do not fit at once. The ones refused wait for the outbox to drain; none is
+	// dropped, none is sent twice, the order stays.
+	Fixture unbounded;
+	unbounded.load(kinds());
+	unbounded.connect();
+	std::string want = discovery_lines(unbounded.client, "ha");
+	size_t total = 0;
+	for (const auto& p : unbounded.client.under("ha/")) {
+		total += p.payload.size();
+	}
+	REQUIRE(total > 8192);
+
+	Fixture f;
+	f.client.byte_capacity = 8192;
+	f.load(kinds());
+	f.connect();
+	CHECK(f.client.refused > 0);
+	CHECK(f.client.under("ha/").size() < unbounded.client.under("ha/").size());
+	// The broker takes what is queued every 100 ms.
+	for (int i = 0; i < 100; ++i) {
+		f.client.queued = 0;
+		f.client.queued_bytes = 0;
+		f.run_for(100);
+	}
+	CHECK(discovery_lines(f.client, "ha") == want);
+	CHECK_FALSE(f.capture.sink.contains("not announced"));
+	MqttStatus status;
+	f.mqtt->status(status);
+	CHECK(status.dirty == 0);
+}
+
 TEST_CASE("MqttDiscoveryOff") {
 	Fixture f;
 	f.load(example(), "{\"broker\": \"mqtt://broker.example\", \"discovery\": {\"enabled\": false}}");

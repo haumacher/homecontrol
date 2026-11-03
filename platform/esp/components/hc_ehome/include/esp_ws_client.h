@@ -33,8 +33,12 @@ public:
 	/// The client's receive and send buffer (each); messages are sent and received in frames of
 	/// this size.
 	static constexpr int kBufferSize = 1024;
-	/// Stack of the client task: the TLS record layer and the handshake's certificate check.
-	static constexpr int kTaskStack = 6144;
+	/// Stack of the client task: the TLS record layer and the handshake's certificate check (logged
+	/// at every open: "client task stack ... unused"). Measured on the C6: 2612 B used (2026-11-03,
+	/// wss to the development CA's certificate); 5120 B keep 2.5 KB for the handshake against a
+	/// public chain through the certificate bundle (RSA, not measured on the desk) and the
+	/// reconnects. 6144 B before issue #45.
+	static constexpr int kTaskStack = 5120;
 	static constexpr int kTaskPriority = 4;
 	static constexpr uint32_t kReaperStack = 3072;
 	static constexpr int kSendTimeoutMs = 2000;

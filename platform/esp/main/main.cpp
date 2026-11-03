@@ -51,8 +51,11 @@ constexpr const char* kTag = "hc.main";
 /// Stack of the event-loop task: log formatting (Log::kMaxMessage plus vsnprintf), console
 /// command bodies with printf, NVS writes and the esp_wifi/mDNS/SNTP calls made on the loop, and
 /// the runtime image's load (the validation of rules and schedules runs on the loop; `image
-/// status` prints the reserve left).
-constexpr uint32_t kLoopTaskStack = 12288;
+/// status` prints the reserve left). Measured on the C6: 3664 B used (2026-11-03, 45 min up with
+/// E-Home, KNX and Zigbee), 5540 B (2026-10-18) with the deepest path, the load of the largest
+/// fixture image; 9216 B keep 3.6 KB over that for the paths not measured (a console command, a
+/// rule set at the image limits). 12288 B before issue #45.
+constexpr uint32_t kLoopTaskStack = 9216;
 constexpr UBaseType_t kLoopTaskPriority = 5;
 
 /// Upper bound for one sleep, so the loop re-checks its deadline at least once a second.

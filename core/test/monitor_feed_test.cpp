@@ -239,6 +239,86 @@ TEST_CASE("MonitorFeed: the ring numbers events and overwrites the oldest") {
 	CHECK(events_of(f.monitor, f.monitor.next()).empty());
 }
 
+TEST_CASE("MonitorFeed: the compact event keeps what the JSON shows (issue #45)") {
+	RingFixture f;
+	// Beyond 32 bits of milliseconds (50 days of uptime) and a wall time beyond int32 (after 2038).
+	f.clock.now_ms = (uint64_t{1} << 40) + 12345;
+	f.clock.wall_seconds = 4102444800; // 2100-01-01
+	f.clock.synchronized = true;
+	REQUIRE(f.model.command(1, Value::of_real(-0.5)) == DatapointStatus::ok);
+
+	hc::zigbee::ZigbeeTraffic traffic;
+	traffic.kind = hc::zigbee::ZigbeeTraffic::Kind::report;
+	traffic.ieee = 0xFFEEDDCCBBAA9988ULL;
+	traffic.short_addr = 0xFFF7;
+	traffic.endpoint = 242;
+	traffic.cluster = 0xFC00;
+	traffic.code = 0xFFFE;
+	Value number = Value::of_unsigned(4000000000u);
+	traffic.value = &number;
+	f.monitor.zigbee_traffic(traffic);
+
+	// A rule id of the longest form (32 characters) is cut to 27 bytes, as the contract says.
+	f.monitor.rule_read("abcdefghijklmnopqrstuvwxyz-_0123", *f.model.find("a"));
+
+	std::vector<Json> events = events_of(f.monitor);
+	REQUIRE(events.size() == 3);
+	for (const Json& e : events) {
+		CHECK(e["ms"].number == static_cast<double>((uint64_t{1} << 40) + 12345));
+		CHECK(e["t"].number == 4102444800.0);
+	}
+	CHECK(events[0]["value"].number == -0.5);
+	CHECK(events[0]["name"].text == "b");
+	CHECK(events[1]["ieee"].text == "ffeeddccbbaa9988");
+	CHECK(events[1]["short"].number == 0xFFF7);
+	CHECK(events[1]["ep"].number == 242);
+	CHECK(events[1]["cluster"].number == 0xFC00);
+	CHECK(events[1]["attr"].number == 0xFFFE);
+	CHECK(events[1]["value"].number == 4000000000.0);
+	CHECK(events[2]["rule"].text == "abcdefghijklmnopqrstuvwxyz-");
+	CHECK(events[2]["action"].text == "read");
+	CHECK(events[2]["name"].text == "a");
+
+	// Without a synchronized clock no event has `t`.
+	f.clock.synchronized = false;
+	REQUIRE(f.model.command(0, Value::of_bool(true)) == DatapointStatus::ok);
+	CHECK_FALSE(events_of(f.monitor, 3)[0].has("t"));
+}
+
+TEST_CASE("MonitorFeed: the event's 8-bit generation is exact over hundreds of model changes (issue #45)") {
+	RingFixture f;
+	// Every command is followed by a model change: no command event the ring holds refers to the
+	// current model, also when the generation has wrapped around 256 (more than twice the capacity).
+	for (int i = 0; i < 600; ++i) {
+		REQUIRE(f.model.command(0, Value::of_bool((i & 1) != 0)) == DatapointStatus::ok);
+		f.monitor.model_changed(nullptr);
+		if (i == 126 || i == 255 || i == 256 || i == 599) {
+			for (const Json& e : events_of(f.monitor, f.monitor.first())) {
+				CHECK_FALSE(e.has("dp"));
+			}
+		}
+	}
+	CHECK(f.monitor.generation() == 600);
+	REQUIRE(f.model.command(0, Value::of_bool(true)) == DatapointStatus::ok);
+	std::vector<Json> events = events_of(f.monitor, f.monitor.first());
+	REQUIRE(events.back()["kind"].text == "command");
+	CHECK(events.back()["dp"].number == 0);
+	CHECK(events.back()["name"].text == "a");
+
+	// The oldest event a full ring holds is kCapacity - 1 model changes old: still not current.
+	RingFixture g;
+	REQUIRE(g.model.command(1, Value::of_real(1.0)) == DatapointStatus::ok);
+	for (size_t i = 0; i + 1 < MonitorFeed::kCapacity; ++i) {
+		g.monitor.model_changed(nullptr);
+	}
+	REQUIRE(g.monitor.first() == 0);
+	std::vector<Json> held = events_of(g.monitor, 0);
+	REQUIRE(held.size() == MonitorFeed::kCapacity);
+	CHECK(held[0]["kind"].text == "command");
+	CHECK_FALSE(held[0].has("dp"));
+	CHECK(held[0]["value"].number == 1);
+}
+
 TEST_CASE("MonitorFeed: command events carry the declared origin, names follow the model generation") {
 	RingFixture f;
 	{

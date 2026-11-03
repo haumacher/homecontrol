@@ -221,15 +221,14 @@ MonitorEvent& MonitorFeed::append(MonitorEvent::Kind kind, uint8_t sub) {
 	}
 	MonitorEvent& event = events_[slot];
 	event = MonitorEvent();
-	event.ms = clock_.monotonic_ms();
+	event.set_ms(clock_.monotonic_ms());
 	WallTime wall = clock_.wall_time();
 	if (wall.synchronized) {
-		event.wall = wall.seconds;
-		event.flags |= MonitorEvent::kWallTime;
+		event.set_wall(wall.seconds);
 	}
 	event.kind = kind;
 	event.sub = sub;
-	event.generation = generation_;
+	event.generation = static_cast<uint8_t>(generation_);
 	++total_;
 	awaiting_value_ = false;
 	if (appended_) {
@@ -272,8 +271,8 @@ void MonitorFeed::model_changed(const image::ImageService* image) {
 	MonitorEvent& event = append(MonitorEvent::Kind::image, static_cast<uint8_t>(kind));
 	if (loaded) {
 		copy_text(event.named.text, sizeof(event.named.text), image->info().project_id);
-		event.named.revision = image->info().revision;
-		event.named.source = static_cast<uint8_t>(image->source());
+		event.image.revision = image->info().revision;
+		event.image.source = static_cast<uint8_t>(image->source());
 	}
 }
 
@@ -281,7 +280,7 @@ void MonitorFeed::datapoint_updated(const DatapointUpdate& update) {
 	const Datapoint& dp = update.datapoint;
 	if (update.origin == UpdateOrigin::report) {
 		MonitorEvent* event = newest();
-		if (awaiting_value_ && event != nullptr && event->datapoint == dp.id() && event->generation == generation_) {
+		if (awaiting_value_ && event != nullptr && event->datapoint == dp.id() && is_current(*event)) {
 			event->value = dp.value();
 			event->flags |= MonitorEvent::kHasValue;
 			awaiting_value_ = false;
@@ -307,11 +306,11 @@ void MonitorFeed::telegram_logged(const knx::TelegramRecord& record, uint64_t) {
 	bool from_monitor = tx && take_pending(record);
 	MonitorEvent& event = append(MonitorEvent::Kind::knx,
 		static_cast<uint8_t>(tx ? MonitorEvent::KnxDirection::tx : MonitorEvent::KnxDirection::rx));
-	event.ms = record.monotonic_ms;
+	event.set_ms(record.monotonic_ms);
 	if (record.wall_synchronized) {
-		event.wall = record.wall_seconds;
-		event.flags |= MonitorEvent::kWallTime;
+		event.set_wall(record.wall_seconds);
 	} else {
+		event.wall = 0;
 		event.flags &= static_cast<uint8_t>(~MonitorEvent::kWallTime);
 	}
 	event.knx.source = record.source.raw;
@@ -355,7 +354,7 @@ void MonitorFeed::zigbee_traffic(const zigbee::ZigbeeTraffic& traffic) {
 		sub = MonitorEvent::ZigbeeEvent::command;
 	}
 	MonitorEvent& event = append(MonitorEvent::Kind::zigbee, static_cast<uint8_t>(sub));
-	event.zigbee.ieee = traffic.ieee;
+	event.zigbee.set_ieee(traffic.ieee);
 	event.zigbee.short_addr = traffic.short_addr;
 	event.zigbee.endpoint = traffic.endpoint;
 	event.zigbee.cluster = traffic.cluster;
@@ -373,7 +372,7 @@ void MonitorFeed::rule_commanded(const char* rule, const Datapoint& datapoint, c
 	MonitorEvent* event = newest();
 	if (event == nullptr || event->kind != MonitorEvent::Kind::command ||
 		event->sub != static_cast<uint8_t>(MonitorEvent::CommandOrigin::app) || event->datapoint != datapoint.id() ||
-		event->generation != generation_) {
+		!is_current(*event)) {
 		event = &append(MonitorEvent::Kind::rule, 0);
 		event->datapoint = datapoint.id();
 		event->value = value;
@@ -396,9 +395,9 @@ void MonitorFeed::rule_read(const char* rule, const Datapoint& datapoint) {
 // ---- JSON -------------------------------------------------------------------------------------
 
 void MonitorFeed::write_event(JsonWriter& json, const MonitorEvent& event, uint32_t sequence) const {
-	json.begin_object().member("seq", sequence).member("ms", event.ms);
+	json.begin_object().member("seq", sequence).member("ms", event.ms());
 	if ((event.flags & MonitorEvent::kWallTime) != 0) {
-		json.member("t", event.wall);
+		json.member("t", static_cast<int64_t>(event.wall));
 	}
 	json.member("kind", kind_name(event.kind));
 	switch (event.kind) {
@@ -426,7 +425,7 @@ void MonitorFeed::write_event(JsonWriter& json, const MonitorEvent& event, uint3
 		}
 		case MonitorEvent::Kind::zigbee: {
 			char ieee[zigbee::kIeeeText];
-			zigbee::format_ieee(event.zigbee.ieee, ieee);
+			zigbee::format_ieee(event.zigbee.ieee(), ieee);
 			json.member("event", sub_name(event)).member("ieee", ieee);
 			if (event.zigbee.short_addr != zigbee::kNoShortAddress) {
 				json.member("short", static_cast<uint32_t>(event.zigbee.short_addr));
@@ -454,12 +453,12 @@ void MonitorFeed::write_event(JsonWriter& json, const MonitorEvent& event, uint3
 			json.member("event", sub_name(event));
 			if (event.named.text[0] != '\0') {
 				json.member("project", event.named.text)
-					.member("revision", event.named.revision)
-					.member("source", image::source_name(static_cast<image::Source>(event.named.source)));
+					.member("revision", event.image.revision)
+					.member("source", image::source_name(static_cast<image::Source>(event.image.source)));
 			}
 			break;
 	}
-	if (event.datapoint != MonitorEvent::kNoDatapoint && event.generation == generation_) {
+	if (event.datapoint != MonitorEvent::kNoDatapoint && is_current(event)) {
 		const Datapoint* dp = model_.get(event.datapoint);
 		if (dp != nullptr) {
 			json.member("dp", static_cast<uint32_t>(event.datapoint)).member("name", dp->name());

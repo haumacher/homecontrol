@@ -111,7 +111,12 @@ without TLS; the SBC fallback talks to a broker on the LAN exactly like the devi
 
 Topic 255 bytes (a longer datapoint topic is not published, logged); discovery config 2048 bytes;
 32 samples per history message; inbound payload 512 bytes on the device (a longer command is
-refused); 16 messages per loop turn (a burst is spread over turns). No QoS 2. One broker.
+refused); 16 messages per loop turn (a burst is spread over turns). On the device esp-mqtt's
+outbox holds at most 8 KB (`EspMqttClient::kOutboxLimit`, 16 KB before issue #45: some 50 states
+or 7 discovery configs, each a heap block until the broker took it): a publication it refuses waits
+in the core (the latest state of every datapoint, the next discovery config) and is tried again
+after 250 ms, so the discovery of a large image is paced by the broker, not dropped by the limit. No QoS 2.
+One broker.
 
 ## Tests
 

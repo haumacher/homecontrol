@@ -14,3 +14,8 @@ CONFIG_ZB_RADIO_NATIVE=y
 # esp_coex_wifi_i154_enable() when the stack starts. Espressif's examples run WiFi with modem sleep
 # (WIFI_PS_MIN_MODEM) beside Zigbee; hc_net disables power save (doc/zigbee.md, "Coexistence").
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# 802.15.4 receive buffers (issue #45): 10 frames of about 130 B (20 by default: about 1.3 KB more).
+# The stack's task takes each frame from the driver at once; 10 cover a burst of reports while it is
+# busy. Gaps show as missed reports and MAC retries, not as an error.
+CONFIG_IEEE802154_RX_BUFFER_SIZE=10

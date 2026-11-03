@@ -52,7 +52,11 @@ public:
 private:
 	static constexpr size_t kRetire = 4;
 	static constexpr size_t kMaxHost = 128;
-	static constexpr uint32_t kStack = 4096;
+	/// The reader's stack: select, recvfrom straight into the ring, and resolve()'s getaddrinfo.
+	/// Measured on the C6 (2026-11-03, a gateway by address): 784 B used; 3072 B leave 2.2 KB for
+	/// getaddrinfo of a gateway by name (lwIP's DNS client, not measured on the desk) and a log line.
+	/// 4096 B before issue #45.
+	static constexpr uint32_t kStack = 3072;
 
 	struct Slot {
 		uint32_t generation;

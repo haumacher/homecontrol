@@ -41,7 +41,11 @@ Zigbee 3.0); Green Power devices themselves are not supported.
 exist, opens the device database in the `zb_db` partition, starts the adapter and the task
 `hc_zigbee`. The task configures the stack: coordinator with `HC_ZIGBEE_MAX_CHILDREN` children, the
 channel mask `HC_ZIGBEE_CHANNEL_MASK`, the PAN id `HC_ZIGBEE_PAN_ID` (0: the stack picks one), the
-transmit power `HC_ZIGBEE_TX_POWER`, and endpoint 1 as an HA home gateway:
+transmit power `HC_ZIGBEE_TX_POWER`, the stack's tables for a network of 32 nodes (the device
+database's `kMaxDevices`; `esp_zb_overall_network_size_set`, 64 by default) and 48 packet buffers
+(`esp_zb_io_buffer_size_set`, 80 by default; both before `esp_zb_init`, issue #45; the 802.15.4
+driver keeps 10 received frames, `CONFIG_IEEE802154_RX_BUFFER_SIZE`), and endpoint 1 as an HA home
+gateway:
 
 - servers: Basic, Identify, On/Off and Level Control (the latter two receive the buttons' commands);
 - clients: Identify, On/Off, Level Control, Color Control, Power Configuration, IAS Zone,
@@ -294,9 +298,10 @@ every function has it off never goes stale, like a pure button.
 ## Threading
 
 The stack runs in its own task and calls back there. Its callbacks (signals, attribute reports,
-read responses, ZDO answers, commands) copy what the adapter needs into a ring of 16 events and post
+read responses, ZDO answers, commands) copy what the adapter needs into a ring of 8 events (16 before issue #45) and post
 one drain message through the `LoopQueue`; the event loop delivers them to the adapter. A full ring
-drops the frame and counts it (`zigbee status`: "events N dropped"). The adapter's requests run on
+drops the frame, counts it (`zigbee status`: "events N dropped") and logs the first drop of a burst
+(`hc.zigbee: Zigbee event dropped: the ring to the event loop is full ...`). The adapter's requests run on
 the event loop's task: the driver takes the stack's lock (at most 500 ms) and calls the SDK
 directly. Allocation happens at `init()` (the adapter, the driver, the task) and at the model
 reloads (the adapter's point tables, the specs it states); reports, commands and the stale check
