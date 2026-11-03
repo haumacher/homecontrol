@@ -6,6 +6,7 @@
 
 #include "doctest.h"
 #include "hc/astro.h"
+#include "hc/time_service.h"
 #include "hc/tz.h"
 
 using hc::GeoLocation;
@@ -161,4 +162,43 @@ TEST_CASE("Astro.NamesAndValidation") {
 	CHECK_FALSE(hc::geo_location_valid(where, &error));
 	// An invalid place has no events.
 	CHECK_FALSE(hc::sun_times(2026, 6, 21, where).occurs(SunEvent::sunrise));
+}
+
+TEST_CASE("Astro.EveryEventLiesWithinTheSunWindow") {
+	// Every third day of two years, latitudes from pole to pole, all longitudes, two elevations.
+	size_t events = 0;
+	for (int latitude = -89; latitude <= 89; latitude += 8) {
+		for (int longitude = -180; longitude <= 180; longitude += 20) {
+			for (double elevation : {0.0, 4000.0}) {
+				GeoLocation where;
+				where.latitude = latitude;
+				where.longitude = longitude;
+				where.elevation_m = elevation;
+				int64_t first = hc::days_from_civil(2026, 1, 1);
+				for (int64_t days = first; days < first + 730; days += 3) {
+					hc::Date date = hc::date_from_days(days);
+					int year = date.year;
+					unsigned month = date.month;
+					unsigned day = date.day;
+					SunTimes times = hc::sun_times(year, month, day, where);
+					hc::SunWindow window = hc::sun_window(year, month, day, where);
+					for (size_t i = 0; i < hc::kSunEventCount; ++i) {
+						if (!times.present[i]) {
+							continue;
+						}
+						++events;
+						INFO(latitude << "/" << longitude << " " << year << "-" << month << "-" << day << " event " << i);
+						CHECK(times.utc[i] >= window.earliest);
+						CHECK(times.utc[i] <= window.latest);
+					}
+				}
+			}
+		}
+	}
+	CHECK(events > 100000);
+
+	GeoLocation invalid;
+	invalid.latitude = 91;
+	hc::SunWindow none = hc::sun_window(2026, 6, 21, invalid);
+	CHECK(none.earliest > none.latest);
 }

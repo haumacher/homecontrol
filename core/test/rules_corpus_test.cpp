@@ -71,6 +71,7 @@ public:
 	bool to_local(int64_t utc_seconds, hc::LocalTime& out) const override { return zone.to_local(utc_seconds, out); }
 
 	bool sun_times(const hc::Date&, hc::SunTimes&) const override { return false; }
+	bool sun_window(const hc::Date&, hc::SunWindow&) const override { return false; }
 
 	const hc_test::FakeClock* clock = nullptr;
 	bool synchronized = false;

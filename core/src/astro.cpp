@@ -130,6 +130,22 @@ bool geo_location_valid(const GeoLocation& where, const char** error) {
 	return reason == nullptr;
 }
 
+SunWindow sun_window(int32_t year, unsigned month, unsigned day, const GeoLocation& where) {
+	SunWindow window;
+	if (!geo_location_valid(where)) {
+		window.earliest = 1;
+		return window;
+	}
+	// The bound of the equation of time, in seconds: 18.5 minutes plus a margin, and the second of
+	// the rounding in sun_times().
+	constexpr int64_t kEquationOfTimeBoundS = 20 * 60;
+	int64_t days = days_from_civil(year, month, day);
+	int64_t mean_noon = days * 86400 + 43200 - static_cast<int64_t>(std::floor(240.0 * where.longitude));
+	window.earliest = mean_noon - 43200 - kEquationOfTimeBoundS - 1;
+	window.latest = mean_noon + 43200 + kEquationOfTimeBoundS + 1;
+	return window;
+}
+
 SunTimes sun_times(int32_t year, unsigned month, unsigned day, const GeoLocation& where) {
 	SunTimes result;
 	if (!geo_location_valid(where)) {

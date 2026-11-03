@@ -27,7 +27,8 @@ What consumers call; the service implements it and the tests fake it:
 | `monotonic_ms()` | the event loop's time base |
 | `now_utc()` | wall seconds since the epoch and `synchronized` |
 | `to_local(utc, LocalTime&)` | local civil time (fields, DST flag, zone abbreviation) |
-| `sun_times(date, SunTimes&)` | dawn, sunrise, sunset, dusk of a local date as UTC instants; false without a location; an event that does not occur is absent. The TimeService keeps the last 12 dates' results for its location (one computation costs about 5 ms on the C6, which has no FPU, and a schedule's next occurrence looks at ten dates, #50) |
+| `sun_times(date, SunTimes&)` | dawn, sunrise, sunset, dusk of a local date as UTC instants; false without a location; an event that does not occur is absent. The TimeService keeps the last 12 dates' results for its location (one computation costs about 5 ms on the C6, which has no FPU, and a schedule's next occurrence may look at ten dates, #50) |
+| `sun_window(date, SunWindow&)` | the span within which every sun event of the date lies, without computing them (`hc::sun_window()`, below); false exactly when `sun_times()` is |
 | `synchronized()`, `local_time()`, `local_date()`, `utc_offset()` | helpers on top of the above; `local_time()` is false while not synchronized |
 | `local_to_utc(date, h, m, s)` | the UTC instant of a local time, with the DST rules of `spec/schedules.md` S1: a repeated time resolves to its first occurrence, a non-existent one to the end of the gap |
 | `sun_event_local(date, event, LocalTime&)` | what the rules' `sunrise()`, `sunset()`, `dawn()`, `dusk()` return (`spec/rules.md` 4.7) |
@@ -84,6 +85,14 @@ the hour angle does not exist (|cos| > 1) the event is absent: polar day or nigh
 nights in which the sun never sinks 6° (Helsinki in June still has a few minutes of civil dusk,
 Tromsø has none).
 
+`hc::sun_window(year, month, day, location)` bounds the events of a date without trigonometry: an
+event is the date's solar noon (12:00 UTC minus 4 minutes per degree east, minus the equation of
+time) moved by an hour angle of 0..180°, and the NOAA equation of time is at most 18.5 minutes in
+magnitude (the sum of its terms' amplitudes; 16.5 in practice). The window is therefore the mean
+solar noon ±(12 h + 20 min), whatever the latitude, elevation or season (`astro_test.cpp` checks
+every event of two years over a grid of places from pole to pole against it). The scheduler uses it
+to skip dates (below).
+
 The events of a date are those around its solar noon; they are UTC instants and may lie on the
 neighbouring UTC date (Sydney's sunrise is on the previous UTC day), and civil dusk at high
 latitude in summer can lie after the following local midnight.
@@ -139,7 +148,16 @@ Per kind, from a UTC instant `t` and the local date `L` of `t`:
   offset change), so the walk is short even for a one-minute interval.
 - `astro`: the same days, the *earliest* moment after `t` (an offset or clamp may move a day's
   firing past a neighbour's); a day without the event has none. If no day of the window has one
-  (polar night), the entry has no next firing until a day change re-evaluates it.
+  (polar night), the entry has no next firing until a day change re-evaluates it. The sun is
+  computed only for the days that can hold the answer (#57): a day's firing lies within its sun
+  window moved by the offset and clamped like the firing, so a day whose latest possible firing is
+  not after `t` is skipped, and the walk stops at the first day whose earliest possible firing is
+  not before the best found (that bound grows with the day: the window moves by a day, the clamp's
+  local times by a day give or take a DST hour, and the clamp is non-decreasing in both). The result
+  is the same as the walk over every day (`scheduler_astro_test.cpp` compares the two over a year
+  at places from Sydney to McMurdo, with the ±12 h offsets); the first evaluation after the clock
+  synchronizes computes two dates instead of ten (about 11 ms instead of 55 ms on the C6), and
+  polar nights still walk the whole window, once per day thanks to the TimeService's cache.
 - `yearly`: the years `L.year-1 .. L.year+8` (29 February: the next leap year within eight years).
 - `dates`: the sorted list from `L-1`.
 - `once`: its moment if after `t`.

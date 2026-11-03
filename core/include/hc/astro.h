@@ -54,6 +54,22 @@ struct SunTimes {
 /// polar day or night boundary, where the event exists only barely.
 SunTimes sun_times(int32_t year, unsigned month, unsigned day, const GeoLocation& where);
 
+/// The span of UTC instants within which every event of a date lies (SunWindow::earliest ..
+/// latest, inclusive), however the sun stands: polar day, night or any elevation. Cheap: no
+/// trigonometry, so a caller can decide from it whether a date's events are worth computing.
+struct SunWindow {
+	int64_t earliest = 0;
+	int64_t latest = 0;
+};
+
+/// The window of the events of `year-month-day` at `where` (the date as for sun_times()). An event
+/// of the date is its solar noon moved by an hour angle of 0..180 degrees, and solar noon is 12:00
+/// minus 4 minutes per degree of longitude minus the equation of time, whose magnitude the NOAA
+/// formula bounds by 18.5 minutes (the sum of its terms' amplitudes): so the window is solar mean
+/// noon -12 h -20 min .. +12 h +20 min. For an invalid location the window is empty
+/// (earliest > latest), as sun_times() has no events then.
+SunWindow sun_window(int32_t year, unsigned month, unsigned day, const GeoLocation& where);
+
 /// Whether the coordinates are in range (latitude -90..90, longitude -180..180, elevation
 /// -500..9000 m, all finite). On refusal `error` (if given) names the problem.
 bool geo_location_valid(const GeoLocation& where, const char** error = nullptr);

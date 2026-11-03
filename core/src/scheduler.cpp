@@ -723,6 +723,43 @@ bool Scheduler::command(const Datapoint& datapoint, const Value&) {
 
 // --- The calendar ---
 
+namespace {
+
+/// The clamp of an astro entry on one date: the sun's moment plus the offset, moved up to
+/// `notBefore` and down to `notAfter`. Non-decreasing in the moment, and for a fixed moment in the
+/// date: the bound of the astro search relies on both (Scheduler::occurrence_after()).
+class AstroClamp {
+public:
+	AstroClamp(const TimeSource& time, const ScheduleSpec& spec, const Date& date) {
+		if (spec.has_not_before) {
+			has_low_ = true;
+			low_ = time.local_to_utc(date, spec.not_before.hour, spec.not_before.minute, spec.not_before.second);
+		}
+		if (spec.has_not_after) {
+			has_high_ = true;
+			high_ = time.local_to_utc(date, spec.not_after.hour, spec.not_after.minute, spec.not_after.second);
+		}
+	}
+
+	int64_t apply(int64_t at) const {
+		if (has_low_ && at < low_) {
+			at = low_;
+		}
+		if (has_high_ && at > high_) {
+			at = high_;
+		}
+		return at;
+	}
+
+private:
+	bool has_low_ = false;
+	bool has_high_ = false;
+	int64_t low_ = 0;
+	int64_t high_ = 0;
+};
+
+} // namespace
+
 std::optional<int64_t> Scheduler::occurrence_on(const Entry& entry, const Date& date) const {
 	const ScheduleSpec& spec = entry.spec;
 	switch (spec.kind) {
@@ -737,20 +774,7 @@ std::optional<int64_t> Scheduler::occurrence_on(const Entry& entry, const Date& 
 		if (!time_.sun_times(date, sun) || !sun.occurs(spec.sun)) {
 			return std::nullopt;
 		}
-		int64_t at = sun.at(spec.sun) + spec.offset_s;
-		if (spec.has_not_before) {
-			int64_t low = time_.local_to_utc(date, spec.not_before.hour, spec.not_before.minute, spec.not_before.second);
-			if (at < low) {
-				at = low;
-			}
-		}
-		if (spec.has_not_after) {
-			int64_t high = time_.local_to_utc(date, spec.not_after.hour, spec.not_after.minute, spec.not_after.second);
-			if (at > high) {
-				at = high;
-			}
-		}
-		return at;
+		return AstroClamp(time_, spec, date).apply(sun.at(spec.sun) + spec.offset_s);
 	}
 	case ScheduleKind::interval:
 		break;
@@ -808,14 +832,32 @@ std::optional<int64_t> Scheduler::occurrence_after(const Entry& entry, int64_t u
 		return std::nullopt;
 	case ScheduleKind::astro: {
 		// The earliest over the window: an offset or a clamp may shift a day's firing across a
-		// neighbour's.
+		// neighbour's. The sun is computed only for the dates that can hold it (#57): a date's
+		// firing lies within its sun window moved by the offset and clamped, which costs no
+		// trigonometry. The window's earliest moment grows with the date (the window moves by a
+		// day, the clamp's local times by a day give or take a DST hour, and the clamp is
+		// non-decreasing in both), so once it is no earlier than the best firing found no later
+		// date can beat it. A date whose latest possible firing is not after `utc` is skipped.
+		// Polar days and nights only make dates without a firing; the result is the same as the
+		// search over every date of the window.
 		std::optional<int64_t> best;
 		for (int d = -1; d <= kSearchDays; ++d) {
 			int64_t days = today + d;
 			if ((spec.days & Weekdays::bit(weekday_from_days(days))) == 0) {
 				continue;
 			}
-			std::optional<int64_t> at = occurrence_on(entry, date_from_days(days));
+			Date date = date_from_days(days);
+			SunWindow window;
+			if (time_.sun_window(date, window)) {
+				AstroClamp clamp(time_, spec, date);
+				if (best && clamp.apply(window.earliest + spec.offset_s) >= *best) {
+					break;
+				}
+				if (clamp.apply(window.latest + spec.offset_s) <= utc) {
+					continue;
+				}
+			}
+			std::optional<int64_t> at = occurrence_on(entry, date);
 			if (at && *at > utc && (!best || *at < *best)) {
 				best = at;
 			}
@@ -936,9 +978,9 @@ void Scheduler::evaluate() {
 			continue;
 		}
 		if (entry.spec.kind == ScheduleKind::astro) {
-			SunTimes sun;
+			SunWindow window; // only whether astronomy is available: no sun computed
 			Date today;
-			if (!time_.local_date(now.seconds, today) || !time_.sun_times(today, sun)) {
+			if (!time_.local_date(now.seconds, today) || !time_.sun_window(today, window)) {
 				if (!entry.astro_refusal_logged) {
 					entry.astro_refusal_logged = true;
 					Log::error(kTag, "schedule %s (%s %s) refused: astronomy needs a location (settings %s, %s)",

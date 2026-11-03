@@ -1460,6 +1460,7 @@ TEST_CASE("RulesClock date-time instants across the end of summer time (spec 4.5
 		hc::WallTime now_utc() const override { return hc::WallTime{utc, true}; }
 		bool to_local(int64_t seconds, hc::LocalTime& out) const override { return zone->to_local(seconds, out); }
 		bool sun_times(const hc::Date&, hc::SunTimes&) const override { return false; }
+		bool sun_window(const hc::Date&, hc::SunWindow&) const override { return false; }
 		const hc_test::PosixRuleZone* zone = nullptr;
 		int64_t utc = 0;
 	} wall;

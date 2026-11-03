@@ -68,6 +68,12 @@ public:
 	/// that day is absent in `out`.
 	virtual bool sun_times(const Date& date, SunTimes& out) const = 0;
 
+	/// Bounds of the sun events of the local date `date` without computing them (hc::sun_window()
+	/// at the configured place): every event sun_times() reports for the date lies within. False
+	/// exactly when sun_times() is false. The scheduler uses it to skip the dates whose events
+	/// cannot matter (homecontrol #57).
+	virtual bool sun_window(const Date& date, SunWindow& out) const = 0;
+
 	/// now_utc().synchronized.
 	bool synchronized() const { return now_utc().synchronized; }
 
@@ -190,6 +196,7 @@ public:
 	WallTime now_utc() const override;
 	bool to_local(int64_t utc_seconds, LocalTime& out) const override;
 	bool sun_times(const Date& date, SunTimes& out) const override;
+	bool sun_window(const Date& date, SunWindow& out) const override;
 
 	/// How many dates' sun events were computed (not taken from the cache); a diagnostic for tests.
 	uint32_t sun_computations() const { return sun_computations_; }
@@ -226,7 +233,7 @@ private:
 	GeoLocation location_;
 	bool has_location_ = false;
 	// One sun computation costs about 5 ms on a chip without an FPU (the C6), and a schedule's next
-	// occurrence looks at ten dates (homecontrol #50): the results are kept per date, for the
+	// occurrence may look at ten dates (homecontrol #50; usually two since #57): the results are kept per date, for the
 	// location they were computed at, and replaced round-robin.
 	mutable SunCacheEntry sun_cache_[kSunCacheSize] = {};
 	mutable size_t sun_cache_count_ = 0;

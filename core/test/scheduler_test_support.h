@@ -95,6 +95,18 @@ public:
 		return true;
 	}
 
+	bool sun_window(const Date& date, hc::SunWindow& out) const override {
+		if (!has_location) {
+			return false;
+		}
+		out = hc::sun_window(date.year, date.month, date.day, location);
+		if (wide_windows) {
+			out.earliest -= 30 * 86400;
+			out.latest += 30 * 86400;
+		}
+		return true;
+	}
+
 	/// Sets the wall clock to `t` (a jump if it differs from the current reading).
 	void set_utc(int64_t t) { wall_base = t - static_cast<int64_t>(mono_ms / 1000); }
 
@@ -105,6 +117,9 @@ public:
 	bool synchronized = true;
 	bool has_location = false;
 	hc::GeoLocation location;
+	/// Windows 30 days wider each side: still true, but they skip no date, so the scheduler computes
+	/// its whole search window (the reference of the bounded search).
+	bool wide_windows = false;
 };
 
 /// Records the firings with the wall time they happened at.

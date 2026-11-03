@@ -459,6 +459,14 @@ bool TimeService::to_local(int64_t utc_seconds, LocalTime& out) const {
 	return zone_.to_local(utc_seconds, out);
 }
 
+bool TimeService::sun_window(const Date& date, SunWindow& out) const {
+	if (!has_location_) {
+		return false;
+	}
+	out = hc::sun_window(date.year, date.month, date.day, location_);
+	return true;
+}
+
 bool TimeService::sun_times(const Date& date, SunTimes& out) const {
 	if (!has_location_) {
 		return false;
