@@ -10,15 +10,15 @@ namespace hc {
 namespace esp {
 
 /// Where the LittleFS partition `storage` is mounted. Its layout (doc/persistence.md):
-/// `/storage/ui` the web UI image (written by flashing storage.bin), `/storage/state` the
-/// BlobStore's blobs (written by the device), later `/storage/image` the runtime image.
+/// `/storage/state` the BlobStore's blobs (written by the device); `/storage/ui`, the web UI of an
+/// older firmware, is removed by the web server at start (the UI is compiled into the firmware).
 constexpr const char* kStorageMountPoint = "/storage";
 constexpr const char* kStoragePartition = "storage";
 
 /// Mounts the partition read-write at kStorageMountPoint, once: the first call mounts, every later
 /// call returns the first call's result (the web server and the blob store both call it, in either
 /// order; thread-safe). Never formats: a partition without a file system (storage.bin never
-/// flashed) or a damaged one stays unmounted, so the UI image is never wiped by accident. Logs the
+/// flashed) or a damaged one stays unmounted, so the device state is never wiped by accident. Logs the
 /// outcome and the usage. Returns whether the partition is mounted.
 bool storage_mount();
 

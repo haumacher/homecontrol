@@ -93,14 +93,14 @@ names and oversize writes are refused (logged) before the store is touched.
 
 `hc_storage` owns the one mount of the LittleFS partition `storage` (204 KB on the 4 MB board: 312 KB before the three Zigbee partitions, 268 KB before the core dump partition;
 `doc/ota.md`) at `/storage`: `storage_mount()` mounts it read-write on the first call and returns
-the first result on every later one; the web server (for the UI) and the blob store both call it,
-in either order. It never formats: a partition without a file system (no `storage.bin` flashed) or
-a damaged one stays unmounted, the web server answers 503 and the blob store refuses, instead of an
-empty file system hiding the fault. Layout:
+the first result on every later one; the web server (removing an old UI image) and the blob store
+both call it, in either order. It never formats: a partition without a file system (no `storage.bin`
+flashed, an empty LittleFS image) or a damaged one stays unmounted and the blob store refuses,
+instead of an empty file system hiding the fault. Layout:
 
 | Path | Content | Written by |
 |---|---|---|
-| `/storage/ui` | the web UI image (`doc/web.md`) | flashing `storage.bin` |
+| `/storage/ui` | the web UI of firmware before 2026-11; removed at start (the UI is in the firmware, `doc/web.md`) | flashing an old `storage.bin` |
 | `/storage/state` | the BlobStore's blobs | the device |
 | `/storage/image` | the runtime image (issue #8, later) | the device |
 

@@ -77,8 +77,8 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   the rule language, and the conformance fixtures both rule interpreters (C++ here, Java in E-Home)
   must pass.
 - `web/` — the device web UI in `web/ui/dist/` (plain ES modules and CSS, no framework, no build
-  step; `doc/web.md`), gzip-compressed into the LittleFS image `storage.bin` by
-  `platform/esp/tools/gen_ui_image.py` during the firmware build; every text goes through `t(key)`
+  step; `doc/web.md`), gzip-compressed and compiled into the firmware by
+  `platform/esp/tools/gen_ui_files.py` during the firmware build (an OTA update brings it along); every text goes through `t(key)`
   over the English base `web/ui/dist/lang/en.json`, the committed language packs are
   `web/ui/lang/<code>.json` (German first; same key set, checked by `scripts/i18n-pack.py check`
   and the host test; `doc/i18n.md`); `web/flasher/` the web flasher (ESP Web Tools page and
@@ -116,8 +116,8 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   directory (the reset sequence of `idf.py flash` fails on this board; put it into download mode
   with BOOT held during RESET): `cd platform/esp/build-esp32c6 && esptool.py --chip esp32c6 --port
   $(readlink -f /dev/serial/by-id/*E8:F6:0A:F8:83:EC*) --before no_reset --after hard_reset write_flash @flash_args` (bootloader, table,
-  updater, application at 0x100000, otadata, the web UI image `storage.bin` at the storage
-  partition; `@app-flash_args` writes only the application). Watch with
+  updater, application at 0x100000, otadata, `storage.bin`, an empty LittleFS image of the storage
+  partition, which wipes the saved state; `@app-flash_args` writes only the application). Watch with
   `idf.py -B build-esp32c6 -p <the C6's node> monitor` (exit with Ctrl-]). OTA updates during
   development: `scripts/update-server.py` and the console's `update now` (`doc/ota.md`).
 - **Run on the host**: `build/homecontrol [--settings <file>] [--http <port>] [--demo]` (default

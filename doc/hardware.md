@@ -87,7 +87,7 @@ stays; the 4 MB application keeps its 2752 KB (the C6 application measured 2,101
 2026-10-18, 75 %). A board flashed with an older table needs the full `write_flash @flash_args` once:
 an OTA update does not change the partition table (the application then logs that it has no coredump
 partition), and the LittleFS image of the old, larger `storage` partition does not mount on the
-smaller one (the web server answers 503 until `storage.bin` is flashed).
+smaller one (values and history are not saved until `storage.bin` is flashed).
 
 Measured on 2026-10-17 (esp32c6): the updater 794,592 bytes (19 % of its partition free), the
 application 1,239,776 bytes (56 % free). The build chooses the table with the CMake variable

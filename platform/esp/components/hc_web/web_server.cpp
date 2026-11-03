@@ -3,6 +3,7 @@
  */
 #include "web_server.h"
 
+#include <dirent.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -33,6 +34,7 @@
 #include "hc/language_packs.h"
 #include "littlefs_blob_store.h"
 #include "storage.h"
+#include "ui_files.h"
 
 namespace hc {
 namespace esp {
@@ -403,28 +405,95 @@ bool WebServer::storage_usage(uint64_t& total, uint64_t& used) const {
 	return true;
 }
 
-bool WebServer::mount_ui() {
-	// The partition is mounted once for the web server and the blob store (hc_storage, doc/persistence.md);
-	// it never formats, so a missing image is reported, not hidden behind an empty file system.
+namespace {
+
+/// Removes the directory `path` with everything in it (LittleFS, single task); false if some entry
+/// stays. `path` is a buffer of `capacity` bytes that the names of the entries are appended to.
+bool remove_tree(char* path, size_t capacity) {
+	DIR* dir = opendir(path);
+	if (dir == nullptr) {
+		return false;
+	}
+	size_t length = std::strlen(path);
+	bool ok = true;
+	// Every removal starts the listing again: LittleFS does not promise a stable listing while it
+	// changes. An entry that cannot be removed ends the walk.
+	for (;;) {
+		struct dirent* entry = readdir(dir);
+		while (entry != nullptr && (std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0)) {
+			entry = readdir(dir);
+		}
+		if (entry == nullptr) {
+			break;
+		}
+		int n = std::snprintf(path + length, capacity - length, "/%s", entry->d_name);
+		if (n < 0 || static_cast<size_t>(n) >= capacity - length) {
+			ok = false;
+			break;
+		}
+		bool directory = entry->d_type == DT_DIR;
+		bool removed = directory ? remove_tree(path, capacity) : unlink(path) == 0;
+		path[length] = '\0';
+		if (!removed) {
+			ok = false;
+			break;
+		}
+		rewinddir(dir);
+	}
+	closedir(dir);
+	return ok && rmdir(path) == 0;
+}
+
+} // namespace
+
+void WebServer::remove_legacy_ui() {
+	// Up to firmware 2026-11 the UI was a directory of the storage partition, written by flashing
+	// storage.bin; it now comes with the firmware (ui_files.h). Its about 30 blocks go back to the
+	// device's state (the stored runtime image, values and history; haumacher/homecontrol#45).
 	if (!storage_mount()) {
-		Log::error(kTag, "web UI not available: %s (doc/web.md)", storage_failure());
-		return false;
+		return;
 	}
-	char path[48];
-	std::snprintf(path, sizeof(path), "%s/VERSION", kUiDir);
-	FILE* file = std::fopen(path, "r");
-	if (file == nullptr) {
-		Log::error(kTag, "web UI not available: the storage partition has no UI image (%s missing)", path);
-		return false;
+	struct stat info;
+	if (stat(kLegacyUiDir, &info) != 0) {
+		return;
 	}
-	size_t n = std::fread(ui_version_, 1, sizeof(ui_version_) - 1, file);
-	std::fclose(file);
-	while (n > 0 && (ui_version_[n - 1] == '\n' || ui_version_[n - 1] == '\r' || ui_version_[n - 1] == ' ')) {
-		--n;
+	size_t total = 0;
+	size_t before = 0;
+	hc::esp::storage_usage(total, before);
+	static char path[kMaxPath + 32];
+	std::snprintf(path, sizeof(path), "%s", kLegacyUiDir);
+	bool removed = remove_tree(path, sizeof(path));
+	size_t after = 0;
+	hc::esp::storage_usage(total, after);
+	if (removed) {
+		Log::info(kTag, "removed the old web UI image %s: %u B freed, %u of %u B used", kLegacyUiDir,
+			static_cast<unsigned>(before - after), static_cast<unsigned>(after), static_cast<unsigned>(total));
+	} else {
+		Log::error(kTag, "cannot remove the old web UI image %s completely (%u B freed)", kLegacyUiDir,
+			static_cast<unsigned>(before > after ? before - after : 0));
 	}
-	ui_version_[n] = '\0';
-	Log::info(kTag, "web UI image %s in %s", ui_version_, kUiDir);
-	return true;
+}
+
+const char* WebServer::ui_version() const {
+	return ui::kVersion;
+}
+
+const ui::UiFile* WebServer::find_ui_file(const char* path) {
+	size_t low = 0;
+	size_t high = ui::kFileCount;
+	while (low < high) {
+		size_t mid = low + (high - low) / 2;
+		int order = std::strcmp(ui::kFiles[mid].path, path);
+		if (order == 0) {
+			return &ui::kFiles[mid];
+		}
+		if (order < 0) {
+			low = mid + 1;
+		} else {
+			high = mid;
+		}
+	}
+	return nullptr;
 }
 
 bool WebServer::start() {
@@ -440,7 +509,8 @@ bool WebServer::start() {
 	for (uint8_t i = 0; i < kSendBuffers; ++i) {
 		xQueueSend(free_, &i, 0);
 	}
-	ui_mounted_ = mount_ui();
+	remove_legacy_ui();
+	Log::info(kTag, "web UI %s, %u files in the firmware", ui::kVersion, static_cast<unsigned>(ui::kFileCount));
 	auth_.start();
 	api_.set_feed(&feed_);
 	if (!feed_.start()) {
@@ -1013,21 +1083,7 @@ static esp_err_t send_language_pack(httpd_req_t* req, const char* uri) {
 }
 
 esp_err_t WebServer::handle_file(httpd_req_t* req) {
-	static const char kMissing[] =
-		"<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" "
-		"content=\"width=device-width\"><title>HomeControl</title></head><body style=\"font-family:sans-serif;"
-		"background:#111;color:#eee;padding:1em\"><h1>HomeControl</h1><p>The web UI image is missing on this "
-		"device: flash <code>storage.bin</code> to the storage partition (doc/web.md). The JSON API under "
-		"<code>/api/</code> works without it.</p></body></html>";
-	if (!ui_mounted_) {
-		httpd_resp_set_status(req, status_line(503));
-		httpd_resp_set_type(req, "text/html; charset=utf-8");
-		httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-		return httpd_resp_send(req, kMissing, sizeof(kMissing) - 1);
-	}
-	wait_job(); // g_file_chunk is g_response: a timed-out job may still write it on the loop
-	static char path[kMaxPath + 32];
-	static char uri[kMaxPath];
+	static char uri[kMaxPath + 16];
 	std::snprintf(uri, sizeof(uri), "%s", req->uri);
 	char* query = std::strchr(uri, '?');
 	if (query != nullptr) {
@@ -1039,12 +1095,15 @@ esp_err_t WebServer::handle_file(httpd_req_t* req) {
 		return httpd_resp_sendstr(req, "bad path\n");
 	}
 	if (std::strncmp(uri, "/i18n/", 6) == 0) {
+		wait_job(); // send_language_pack() reads into g_file_chunk, which is g_response
 		return send_language_pack(req, uri);
 	}
-	const char* name = uri[1] == '\0' || uri[std::strlen(uri) - 1] == '/' ? "index.html" : "";
-	std::snprintf(path, sizeof(path), "%s%s%s.gz", kUiDir, uri, name);
-	struct stat info;
-	if (stat(path, &info) != 0) {
+	size_t length = std::strlen(uri);
+	if (uri[length - 1] == '/' && length + 10 < sizeof(uri)) {
+		std::strcat(uri, "index.html");
+	}
+	const ui::UiFile* file = find_ui_file(uri);
+	if (file == nullptr) {
 		const char* last = std::strrchr(uri, '/');
 		if (std::strchr(last, '.') != nullptr) {
 			httpd_resp_set_status(req, status_line(404));
@@ -1052,10 +1111,16 @@ esp_err_t WebServer::handle_file(httpd_req_t* req) {
 			return httpd_resp_sendstr(req, "not found\n");
 		}
 		// A page of the single-page UI (/settings, /log, ...): the router in index.html shows it.
-		std::snprintf(path, sizeof(path), "%s/index.html.gz", kUiDir);
+		std::snprintf(uri, sizeof(uri), "/index.html");
+		file = find_ui_file(uri);
+		if (file == nullptr) {
+			httpd_resp_set_status(req, status_line(404));
+			httpd_resp_set_type(req, "text/plain; charset=utf-8");
+			return httpd_resp_sendstr(req, "not found\n");
+		}
 	}
-	static char etag[sizeof(ui_version_) + 2];
-	std::snprintf(etag, sizeof(etag), "\"%s\"", ui_version_);
+	static char etag[24];
+	std::snprintf(etag, sizeof(etag), "\"%s\"", ui::kVersion);
 	static char if_none_match[sizeof(etag) + 8];
 	if (copy_header(req, "If-None-Match", if_none_match, sizeof(if_none_match), "") &&
 		std::strcmp(if_none_match, etag) == 0) {
@@ -1064,34 +1129,20 @@ esp_err_t WebServer::handle_file(httpd_req_t* req) {
 		httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
 		return httpd_resp_send(req, nullptr, 0);
 	}
-	FILE* file = std::fopen(path, "rb");
-	if (file == nullptr) {
-		httpd_resp_set_status(req, status_line(404));
-		httpd_resp_set_type(req, "text/plain; charset=utf-8");
-		return httpd_resp_sendstr(req, "not found\n");
-	}
-	// The content type of the file without its ".gz".
-	path[std::strlen(path) - 3] = '\0';
-	httpd_resp_set_type(req, content_type_of(path));
+	httpd_resp_set_type(req, content_type_of(file->path));
 	httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
 	httpd_resp_set_hdr(req, "ETag", etag);
 	httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
 	httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
 	httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
-	esp_err_t err = ESP_OK;
-	for (;;) {
-		size_t n = std::fread(g_file_chunk, 1, sizeof(g_file_chunk), file);
-		if (n == 0) {
-			break;
-		}
-		err = httpd_resp_send_chunk(req, g_file_chunk, static_cast<ssize_t>(n));
+	// Sent straight from the application image in flash, in pieces of kFileChunk (the socket copies them).
+	for (size_t offset = 0; offset < file->size; offset += kFileChunk) {
+		size_t n = file->size - offset < kFileChunk ? file->size - offset : kFileChunk;
+		esp_err_t err = httpd_resp_send_chunk(req, reinterpret_cast<const char*>(file->data + offset),
+			static_cast<ssize_t>(n));
 		if (err != ESP_OK) {
-			break;
+			return err;
 		}
-	}
-	std::fclose(file);
-	if (err != ESP_OK) {
-		return err;
 	}
 	return httpd_resp_send_chunk(req, nullptr, 0);
 }
@@ -1116,7 +1167,7 @@ int WebServer::web_command(int argc, char** argv) {
 			static_cast<unsigned>(Auth::kMaxTokens));
 		std::printf("live      %u of %u WebSocket clients\n", static_cast<unsigned>(feed_.client_count()),
 			static_cast<unsigned>(LiveFeed::kMaxClients));
-		std::printf("ui        %s\n", ui_mounted_ ? ui_version_ : "missing (flash storage.bin)");
+		std::printf("ui        %s, %u files in the firmware\n", ui::kVersion, static_cast<unsigned>(ui::kFileCount));
 		std::printf("heap      %u B free (min %u B)\n", static_cast<unsigned>(esp_get_free_heap_size()),
 			static_cast<unsigned>(esp_get_minimum_free_heap_size()));
 		return 0;

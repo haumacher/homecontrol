@@ -22,9 +22,8 @@ bool mount() {
 	esp_vfs_littlefs_conf_t conf = {};
 	conf.base_path = kStorageMountPoint;
 	conf.partition_label = kStoragePartition;
-	// Never format: an unreadable partition means the UI image was not flashed (or is damaged); the
-	// web server says so on every page, and the blob store refuses, instead of an empty file system
-	// hiding it.
+	// Never format: an unreadable partition means storage.bin was not flashed (or the partition is
+	// damaged); the blob store refuses, instead of an empty file system hiding it.
 	conf.format_if_mount_failed = false;
 	conf.dont_mount = false;
 	conf.read_only = false;
@@ -32,7 +31,7 @@ bool mount() {
 	if (err != ESP_OK) {
 		std::snprintf(g_failure, sizeof(g_failure), "cannot mount the storage partition (%s); flash storage.bin",
 			esp_err_to_name(err));
-		Log::error(kTag, "%s (doc/web.md): no web UI, values and history are not saved", g_failure);
+		Log::error(kTag, "%s (doc/persistence.md): values, history and the runtime image are not saved", g_failure);
 		return false;
 	}
 	g_mounted = true;

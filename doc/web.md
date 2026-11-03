@@ -21,7 +21,7 @@ history database, no frameworks. The API contract is `spec/api.md`.
 | `platform/esp/components/hc_web` | esp_http_server, the job hand-over to the loop, the WebSocket send pool, LittleFS, the `web` console command |
 | `platform/posix/` `WebServer` | cpp-httplib for HTTP, the core codec on a raw socket for the WebSocket |
 | `web/ui/dist/` | the UI: plain ES modules, one stylesheet, no build step |
-| `platform/esp/tools/gen_ui_image.py` | gzip and content hash for the LittleFS image |
+| `platform/esp/tools/gen_ui_files.py` | gzip, content hash and the C++ table of the UI compiled into the firmware |
 
 Everything that decides something is in the core and has host tests; the platforms carry bytes.
 Both servers call the core only on the event loop's thread: the ESP server copies each request into
@@ -188,26 +188,28 @@ the dashboard; the budget is 120 KB). No framework and
 no bundler: browsers load ES modules natively, the code stays readable in the device's own files,
 and there is no node toolchain in the build. Rejected: Preact/Lit (another dependency and a build
 step for a handful of pages); server-rendered pages (state on the device, a reload per action);
-files compiled into the firmware (every UI change would be a firmware build and an OTA of 1.3 MB).
+files compiled into the firmware at the time (every UI change a firmware build and an OTA), which
+is what the UI is now. It was a LittleFS image of the storage partition (until 2026-11: the OTA update did not replace it, so a new
+firmware could meet an old UI, and its about 30 blocks of 4 KB, one per file at least, left too
+little room to store a 32 KB runtime image beside the old one, issue #45).
 
-The firmware build turns it into `storage.bin`: `gen_ui_image.py` writes each file gzip-compressed
-(level 9, no time stamps: the output depends on the content only) plus `VERSION`, the first 16 hex
-digits of a SHA-256 over all paths and contents; joltwallet/littlefs's
-`littlefs_create_partition_image` packs that into a LittleFS image of the storage partition
-(0x3b2000, 268 KB (312 KB before the three Zigbee partitions) on the 4 MB layout), and `flash_args`, `flasher_args.json`, the web flasher's
-manifest (sixth part) and `scripts/flasher-local.sh` carry it. The image tool is littlefs-python,
-which the component installs into a venv in the build directory on the first build (needs pip
-access once). The device mounts the partition read-only at `/storage` (never formats it: a missing
-image is reported, not hidden behind an empty file system), serves `/ui/<path>.gz` with
-`Content-Encoding: gzip`, `ETag: "<VERSION>"` and `Cache-Control: no-cache` (the browser revalidates
-and gets 304 until the UI changes), routes `/api/*` and `/ws` first, and answers every
-extensionless path with `index.html` so that `/settings` can be reloaded. Without an image every
-page is a 503 that says to flash `storage.bin`; the API works regardless. One hash for all files is
-coarser than per-file ETags (a UI change refetches 19 KB), and simpler on the device.
+The UI is compiled into the firmware: `platform/esp/tools/gen_ui_files.py` writes each file
+gzip-compressed (level 9, no time stamps: the output depends on the content only) as a constant
+array into `ui_files.cpp` in the build directory of `hc_web`, with the table `hc::esp::ui::kFiles`
+sorted by path and `kVersion`, the first 16 hex digits of a SHA-256 over all paths and contents
+(`components/hc_web/ui_files.h`). The arrays stay in the application image in flash; the web server
+finds a file by binary search and sends it from there in pieces, with `Content-Encoding: gzip`,
+`ETag: "<kVersion>"` and `Cache-Control: no-cache` (the browser revalidates and gets 304 until the
+UI changes). It routes `/api/*` and `/ws` first and answers every extensionless path with
+`index.html` so that `/settings` can be reloaded. One hash for all files is coarser than per-file
+ETags (a UI change refetches everything), and simpler on the device. The UI costs about 75 KB of
+the application partition (2.47 MB of 2.75 MB used, 2026-11-03) and comes with every firmware
+update: a UI change is a firmware build and an OTA of the application (about 20 s on the C6).
 
-**Gap**: the OTA update replaces the application, not the storage partition. A firmware update
-that needs a newer UI must come with a UI image flashed over USB or the web flasher, until the
-update manifest grows a UI part (to do with the release workflow).
+A firmware that finds the directory `/storage/ui` of an older one in the storage partition removes
+it at start and logs the bytes freed (on the C6: 16 KB free before, 152 KB after). `storage.bin`
+is now an empty LittleFS image, so that a device flashed over USB or with the web flasher has a
+file system to mount.
 
 ### Pages
 

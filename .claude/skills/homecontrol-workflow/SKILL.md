@@ -268,8 +268,9 @@ accept the confirm dialog), then wait for the status line "<version> (<build>) l
 capture shows `hc.updater` writing the image and `hc.ota ... completed (uploaded from the browser)`.
 About 40 s all in, the stored image and the Zigbee database stay in place, and the page shows the
 build id to compare with `hc_generated/hc_build_id.h`. USB (`esptool.py ... write_flash`) stays for
-the updater (`0x10000 hc_updater.bin`), the bootloader, the partition table, and the UI image
-`storage.bin` (which wipes the stored runtime image and persisted values: redeploy afterwards).
+the updater (`0x10000 hc_updater.bin`), the bootloader, the partition table, and the empty file
+system `storage.bin` (which wipes the stored runtime image and persisted values: redeploy
+afterwards). The web UI is compiled into the application and comes with every OTA update.
 Only the C6 is flashed, at the node its id resolves to (it moves between ttyACM0 and ttyACM1); the S3 is another project's board.
 Tell the user the commit hash and what to try. Never leave a broken build on the board — it is the
 shared reference for bug reports.

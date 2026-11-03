@@ -94,22 +94,17 @@ function(hc_rewrite_flash_target target with_extras)
 	set_target_properties(${target} PROPERTIES IMAGES "${new_images}" FLASH_FILE "${files}" FLASH_ENTRY "${entries}")
 endfunction()
 
-# ---- The web UI image (doc/web.md) -----------------------------------------------------------
+# ---- The storage partition's image (doc/persistence.md) ------------------------------------
 #
-# web/ui/dist, gzip-compressed with its content hash (tools/gen_ui_image.py), becomes storage.bin, a
-# LittleFS image of the storage partition; `flash` writes it too (flash_args, flasher_args.json).
-# littlefs_create_partition_image comes with joltwallet/littlefs and installs littlefs-python into a
-# venv in the build directory on first use.
+# storage.bin is an empty LittleFS image of the storage partition, so that a device flashed over
+# USB (or with the web flasher) mounts it; the device never formats it itself. The web UI is not
+# in it: it is compiled into the firmware (components/hc_web, tools/gen_ui_files.py) and updated
+# with it over the air. littlefs_create_partition_image comes with joltwallet/littlefs and installs
+# littlefs-python into a venv in the build directory on first use.
 
-get_filename_component(hc_ui_dist "${HC_ESP_DIR}/../../web/ui/dist" REALPATH)
-file(GLOB_RECURSE hc_ui_files CONFIGURE_DEPENDS "${hc_ui_dist}/*")
-set(hc_ui_stage "${CMAKE_BINARY_DIR}/ui_image")
-add_custom_command(OUTPUT "${hc_ui_stage}/ui/VERSION"
-	COMMAND ${hc_python} "${HC_ESP_DIR}/tools/gen_ui_image.py" "${hc_ui_dist}" "${hc_ui_stage}"
-	DEPENDS "${HC_ESP_DIR}/tools/gen_ui_image.py" ${hc_ui_files}
-	VERBATIM)
-add_custom_target(hc_ui_stage DEPENDS "${hc_ui_stage}/ui/VERSION")
-littlefs_create_partition_image(storage "${hc_ui_stage}" FLASH_IN_PROJECT DEPENDS hc_ui_stage)
+set(hc_storage_stage "${CMAKE_BINARY_DIR}/storage_image")
+file(MAKE_DIRECTORY "${hc_storage_stage}")
+littlefs_create_partition_image(storage "${hc_storage_stage}" FLASH_IN_PROJECT)
 
 hc_rewrite_flash_target(flash TRUE)
 hc_rewrite_flash_target(app-flash FALSE)
@@ -121,8 +116,3 @@ partition_table_add_check_size_target(hc_app_check_size
 	BINARY_PATH "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"
 	PARTITION_TYPE app PARTITION_SUBTYPE ota_0)
 add_dependencies(app hc_app_check_size)
-
-# The language packs (doc/i18n.md): gen_ui_image.py takes them from web/ui/lang; a changed pack
-# restages the UI image.
-file(GLOB hc_ui_packs CONFIGURE_DEPENDS "${hc_ui_dist}/../lang/*.json")
-add_custom_command(OUTPUT "${hc_ui_stage}/ui/VERSION" APPEND DEPENDS ${hc_ui_packs})

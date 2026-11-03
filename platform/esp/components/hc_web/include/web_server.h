@@ -29,6 +29,9 @@ namespace hc {
 
 class Mqtt;
 namespace esp {
+namespace ui {
+struct UiFile;
+} // namespace ui
 
 /// Hardware random numbers (esp_fill_random, with the RF subsystem as entropy source once WiFi
 /// runs) and PBKDF2 through mbedTLS (the SHA accelerator).
@@ -50,8 +53,8 @@ public:
 /// - /ws : the WebSocket of the core's LiveFeed. Incoming messages go to the loop the same way;
 ///   outgoing messages are copied into a pool of kSendBuffers buffers and sent by work queued to
 ///   the httpd task (httpd_queue_work), so the loop never blocks on a socket.
-/// - everything else: the UI files from the LittleFS image (/storage/ui, gzip-compressed, ETag =
-///   the image's content hash), extensionless paths fall back to index.html.
+/// - everything else: the UI files, compiled into the firmware (ui_files.h, gzip-compressed, ETag =
+///   the UI's content hash), extensionless paths fall back to index.html.
 ///
 /// Also the `web` console command (tokens, password reset, demo datapoints, status).
 class WebServer : public WebHost, public WsTransport {
@@ -63,8 +66,8 @@ public:
 	/// to it (hc_ehome). Issue #45 tried 7: six parallel loads then purged three of four live-feed
 	/// sockets on the C6 (2026-11-03), so it stays 10.
 	static constexpr uint16_t kMaxSockets = 10;
-	/// The httpd task's stack: request parsing and what runs there (the UI files read from LittleFS
-	/// in chunks, the body received into the job slot and handed to the loop, the WebSocket frames
+	/// The httpd task's stack: request parsing and what runs there (the UI files sent from flash in
+	/// chunks, the body received into the job slot and handed to the loop, the WebSocket frames
 	/// and the queued sends; the API itself, the password check included, runs on the loop).
 	/// Measured on the C6: 2052 B used (2026-11-03), 2692 B (2026-10-18, with page loads and a
 	/// login); 4608 B keep 1.9 KB over that. 6144 B before issue #45.
@@ -78,12 +81,13 @@ public:
 	static constexpr size_t kMaxWs = 8;
 	static constexpr const char* kMountPoint = "/storage";
 	static constexpr const char* kPartitionLabel = "storage";
-	static constexpr const char* kUiDir = "/storage/ui";
+	/// Where the storage partition held the UI before it came with the firmware; removed at start.
+	static constexpr const char* kLegacyUiDir = "/storage/ui";
 
 	WebServer(Controller& controller, DatapointModel& model, LoopQueue& queue, NetServices& services,
 		OtaService& ota, const char* device_name);
 
-	/// Mounts the UI image, reads the stored password and tokens and starts the server. Call on the
+	/// Removes an old UI image from the storage partition, reads the stored password and tokens and starts the server. Call on the
 	/// event loop once the network stack is initialized (after WifiDriver::init). Logs the free heap
 	/// before and after. Returns false (logged) if the server cannot start.
 	bool start();
@@ -122,7 +126,7 @@ public:
 	void ntp_server_changed() override;
 	bool set_update_url(const char* url, const char** error) override;
 	void write_update_state(JsonWriter& json) const override;
-	const char* ui_version() const override { return ui_version_; }
+	const char* ui_version() const override;
 	uint16_t websocket_port() const override { return 0; }
 	HostResult system_action_possible(SystemAction action, const char** reason) const override;
 	void system_action(SystemAction action) override;
@@ -161,7 +165,10 @@ private:
 	void handle_close(int fd);
 	void drain();
 	bool run_on_loop();
-	bool mount_ui();
+	/// Removes the UI directory an older firmware left in the storage partition (kLegacyUiDir).
+	void remove_legacy_ui();
+	/// The UI file of the path ("/index.html"), nullptr if the UI has none.
+	static const ui::UiFile* find_ui_file(const char* path);
 	int web_command(int argc, char** argv);
 
 	Controller& controller_;
@@ -176,8 +183,6 @@ private:
 	LiveFeed feed_;
 	DemoTechnology demo_;
 	httpd_handle_t server_ = nullptr;
-	char ui_version_[24] = "";
-	bool ui_mounted_ = false;
 	BlobStore* blobs_ = nullptr;
 	EspDiagnostics* diagnostics_ = nullptr;
 
