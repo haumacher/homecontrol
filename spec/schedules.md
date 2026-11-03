@@ -30,9 +30,18 @@ Decisions:
 - **S3. One shape per kind, no cron strings.** Six kinds cover what a house needs; each has
   explicit members that E-Home can show as a form and the device can validate. *Alternative:* a cron
   expression (unreadable for inhabitants, no astronomy, no DST semantics of its own).
-- **S4. The enable switch is the only adjustable part for now.** Like a rule's (`spec/rules.md`
-  8.3), it defaults to the image's `enabled` and may be switched on the device unless the image
-  fixes it. Adjustable times are a later extension (section 7).
+- **S4. The image declares what the inhabitant may adjust, within bounds; the device keeps the
+  inhabitant's values as overrides.** The enable switch, like a rule's (`spec/rules.md` 8.3),
+  defaults to the image's `enabled` and may be switched on the device unless the image fixes it.
+  Besides, an entry may declare members of its kind adjustable (`adjustable`, with optional
+  `bounds` and a step, section 2.1, issue #58): the opening time of the blinds on workdays, the
+  days of an alarm, the offset of a dusk entry. The inhabitant's values are overrides persisted by
+  schedule id and member, kept by a new image while they still fit it (4.2), like the rule
+  parameters (`spec/rules.md` D5). An adjustable `time` is also a datapoint
+  `schedule/<id>/time` (2.2), so a control page shows it and rules read it. *Alternatives:* a rule
+  parameter compared with `time()` in a condition of an entry firing every minute (no DST rules of
+  S1, no missed firings of S2, the moment invisible in the schedule view); every member adjustable
+  (E-Home could not keep an installation's timing, and the UI could not know what makes sense).
 
 ## 2. The entry
 
@@ -49,7 +58,77 @@ second fire in this order). Members not defined here are refused, except `descri
 | `enabledAdjustable` | boolean | no, `true` | Whether the inhabitant may switch the entry on and off. |
 | `missed` | `skip` or `catchUp` | no, `skip` | What happens to a missed firing (section 4.3). |
 | `output` | datapoint name | no | A `boolean` datapoint of the image that the scheduler owns: true from a firing until local midnight (section 5). |
+| `adjustable` | array of member names | no, `[]` | The members of the kind the inhabitant may change (section 2.1). |
+| `bounds` | object | no | Bounds and steps of adjustable members (section 2.1). |
 | *kind members* | | | Section 3. |
+
+### 2.1 Adjustable members
+
+`adjustable` lists member names of the entry's kind, each at most once:
+
+| `kind` | May be adjustable |
+|---|---|
+| `weekly` | `time`, `days` |
+| `yearly` | `time` (the date stays fixed) |
+| `dates` | `time` (the dates stay fixed) |
+| `astro` | `offset`, `notBefore`, `notAfter`, `days` |
+| `interval` | `every`, `from`, `until`, `days` |
+| `once` | `at` |
+
+A member not listed stays as the image gives it; another name is refused (`malformed`). An
+adjustable `notBefore` or `notAfter` must be set in the image (the inhabitant moves a clamp, they do
+not add one). `sun`, `month`, `day`, `dates`, `missed`, `output` and the label are never adjustable.
+
+`bounds` maps an adjustable member (not `days`) to `{"min", "max", "step"}`, every member of it
+optional, at most one bound object per member:
+
+| Member | `min`, `max` (inclusive) | `step` | Absent `min`/`max` |
+|---|---|---|---|
+| `time`, `notBefore`, `notAfter`, `from`, `until` | time `{"hour", "minute", "second"}` | integer seconds, 1..86400 | 00:00:00, 23:59:59 |
+| `offset` | duration (ms, whole seconds), -12 h..12 h | duration (ms, whole seconds), positive | -12 h, 12 h |
+| `every` | duration (ms, whole minutes), 1 min..12 h | duration (ms, whole minutes), positive | 1 min, 12 h |
+| `at` | `{"year", "month", "day", "hour", "minute", "second"}` | none (refused) | 1970-01-01 00:00:00, 2155-12-31 23:59:59 |
+
+A value is *within the bounds* when `min <= value <= max` (times as seconds since midnight, `at` as
+its local date and time) and, with a `step`, it is a whole multiple of the step: times count from
+00:00:00 (a step of 300 allows 06:00, 06:05, ...), durations from 0 (a step of 300000 allows
+-10 min, -5 min, 0, 5 min, ...). An absent step allows any value of the member's form. The image's
+own value must be within its bounds (refused `malformed` otherwise), and `min` may not exceed `max`.
+`days` takes no bounds: any non-empty set of days is allowed.
+
+```json
+{"id": "workdayMorning", "label": "Workday morning", "kind": "weekly", "days": [1, 2, 3, 4, 5],
+ "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time", "days"],
+ "bounds": {"time": {"min": {"hour": 5, "minute": 0, "second": 0}, "max": {"hour": 9, "minute": 0, "second": 0},
+                     "step": 300}}}
+```
+
+```json
+{"id": "blindsEvening", "label": "Blinds down at dusk", "kind": "astro", "sun": "sunset", "offset": -1800000,
+ "notAfter": {"hour": 22, "minute": 0, "second": 0}, "adjustable": ["offset", "notAfter"],
+ "bounds": {"offset": {"min": -3600000, "max": 3600000, "step": 300000},
+            "notAfter": {"min": {"hour": 20, "minute": 0, "second": 0}, "step": 1800}}}
+```
+
+### 2.2 The time datapoint
+
+An entry of kind `weekly`, `yearly` or `dates` whose `time` is adjustable is also the datapoint
+`schedule/<id>/time` of type `timeOfDay` (no day of the week), which the device derives when it
+loads the image (`spec/runtime-image.md` 3.3; the prefix `schedule/` is reserved). The scheduler
+owns it (technology `scheduler`):
+
+1. **Value.** It carries the entry's effective time, quality good: from the load of the schedules
+   (taking it then is no event for the rules, like the rule parameters' datapoints of
+   `spec/rules.md` 8.6), and after every change (UI or API, a reset, a new image) as an update.
+2. **Commands.** It is writable: a command (the UI, the API, MQTT, a rule's `write`) is a change of
+   the member `time` as by the API (4.2), refused like it (outside the bounds, a time with a day of
+   the week) with the datapoint keeping its value.
+3. **Rules** read it, trigger on it and write it like any datapoint (`@"schedule/workdayMorning/time"`);
+   a `read` of it is refused at load (`notReadable`). It is not persisted by the datapoint model and
+   has no history: the entry's record keeps the override.
+
+The other members stay API-only: days as a set have no datapoint type, and offsets and windows are
+rarely put on a control page.
 
 ## 3. Kinds
 
@@ -91,13 +170,42 @@ service's flag, `doc/time.md`); the first synchronization is not a gap: an entry
 (no persisted state) counts from the moment it is first evaluated. A firing is delivered to the
 rules as an external event (`spec/rules.md` 7.1) within about a second of its moment.
 
-### 4.2 Enable switch
+### 4.2 Enable switch and adjustable members
 
 A disabled entry does not fire and has no next firing. Firings that passed while it was disabled
 are not missed. The switch is persisted on the device by schedule id as an *override* of the
 image's `enabled`; switching back to the image's value removes the override. A new image keeps the
 override while the entry still exists and is adjustable; an entry that becomes
 `enabledAdjustable: false` loses it (logged).
+
+The inhabitant changes adjustable members (2.1) through the API (`PUT /api/schedules/<id>`,
+`spec/api.md`), the UI or the time datapoint (2.2). A change names one or more members and is
+applied whole or refused whole, naming the member: `not_adjustable` (the image does not list it),
+`out_of_bounds` (outside its bounds or off its step), `malformed` (not a value of the member, an
+empty `days`, or members that would contradict each other: `from` after `until`, `notBefore` after
+`notAfter`). A value equal to the image's removes that member's override; any other value is the
+member's override, persisted with the entry's record by schedule id and member. A reset
+(`DELETE /api/schedules/<id>/override`) removes every override of the entry, the enable switch's
+included.
+
+A new image keeps a member's override while the entry still exists, the member is still adjustable
+and the value is within the new bounds; otherwise the override is dropped and logged
+(`schedule <id>: override of <member> (<value>) dropped: <why>`), and the member takes the image's
+value. An override the new image's value happens to equal is no override any more. Kept overrides
+that contradict the new image's other values (a kept `from` after a new `until`) are dropped too.
+This is the rule of the rule parameters (`spec/rules.md` D5, 8.4).
+
+**A change takes effect at once and is not a gap.** The entry is evaluated again with the new
+values. Moments that passed before the change are not missed (4.3): moving the 06:30 to 06:00 at
+06:15 fires nothing today and logs no missed firing; moving it to 06:20 at 06:15 fires at 06:20
+today. **A handled firing stays handled:** the latest handled moment (4.3) is kept, and a day whose
+firing was handled under the old values counts as handled under the new ones, so moving a 06:30
+that fired today to 07:00 does not fire a second time today (tomorrow it fires at 07:00). This holds
+for the kinds with one firing per day (`weekly`, `yearly`, `dates`, `astro`); an `interval` entry's
+slots are handled up to the moment of the change only. **A `once` entry that fired (or was skipped)
+is not re-armed:** it never fires again, wherever its `at` moves, even into the future; a new
+one-shot is a new entry of the image. The DST rules of S1 apply to the new values (an
+override of 02:30 fires at 03:00 on the spring-forward day).
 
 ### 4.3 Missed firings
 
@@ -117,7 +225,7 @@ moments up to the latest handled one do not fire again.
 ### 4.4 Image swap
 
 Entries whose id is in the new image keep their persisted state (latest handled moment, last
-firing, enable override per 4.2). The state of ids no longer present is deleted. Entries are
+firing, the enable and member overrides per 4.2). The state of ids no longer present is deleted. Entries are
 re-evaluated at once; missed firings are handled per 4.3.
 
 ## 5. Output datapoint
@@ -135,7 +243,7 @@ The device refuses the whole image at the first failure, naming the entry and on
 
 | Reason | Examples |
 |---|---|
-| `malformed` | missing or unknown member, a value out of its range (`hour` 24, `month` 2 with `day` 30, an empty `days`, `until` before `from`, `notBefore` after `notAfter`, an offset beyond 12 h), an invalid id or label |
+| `malformed` | missing or unknown member, a value out of its range (`hour` 24, `month` 2 with `day` 30, an empty `days`, `until` before `from`, `notBefore` after `notAfter`, an offset beyond 12 h), an invalid id or label; an `adjustable` member the kind does not have or listed twice, an adjustable clamp the entry does not set, bounds of a member that is not adjustable or of `days`, `min` after `max`, a step of `at` or one that is not whole seconds (minutes for `every`), the image's value outside its bounds or off its step |
 | `duplicateId` | two entries with the same id; a date listed twice in `dates` |
 | `unknownReference` | `output` names no datapoint of the image |
 | `typeError` | `output` names a datapoint that is not `boolean` |
@@ -144,9 +252,8 @@ The device refuses the whole image at the first failure, naming the entry and on
 
 ## 7. Not yet specified
 
-- Adjustable times (the inhabitant moves the 06:30 of a weekly entry) through the adjustable
-  parameter mechanism of `spec/rules.md` 8; until then a rule parameter compared with `time()` in a
-  condition serves.
+- Datapoints for the adjustable members other than `time` (days as a set have no datapoint
+  type).
 - Exceptions ("weekly, but not on the dates of entry `holidays`") and vacation ranges; today a rule
   condition combines two entries' outputs.
 - One-shot timers *started by rules* are the rules' own timers (`spec/rules.md` 2.5), not schedule
@@ -158,7 +265,8 @@ The device refuses the whole image at the first failure, naming the entry and on
 "schedules": [
   {"id": "workdayMorning", "label": "Workday morning", "kind": "weekly",
    "days": [1, 2, 3, 4, 5], "time": {"hour": 6, "minute": 30, "second": 0}, "missed": "catchUp",
-   "output": "schedule.morning"},
+   "output": "schedule.morning", "adjustable": ["time", "days"],
+   "bounds": {"time": {"min": {"hour": 5, "minute": 0, "second": 0}, "max": {"hour": 9, "minute": 0, "second": 0}, "step": 300}}},
   {"id": "christmasEve", "label": "Christmas Eve", "kind": "yearly",
    "month": 12, "day": 24, "time": {"hour": 17, "minute": 0, "second": 0}},
   {"id": "trash", "label": "Bin collection", "kind": "dates",

@@ -188,7 +188,22 @@ idle when the record was written; e.g. `1;1792209600;1792209600;;workdayMorning`
 An idle record means the entry stayed idle until the controller stopped (switching it on or the
 location arriving rewrites the record), so it restarts from now. The id in the value detects a
 foreign record (a hash collision with a removed entry, garbage): it is logged and ignored. Two ids
-of one image with the same hash: the second entry is not persisted (logged at load). On each load
+of one image with the same hash: the second entry is not persisted (logged at load).
+
+An entry with member overrides (issue #58, `spec/schedules.md` 4.2) is written in format version 2,
+`2;<lastFired>;<accounted>;<flags>;<member>=<value>,...;<id>`, the members by their image names
+and their values as scalars: times in seconds since midnight, `offset` and `every` in seconds,
+`days` as the weekday bits (bit 0 Monday), `at` as local seconds since 1970; e.g.
+`2;1792209600;1792209600;;time=21600,days=15;workdayMorning`. Without overrides the record stays
+version 1, so a firmware before #58 reads it. At load each override is checked against the new
+image (still adjustable, within the bounds and on the step, consistent with the other values); one
+that fails is dropped with a log line naming the reason and the record is rewritten. A value
+record is at most 127 bytes: the id is at most 63, which leaves room for all members of one kind.
+
+A change of members is no gap: the accounted moment becomes the latest of the old accounted moment,
+the moment just before the change, and, for the kinds with one firing a day, the new day's
+occurrence when the old one on that day was already accounted (`interval` only up to now; a `once`
+that was accounted stays done). On each load
 the records whose key belongs to no entry are deleted. The record is written at each firing, at
 each skip, when an entry is first evaluated, when it becomes idle or runs again, and when the
 switch changes. Wear: an entry firing every minute writes about 1440 records of ~60 bytes a day;
@@ -207,8 +222,9 @@ to the scheduler (its commands remain refused).
 
 ### Memory
 
-The scheduler object is about 80 bytes; per entry about 150 bytes (the copied spec, the record key,
-four times) plus the id and label and 4 bytes per listed date. 128 entries: about 20 KB at most.
+The scheduler object is about 80 bytes; per entry about 170 bytes (the copied spec, the record key,
+four times, the override marks) plus the id and label, 4 bytes per listed date, 8 per adjustable
+member (the image's value) and 32 per bound. 128 entries: about 22 KB without bounds.
 Nothing is allocated after `load()`.
 
 ## What the ESP side still has to do

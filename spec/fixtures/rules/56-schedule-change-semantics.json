@@ -1,0 +1,38 @@
+{
+	"title": "A change of a schedule's time is not a gap, and a day's handled firing stays handled",
+	"description": "Three entries at 06:30 every day (spec/schedules.md 4.2). At 06:15 a moves to 06:00: that moment has passed, but a change is no gap, so a does not fire today (and nothing is missed). b moves to 06:20: still ahead, it fires at 06:20 today. c fires at 06:30 and at 06:45 moves to 07:00: its firing of today was handled, so it does not fire again at 07:00. On Tuesday all three fire at their new times.",
+	"datapoints": [
+		{"name": "x.a", "type": "boolean"},
+		{"name": "x.b", "type": "boolean"},
+		{"name": "x.c", "type": "boolean"}
+	],
+	"schedules": [
+		{"id": "a", "label": "A", "kind": "weekly", "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time"], "bounds": {"time": {"step": 300}}},
+		{"id": "b", "label": "B", "kind": "weekly", "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time"], "bounds": {"time": {"step": 300}}},
+		{"id": "c", "label": "C", "kind": "weekly", "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time"], "bounds": {"time": {"step": 300}}}
+	],
+	"clock": {"start": "2026-10-12T05:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{"id": "ra", "name": "ra", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "a"}], "actions": [{"kind": "write", "datapoint": "x.a", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]},
+		{"id": "rb", "name": "rb", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "b"}], "actions": [{"kind": "write", "datapoint": "x.b", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]},
+		{"id": "rc", "name": "rc", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "c"}], "actions": [{"kind": "write", "datapoint": "x.c", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}
+	],
+	"timeline": [
+		{"at": 4500000, "setSchedule": {"id": "a", "time": {"hour": 6, "minute": 0, "second": 0}}},
+		{"at": 4500000, "setSchedule": {"id": "b", "time": {"hour": 6, "minute": 20, "second": 0}}},
+		{"at": 6300000, "setSchedule": {"id": "c", "time": {"hour": 7, "minute": 0, "second": 0}}},
+		{"at": 10800000, "check": {"firings": {"ra": 0, "rb": 1, "rc": 1}}}
+	],
+	"end": 97200000,
+	"expected": {
+		"commands": [
+			{"at": 4800000, "rule": "rb", "datapoint": "x.b", "value": true},
+			{"at": 5400000, "rule": "rc", "datapoint": "x.c", "value": true},
+			{"at": 90000000, "rule": "ra", "datapoint": "x.a", "value": true},
+			{"at": 91200000, "rule": "rb", "datapoint": "x.b", "value": true},
+			{"at": 93600000, "rule": "rc", "datapoint": "x.c", "value": true}
+		],
+		"logs": [],
+		"final": {"firings": {"ra": 1, "rb": 2, "rc": 2}, "schedules": {"a": {"values": {"time": {"hour": 6, "minute": 0, "second": 0}}, "overridden": ["time"]}, "b": {"values": {"time": {"hour": 6, "minute": 20, "second": 0}}, "overridden": ["time"]}, "c": {"values": {"time": {"hour": 7, "minute": 0, "second": 0}}, "overridden": ["time"]}}}
+	}
+}

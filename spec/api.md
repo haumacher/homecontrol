@@ -82,7 +82,8 @@ WebSocket connections are closed with 1008 `auth.session_ended`.
 ### `GET /api/status`
 
 ```json
-{"device": {"name": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "...", "ui": "3c0dcd52e390bb91"},
+{"device": {"name": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "...", "ui": "3c0dcd52e390bb91",
+            "schema": "1.2"},
  "uptime_s": 5321,
  "network": {"state": "up", "ip": "192.0.2.10", "mode": "normal", "pairing": false, "mdns": "homecontrol-a1b2c3.local",
              "mdns_announced": true},
@@ -98,6 +99,9 @@ WebSocket connections are closed with 1008 `auth.session_ended`.
  "image": {"loaded": true, "project": "example-house", "revision": 7, "name": "Example house", "source": "api",
            "datapoints": 17, "rules": 2, "schedules": 2, "degraded": false}}
 ```
+
+`device.schema` is the newest runtime image schema the firmware reads (`spec/runtime-image.md` I4,
+section 8): E-Home warns before deploying an image of a newer one.
 
 `image` (builds with the runtime image service): without an image `{"loaded": false}`, after a
 refused load while no image runs also `"refused": "<code>"`. `source` is how the image came: `boot` (the stored
@@ -340,7 +344,7 @@ does not know is left out.
 
 ```json
 {"uptime_s": 3725, "now_ms": 3725012,
- "device": {"name", "version", "build", "ui"}, "boot": {...}, "update": {...},
+ "device": {"name", "version", "build", "ui", "schema"}, "boot": {...}, "update": {...},
  "chip": {"available": true, "model": "ESP32-C6", "revision": "v0.1", "cores": 1, "cpu_mhz": 160,
           "flash_size": 4194304, "flash_mode": "dio", "flash_freq": "80m", "idf": "v5.5.6", "ota_state": "valid"},
  "led": "ready", "time": {"synchronized": true, "local": "..."}, "improv": {"active": false},
@@ -747,19 +751,43 @@ Path segments may be percent-encoded.
 ```json
 {"synchronized": true, "now": 1792231392, "count": 2, "from": 0, "next": null,
  "schedules": [{"id": "workdayMorning", "label": "Workday morning", "kind": "weekly", "enabled": true,
-                "adjustable": true, "nextFiring": 1792384200, "lastFired": 1792297800}]}
+                "enabledAdjustable": true, "enabledOverridden": false,
+                "adjustable": ["time", "days"], "overridden": ["time"],
+                "values": {"time": {"hour": 6, "minute": 0, "second": 0}, "days": [1, 2, 3, 4, 5]},
+                "image": {"time": {"hour": 6, "minute": 30, "second": 0}, "days": [1, 2, 3, 4, 5]},
+                "bounds": {"time": {"min": {"hour": 5, "minute": 0, "second": 0},
+                                    "max": {"hour": 9, "minute": 0, "second": 0}, "step": 300}},
+                "nextFiring": 1792384200, "lastFired": 1792297800}]}
 ```
 
 `nextFiring` (UTC seconds) is `null` when the entry has none (switched off, a past one-shot, no
-sun times, the clock not synchronized); `lastFired` is `null` when unknown; `adjustable` is the
-image's `enabledAdjustable`.
+sun times, the clock not synchronized); `lastFired` is `null` when unknown. `enabledAdjustable` is
+the image's `enabledAdjustable`, `enabledOverridden` whether the switch differs from the image.
+`adjustable` lists the members the image declares adjustable (`spec/schedules.md` 2.1),
+`overridden` those whose value differs from the image's; `values` holds each adjustable member's
+effective value, `image` the image's, in the member's form of the image (a time of day
+`{"hour", "minute", "second"}`, `days` as `[1..7]`, `offset` and `every` in milliseconds, `at` as
+`{"year", "month", "day", "hour", "minute", "second"}`). `bounds` holds the members the image
+bounds, with `min` and `max` filled in (the member's full range where the image leaves one out)
+and `step` only when the image gives one (seconds for times, milliseconds for durations).
 
 ### `PUT /api/schedules/<id>`
 
-Body `{"enabled": true|false}`: switches the entry like the console does (persisted; switching back
-to the image's value removes the override). 200 `{"ok": true, "schedule": {...}}`. Refusals: 404
-`schedule.unknown`, 403 `schedule.not_adjustable` (with the scheduler's reason), 400
-`schedule.value_missing`, 400 `api.bad_json`.
+Body: `enabled` (true|false) and any adjustable members in the form above, e.g.
+`{"time": {"hour": 6, "minute": 0, "second": 0}}` or `{"days": [1, 2, 3, 4], "enabled": true}`;
+or `{"reset": true}` alone, which is the DELETE below. The change is applied whole or refused whole
+(`spec/schedules.md` 4.2): a value equal to the image's removes that override, another is persisted
+as the override. 200 `{"ok": true, "schedule": {...}}`, the entry as in the list. Refusals (the
+member ones name the member: `{"error": "...", "code": "...", "member": "time"}`): 404
+`schedule.unknown`; 403 `schedule.not_adjustable` (the switch or a member the image fixes); 400
+`schedule.out_of_bounds` (outside the bounds or off the step); 400 `schedule.malformed` (an unknown
+member, a value not of the member's form, an empty `days`, members that contradict each other,
+`reset` with others); 400 `schedule.value_missing` (no member); 400 `api.bad_json`.
+
+### `DELETE /api/schedules/<id>/override`
+
+Returns the entry to the image's values: every member override and the switch's are removed. 200
+`{"ok": true, "schedule": {...}}`; 404 `schedule.unknown`. Path segments may be percent-encoded.
 
 ## Other refusals
 
@@ -840,10 +868,12 @@ With `ehome.enabled` true the controller opens the WebSocket of `socket` (TLS) a
 
 ```
 E-Home → {"type": "challenge", "nonce": "<32 to 128 hex digits>"}
-device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "key": "ce7d 4a41 a476 9ee3"}
+device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "schema": "1.2", "key": "ce7d 4a41 a476 9ee3"}
 E-Home → {"type": "ready", "installation": "<name>"}        or {"type": "refused", "code": "...", "error": "..."} and the close
 ```
 
+`schema` is the newest runtime image schema the firmware reads (as in `GET /api/status`), so E-Home
+knows at every connection whether an image it would deploy is too new for the device.
 `key` (only while the device holds an installation key) is that key's fingerprint (below): E-Home
 learns at every connection which key the device accepts images from, and signs with it.
 `mac` is HMAC-SHA256 with the 32 bytes the secret's hex digits denote as the key, over the bytes the

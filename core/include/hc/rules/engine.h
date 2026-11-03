@@ -255,6 +255,17 @@ public:
 	/// The publishes are not events for the rules.
 	void bind_parameters();
 
+	/// Runs `publish` with the datapoint updates it causes taken as no events for the rules (change
+	/// tracking still follows them): another component's datapoints taking their values at load, like
+	/// the schedules' time datapoints (spec/schedules.md 2.2), as the parameter datapoints do here.
+	template <class F>
+	void quietly(F publish) {
+		bool was = quiet_;
+		quiet_ = true;
+		publish();
+		quiet_ = was;
+	}
+
 	/// The technology that owns the parameter datapoints (named kTechnologyName).
 	const Technology& technology() const { return technology_; }
 	/// The rule and parameter index behind a parameter datapoint; false for another datapoint.

@@ -80,7 +80,8 @@ inhabitant persists on the device under `<ruleId>/<parameterId>` and survives a 
 declaration still exists with a compatible type and the value is still valid; otherwise it is reset
 to the new default with a log line (section 8). Only values the inhabitant (or a rule action) set
 are persisted, and only while they differ from the default: a parameter never touched, or set back
-to its default, follows the default of each new image. *Alternatives:*
+to its default, follows the default of each new image. The adjustable members of the schedule
+entries follow the same rule (`spec/schedules.md` S4, 4.2). *Alternatives:*
 persist every value (E-Home could never change a default again); key by position (any edit in E-Home
 would scramble the stored values); expose arbitrary datapoints for editing (contradicts decision 3
 of the author).
@@ -151,7 +152,8 @@ kind `datapoint` and an expression node of kind `datapoint` are different things
 | datapoint name | as in the datapoint model: 1..63 printable bytes | the image |
 
 The parameter id `enabled` is reserved for the enable switch (section 8.3). Datapoint names that
-start with `rule/` are reserved for the datapoints of the rule parameters (section 8.6); the image
+start with `rule/` are reserved for the datapoints of the rule parameters (section 8.6), those that
+start with `schedule/` for the adjustable schedule times (`spec/schedules.md` 2.2); the image
 declares none.
 
 ### 2.2 Rule
@@ -953,6 +955,11 @@ The rule engine owns them (technology `rules`):
 A value the datapoint type cannot hold (an integer beyond the signed 32-bit range, a negative
 duration or one beyond 2^32-1 ms) is not mirrored: the datapoint keeps its previous value and the
 device logs it. E-Home's simulation shows the same datapoints.
+
+The adjustable time of a schedule entry is a datapoint of the same kind, `schedule/<id>/time`
+(`spec/schedules.md` 2.2, owned by the scheduler): rules read, trigger on and write it
+(`@"schedule/workdayMorning/time"`); its value at the load is no event, a command to it is a change
+of the entry within its bounds.
 
 ## 9. Diagnostics
 

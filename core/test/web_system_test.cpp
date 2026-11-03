@@ -360,6 +360,8 @@ TEST_CASE("WebSystem: the status carries storage, external, lang and mqtt as the
 	SystemFixture f;
 	auto r = f.call(HttpMethod::get, "/api/status");
 	CHECK_FALSE(r.json.has("storage")); // nothing known: left out
+	// The newest image schema this firmware reads (spec/api.md), for E-Home's check before a deploy.
+	CHECK(r.json["device"]["schema"].text == hc::image::schema_version_text());
 	hc_test::FakeBlobStore blobs;
 	const char data[] = "0123456789";
 	hc::BlobChunk chunk{data, 10};

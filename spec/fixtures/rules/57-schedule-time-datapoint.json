@@ -1,0 +1,34 @@
+{
+	"title": "The adjustable time as the datapoint schedule/<id>/time: rules read and follow it, a command to it changes the schedule",
+	"description": "The entry's adjustable time is the datapoint schedule/morning/time (spec/schedules.md 2.2), which takes its value when the schedules load (06:30; like a parameter datapoint, taking it is no event: show does not react at the start). A command to the datapoint is a change like the API's: 06:00 is accepted (show copies it), and the entry fires at 06:00, where early reads the datapoint (before 06:15: true). 04:00 is outside the bounds: the command is refused. A change through the API (07:30) updates the datapoint; show copies it; on Tuesday the entry fires at 07:30 and early writes false.",
+	"datapoints": [
+		{"name": "copy.time", "type": "timeOfDay"},
+		{"name": "early", "type": "boolean"}
+	],
+	"schedules": [
+		{"id": "morning", "label": "Morning", "kind": "weekly", "days": [1, 2, 3, 4, 5], "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time", "days"], "bounds": {"time": {"min": {"hour": 5, "minute": 0, "second": 0}, "max": {"hour": 9, "minute": 0, "second": 0}, "step": 300}}}
+	],
+	"clock": {"start": "2026-10-12T05:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{"id": "show", "name": "Show", "reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "schedule/morning/time"}], "actions": [{"kind": "write", "datapoint": "copy.time", "value": {"kind": "datapoint", "name": "schedule/morning/time"}}]}]},
+		{"id": "early", "name": "Early", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "morning"}], "actions": [{"kind": "write", "datapoint": "early", "value": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "schedule/morning/time"}, "right": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 6, "minute": 15, "second": 0}}}}]}]}
+	],
+	"timeline": [
+		{"at": 500, "check": {"datapoints": {"schedule/morning/time": {"hour": 6, "minute": 30, "second": 0}, "copy.time": null}, "firings": {"show": 0}}},
+		{"at": 1000, "command": {"datapoint": "schedule/morning/time", "value": {"hour": 6, "minute": 0, "second": 0}}},
+		{"at": 2000, "check": {"schedules": {"morning": {"values": {"time": {"hour": 6, "minute": 0, "second": 0}}, "overridden": ["time"]}}}},
+		{"at": 7200000, "command": {"datapoint": "schedule/morning/time", "value": {"hour": 4, "minute": 0, "second": 0}, "refused": true}},
+		{"at": 7201000, "setSchedule": {"id": "morning", "time": {"hour": 7, "minute": 30, "second": 0}}}
+	],
+	"end": 97200000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "show", "datapoint": "copy.time", "value": {"hour": 6, "minute": 0, "second": 0}},
+			{"at": 3600000, "rule": "early", "datapoint": "early", "value": true},
+			{"at": 7201000, "rule": "show", "datapoint": "copy.time", "value": {"hour": 7, "minute": 30, "second": 0}},
+			{"at": 95400000, "rule": "early", "datapoint": "early", "value": false}
+		],
+		"logs": [],
+		"final": {"datapoints": {"schedule/morning/time": {"hour": 7, "minute": 30, "second": 0}, "copy.time": {"hour": 7, "minute": 30, "second": 0}}, "schedules": {"morning": {"values": {"time": {"hour": 7, "minute": 30, "second": 0}}, "overridden": ["time"]}}}
+	}
+}

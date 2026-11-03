@@ -235,7 +235,11 @@ are all local).
   A changed parameter shows its default and a "Reset" button; a refusal shows its reason under
   the parameter. Polled every 10 s; the card being edited is not redrawn.
 - **Schedules**: each entry with its kind, its next firing (weekday and time and how far ahead),
-  the last firing and its switch (disabled where the image fixes it). Polled every 30 s.
+  the last firing and its switch (disabled where the image fixes it), and an editor for each member
+  the image declares adjustable (issue #58): a time picker on the member's step and within its
+  bounds, day toggles, offsets and intervals in minutes, a date and time for a one-shot; a changed
+  member is marked with the project's value beside it, and **Back to the project's values** resets
+  the entry. Polled every 30 s (a focused control is not redrawn).
 - **Settings**: the deployed project (name, revision, generated when and by what, deployed when and
   how, whether it survives a restart) with **Forget project** (`DELETE /api/image` after a
   confirmation), the **E-Home** card (`ehome.js`, issue #41, doc/ehome.md: the connection's state

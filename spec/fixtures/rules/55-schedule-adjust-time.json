@@ -1,0 +1,34 @@
+{
+	"title": "An adjustable schedule time: set within its bounds and step, refused outside, kept across a reboot, removed by setting the image's value",
+	"description": "The weekly 06:30 on workdays declares time and days adjustable, the time within 05:00..09:00 on a 5-minute step (spec/schedules.md 2.1). At 05:00:01 on Monday the inhabitant moves it to 06:00: it fires at 06:00. 04:55 is outside the bounds, 06:02 off the step: both refused (out_of_bounds), the override stays. The reboot at noon keeps the override (it is persisted by schedule id and member, 4.2): Tuesday fires at 06:00. Setting 06:30 again, the image's value, removes the override: Wednesday fires at 06:30. The reboot resets the diagnostics: two firings after it.",
+	"datapoints": [
+		{"name": "blinds.up", "type": "boolean"}
+	],
+	"schedules": [
+		{"id": "morning", "label": "Morning", "kind": "weekly", "days": [1, 2, 3, 4, 5], "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time", "days"], "bounds": {"time": {"min": {"hour": 5, "minute": 0, "second": 0}, "max": {"hour": 9, "minute": 0, "second": 0}, "step": 300}}}
+	],
+	"clock": {"start": "2026-10-12T05:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{"id": "open", "name": "Open the blinds", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "morning"}], "actions": [{"kind": "write", "datapoint": "blinds.up", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}
+	],
+	"timeline": [
+		{"at": 1000, "setSchedule": {"id": "morning", "time": {"hour": 6, "minute": 0, "second": 0}}},
+		{"at": 2000, "setSchedule": {"id": "morning", "time": {"hour": 4, "minute": 55, "second": 0}, "refused": "out_of_bounds"}},
+		{"at": 3000, "setSchedule": {"id": "morning", "time": {"hour": 6, "minute": 2, "second": 0}, "refused": "out_of_bounds"}},
+		{"at": 4000, "check": {"schedules": {"morning": {"values": {"time": {"hour": 6, "minute": 0, "second": 0}, "days": [1, 2, 3, 4, 5]}, "overridden": ["time"]}}, "datapoints": {"schedule/morning/time": {"hour": 6, "minute": 0, "second": 0}}}},
+		{"at": 25200000, "reboot": true},
+		{"at": 25201000, "check": {"schedules": {"morning": {"values": {"time": {"hour": 6, "minute": 0, "second": 0}}, "overridden": ["time"]}}, "datapoints": {"schedule/morning/time": {"hour": 6, "minute": 0, "second": 0}}}},
+		{"at": 93600000, "setSchedule": {"id": "morning", "time": {"hour": 6, "minute": 30, "second": 0}}},
+		{"at": 93601000, "check": {"schedules": {"morning": {"values": {"time": {"hour": 6, "minute": 30, "second": 0}}, "overridden": []}}}}
+	],
+	"end": 180000000,
+	"expected": {
+		"commands": [
+			{"at": 3600000, "rule": "open", "datapoint": "blinds.up", "value": true},
+			{"at": 90000000, "rule": "open", "datapoint": "blinds.up", "value": true},
+			{"at": 178200000, "rule": "open", "datapoint": "blinds.up", "value": true}
+		],
+		"logs": [],
+		"final": {"schedules": {"morning": {"values": {"time": {"hour": 6, "minute": 30, "second": 0}, "days": [1, 2, 3, 4, 5]}, "overridden": []}}, "firings": {"open": 2}}
+	}
+}

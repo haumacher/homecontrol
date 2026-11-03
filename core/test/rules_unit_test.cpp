@@ -575,6 +575,17 @@ TEST_CASE("RulesPrinter round trip of every corpus expression") {
 				}
 			}
 		}
+		// The time datapoints of the full schedule entries (spec/schedules.md 2.2, README "schedules").
+		for (const Json& s : json["schedules"].items) {
+			bool time = false;
+			for (const Json& member : s["adjustable"].items) {
+				time = time || member.text == "time";
+			}
+			const std::string kind = s["kind"].text;
+			if (time && (kind == "weekly" || kind == "yearly" || kind == "dates")) {
+				d.add("schedule/" + s["id"].text + "/time", hc::ValueType::time_of_day, true);
+			}
+		}
 		d.load(model);
 		struct Schedules : hc::rules::ScheduleDirectory {
 			const Json* ids;

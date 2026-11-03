@@ -80,7 +80,9 @@ ImageService::ImageService(Controller& controller, DatapointModel& model, BlobSt
 	  value_store_(controller.loop(), controller.clock(), model, blobs, value_limits),
 	  history_(controller.loop(), controller.clock(), model, blobs, history_limits),
 	  time_master_(controller.loop(), controller.time(), model, adapter),
-	  store_(blobs) {}
+	  store_(blobs) {
+	scheduler_.defer_time_reports(true); // published quietly after each load (bind_technologies)
+}
 
 ImageService::~ImageService() {
 	if (reload_pending_) {
@@ -509,11 +511,12 @@ bool ImageService::bind_technologies(const Plan& plan, Source source) {
 		time_master_.clear();
 	}
 
-	// 7: schedules.
+	// 7: schedules. Their time datapoints take their values as no events (spec/schedules.md 2.2).
 	ScheduleStatus schedule_status = scheduler_.load(plan.schedules, plan.schedule_count);
 	if (schedule_status != ScheduleStatus::ok) {
 		return fail_applied(source, "schedules", "the scheduler refused: %s", schedule_status_name(schedule_status));
 	}
+	engine_.quietly([this] { scheduler_.publish_times(); });
 
 	// 7b: external values, after the model they bind to.
 	if (external_ != nullptr) {

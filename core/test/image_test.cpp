@@ -266,6 +266,47 @@ TEST_CASE("Image.Corpus") {
 	}
 }
 
+TEST_CASE("Image.NewerMinorNamedInStrictRefusals") {
+	// From 1.2 on a strict refusal of an image of a newer minor version says the firmware is older
+	// (spec/runtime-image.md I4); an image of the version this firmware reads, or an older one, does not.
+	const char* schedule = R"(, "schedules": [{"id": "s", "label": "S", "kind": "weekly",
+		"time": {"hour": 6, "minute": 0, "second": 0}, "jitter": 1}]})";
+	char newer[16];
+	std::snprintf(newer, sizeof(newer), "%u.%u", static_cast<unsigned>(hc::image::kSchemaMajor),
+		static_cast<unsigned>(hc::image::kSchemaMinor + 1));
+	for (const char* version : {hc::image::schema_version_text(), "1.0", static_cast<const char*>(newer)}) {
+		CAPTURE(version);
+		std::string text = std::string(R"({"image": {"schemaVersion": ")") + version +
+			R"(", "projectId": "p", "revision": 1}, "datapoints": [])" + schedule;
+		Plan plan;
+		Report report;
+		REQUIRE_FALSE(parse(text, plan, report));
+		REQUIRE(report.count == 1);
+		std::string reason = report.refusals[0].reason;
+		if (version == newer) {
+			CHECK(reason == std::string("malformed: unknown member 'jitter' (the image's schema ") + newer +
+				" is newer than this firmware reads, up to " + hc::image::schema_version_text() + ": update the firmware)");
+		} else {
+			CHECK(reason == "malformed: unknown member 'jitter'");
+		}
+	}
+	// A long rule id and member: the reason is cut, never the hint.
+	std::string id(32, 'r'); // the longest rule id
+	std::string member(39, 'm');
+	std::string text = std::string(R"({"image": {"schemaVersion": ")") + newer +
+		R"(", "projectId": "p", "revision": 1}, "datapoints": [], "rules": [{"id": ")" + id + R"(", "name": "R", ")" + member +
+		R"(": 1, "reactions": [{"triggers": [{"kind": "start"}], "actions": []}]}]})";
+	Plan plan;
+	Report report;
+	REQUIRE_FALSE(parse(text, plan, report));
+	REQUIRE(report.count == 1);
+	std::string reason = report.refusals[0].reason;
+	CAPTURE(reason);
+	CHECK(reason.rfind("rule '" + id, 0) == 0);
+	CHECK(reason.size() <= Report::kMaxReason);
+	CHECK(reason.find(std::string("up to ") + hc::image::schema_version_text() + ": update the firmware)") != std::string::npos);
+}
+
 TEST_CASE("Image.ExampleAndMinimalLoad") {
 	Plan plan;
 	Report report;

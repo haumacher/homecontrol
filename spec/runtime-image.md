@@ -28,9 +28,15 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
   more than about 100 KB may find no free heap block of its size; the device then answers 507
   and keeps its image.
 - **I4. Versioned by `image.schemaVersion`, `<major>.<minor>`.** A newer major version is refused
-  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.1)`); a
-  newer minor version of a known major loads. *Alternative:* a feature list (more precise, but
-  E-Home would have to know which features a firmware has).
+  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.2)`); a
+  newer minor version of a known major loads, and an older minor version too. Where a newer minor
+  meets the strict objects of I5 (a rule or schedule member this firmware does not know), the
+  refusal adds that the firmware is older than the image, from firmware 1.2 on:
+  `malformed: unknown member 'jitter' (the image's schema 1.3 is newer than this firmware reads, up
+  to 1.2: update the firmware)`. The device reports the newest version it reads as `schema` in
+  `GET /api/status` and in the E-Home connection's `auth` (`spec/api.md`), so E-Home can warn
+  before a deploy. *Alternative:* a feature list (more precise, but E-Home would have to know which
+  features a firmware has).
 - **I5. Unknown members are ignored, except in `rules` and `schedules`.** A minor version may add
   members; an older firmware loads the image without them. The rule and schedule objects keep
   their own strict policy (`spec/rules.md` 10, `spec/schedules.md` 2: unknown members are refused,
@@ -91,7 +97,7 @@ Strings are 1..N bytes of valid UTF-8 without control characters; N is given per
 
 | Member | Type | Required | Meaning |
 |---|---|---|---|
-| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.1` (section 8). |
+| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.2` (section 8). |
 | `projectId` | string, 1..63 | yes | E-Home's project. Shown in the status. |
 | `revision` | integer 0..4294967295 | yes | E-Home's deployment counter, shown in the status and returned by PUT. The device does not refuse an older revision: rolling back is a deployment like any other. |
 | `generatedAt` | string, 1..31 | no | ISO 8601 time of the export. |
@@ -149,6 +155,13 @@ writable exactly when the parameter is adjustable, not persisted by the datapoin
 engine's parameter store keeps the overrides) and without history; the rule engine owns it. Ids
 starting with `rule/` are reserved: a declared one refuses the image. Functions, schedules and
 the UI may name these datapoints like any other.
+
+Implied datapoints of the schedules (`spec/schedules.md` 2.2, issue #58): behind the rules'
+datapoints, the loader adds `schedule/<scheduleId>/time` for every entry of kind `weekly`,
+`yearly` or `dates` whose `adjustable` names `time`, in schedule order: type `timeOfDay`, writable
+(within the entry's bounds), transmitting, not persisted by the datapoint model and without
+history; the scheduler owns it. Ids starting with `schedule/` are reserved: a declared one refuses
+the image.
 
 The Zigbee binding (issue #29; the bindings, the checks and their refusals in `spec/zigbee.md`
 "Bindings"): the datapoint stands for one function of one endpoint of a joined (or not yet joined)
@@ -443,3 +456,17 @@ persisted values and history rings: the device returns to setup.
 - 1.0 (issue #8): first version.
 - 1.1 (issue #54): `ui.pages`, the control pages (3.9), with their limits (5). An image of 1.0 loads
   unchanged; a 1.0 firmware loads an image of 1.1 and ignores its pages (I4, I5).
+- 1.2 (issues #58 and #56): the schedule members `adjustable` and `bounds` (`spec/schedules.md` 2.1)
+  and the implied datapoints `schedule/<id>/time` (3.3), the prefix `schedule/` reserved; and
+  `history.archives`, the consolidated archives of homecontrol#56 (3.7). E-Home writes 1.2. An image
+  of 1.0 or 1.1 loads unchanged. A 1.1 firmware ignores `history.archives` (I5), but refuses
+  `adjustable` and `bounds` (schedule members are strict, I5): an image that uses them needs a 1.2
+  firmware, one without them loads on 1.1 too. From 1.2 on such a strict refusal of a newer minor
+  names the versions (I4). The exact form of the schedule members, which E-Home exports
+  (haumacher/ehome#74):
+  `"adjustable": ["time", "days"]`, an array of member names of the entry's kind, each once, and
+  `"bounds": {"<member>": {"min": v, "max": v, "step": n}}`, every part optional, where `v` has the
+  member's own form (a time `{"hour", "minute", "second"}`, an `offset` or `every` in milliseconds,
+  an `at` as a date and time) and `step` is in seconds for the times (1..86400), in milliseconds
+  for `offset` (whole seconds) and `every` (whole minutes), and absent for `at`; `days` has no
+  bounds.

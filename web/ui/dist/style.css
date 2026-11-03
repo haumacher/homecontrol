@@ -1263,11 +1263,29 @@ input.number {
 }
 
 .schedule {
+	padding: 12px 0;
+}
+
+.schedule-row {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 12px;
-	padding: 12px 0;
+}
+
+.schedule-members {
+	margin-top: 8px;
+	padding-left: 12px;
+	border-left: 2px solid var(--line);
+}
+
+.schedule-reset {
+	margin-top: 8px;
+}
+
+.day-toggles button {
+	min-width: 40px;
+	padding: 4px 6px;
 }
 
 .schedule + .schedule {

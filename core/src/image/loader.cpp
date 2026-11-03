@@ -48,6 +48,15 @@ const char* report_kind_name(Report::Kind kind) {
 	return "?";
 }
 
+const char* schema_version_text() {
+	static char text[24];
+	if (text[0] == '\0') {
+		std::snprintf(text, sizeof(text), "%u.%u", static_cast<unsigned>(kSchemaMajor),
+			static_cast<unsigned>(kSchemaMinor));
+	}
+	return text;
+}
+
 void Report::add(Kind failure, const char* path, const char* format, ...) {
 	if (kind == Kind::none) {
 		kind = failure;
@@ -349,6 +358,28 @@ struct Ctx {
 		report.add(Report::Kind::invalid, path, "%s", reason);
 	}
 
+	/// The image's minor version when it is newer than this firmware reads (same major), else 0.
+	uint32_t newer_minor = 0;
+
+	/// A strict refusal (an unknown member of a rule or schedule object): with an image of a newer
+	/// minor version, the reason adds that the firmware is older than the image (spec/runtime-image.md
+	/// I4), cutting the reason itself rather than that hint.
+	void refuse_strict(Report::Kind kind, const char* at, const char* format, ...) HC_PRINTF_FORMAT(4, 5) {
+		char hint[112] = "";
+		if (newer_minor != 0) {
+			std::snprintf(hint, sizeof(hint),
+				" (the image's schema %u.%u is newer than this firmware reads, up to %s: update the firmware)",
+				static_cast<unsigned>(kSchemaMajor), static_cast<unsigned>(newer_minor), schema_version_text());
+		}
+		char reason[Report::kMaxReason + 1];
+		size_t room = sizeof(reason) - std::strlen(hint);
+		va_list args;
+		va_start(args, format);
+		std::vsnprintf(reason, room, format, args);
+		va_end(args);
+		report.add(kind, at, "%s%s", reason, hint);
+	}
+
 	void no_memory(const char* what) {
 		report.add(Report::Kind::no_memory, path, "no memory for %s", what);
 	}
@@ -521,7 +552,7 @@ struct Ctx {
 				if (!json_string(key, name, sizeof(name))) {
 					std::snprintf(name, sizeof(name), "?");
 				}
-				refuse("malformed: unknown member '%s'", name);
+				refuse_strict(Report::Kind::invalid, path, "malformed: unknown member '%s'", name);
 				ok = false;
 			}
 		}
@@ -607,6 +638,9 @@ bool parse_image(Ctx& c, const JsonSpan& root) {
 				info.schema_version, static_cast<unsigned>(kSchemaMajor), static_cast<unsigned>(kSchemaMajor),
 				static_cast<unsigned>(kSchemaMinor));
 			return false;
+		}
+		if (major == kSchemaMajor && minor > kSchemaMinor) {
+			c.newer_minor = minor;
 		}
 	}
 	{
@@ -1027,6 +1061,11 @@ void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, 
 				c.refuse("id '%s': the prefix '%s' is reserved for the datapoints of rule parameters", spec.name,
 					rules::kParameterDatapointPrefix);
 				spec.name = nullptr; // refused once, not again as a duplicate of a parameter's
+			} else if (spec.name != nullptr && std::strncmp(spec.name, kScheduleDatapointPrefix,
+				std::strlen(kScheduleDatapointPrefix)) == 0) {
+				c.refuse("id '%s': the prefix '%s' is reserved for the datapoints of the schedules", spec.name,
+					kScheduleDatapointPrefix);
+				spec.name = nullptr;
 			}
 		}
 	}
@@ -1197,6 +1236,56 @@ void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, 
 	}
 }
 
+/// The ids of the entries whose adjustable `time` is a datapoint `schedule/<id>/time`
+/// (spec/schedules.md 2.2), in image order, into `out` (may be nullptr) up to `capacity`; returns
+/// how many there are. Lenient: an entry that is not well-formed, or whose id came before, is
+/// skipped, since parse_schedules() refuses it with the precise reason.
+size_t schedule_time_ids(const JsonSpan& root, JsonSpan* out, size_t capacity) {
+	JsonSpan list;
+	if (!json_member(root, "schedules", list) || list.kind != JsonSpan::Kind::array) {
+		return 0;
+	}
+	size_t count = 0;
+	size_t position = 0;
+	JsonSpan item;
+	while (json_next_item(list, position, item)) {
+		JsonSpan kind;
+		JsonSpan adjustable;
+		JsonSpan id;
+		char text[Scheduler::kMaxId + 1];
+		if (item.kind != JsonSpan::Kind::object || !json_member(item, "kind", kind) ||
+			!(json_string_equals(kind, "weekly") || json_string_equals(kind, "yearly") ||
+				json_string_equals(kind, "dates")) ||
+			!json_member(item, "adjustable", adjustable) || adjustable.kind != JsonSpan::Kind::array ||
+			!json_member(item, "id", id) || !json_string(id, text, sizeof(text)) ||
+			!id_valid(text, Scheduler::kMaxId, false)) {
+			continue;
+		}
+		bool time = false;
+		size_t at = 0;
+		JsonSpan name;
+		while (!time && json_next_item(adjustable, at, name)) {
+			time = json_string_equals(name, "time");
+		}
+		bool repeated = false;
+		size_t earlier = 0;
+		JsonSpan other;
+		while (!repeated && json_next_item(list, earlier, other) && other.data != item.data) {
+			JsonSpan other_id;
+			repeated = other.kind == JsonSpan::Kind::object && json_member(other, "id", other_id) &&
+				json_string_equals(other_id, text);
+		}
+		if (!time || repeated) {
+			continue;
+		}
+		if (out != nullptr && count < capacity) {
+			out[count] = id;
+		}
+		++count;
+	}
+	return count;
+}
+
 void parse_datapoints(Ctx& c, const JsonSpan& root) {
 	Plan& plan = c.plan;
 	JsonSpan list;
@@ -1238,7 +1327,16 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 		}
 		rules::parameter_datapoints(rules_document.value(rules_member), parameter_list, parameters);
 	}
-	size_t total = declared + implied + parameters;
+	// The time datapoints of the schedules (spec/schedules.md 2.2), after the rule parameters'.
+	size_t schedule_times = schedule_time_ids(root, nullptr, 0);
+	Arena id_scratch;
+	JsonSpan* schedule_ids = id_scratch.array<JsonSpan>(schedule_times);
+	if (schedule_times > 0 && schedule_ids == nullptr) {
+		c.no_memory("the datapoints of the schedules");
+		return;
+	}
+	schedule_time_ids(root, schedule_ids, schedule_times);
+	size_t total = declared + implied + parameters + schedule_times;
 	plan.datapoints = plan.arena.array<DatapointSpec>(total);
 	plan.bindings = plan.arena.array<Binding>(total);
 	KnxDraft* drafts = plan.arena.array<KnxDraft>(declared);
@@ -1293,6 +1391,21 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 		plan.datapoints[at].type = parameter_list[i].type;
 		plan.datapoints[at].flags = parameter_list[i].flags;
 		plan.bindings[at] = Binding::rule;
+		++at;
+	}
+	for (size_t i = 0; i < schedule_times; ++i) {
+		char id[Scheduler::kMaxId + 1];
+		char name[Datapoint::kMaxName + 1];
+		json_string(schedule_ids[i], id, sizeof(id));
+		schedule_time_datapoint_name(id, name, sizeof(name));
+		plan.datapoints[at].name = plan.arena.copy(name, std::strlen(name));
+		if (plan.datapoints[at].name == nullptr) {
+			c.no_memory("the datapoints of the schedules");
+			return;
+		}
+		plan.datapoints[at].type = ValueType::time_of_day;
+		plan.datapoints[at].flags = DatapointFlags::kWritable | DatapointFlags::kTransmit;
+		plan.bindings[at] = Binding::schedule;
 		++at;
 	}
 	if (c.stopped()) {
@@ -1880,23 +1993,202 @@ uint32_t seconds_of(const LocalClockTime& t) {
 	return static_cast<uint32_t>(t.hour) * 3600u + t.minute * 60u + t.second;
 }
 
+/// The names of the members an entry of `kind` may declare adjustable, for a refusal.
+void allowed_members(ScheduleKind kind, char* out, size_t size) {
+	size_t used = 0;
+	out[0] = '\0';
+	uint16_t allowed = ScheduleMember::allowed(kind);
+	for (size_t i = 0; i < ScheduleMember::kCount; ++i) {
+		if ((allowed & ScheduleMember::bit(i)) != 0 && used < size) {
+			int n = std::snprintf(out + used, size - used, "%s%s", used > 0 ? ", " : "",
+				ScheduleMember::name(ScheduleMember::bit(i)));
+			used += n > 0 ? static_cast<size_t>(n) : 0;
+		}
+	}
+}
+
+/// One bound value of `member` (spec/schedules.md 2.1) as its scalar: a time of day as seconds since
+/// midnight, `offset` and `every` from milliseconds to seconds, `at` as local seconds since 1970.
+bool read_bound_value(Ctx& c, const JsonSpan& span, uint16_t member, int64_t& out, const char* what) {
+	if (ScheduleMember::is_time(member)) {
+		LocalClockTime t;
+		if (!read_clock(c, span, t, what)) {
+			return false;
+		}
+		out = seconds_of(t);
+		return true;
+	}
+	if (member == ScheduleMember::kAt) {
+		Date date;
+		LocalClockTime t;
+		if (!read_date(c, span, date, &t, what)) {
+			return false;
+		}
+		out = days_from_civil(date.year, date.month, date.day) * 86400 + seconds_of(t);
+		return true;
+	}
+	int64_t ms = 0;
+	double low = member == ScheduleMember::kOffset ? -43200000.0 : 60000.0;
+	char name[48];
+	std::snprintf(name, sizeof(name), "malformed: %s (milliseconds)", what);
+	if (!c.integer(span, low, 43200000.0, ms, name)) {
+		return false;
+	}
+	int64_t unit = member == ScheduleMember::kEvery ? 60000 : 1000;
+	if (ms % unit != 0) {
+		c.refuse("malformed: %s must be a whole number of %s", what, unit == 60000 ? "minutes" : "seconds");
+		return false;
+	}
+	out = ms / 1000;
+	return true;
+}
+
+/// `adjustable` and `bounds` of an entry (issue #58), after its kind members.
+void parse_adjustable(Ctx& c, const JsonSpan& item, ScheduleSpec& spec, const char* kind, size_t refusals_before) {
+	JsonSpan value;
+	uint16_t allowed = ScheduleMember::allowed(spec.kind);
+	char names[80];
+	if (c.member(item, "adjustable", value)) {
+		Path p(c, ".adjustable");
+		if (!c.array(value, "malformed: adjustable")) {
+			return;
+		}
+		size_t position = 0;
+		size_t n = 0;
+		JsonSpan name;
+		while (json_next_item(value, position, name)) {
+			Path q(c, "[%u]", static_cast<unsigned>(n++));
+			char text[16];
+			if (!c.string(name, text, sizeof(text), 1, 15, true, "malformed: a member name")) {
+				continue;
+			}
+			uint16_t member = ScheduleMember::of_name(text, std::strlen(text));
+			if (member == 0 || (member & allowed) == 0) {
+				allowed_members(spec.kind, names, sizeof(names));
+				c.refuse("malformed: '%s' cannot be adjustable in a %s entry (%s)", text, kind, names);
+			} else if ((spec.adjustable & member) != 0) {
+				c.refuse("malformed: '%s' is listed twice", text);
+			} else {
+				spec.adjustable = static_cast<uint16_t>(spec.adjustable | member);
+			}
+		}
+	}
+	if (c.member(item, "bounds", value)) {
+		Path p(c, ".bounds");
+		if (!c.object(value, "malformed: bounds")) {
+			return;
+		}
+		size_t count = 0;
+		size_t position = 0;
+		JsonSpan key;
+		JsonSpan bound;
+		while (json_next_member(value, position, key, bound)) {
+			++count;
+		}
+		ScheduleBound* bounds = count > 0 ? c.plan.arena.array<ScheduleBound>(count) : nullptr;
+		if (count > 0 && bounds == nullptr) {
+			c.no_memory("the bounds");
+			return;
+		}
+		position = 0;
+		size_t n = 0;
+		while (json_next_member(value, position, key, bound)) {
+			char text[16];
+			if (!json_string(key, text, sizeof(text))) {
+				std::snprintf(text, sizeof(text), "?");
+			}
+			Path q(c, ".%s", text);
+			uint16_t member = ScheduleMember::of_name(text, std::strlen(text));
+			if (member == 0 || (member & spec.adjustable) == 0) {
+				c.refuse("malformed: bounds for '%s', which is not adjustable", text);
+				continue;
+			}
+			if (member == ScheduleMember::kDays) {
+				c.refuse("malformed: days take no bounds");
+				continue;
+			}
+			static const char* const kBound[] = {"min", "max", "step", nullptr};
+			if (!c.object(bound, "malformed: a bound") || !c.only(bound, kBound)) {
+				continue;
+			}
+			ScheduleBound& b = bounds[n];
+			b.member = member;
+			// Absent: the member's whole range.
+			b.min = ScheduleMember::is_time(member) ? 0 : member == ScheduleMember::kOffset ? -43200
+				: member == ScheduleMember::kEvery ? 60 : 0;
+			b.max = ScheduleMember::is_time(member) ? 86399 : member == ScheduleMember::kOffset ? 43200
+				: member == ScheduleMember::kEvery ? 43200 : (days_from_civil(2155, 12, 31) * 86400 + 86399);
+			bool ok = true;
+			JsonSpan v;
+			if (c.member(bound, "min", v)) {
+				Path r(c, ".min");
+				ok = read_bound_value(c, v, member, b.min, "min") && ok;
+			}
+			if (c.member(bound, "max", v)) {
+				Path r(c, ".max");
+				ok = read_bound_value(c, v, member, b.max, "max") && ok;
+			}
+			if (c.member(bound, "step", v)) {
+				Path r(c, ".step");
+				int64_t step = 0;
+				if (member == ScheduleMember::kAt) {
+					c.refuse("malformed: at takes no step");
+					ok = false;
+				} else if (ScheduleMember::is_time(member)) {
+					ok = c.integer(v, 1, 86400, step, "malformed: step (seconds)") && ok;
+					b.step = step;
+				} else {
+					int64_t unit = member == ScheduleMember::kEvery ? 60000 : 1000;
+					if (!c.integer(v, 1, 43200000.0, step, "malformed: step (milliseconds)")) {
+						ok = false;
+					} else if (step % unit != 0) {
+						c.refuse("malformed: step must be a whole number of %s", unit == 60000 ? "minutes" : "seconds");
+						ok = false;
+					} else {
+						b.step = step / 1000;
+					}
+				}
+			}
+			if (ok && b.min > b.max) {
+				c.refuse("malformed: min is later than max");
+				ok = false;
+			}
+			if (ok) {
+				++n;
+			}
+		}
+		spec.bounds = bounds;
+		spec.bound_count = n;
+	}
+	if (c.stopped() || c.report.total != refusals_before) {
+		return; // the entry's own refusals say enough
+	}
+	// The shared checks of the scheduler: the image's own value within its bounds and on its step,
+	// an adjustable clamp that the entry sets.
+	if (const char* error = schedule_adjustable_error(spec)) {
+		Path p(c, c.member(item, "bounds", value) ? ".bounds" : ".adjustable");
+		c.refuse("malformed: %s", error);
+	}
+}
+
 void parse_schedule(Ctx& c, const JsonSpan& item, ScheduleSpec& spec, const Index& index) {
 	static const char* const kWeekly[] = {"id", "label", "kind", "enabled", "enabledAdjustable", "missed", "output",
-		"time", "days", nullptr};
+		"adjustable", "bounds", "time", "days", nullptr};
 	static const char* const kYearly[] = {"id", "label", "kind", "enabled", "enabledAdjustable", "missed", "output",
-		"month", "day", "time", nullptr};
+		"adjustable", "bounds", "month", "day", "time", nullptr};
 	static const char* const kDates[] = {"id", "label", "kind", "enabled", "enabledAdjustable", "missed", "output",
-		"dates", "time", nullptr};
+		"adjustable", "bounds", "dates", "time", nullptr};
 	static const char* const kAstro[] = {"id", "label", "kind", "enabled", "enabledAdjustable", "missed", "output",
-		"sun", "offset", "notBefore", "notAfter", "days", nullptr};
+		"adjustable", "bounds", "sun", "offset", "notBefore", "notAfter", "days", nullptr};
 	static const char* const kInterval[] = {"id", "label", "kind", "enabled", "enabledAdjustable", "missed",
-		"output", "every", "from", "until", "days", nullptr};
+		"output", "adjustable", "bounds", "every", "from", "until", "days", nullptr};
 	static const char* const kOnce[] = {"id", "label", "kind", "enabled", "enabledAdjustable", "missed", "output",
-		"at", nullptr};
+		"adjustable", "bounds", "at", nullptr};
 	if (item.kind != JsonSpan::Kind::object) {
 		c.refuse("malformed: a schedule entry must be an object");
 		return;
 	}
+	size_t refusals_before = c.report.total;
 	JsonSpan value;
 	{
 		Path p(c, ".id");
@@ -2165,6 +2457,7 @@ void parse_schedule(Ctx& c, const JsonSpan& item, ScheduleSpec& spec, const Inde
 			}
 			break;
 	}
+	parse_adjustable(c, item, spec, kind, refusals_before);
 }
 
 void parse_schedules(Ctx& c, const JsonSpan& root, const Index& index) {
@@ -2737,8 +3030,13 @@ void parse_rules(Ctx& c, const JsonSpan& root, const Clock& clock, const char* l
 	if (!result.ok()) {
 		Report::Kind kind =
 			result.error == rules::LoadError::out_of_memory ? Report::Kind::no_memory : Report::Kind::invalid;
-		c.report.add(kind, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
-			result.text);
+		if (result.error == rules::LoadError::malformed && std::strncmp(result.text, "unknown member", 14) == 0) {
+			c.refuse_strict(kind, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
+				result.text);
+		} else {
+			c.report.add(kind, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
+				result.text);
+		}
 		return;
 	}
 	plan.rules_compiled = true;

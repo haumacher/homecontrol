@@ -181,3 +181,14 @@ outside world (weather, external services).
   upstream in 5.5.5 and later (no 5.3.x or 5.4.x has it); upgrading beats patching the IDF. The
   Zigbee SDK stays on the 1.6 line (ZBOSS), which declares `idf >= 5.0` and builds unchanged; the
   application grew by 38 KB (doc/ota.md).
+- **2026-11-03 — Adjustable schedule members (#58).** The image lists the members of a schedule
+  entry the inhabitant may change (`adjustable`) with optional bounds and a step (`bounds`); the
+  device keeps the values as overrides by schedule id and member, kept by a new image while they
+  fit it, like the rule parameters. A change is no gap and a handled day stays handled. The
+  adjustable time is also the datapoint `schedule/<id>/time`, so control pages show it and rules
+  read it. Alternatives: a rule parameter compared with `time()` every minute (no DST handling, no
+  missed firings, invisible in the schedule view); everything adjustable (E-Home could not keep an
+  installation's timing). They are members of schema 1.2 (with the history archives of #56): a 1.1
+  firmware refuses an image that uses them, and a 1.2 firmware names the versions when a newer image
+  meets its strict objects; the device reports the newest schema it reads (`schema`), so E-Home
+  warns before a deploy.

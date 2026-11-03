@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "hc/diagnostics.h"
+#include "hc/image/image.h"
 #include "hc/knx/telegram_log.h"
 #include "hc/knx/tunnel.h"
 #include "hc/version.h"
@@ -138,6 +139,7 @@ void WebApi::diagnostics(const WebRequest& request, WebResponse& response) {
 		.member("version", kVersion)
 		.member("build", build_id())
 		.member("ui", host_.ui_version())
+		.member("schema", image::schema_version_text())
 		.end_object();
 	write_boot_status(json, ctl.diagnostics());
 	json.key("update").begin_object();

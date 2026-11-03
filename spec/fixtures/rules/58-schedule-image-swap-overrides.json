@@ -1,0 +1,33 @@
+{
+	"title": "An image swap keeps a schedule override while the entry, its adjustable member and the value's fit remain; otherwise drops it",
+	"description": "spec/schedules.md 4.2 and 4.4. The time is set to 06:00. A new image with the same entry keeps it. One whose bounds start at 06:15 drops it: the entry runs at the image's 06:30 again. Back to the first image, 06:00 is set again; an image whose entry no longer declares time adjustable drops it. The entry then fires at 06:30.",
+	"datapoints": [
+		{"name": "blinds.up", "type": "boolean"}
+	],
+	"schedules": [
+		{"id": "morning", "label": "Morning", "kind": "weekly", "days": [1, 2, 3, 4, 5], "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time", "days"], "bounds": {"time": {"min": {"hour": 5, "minute": 0, "second": 0}, "max": {"hour": 9, "minute": 0, "second": 0}, "step": 300}}}
+	],
+	"clock": {"start": "2026-10-12T05:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{"id": "open", "name": "Open the blinds", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "morning"}], "actions": [{"kind": "write", "datapoint": "blinds.up", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}
+	],
+	"timeline": [
+		{"at": 1000, "setSchedule": {"id": "morning", "time": {"hour": 6, "minute": 0, "second": 0}}},
+		{"at": 2000, "image": {"rules": [{"id": "open", "name": "Open the blinds", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "morning"}], "actions": [{"kind": "write", "datapoint": "blinds.up", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}], "schedules": [{"id": "morning", "label": "Morning", "kind": "weekly", "days": [1, 2, 3, 4, 5], "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time", "days"], "bounds": {"time": {"min": {"hour": 5, "minute": 0, "second": 0}, "max": {"hour": 9, "minute": 0, "second": 0}, "step": 300}}}]}},
+		{"at": 2500, "check": {"schedules": {"morning": {"values": {"time": {"hour": 6, "minute": 0, "second": 0}}, "overridden": ["time"]}}, "datapoints": {"schedule/morning/time": {"hour": 6, "minute": 0, "second": 0}}}},
+		{"at": 3000, "image": {"rules": [{"id": "open", "name": "Open the blinds", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "morning"}], "actions": [{"kind": "write", "datapoint": "blinds.up", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}], "schedules": [{"id": "morning", "label": "Morning", "kind": "weekly", "days": [1, 2, 3, 4, 5], "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time", "days"], "bounds": {"time": {"min": {"hour": 6, "minute": 15, "second": 0}, "max": {"hour": 9, "minute": 0, "second": 0}, "step": 300}}}]}},
+		{"at": 3500, "check": {"schedules": {"morning": {"values": {"time": {"hour": 6, "minute": 30, "second": 0}}, "overridden": []}}, "datapoints": {"schedule/morning/time": {"hour": 6, "minute": 30, "second": 0}}}},
+		{"at": 4000, "image": {"rules": [{"id": "open", "name": "Open the blinds", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "morning"}], "actions": [{"kind": "write", "datapoint": "blinds.up", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}], "schedules": [{"id": "morning", "label": "Morning", "kind": "weekly", "days": [1, 2, 3, 4, 5], "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time", "days"], "bounds": {"time": {"min": {"hour": 5, "minute": 0, "second": 0}, "max": {"hour": 9, "minute": 0, "second": 0}, "step": 300}}}]}},
+		{"at": 5000, "setSchedule": {"id": "morning", "time": {"hour": 6, "minute": 0, "second": 0}}},
+		{"at": 6000, "image": {"rules": [{"id": "open", "name": "Open the blinds", "reactions": [{"triggers": [{"kind": "schedule", "schedule": "morning"}], "actions": [{"kind": "write", "datapoint": "blinds.up", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}], "schedules": [{"id": "morning", "label": "Morning", "kind": "weekly", "days": [1, 2, 3, 4, 5], "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["days"]}]}},
+		{"at": 6500, "check": {"schedules": {"morning": {"values": {"time": {"hour": 6, "minute": 30, "second": 0}}, "overridden": []}}}}
+	],
+	"end": 7200000,
+	"expected": {
+		"commands": [
+			{"at": 5400000, "rule": "open", "datapoint": "blinds.up", "value": true}
+		],
+		"logs": [],
+		"final": {"schedules": {"morning": {"values": {"time": {"hour": 6, "minute": 30, "second": 0}}, "overridden": []}}}
+	}
+}

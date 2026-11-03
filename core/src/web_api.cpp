@@ -6,6 +6,7 @@
 #include "hc/diagnostics.h"
 #include "hc/dpt.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -519,9 +520,22 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		rule_parameter(first, second, request, response);
 		return;
 	}
+	// /api/schedules/<id> (PUT) and /api/schedules/<id>/override (DELETE)
 	const char* rest = path + 15;
-	if (std::strchr(rest, '/') != nullptr || !url_decode(rest, std::strlen(rest), first, sizeof(first))) {
-		refuse(response, 404, "api.not_found", "no such API endpoint (PUT /api/schedules/<id>)");
+	const char* slash = std::strchr(rest, '/');
+	bool override_path = slash != nullptr && std::strcmp(slash, "/override") == 0;
+	size_t id_length = slash != nullptr ? static_cast<size_t>(slash - rest) : std::strlen(rest);
+	if ((slash != nullptr && !override_path) || !url_decode(rest, id_length, first, sizeof(first))) {
+		refuse(response, 404, "api.not_found",
+			"no such API endpoint (PUT /api/schedules/<id>, DELETE /api/schedules/<id>/override)");
+		return;
+	}
+	if (override_path) {
+		if (request.method != HttpMethod::del) {
+			refuse(response, 405, "api.method_not_allowed", "use DELETE");
+			return;
+		}
+		reset_schedule(first, response);
 		return;
 	}
 	if (request.method != HttpMethod::put) {
@@ -690,6 +704,7 @@ void WebApi::write_status(JsonWriter& json) {
 		.member("version", kVersion)
 		.member("build", build_id())
 		.member("ui", host_.ui_version())
+		.member("schema", image::schema_version_text())
 		.end_object();
 	json.member("uptime_s", ctl.uptime_ms() / 1000);
 	write_boot_status(json, ctl.diagnostics());
@@ -2087,14 +2102,193 @@ void WebApi::rule_parameter(const char* rule, const char* parameter, const WebRe
 	finish(response, json);
 }
 
+namespace {
+
+void write_clock(JsonWriter& json, int64_t seconds) {
+	json.begin_object()
+		.member("hour", static_cast<uint32_t>(seconds / 3600))
+		.member("minute", static_cast<uint32_t>(seconds % 3600 / 60))
+		.member("second", static_cast<uint32_t>(seconds % 60))
+		.end_object();
+}
+
+/// A member's scalar in its JSON form of the image (spec/schedules.md 3): a time of day as
+/// {"hour","minute","second"}, days as [1..7], offset and every in milliseconds, at as
+/// {"year","month","day","hour","minute","second"}.
+void write_member(JsonWriter& json, uint16_t member, int64_t value) {
+	if (ScheduleMember::is_time(member)) {
+		write_clock(json, value);
+	} else if (member == ScheduleMember::kDays) {
+		json.begin_array();
+		for (unsigned day = 1; day <= 7; ++day) {
+			if ((value & Weekdays::bit(day)) != 0) {
+				json.number(static_cast<uint32_t>(day));
+			}
+		}
+		json.end_array();
+	} else if (member == ScheduleMember::kAt) {
+		Date date = date_from_days(value / 86400);
+		int64_t rest = value % 86400;
+		json.begin_object()
+			.member("year", static_cast<uint32_t>(date.year))
+			.member("month", static_cast<uint32_t>(date.month))
+			.member("day", static_cast<uint32_t>(date.day))
+			.member("hour", static_cast<uint32_t>(rest / 3600))
+			.member("minute", static_cast<uint32_t>(rest % 3600 / 60))
+			.member("second", static_cast<uint32_t>(rest % 60))
+			.end_object();
+	} else {
+		json.number(value * 1000); // offset, every: milliseconds
+	}
+}
+
+void write_members(JsonWriter& json, const char* name, uint16_t members) {
+	json.key(name).begin_array();
+	for (size_t i = 0; i < ScheduleMember::kCount; ++i) {
+		if ((members & ScheduleMember::bit(i)) != 0) {
+			json.string(ScheduleMember::name(ScheduleMember::bit(i)));
+		}
+	}
+	json.end_array();
+}
+
+bool integer_member(const JsonSpan& object, const char* name, int64_t min, int64_t max, int64_t& out) {
+	JsonSpan span;
+	double value = 0;
+	if (!json_member(object, name, span) || span.kind != JsonSpan::Kind::number || !json_number(span, value) ||
+		std::floor(value) != value || value < static_cast<double>(min) || value > static_cast<double>(max)) {
+		return false;
+	}
+	out = static_cast<int64_t>(value);
+	return true;
+}
+
+/// Reads a member's value from its JSON form (write_member()) into `values`; false with `error`
+/// set when it is not a value of the member's form.
+bool read_member(const JsonSpan& span, uint16_t member, ScheduleSpec& values, const char*& error) {
+	if (ScheduleMember::is_time(member) || member == ScheduleMember::kAt) {
+		int64_t year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+		bool at = member == ScheduleMember::kAt;
+		if (span.kind != JsonSpan::Kind::object || !integer_member(span, "hour", 0, 23, hour) ||
+			!integer_member(span, "minute", 0, 59, minute) || !integer_member(span, "second", 0, 59, second) ||
+			(at && (!integer_member(span, "year", 1970, 2155, year) || !integer_member(span, "month", 1, 12, month) ||
+				!integer_member(span, "day", 1, 31, day) ||
+				day > static_cast<int64_t>(days_in_month(static_cast<int32_t>(year), static_cast<unsigned>(month)))))) {
+			error = at ? "not a date and time {\"year\", \"month\", \"day\", \"hour\", \"minute\", \"second\"}"
+				: "not a time of day {\"hour\", \"minute\", \"second\"}";
+			return false;
+		}
+		int64_t seconds = hour * 3600 + minute * 60 + second;
+		if (at) {
+			seconds += days_from_civil(static_cast<int32_t>(year), static_cast<unsigned>(month),
+				static_cast<unsigned>(day)) * 86400;
+		}
+		set_schedule_member_value(values, member, seconds);
+		return true;
+	}
+	if (member == ScheduleMember::kDays) {
+		if (span.kind != JsonSpan::Kind::array) {
+			error = "days must be an array of 1 (Monday) .. 7 (Sunday)";
+			return false;
+		}
+		uint8_t days = 0;
+		size_t position = 0;
+		JsonSpan item;
+		while (json_next_item(span, position, item)) {
+			double day = 0;
+			if (item.kind != JsonSpan::Kind::number || !json_number(item, day) || std::floor(day) != day || day < 1 ||
+				day > 7 || (days & Weekdays::bit(static_cast<unsigned>(day))) != 0) {
+				error = "days must list each of 1 (Monday) .. 7 (Sunday) at most once";
+				return false;
+			}
+			days = static_cast<uint8_t>(days | Weekdays::bit(static_cast<unsigned>(day)));
+		}
+		values.days = days; // empty: refused by the scheduler as malformed
+		return true;
+	}
+	// offset, every: milliseconds, whole seconds (every: whole minutes).
+	double ms = 0;
+	int64_t unit = member == ScheduleMember::kEvery ? 60000 : 1000;
+	if (span.kind != JsonSpan::Kind::number || !json_number(span, ms) || std::floor(ms) != ms || ms < -43200000.0 ||
+		ms > 43200000.0 || static_cast<int64_t>(ms) % unit != 0) {
+		error = member == ScheduleMember::kEvery ? "every must be milliseconds, a whole number of minutes"
+			: "offset must be milliseconds, a whole number of seconds, at most 12 h";
+		return false;
+	}
+	int64_t seconds = static_cast<int64_t>(ms) / 1000;
+	if (member == ScheduleMember::kEvery && seconds < 60) {
+		error = "every must be at least a minute";
+		return false;
+	}
+	set_schedule_member_value(values, member, seconds);
+	return true;
+}
+
+void refuse_member(WebResponse& response, int status, const char* code, const char* text, uint16_t member) {
+	response.status = status;
+	response.content_type = "application/json";
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object().member("error", text).member("code", code);
+	if (member != 0) {
+		json.member("member", ScheduleMember::name(member));
+	}
+	json.end_object();
+	response.length = json.overflowed() ? 0 : json.length();
+}
+
+} // namespace
+
 void WebApi::write_schedule(JsonWriter& json, size_t index) {
 	Scheduler& scheduler = image_->scheduler();
+	uint16_t adjustable = scheduler.adjustable(index);
 	json.begin_object()
 		.member("id", scheduler.id(index))
 		.member("label", scheduler.label(index))
 		.member("kind", schedule_kind_name(scheduler.kind(index)))
 		.member("enabled", scheduler.enabled(index))
-		.member("adjustable", image_->view().schedule_adjustable(scheduler.id(index)));
+		.member("enabledAdjustable", scheduler.enabled_adjustable(index))
+		.member("enabledOverridden", scheduler.enabled_overridden(index));
+	write_members(json, "adjustable", adjustable);
+	write_members(json, "overridden", scheduler.overridden(index));
+	const ScheduleSpec& spec = scheduler.spec(index);
+	ScheduleSpec image = scheduler.image_spec(index);
+	json.key("values").begin_object();
+	for (size_t i = 0; i < ScheduleMember::kCount; ++i) {
+		uint16_t member = ScheduleMember::bit(i);
+		if ((adjustable & member) != 0) {
+			json.key(ScheduleMember::name(member));
+			write_member(json, member, schedule_member_value(spec, member));
+		}
+	}
+	json.end_object();
+	json.key("image").begin_object();
+	for (size_t i = 0; i < ScheduleMember::kCount; ++i) {
+		uint16_t member = ScheduleMember::bit(i);
+		if ((adjustable & member) != 0) {
+			json.key(ScheduleMember::name(member));
+			write_member(json, member, schedule_member_value(image, member));
+		}
+	}
+	json.end_object();
+	json.key("bounds").begin_object();
+	for (size_t i = 0; i < ScheduleMember::kCount; ++i) {
+		uint16_t member = ScheduleMember::bit(i);
+		const ScheduleBound* bound = scheduler.bound(index, member);
+		if (bound == nullptr) {
+			continue;
+		}
+		json.key(ScheduleMember::name(member)).begin_object();
+		json.key("min");
+		write_member(json, member, bound->min);
+		json.key("max");
+		write_member(json, member, bound->max);
+		if (bound->step > 0) {
+			// seconds for a time of day, milliseconds for the durations
+			json.member("step", ScheduleMember::is_time(member) ? bound->step : bound->step * 1000);
+		}
+		json.end_object();
+	}
+	json.end_object();
 	std::optional<int64_t> next = scheduler.next_firing(index);
 	json.key("nextFiring");
 	if (next) {
@@ -2161,19 +2355,104 @@ void WebApi::put_schedule(const char* id, const WebRequest& request, WebResponse
 		refuse(response, 400, "api.bad_json", error != nullptr ? error : "the body must be a JSON object");
 		return;
 	}
+	// The members: `enabled`, the adjustable members of spec/schedules.md 2.1, or `reset`.
+	bool has_enabled = false;
 	bool enabled = false;
-	if (!json_member(body, "enabled", member) || !json_bool(member, enabled)) {
-		refuse(response, 400, "schedule.value_missing", "the body needs {\"enabled\": true|false}");
+	bool reset = false;
+	uint16_t members = 0;
+	ScheduleSpec values = scheduler.spec(*index);
+	size_t position = 0;
+	JsonSpan key;
+	JsonSpan value;
+	while (json_next_member(body, position, key, value)) {
+		char name[16];
+		if (!json_string(key, name, sizeof(name))) {
+			name[0] = '\0';
+		}
+		if (std::strcmp(name, "enabled") == 0) {
+			if (!json_bool(value, enabled)) {
+				refuse(response, 400, "schedule.value_missing", "enabled must be true or false");
+				return;
+			}
+			has_enabled = true;
+			continue;
+		}
+		if (std::strcmp(name, "reset") == 0) {
+			if (!json_bool(value, reset) || !reset) {
+				refuse(response, 400, "schedule.malformed", "reset must be true");
+				return;
+			}
+			continue;
+		}
+		uint16_t bit = ScheduleMember::of_name(name, std::strlen(name));
+		if (bit == 0) {
+			char text[64];
+			std::snprintf(text, sizeof(text), "unknown member '%s'", name);
+			refuse(response, 400, "schedule.malformed", text);
+			return;
+		}
+		const char* why = nullptr;
+		if (!read_member(value, bit, values, why)) {
+			refuse_member(response, 400, "schedule.malformed", why, bit);
+			return;
+		}
+		members = static_cast<uint16_t>(members | bit);
+	}
+	if (reset) {
+		if (has_enabled || members != 0) {
+			refuse(response, 400, "schedule.malformed", "reset takes no other members");
+			return;
+		}
+		reset_schedule(id, response);
 		return;
 	}
-	if (!scheduler.set_enabled(id, enabled, &error)) {
-		refuse(response, 403, "schedule.not_adjustable", error != nullptr ? error : "the entry's switch is not adjustable");
+	if (!has_enabled && members == 0) {
+		refuse(response, 400, "schedule.value_missing",
+			"the body needs {\"enabled\": true|false}, adjustable members, or {\"reset\": true}");
 		return;
 	}
-	Log::info(kTag, "schedule %s %s from the API", id, enabled ? "enabled" : "disabled");
+	if (has_enabled && !scheduler.enabled_adjustable(*index)) {
+		refuse(response, 403, "schedule.not_adjustable", "the image fixes this schedule's enable switch");
+		return;
+	}
+	if (members != 0) {
+		uint16_t culprit = 0;
+		const char* why = nullptr;
+		ScheduleChange change = scheduler.set_members(id, members, values, &culprit, &why);
+		if (change != ScheduleChange::ok) {
+			char code[40];
+			std::snprintf(code, sizeof(code), "schedule.%s", schedule_change_name(change));
+			refuse_member(response, change == ScheduleChange::not_adjustable ? 403 : 400, code,
+				why != nullptr ? why : "refused", culprit);
+			return;
+		}
+		Log::info(kTag, "schedule %s changed from the API", id);
+	}
+	if (has_enabled) {
+		if (!scheduler.set_enabled(id, enabled, &error)) {
+			refuse(response, 403, "schedule.not_adjustable", error != nullptr ? error : "the entry's switch is not adjustable");
+			return;
+		}
+		Log::info(kTag, "schedule %s %s from the API", id, enabled ? "enabled" : "disabled");
+	}
+	schedule_changed(*index, response);
+}
+
+void WebApi::reset_schedule(const char* id, WebResponse& response) {
+	Scheduler& scheduler = image_->scheduler();
+	std::optional<size_t> index = scheduler.find(id);
+	if (!index || !scheduler.reset_overrides(id)) {
+		refuse(response, 404, "schedule.unknown", "no schedule entry with this id");
+		return;
+	}
+	Log::info(kTag, "schedule %s back to the image's values from the API", id);
+	schedule_changed(*index, response);
+}
+
+void WebApi::schedule_changed(size_t index, WebResponse& response) {
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object().member("ok", true).key("schedule");
-	write_schedule(json, *index);
+	write_schedule(json, index);
 	json.end_object();
 	finish(response, json);
 }

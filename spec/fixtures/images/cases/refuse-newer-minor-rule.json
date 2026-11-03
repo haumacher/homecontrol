@@ -1,0 +1,8 @@
+{"comment": "The rule half of refuse-newer-minor-strict.json. An image of a newer minor version loads (I4) unless a strict object (a rule, a schedule entry) has a member this firmware does not know: then the refusal adds that the image's schema is newer than the firmware reads (from 1.2 on). The case uses minor 99, so it stays newer than every firmware.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "rules[0]", "reason": "unknown member 'priority' (the image's schema 1.99 is newer than this firmware reads, up to "}]},
+ "image": {"schemaVersion": "1.99", "projectId": "case", "revision": 1, "futureField": true},
+ "datapoints": [{"id": "light", "type": "boolean", "virtual": {}, "writable": true}],
+ "schedules": [{"id": "morning", "label": "Morning", "kind": "weekly", "time": {"hour": 6, "minute": 30, "second": 0}}],
+ "rules": [{"id": "r", "name": "R", "priority": 2, "reactions": [{"triggers": [{"kind": "schedule", "schedule": "morning"}],
+   "actions": [{"kind": "write", "datapoint": "light", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}]}

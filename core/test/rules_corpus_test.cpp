@@ -16,11 +16,14 @@
 #include "doctest.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
+#include "hc/image/loader.h"
 #include "hc/image/rules_clock.h"
+#include "hc/json.h"
 #include "hc/network_settings.h"
 #include "hc/rules/engine.h"
 #include "hc/time_service.h"
 #include "hc/rules/parameter_store.h"
+#include "hc/scheduler.h"
 #include "rules_test_support.h"
 #include "test_support.h"
 
@@ -185,9 +188,49 @@ bool same(const Val& actual, const Val& expected) {
 	return hc::rules::val_identical(actual, expected);
 }
 
+/// The schedule entries of a case in the image's full form (README "schedules"), parsed by the
+/// device's image loader from a synthetic image that holds only them: the specs the scheduler loads
+/// and the time datapoints they imply (spec/schedules.md 2.2).
+struct SchedulePlan {
+	std::string text;
+	hc::image::Plan plan;
+	std::vector<std::string> time_datapoints;
+
+	/// From the `schedules` array of the case or of an image step; false when it holds no full entry.
+	bool build(const hc::JsonSpan& list, const hc_test::FakeClock& clock) {
+		std::string entries;
+		size_t position = 0;
+		hc::JsonSpan item;
+		hc::JsonSpan kind;
+		while (hc::json_next_item(list, position, item)) {
+			if (item.kind == hc::JsonSpan::Kind::object && hc::json_member(item, "kind", kind)) {
+				entries += (entries.empty() ? "" : ",") + std::string(item.data, item.length);
+			}
+		}
+		if (entries.empty()) {
+			return false;
+		}
+		text = R"({"image": {"schemaVersion": "1.2", "projectId": "corpus", "revision": 1}, "schedules": [)" + entries + "]}";
+		hc::image::Loader loader(clock, hc::HistoryLimits().cap_bytes);
+		hc::image::Report report;
+		bool ok = loader.parse(text.data(), text.size(), plan, report);
+		std::string reasons;
+		for (size_t i = 0; i < report.count; ++i) {
+			reasons += std::string(report.refusals[i].path) + ": " + report.refusals[i].reason + "\n";
+		}
+		REQUIRE_MESSAGE(ok, "the case's schedules are refused:\n" << reasons);
+		for (size_t i = 0; i < plan.datapoint_count; ++i) {
+			if (plan.bindings[i] == hc::image::Binding::schedule) {
+				time_datapoints.push_back(plan.datapoints[i].name);
+			}
+		}
+		return true;
+	}
+};
+
 class CaseRunner {
 public:
-	explicit CaseRunner(const Json& json) : case_(json) {
+	CaseRunner(const Json& json, const std::string& text) : case_(json), text_(text) {
 		// Index: 1 refuses commands, 2 refuses reads.
 		technologies_[1].refuse = technologies_[3].refuse = true;
 		technologies_[2].refuse_reads = technologies_[3].refuse_reads = true;
@@ -233,6 +276,15 @@ public:
 				schedules_.ids.push_back(s.text);
 			}
 		}
+		hc::JsonSpan root;
+		hc::JsonSpan list;
+		REQUIRE(hc::json_parse(text_.data(), text_.size(), root, nullptr, 100));
+		if (hc::json_member(root, "schedules", list)) {
+			auto plan = std::make_unique<SchedulePlan>();
+			if (plan->build(list, clock_)) {
+				schedule_plan_ = std::move(plan);
+			}
+		}
 		for (const Json& dp : case_["datapoints"].items) {
 			if (dp.has("readable") && !dp["readable"].boolean) {
 				schedules_.unreadable.push_back(dp["name"].text);
@@ -271,9 +323,12 @@ public:
 		}
 		REQUIRE_MESSAGE(result.ok(), "load refused: " << std::string(hc::rules::load_error_name(result.error)) << " rule "
 			<< std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
+		load_schedules(true);
 		engine_->start(StartReason::boot);
 		advance(0);
+		size_t step_index = 0;
 		for (const Json& step : case_["timeline"].items) {
+			current_step_ = step_index++;
 			uint64_t at = static_cast<uint64_t>(step["at"].number);
 			advance(at);
 			apply(step, at);
@@ -302,8 +357,34 @@ private:
 		std::vector<std::string> unreadable; ///< "readable": false
 	};
 
+	/// Forwards the scheduler's firings to the current engine.
+	struct Firings : hc::ScheduleListener {
+		explicit Firings(CaseRunner& r) : runner(r) {}
+		void schedule_fired(const char* id) override { runner.engine_->schedule_fired(id); }
+		CaseRunner& runner;
+	};
+
+	/// The scheduler with the case's full entries (README "schedules"), after the rules' load as in
+	/// the image service (spec/runtime-image.md 6); the time datapoints take their values quietly.
+	/// `fresh`: a new scheduler (the start, a reboot).
+	void load_schedules(bool fresh) {
+		if (schedule_plan_ == nullptr) {
+			return;
+		}
+		if (fresh || scheduler_ == nullptr) {
+			scheduler_.reset();
+			scheduler_ = std::make_unique<hc::Scheduler>(loop_, time_.wall, settings_, &model_);
+			scheduler_->defer_time_reports(true);
+			scheduler_->add_listener(firings_);
+		}
+		const hc::image::Plan& plan = schedule_plan_->plan;
+		REQUIRE(scheduler_->load(plan.schedules, plan.schedule_count) == hc::ScheduleStatus::ok);
+		engine_->quietly([this] { scheduler_->publish_times(); });
+	}
+
 	/// The case's datapoints, owned by the test technologies, then the parameter datapoints of
-	/// `rules` (spec/rules.md 8.6) as the image loader derives them, unbound: the engine binds them.
+	/// `rules` (spec/rules.md 8.6) as the image loader derives them, unbound: the engine binds them;
+	/// then the time datapoints of the full schedule entries, which the scheduler binds.
 	void load_model(const Json& rules, bool keep_values = false) {
 		names_.clear();
 		specs_.clear();
@@ -326,6 +407,13 @@ private:
 			names_.push_back(derived[i].name);
 			types.push_back(derived[i].type);
 			flags.push_back(derived[i].flags);
+		}
+		if (schedule_plan_ != nullptr) {
+			for (const std::string& name : schedule_plan_->time_datapoints) {
+				names_.push_back(name);
+				types.push_back(hc::ValueType::time_of_day);
+				flags.push_back(static_cast<uint8_t>(hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit));
+			}
 		}
 		for (size_t i = 0; i < names_.size(); ++i) {
 			specs_.push_back(DatapointSpec{names_[i].c_str(), types[i], flags[i]});
@@ -425,6 +513,12 @@ private:
 			engine_->set_parameter(p["rule"].text.c_str(), p["parameter"].text.c_str(), tree_.value(p["value"]));
 		} else if (step.has("clockSync")) {
 			time_.wall.synchronized = step["clockSync"].boolean;
+			if (scheduler_ != nullptr) {
+				scheduler_->time_changed(time_.wall.synchronized ? hc::TimeEvents::kSynchronized
+					: hc::TimeEvents::kSynchronizationLost);
+			}
+		} else if (step.has("setSchedule")) {
+			set_schedule(step["setSchedule"], at);
 		} else if (step.has("image")) {
 			// As the image service swaps (doc/image.md): the rules' queued events go, the model is
 			// loaded again with the values kept (the parameter datapoints follow the new rules), the
@@ -433,6 +527,20 @@ private:
 			std::vector<std::string> old_names;
 			for (size_t i = 0; i < model_.size(); ++i) {
 				old_names.push_back(model_.get(static_cast<uint16_t>(i))->name());
+			}
+			std::unique_ptr<SchedulePlan> previous_plan;
+			if (step["image"].has("schedules")) {
+				// The step's entries replace the case's (README "image").
+				hc::JsonSpan list = timeline_member(current_step_, "image", "schedules");
+				auto plan = std::make_unique<SchedulePlan>();
+				REQUIRE_MESSAGE(plan->build(list, clock_), "the image step's schedules need full entries");
+				previous_plan = std::move(schedule_plan_);
+				schedule_plan_ = std::move(plan);
+				for (const Json& s : step["image"]["schedules"].items) {
+					if (std::find(schedules_.ids.begin(), schedules_.ids.end(), s["id"].text) == schedules_.ids.end()) {
+						schedules_.ids.push_back(s["id"].text);
+					}
+				}
 			}
 			load_model(step["image"]["rules"], true);
 			std::vector<uint16_t> previous;
@@ -444,19 +552,123 @@ private:
 			REQUIRE_MESSAGE(result.ok(), "image at " << at << " refused: " << std::string(hc::rules::load_error_name(result.error))
 				<< " rule " << std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
 			image_ = &step["image"]["rules"];
+			load_schedules(false);
 			engine_->start(StartReason::image);
 		} else if (step.has("reboot")) {
+			scheduler_.reset();
 			engine_.reset();
 			load_model(*image_);
 			engine_ = std::make_unique<Engine>(loop_, model_, clock_, settings_, time_);
 			engine_->set_observer(&recorder_);
 			LoadResult result = engine_->load(tree_.value(*image_), &schedules_);
 			REQUIRE(result.ok());
+			load_schedules(true);
 			engine_->start(StartReason::boot);
 		} else if (step.has("check")) {
 			compare_state(step["check"], "check at " + std::to_string(at));
 		} else {
 			FAIL("unknown timeline step at " << at);
+		}
+	}
+
+	/// The span of `timeline[index].<step>.<member>` in the case's text.
+	hc::JsonSpan timeline_member(size_t index, const char* step, const char* member) {
+		hc::JsonSpan root, timeline, item, inner, out;
+		REQUIRE(hc::json_parse(text_.data(), text_.size(), root, nullptr, 100));
+		REQUIRE(hc::json_member(root, "timeline", timeline));
+		size_t position = 0;
+		for (size_t i = 0; i <= index; ++i) {
+			REQUIRE(hc::json_next_item(timeline, position, item));
+		}
+		REQUIRE(hc::json_member(item, step, inner));
+		REQUIRE(hc::json_member(inner, member, out));
+		return out;
+	}
+
+	/// A member's value in the JSON form of the image and the API (spec/schedules.md 3) into `values`.
+	static void read_member(const Json& json, uint16_t member, hc::ScheduleSpec& values) {
+		if (hc::ScheduleMember::is_time(member) || member == hc::ScheduleMember::kAt) {
+			int64_t seconds = static_cast<int64_t>(json["hour"].number) * 3600 + static_cast<int64_t>(json["minute"].number) * 60 +
+				static_cast<int64_t>(json["second"].number);
+			if (member == hc::ScheduleMember::kAt) {
+				seconds += hc::days_from_civil(static_cast<int32_t>(json["year"].number), static_cast<unsigned>(json["month"].number),
+					static_cast<unsigned>(json["day"].number)) * 86400;
+			}
+			hc::set_schedule_member_value(values, member, seconds);
+		} else if (member == hc::ScheduleMember::kDays) {
+			uint8_t days = 0;
+			for (const Json& day : json.items) {
+				days = static_cast<uint8_t>(days | hc::Weekdays::bit(static_cast<unsigned>(day.number)));
+			}
+			values.days = days;
+		} else {
+			hc::set_schedule_member_value(values, member, static_cast<int64_t>(json.number) / 1000);
+		}
+	}
+
+	/// README "setSchedule": the change of `PUT /api/schedules/<id>`.
+	void set_schedule(const Json& change, uint64_t at) {
+		REQUIRE_MESSAGE(scheduler_ != nullptr, "setSchedule needs full schedule entries");
+		const std::string& id = change["id"].text;
+		std::string refused = change.has("refused") ? change["refused"].text : "";
+		if (change.has("reset")) {
+			CHECK_MESSAGE(scheduler_->reset_overrides(id.c_str()), "the reset at " << at << " was refused");
+			return;
+		}
+		std::optional<size_t> index = scheduler_->find(id.c_str());
+		REQUIRE_MESSAGE(index.has_value(), "no schedule " << id);
+		hc::ScheduleSpec values = scheduler_->spec(*index);
+		uint16_t members = 0;
+		for (const auto& entry : change.members) {
+			uint16_t member = hc::ScheduleMember::of_name(entry.first.c_str(), entry.first.size());
+			if (member == 0) {
+				REQUIRE_MESSAGE((entry.first == "id" || entry.first == "refused" || entry.first == "enabled"),
+					"unknown setSchedule member " << entry.first);
+				continue;
+			}
+			read_member(entry.second, member, values);
+			members = static_cast<uint16_t>(members | member);
+		}
+		hc::ScheduleChange result = hc::ScheduleChange::ok;
+		if (members != 0) {
+			result = scheduler_->set_members(id.c_str(), members, values);
+		}
+		if (result == hc::ScheduleChange::ok && change.has("enabled")) {
+			result = scheduler_->set_enabled(id.c_str(), change["enabled"].boolean) ? hc::ScheduleChange::ok
+				: hc::ScheduleChange::not_adjustable;
+		}
+		std::string got = result == hc::ScheduleChange::ok ? "" : hc::schedule_change_name(result);
+		CHECK_MESSAGE(got == refused, "setSchedule at " << at << ": " << (got.empty() ? "accepted" : got) << ", expected "
+			<< (refused.empty() ? "accepted" : refused));
+	}
+
+	void compare_schedules(const Json& expected, const std::string& where) {
+		REQUIRE_MESSAGE(scheduler_ != nullptr, where << ": `schedules` needs full schedule entries");
+		for (const auto& entry : expected.members) {
+			std::optional<size_t> index = scheduler_->find(entry.first.c_str());
+			REQUIRE_MESSAGE(index.has_value(), where << ": no schedule " << entry.first);
+			const hc::ScheduleSpec& spec = scheduler_->spec(*index);
+			for (const auto& value : entry.second["values"].members) {
+				uint16_t member = hc::ScheduleMember::of_name(value.first.c_str(), value.first.size());
+				REQUIRE_MESSAGE(member != 0, "unknown member " << value.first);
+				hc::ScheduleSpec want = spec;
+				read_member(value.second, member, want);
+				CHECK_MESSAGE(hc::schedule_member_value(spec, member) == hc::schedule_member_value(want, member),
+					where << ": " << entry.first << "." << value.first << " is " << hc::schedule_member_value(spec, member)
+					<< ", expected " << hc::schedule_member_value(want, member));
+			}
+			if (entry.second.has("overridden")) {
+				uint16_t want = 0;
+				for (const Json& name : entry.second["overridden"].items) {
+					want = static_cast<uint16_t>(want | hc::ScheduleMember::of_name(name.text.c_str(), name.text.size()));
+				}
+				CHECK_MESSAGE(scheduler_->overridden(*index) == want, where << ": overridden members of " << entry.first
+					<< " are " << scheduler_->overridden(*index) << ", expected " << want);
+			}
+			if (entry.second.has("enabled")) {
+				CHECK_MESSAGE(scheduler_->enabled(*index) == entry.second["enabled"].boolean, where << ": " << entry.first
+					<< " enabled");
+			}
 		}
 	}
 
@@ -522,6 +734,9 @@ private:
 			REQUIRE(engine_->diagnostics(static_cast<size_t>(rule_index(entry.first)), d));
 			CHECK_MESSAGE(d.firings == static_cast<uint32_t>(entry.second.number), where << ": firings of "
 				<< entry.first << " are " << d.firings << ", expected " << entry.second.text);
+		}
+		if (expected.has("schedules")) {
+			compare_schedules(expected["schedules"], where);
 		}
 		if (expected.has("persisted")) {
 			engine_->persist_now(); // the delayed state writes (README: the store as an orderly shutdown leaves it)
@@ -631,6 +846,7 @@ private:
 	}
 
 	const Json& case_;
+	const std::string& text_;
 	JsonTree tree_;
 	hc_test::FakeClock clock_;
 	hc_test::FakeSettings settings_;
@@ -644,6 +860,10 @@ private:
 	std::vector<DatapointSpec> specs_;
 	const Json* image_ = nullptr;
 	std::unique_ptr<Engine> engine_;
+	std::unique_ptr<SchedulePlan> schedule_plan_;
+	Firings firings_{*this};
+	std::unique_ptr<hc::Scheduler> scheduler_; ///< Declared after the engine: destroyed first.
+	size_t current_step_ = 0;
 };
 
 void run_case(const char* prefix) {
@@ -659,7 +879,7 @@ void run_case(const char* prefix) {
 	Json json;
 	REQUIRE_MESSAGE(hc_test::parse_json(text, json, error), path << ": " << error);
 	hc_test::ScopedCapture capture(hc::LogLevel::error); // keep the test output short
-	CaseRunner runner(json);
+	CaseRunner runner(json, text);
 	runner.run();
 }
 
@@ -721,8 +941,13 @@ HC_RULE_CASE("50", "parameter-datapoint-change")
 HC_RULE_CASE("51", "parameter-datapoint-command")
 HC_RULE_CASE("52", "parameter-datapoint-other-rule")
 HC_RULE_CASE("53", "parameter-datapoint-enabled")
+HC_RULE_CASE("54", "silence-read-parameter-datapoint")
+HC_RULE_CASE("55", "schedule-adjust-time")
+HC_RULE_CASE("56", "schedule-change-semantics")
+HC_RULE_CASE("57", "schedule-time-datapoint")
+HC_RULE_CASE("58", "schedule-image-swap-overrides")
 
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
-	CHECK(files.size() == 54);
+	CHECK(files.size() == 58);
 }

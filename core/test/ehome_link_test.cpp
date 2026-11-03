@@ -11,6 +11,7 @@
 
 #include "doctest.h"
 #include "fake_image_staging.h"
+#include "hc/image/image.h"
 #include "fake_blob_store.h"
 #include "fake_fetch.h"
 #include "hc/ehome_link.h"
@@ -267,6 +268,7 @@ struct EhomeFixture : WebFixture {
 		REQUIRE(auth.size() >= 1);
 		CHECK(auth.back()["controller"].text == "c-17");
 		CHECK(auth.back()["mac"].text == kMac);
+		CHECK(auth.back()["schema"].text == hc::image::schema_version_text()); // the newest schema it reads
 		client.deliver("{\"type\":\"ready\",\"installation\":\"Example House\"}");
 		REQUIRE(link.state() == EhomeState::connected);
 	}

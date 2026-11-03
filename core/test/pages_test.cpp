@@ -171,7 +171,8 @@ TEST_CASE("Pages.FixtureLoadsAsSchema11") {
 	REQUIRE_MESSAGE(parse(replace(fixture("pages.json"), "\"1.1\"", "\"1.7\""), plan, report), describe(report));
 	CHECK_FALSE(parse(replace(fixture("pages.json"), "\"1.1\"", "\"2.0\""), plan, report));
 	CHECK(report.kind == Report::Kind::version);
-	CHECK(std::strstr(report.refusals[0].reason, "(1.x, up to 1.1)") != nullptr);
+	CHECK(std::strstr(report.refusals[0].reason, (std::string("(1.x, up to ") + hc::image::schema_version_text() + ")").c_str()) !=
+		nullptr);
 }
 
 TEST_CASE("Pages.TablesOfTheUiModel") {

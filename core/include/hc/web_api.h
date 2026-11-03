@@ -241,6 +241,8 @@ private:
 	void rule_parameter(const char* rule, const char* parameter, const WebRequest& request, WebResponse& response);
 	void schedules(const WebRequest& request, WebResponse& response);
 	void put_schedule(const char* id, const WebRequest& request, WebResponse& response);
+	void reset_schedule(const char* id, WebResponse& response);
+	void schedule_changed(size_t index, WebResponse& response);
 	void write_rule(JsonWriter& json, size_t index);
 	// The console's commands (web_api_system.cpp)
 	void system(const char* what, const WebRequest& request, WebResponse& response);

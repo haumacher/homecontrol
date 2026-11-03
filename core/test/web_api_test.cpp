@@ -626,8 +626,9 @@ TEST_CASE("WebApi.Schedules: entries with their switches and next firings") {
 	auto& entries = r.json["schedules"].items;
 	REQUIRE(entries.size() == 2);
 	CHECK(entries[0]["id"].text == "fixed");
-	CHECK_FALSE(entries[0]["adjustable"].boolean);
-	CHECK(entries[1]["adjustable"].boolean);
+	CHECK_FALSE(entries[0]["enabledAdjustable"].boolean);
+	CHECK(entries[1]["enabledAdjustable"].boolean);
+	CHECK(entries[1]["adjustable"].items.empty());
 	CHECK(entries[1]["kind"].text == "weekly");
 	CHECK(entries[1]["enabled"].boolean);
 	CHECK(entries[1]["nextFiring"].number > f.fake.clock.wall_seconds);
@@ -651,4 +652,145 @@ TEST_CASE("WebApi.Schedules: entries with their switches and next firings") {
 	CHECK(f.put("/api/schedules/free", "{\"enabled\":true}", false).status == 403);
 	CHECK(f.put("/api/schedules/free/x", "{\"enabled\":true}").status == 404);
 	CHECK(f.request(HttpMethod::post, "/api/schedules/free", "{}", f.cookie).status == 405);
+}
+
+namespace {
+
+/// An image with an adjustable weekly entry (issue #58) and a rule that reads its time datapoint.
+const char* kAdjustableImage = R"({
+	"image": {"schemaVersion": "1.2", "projectId": "adjust", "revision": 1},
+	"datapoints": [{"id": "early", "type": "boolean", "writable": true, "virtual": {}}],
+	"schedules": [
+		{"id": "morning", "label": "Morning", "kind": "weekly", "days": [1, 2, 3, 4, 5],
+		 "time": {"hour": 6, "minute": 30, "second": 0}, "adjustable": ["time", "days"],
+		 "bounds": {"time": {"min": {"hour": 5, "minute": 0, "second": 0}, "max": {"hour": 9, "minute": 0, "second": 0},
+		                     "step": 300}}},
+		{"id": "blinds", "label": "Blinds", "kind": "astro", "sun": "sunset", "offset": 0, "adjustable": ["offset"],
+		 "bounds": {"offset": {"min": -3600000, "max": 3600000, "step": 300000}}}
+	],
+	"rules": [
+		{"id": "watch", "name": "Watch",
+		 "reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "schedule/morning/time"}],
+			"actions": [{"kind": "write", "datapoint": "early", "value": {"kind": "binary", "op": "<",
+				"left": {"kind": "datapoint", "name": "schedule/morning/time"},
+				"right": {"kind": "literal", "type": "timeOfDay", "value": {"hour": 6, "minute": 15, "second": 0}}}}]}]}
+	]
+})";
+
+} // namespace
+
+TEST_CASE("WebApi.Schedules: adjustable members, bounds, overrides and their refusals") {
+	DashboardFixture f;
+	f.load(kAdjustableImage);
+	f.controller.run_once();
+	// The time datapoint took its value at the load quietly: the rule following it did not react.
+	const hc::Datapoint* time_dp = f.model.find("schedule/morning/time");
+	REQUIRE(time_dp != nullptr);
+	CHECK(time_dp->quality() == hc::Quality::good);
+	CHECK(f.model.find("early")->quality() == hc::Quality::unknown);
+	auto r = f.get("/api/schedules", f.cookie);
+	REQUIRE(r.status == 200);
+	auto& entry = r.json["schedules"].items[0];
+	REQUIRE(entry["adjustable"].items.size() == 2);
+	CHECK(entry["adjustable"].items[0].text == "time");
+	CHECK(entry["adjustable"].items[1].text == "days");
+	CHECK(entry["overridden"].items.empty());
+	CHECK(entry["values"]["time"]["hour"].number == 6);
+	CHECK(entry["values"]["time"]["minute"].number == 30);
+	CHECK(entry["values"]["days"].items.size() == 5);
+	CHECK(entry["image"]["time"]["minute"].number == 30);
+	CHECK(entry["bounds"]["time"]["min"]["hour"].number == 5);
+	CHECK(entry["bounds"]["time"]["max"]["hour"].number == 9);
+	CHECK(entry["bounds"]["time"]["step"].number == 300);
+	CHECK_FALSE(entry["bounds"].has("days"));
+	auto& blinds = r.json["schedules"].items[1];
+	CHECK(blinds["values"]["offset"].number == 0);
+	CHECK(blinds["bounds"]["offset"]["min"].number == -3600000);
+	CHECK(blinds["bounds"]["offset"]["step"].number == 300000);
+
+	r = f.put("/api/schedules/morning", R"({"time": {"hour": 6, "minute": 0, "second": 0}})");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK(r.json["schedule"]["overridden"].items.size() == 1);
+	CHECK(r.json["schedule"]["values"]["time"]["hour"].number == 6);
+	CHECK(r.json["schedule"]["values"]["time"]["minute"].number == 0);
+	CHECK(r.json["schedule"]["image"]["time"]["minute"].number == 30);
+
+	// The datapoint followed, and the rule reading it saw the new time.
+	r = f.get("/api/model", f.cookie);
+	REQUIRE(r.status == 200);
+	bool found = false;
+	for (auto& dp : r.json["datapoints"].items) {
+		if (dp["name"].text == "schedule/morning/time") {
+			found = true;
+			CHECK(dp["technology"].text == "scheduler");
+			CHECK(dp["writable"].boolean);
+		}
+	}
+	CHECK(found);
+	f.controller.run_once();
+	const hc::Datapoint* early = f.model.find("early");
+	REQUIRE(early != nullptr);
+	CHECK(early->value() == hc::Value::of_bool(true));
+
+	auto refusal = [&](const char* body, int status, const char* code, const char* member) {
+		auto result = f.put("/api/schedules/morning", body);
+		CHECK_MESSAGE(result.status == status, body << " " << result.body);
+		CHECK_MESSAGE(result.json["code"].text == code, body << " " << result.body);
+		if (member != nullptr) {
+			CHECK_MESSAGE(result.json["member"].text == member, body << " " << result.body);
+		}
+	};
+	hc_test::ScopedCapture capture;
+	refusal(R"({"time": {"hour": 4, "minute": 55, "second": 0}})", 400, "schedule.out_of_bounds", "time");
+	refusal(R"({"time": {"hour": 6, "minute": 2, "second": 0}})", 400, "schedule.out_of_bounds", "time");
+	refusal(R"({"time": {"hour": 25, "minute": 0, "second": 0}})", 400, "schedule.malformed", "time");
+	refusal(R"({"days": []})", 400, "schedule.malformed", "days");
+	refusal(R"({"days": [1, 1]})", 400, "schedule.malformed", "days");
+	refusal(R"({"offset": 0})", 403, "schedule.not_adjustable", "offset");
+	refusal(R"({"cron": "*"})", 400, "schedule.malformed", nullptr);
+	refusal(R"({"reset": true, "days": [1]})", 400, "schedule.malformed", nullptr);
+	refusal(R"({})", 400, "schedule.value_missing", nullptr);
+	refusal(R"({"days": [1], "time": {"hour": 4, "minute": 0, "second": 0}})", 400, "schedule.out_of_bounds", "time");
+	CHECK(f.get("/api/schedules", f.cookie).json["schedules"].items[0]["values"]["days"].items.size() == 5);
+
+	r = f.put("/api/schedules/morning", R"({"days": [1, 2, 3, 4], "enabled": false})");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK(r.json["schedule"]["overridden"].items.size() == 2);
+	CHECK(r.json["schedule"]["enabledOverridden"].boolean);
+	r = f.put("/api/schedules/blinds", R"({"offset": -1800000})");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK(r.json["schedule"]["values"]["offset"].number == -1800000);
+
+	// DELETE .../override and PUT {"reset": true} return to the image's values.
+	r = f.request(HttpMethod::del, "/api/schedules/morning/override", "", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK(r.json["schedule"]["overridden"].items.empty());
+	CHECK_FALSE(r.json["schedule"]["enabledOverridden"].boolean);
+	CHECK(r.json["schedule"]["values"]["time"]["minute"].number == 30);
+	r = f.put("/api/schedules/blinds", R"({"reset": true})");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK(r.json["schedule"]["values"]["offset"].number == 0);
+	CHECK(f.request(HttpMethod::del, "/api/schedules/nothing/override", "", f.cookie).status == 404);
+	CHECK(f.request(HttpMethod::put, "/api/schedules/morning/override", "{}", f.cookie).status == 405);
+	CHECK(f.request(HttpMethod::del, "/api/schedules/morning/other", "", f.cookie).status == 404);
+}
+
+TEST_CASE("WebApi.Schedules: a command to schedule/<id>/time is a PUT") {
+	DashboardFixture f;
+	f.load(kAdjustableImage);
+	f.controller.run_once();
+	const hc::Datapoint* dp = f.model.find("schedule/morning/time");
+	REQUIRE(dp != nullptr);
+	char path[64];
+	std::snprintf(path, sizeof(path), "/api/datapoints/%u/command", static_cast<unsigned>(dp->id()));
+	auto r = f.request(HttpMethod::post, path, R"({"value": {"day": 0, "hour": 7, "minute": 15, "second": 0}})", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	f.controller.run_once();
+	r = f.get("/api/schedules", f.cookie);
+	CHECK(r.json["schedules"].items[0]["values"]["time"]["hour"].number == 7);
+	CHECK(r.json["schedules"].items[0]["overridden"].items.size() == 1);
+	hc_test::ScopedCapture capture;
+	r = f.request(HttpMethod::post, path, R"({"value": {"day": 0, "hour": 9, "minute": 30, "second": 0}})", f.cookie);
+	CHECK(r.status != 200);
+	CHECK(f.get("/api/schedules", f.cookie).json["schedules"].items[0]["values"]["time"]["hour"].number == 7);
 }

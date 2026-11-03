@@ -8,6 +8,7 @@
 #include <cstring>
 #include <new>
 
+#include "hc/image/image.h"
 #include "hc/log.h"
 #include "hc/sha.h"
 #include "hc/version.h"
@@ -589,7 +590,8 @@ void EhomeLink::handshake_message(const JsonSpan& message, const JsonSpan& type)
 			.member("controller", id)
 			.member("mac", mac)
 			.member("version", kVersion)
-			.member("build", build_id());
+			.member("build", build_id())
+			.member("schema", image::schema_version_text()); // the newest image schema it reads
 		if (has_key) {
 			json.member("key", fingerprint); // the installation key the device holds
 		}
