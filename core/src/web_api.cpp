@@ -259,6 +259,31 @@ uint8_t WebApi::ehome_signature() const {
 }
 
 bool WebApi::poll_deferred(WebResponse& response) {
+	if (response.deferred_kind == kDeferredImageStore) {
+		if (image_ == nullptr) {
+			refuse(response, 500, "api.not_deferred", "no answer is pending");
+			response.deferred = false;
+			return true;
+		}
+		JsonWriter json(response.body, response.capacity);
+		json.begin_object();
+		switch (image_->store_answer(response.deferred_token, json)) {
+			case image::ImageService::StoreAnswer::pending:
+				return false;
+			case image::ImageService::StoreAnswer::superseded:
+				refuse(response, 409, "image.superseded",
+					"a later image was deployed before this answer was fetched: GET /api/status and GET /api/image "
+					"tell what runs and what is stored");
+				break;
+			case image::ImageService::StoreAnswer::ready:
+				json.end_object();
+				response.status = 200;
+				finish(response, json);
+				break;
+		}
+		response.deferred = false;
+		return true;
+	}
 	if (ehome_ == nullptr) {
 		refuse(response, 500, "api.not_deferred", "no answer is pending");
 		return true;
@@ -271,6 +296,8 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 	response.length = 0;
 	response.needs_hash = false;
 	response.deferred = false;
+	response.deferred_kind = 0;
+	response.deferred_token = 0;
 	const char* path = request.path != nullptr ? request.path : "";
 	bool state_changing = request.method != HttpMethod::get;
 	bool csrf_ok = request.requested_with != nullptr && std::strcmp(request.requested_with, kCsrfHeaderValue) == 0;
@@ -1240,6 +1267,20 @@ void WebApi::image_changed() {
 	}
 }
 
+const char* WebApi::body_refusal(HttpMethod method, const char* path) const {
+	if (image_ != nullptr && method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0 &&
+		image_->store_pending()) {
+		return "the previous image is still being stored; deploy again in a moment";
+	}
+	return nullptr;
+}
+
+void WebApi::image_stored() {
+	if (ehome_ != nullptr) {
+		ehome_->deferred_ready(); // an answer over the E-Home connection goes out at once
+	}
+}
+
 ImageStaging* WebApi::body_staging(HttpMethod method, const char* path) const {
 	if (image_ != nullptr && method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
 		return image_->staging();
@@ -1315,6 +1356,12 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 	}
 	if (request.method == HttpMethod::del) {
 		const char* error = nullptr;
+		if (image_->store_pending()) {
+			Log::warn(kTag, "DELETE /api/image from %s refused: the image is still being stored", request.source);
+			refuse(response, 503, "image.busy", "the image is still being stored; remove it in a moment");
+			response.retry_after_s = kBusyRetryS;
+			return;
+		}
 		if (!image_->unload(&error)) {
 			refuse(response, 500, "image.storage_error", error);
 			return;
@@ -1345,7 +1392,15 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 	Log::info(kTag, "PUT /api/image from %s: %u bytes%s", request.source, static_cast<unsigned>(request.body_length),
 		signed_image ? ", signed" : "");
 	bool ok = image_->load(request.body, request.body_length, image::Source::api, true,
-		signed_image ? signature : nullptr);
+		signed_image ? signature : nullptr, request.body_holder, Callback::member<WebApi, &WebApi::image_stored>(this));
+	if (ok && image_->store_pending()) {
+		// The image runs; its store runs off the loop (homecontrol #68): the answer waits for it.
+		response.deferred = true;
+		response.deferred_kind = kDeferredImageStore;
+		response.deferred_token = image_->store_ticket();
+		response.length = 0;
+		return;
+	}
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object();
 	if (ok) {
@@ -1359,6 +1414,10 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 			// 403, not 401: the UI takes a 401 for an expired login.
 			case image::Report::Kind::unsigned_image: response.status = 403; break;
 			case image::Report::Kind::bad_signature: response.status = 403; break;
+			case image::Report::Kind::busy:
+				response.status = 503;
+				response.retry_after_s = kBusyRetryS;
+				break;
 			default: response.status = 422; break;
 		}
 		image_->write_report(json);

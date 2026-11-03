@@ -33,6 +33,7 @@
 #include "hc/ehome_link.h"
 #include "hc/external_values.h"
 #include "hc/image/image_service.h"
+#include "hc/posix/thread_worker.h"
 #include "hc/language_packs.h"
 #include "hc/mqtt.h"
 #include "hc/signature.h"
@@ -289,6 +290,9 @@ int main(int argc, char** argv) {
 	hc::knx::KnxAdapter adapter(controller.loop(), clock, model, tunnel, &telegrams);
 	hc::posix::FileBlobStore blobs(hc::posix::FileBlobStore::directory_for_settings(settings_path));
 	hc::image::ImageService image(controller, model, blobs, adapter, &tunnel);
+	// The image's store off the loop (#68); declared after the service, so it ends first.
+	hc::posix::ThreadWorker store_worker(executor);
+	image.set_worker(&store_worker);
 	hc::posix::HttplibFetcher fetcher(executor);
 	hc::ExternalValues external(controller.loop(), controller.time(), settings, controller.connectivity(), model, fetcher);
 	image.set_external(&external);

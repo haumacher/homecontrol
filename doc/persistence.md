@@ -54,8 +54,20 @@ budget in bytes. Not specified in this package.
 
 Names are 1..31 characters of `[A-Za-z0-9._-]`, not starting with a dot (`check_name()`), in a flat
 namespace of the store's own (a directory nobody else writes); a name is never a path. Failures
-return a status and are logged by the implementation, never abort. Not thread-safe: the core calls
-it on the event loop's thread. Writes may take milliseconds; the callers rate-limit them.
+return a status and are logged by the implementation, never abort. Writes may take milliseconds;
+the callers rate-limit them.
+
+**Threads.** The core calls the store on the event loop's thread, with one exception (#68): the
+image store's write of a deployed image (`ImageStore::write`: its chunks `image.<g>.<n>`, the
+manifest `image.idx`, the removal of the old generation) runs on the platform's `Worker` while the
+loop goes on with its own blobs (values, rings, archives, language packs) and reads the image's
+(`GET /api/image`, `ImageStore::stored()`). So an implementation must take calls on *different*
+blobs from two threads at once and keep no per-call state in the object; calls on the same blob
+never overlap (the image service refuses a second store, an unload and a deploy while one runs).
+LittleFS (`LittleFsBlobStore`: paths on the stack, the file system's own lock around each call;
+littlefs fixes up open directories when another call commits, so `visit()` beside a write is safe)
+and POSIX files (`FileBlobStore`) do; the tests' `FakeBlobStore` and `MemoryBlobStore` are not
+thread-safe and are only used with the stepped `ManualWorker`, on one thread.
 
 ## The two implementations
 

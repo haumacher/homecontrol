@@ -20,7 +20,9 @@ namespace hc {
 ///
 /// Threading: the E-Home connection stages on the event loop, the ESP's HTTP server in its own
 /// task. begin() claims the area atomically (a second begin() is refused as busy until end()); the
-/// claimant alone calls the other functions, on its thread.
+/// claimant alone calls the other functions, on its thread. The claim may be handed over (the image
+/// service takes a received body for its store off the loop, homecontrol #68, and ends the staging
+/// on the loop when the store is done): one holder at a time.
 class ImageStaging {
 public:
 	/// Bytes the area holds at most (0: none, e.g. it was not verified at start).

@@ -101,7 +101,10 @@ protected:
 /// - read() returns the bytes at `offset` (fewer at the end of the blob; 0 at or past the end).
 /// - Failures return a status, never abort; the implementation logs their cause.
 ///
-/// Threading: not thread-safe; the core calls it on the event loop's thread. A write may take
+/// Threading: the core calls it on the event loop's thread, except the image store's write of a
+/// deployed image, which runs on the platform's Worker meanwhile (homecontrol #68, doc/persistence.md
+/// "Threads"): calls on *different* blobs may come from two threads at once, so an implementation
+/// keeps no per-call state in the object; calls on the same blob never overlap. A write may take
 /// milliseconds (flash erase); the callers rate-limit and batch their writes.
 class BlobStore {
 public:

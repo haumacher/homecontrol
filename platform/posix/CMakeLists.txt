@@ -159,6 +159,8 @@ target_sources(hc_tests PRIVATE
 )
 # The runtime image (issue #8, spec/runtime-image.md; the fixtures spec/fixtures/images are read at run time).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_test.cpp")
+# The image's store off the loop (issue #68).
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_store_async_test.cpp")
 # The control pages of the image (issue #54, schema 1.1).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/pages_test.cpp")
 # The BlobStore on files (issue #21, doc/persistence.md).
@@ -229,8 +231,10 @@ target_sources(hc_tests PRIVATE
 # The POSIX MQTT client (a small MQTT 3.1.1 client over TCP, in the web library for the LoopExecutor) and
 # its test against an in-process broker speaking the core's codec.
 target_sources(hc_posix_web PRIVATE src/mqtt_client.cpp)
+# The worker that runs a job off the loop (the runtime image's store, issue #68).
+target_sources(hc_posix_web PRIVATE src/thread_worker.cpp)
 add_executable(hc_posix_mqtt_tests "${HC_REPO_DIR}/core/test/test_main.cpp" test/posix_mqtt_client_test.cpp
-	test/posix_websocket_client_test.cpp test/posix_http_fetcher_test.cpp)
+	test/posix_websocket_client_test.cpp test/posix_http_fetcher_test.cpp test/posix_thread_worker_test.cpp)
 target_include_directories(hc_posix_mqtt_tests SYSTEM PRIVATE "${HC_REPO_DIR}/third_party/doctest")
 target_include_directories(hc_posix_mqtt_tests PRIVATE "${HC_REPO_DIR}/core/test")
 target_link_libraries(hc_posix_mqtt_tests PRIVATE hc_posix_web)

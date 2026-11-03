@@ -25,6 +25,9 @@ namespace image {
 class ImageStore {
 public:
 	static constexpr size_t kChunkSize = 16384;
+	/// A chunk is handed to BlobStore::write() in pieces of this size (one file write each).
+	static constexpr size_t kPieceSize = 4096;
+	static_assert(kChunkSize % kPieceSize == 0, "a chunk is whole pieces");
 	static constexpr const char* kManifest = "image.idx";
 
 	explicit ImageStore(BlobStore& store) : store_(store) {}

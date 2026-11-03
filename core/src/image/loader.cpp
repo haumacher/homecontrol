@@ -44,6 +44,7 @@ const char* report_kind_name(Report::Kind kind) {
 		case Report::Kind::unsigned_image: return "unsigned";
 		case Report::Kind::bad_signature: return "bad signature";
 		case Report::Kind::apply: return "apply";
+		case Report::Kind::busy: return "busy";
 	}
 	return "?";
 }

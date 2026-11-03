@@ -11,6 +11,7 @@
 
 #include "doctest.h"
 #include "fake_image_staging.h"
+#include "fake_worker.h"
 #include "hc/image/image.h"
 #include "fake_blob_store.h"
 #include "fake_fetch.h"
@@ -1388,4 +1389,118 @@ TEST_CASE("E-Home image staging: when the area declines, the image is received i
 	staging.fail_after = 0;
 	r = socket_put_image(f, 5, example, "");
 	CHECK(r["status"].number == 200);
+}
+
+TEST_CASE("E-Home image store: the answer to PUT /api/image goes out when the image is stored, a failure with its reason") {
+	// homecontrol #68: the store runs off the loop; E-Home hears "stored" only when it is.
+	EhomeFixture f;
+	hc_test::FakeImageStaging staging;
+	hc_test::ManualWorker worker;
+	f.service.set_staging(&staging);
+	f.service.set_worker(&worker);
+	f.handshake();
+	std::string example = image_fixture("example.json");
+	f.client.deliver("{\"type\":\"request\",\"id\":4,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(example.size()) + "}");
+	f.client.deliver_binary(example, 1024);
+	CHECK(f.service.loaded()); // runs
+	CHECK(f.service.store_pending());
+	CHECK_FALSE(f.response(4).has("status")); // not answered before it is stored
+	CHECK(f.capture.sink.contains("request 4: /api/image runs, its answer follows when it is stored"));
+	// The link stays responsive; a further request waits for the running one as always.
+	f.client.deliver("{\"type\":\"ping\"}");
+	CHECK(f.client.sent("pong").size() == 1);
+	f.client.deliver("{\"type\":\"request\",\"id\":5,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	CHECK(f.response(5)["status"].number == 429);
+	CHECK(staging.busy); // the service reads the body from the staging area
+
+	worker.step();
+	Json r = f.response(4);
+	CHECK(r["status"].number == 200);
+	CHECK(r["body"]["stored"].boolean);
+	CHECK(r["body"]["image"]["revision"].number == 7);
+	CHECK_FALSE(staging.busy);
+	f.client.deliver("{\"type\":\"request\",\"id\":6,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	CHECK(f.response(6)["status"].number == 200); // the slot is free again
+
+	// A store the flash refuses: the answer says so, with the reason.
+	std::string next = example;
+	next.replace(next.find("\"revision\": 7"), 13, "\"revision\": 8");
+	f.client.deliver("{\"type\":\"request\",\"id\":7,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(next.size()) + "}");
+	f.client.deliver_binary(next, 1024);
+	CHECK_FALSE(f.response(7).has("status"));
+	f.blobs.fail_writes = true;
+	worker.step();
+	f.blobs.fail_writes = false;
+	r = f.response(7);
+	CHECK(r["status"].number == 200);
+	CHECK_FALSE(r["body"]["stored"].boolean);
+	CHECK(r["body"]["storeError"].text == "the storage refused a write");
+	CHECK(r["body"]["image"]["revision"].number == 8);
+}
+
+TEST_CASE("E-Home image store: a deploy while an HTTP deploy is being stored is refused 503 image.busy, its frames dropped") {
+	EhomeFixture f;
+	hc_test::ManualWorker worker;
+	f.service.set_worker(&worker);
+	f.handshake();
+	// An HTTP deploy whose store is pending (the receiver hands its body over).
+	std::string example = image_fixture("example.json");
+	hc::image::ImageBody body;
+	REQUIRE(body.begin(example.size(), nullptr));
+	REQUIRE(body.append(example.data(), example.size()));
+	hc::WebRequest req;
+	req.method = HttpMethod::put;
+	req.path = "/api/image";
+	req.query = "";
+	req.cookie = f.cookie.c_str();
+	req.requested_with = "HomeControl";
+	req.source = "192.0.2.7";
+	req.body = body.finish();
+	req.body_length = example.size();
+	req.body_holder = &body;
+	char out[4096];
+	hc::WebResponse http(out, sizeof(out));
+	f.api.handle(req, http);
+	REQUIRE(http.deferred);
+	CHECK_FALSE(body.active()); // taken over
+
+	f.client.deliver("{\"type\":\"request\",\"id\":3,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(example.size()) + "}");
+	Json r = f.response(3);
+	CHECK(r["status"].number == 503);
+	CHECK(r["body"]["code"].text == "image.busy");
+	f.client.deliver_binary(example, 1024); // dropped, the link stays up
+	CHECK(f.link.state() == EhomeState::connected);
+	f.client.deliver("{\"type\":\"request\",\"id\":4,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	CHECK(f.response(4)["status"].number == 200);
+
+	worker.step();
+	REQUIRE(f.api.poll_deferred(http));
+	CHECK(http.status == 200);
+	CHECK_FALSE(socket_put_image(f, 5, example, "").has("status")); // now E-Home's turn: deferred
+	worker.step();
+	CHECK(f.response(5)["body"]["stored"].boolean);
+}
+
+TEST_CASE("E-Home image store: the session ends while the image is stored; the store completes, the next session deploys") {
+	EhomeFixture f;
+	hc_test::ManualWorker worker;
+	f.service.set_worker(&worker);
+	f.handshake();
+	std::string example = image_fixture("example.json");
+	socket_put_image(f, 4, example, "");
+	CHECK(f.service.store_pending());
+	f.client.drop("connection reset");
+	CHECK(f.capture.sink.contains("the deferred answer to request 4 is dropped with the session"));
+	worker.step(); // the store goes on and ends
+	CHECK(f.service.stored_ok());
+	CHECK_FALSE(f.response(4).has("status"));
+	f.advance(1100);
+	f.handshake();
+	CHECK_FALSE(socket_put_image(f, 5, example, "").has("status")); // deferred: no answer yet
+	worker.step();
+	CHECK(f.response(5)["status"].number == 200);
+	CHECK(f.response(5)["body"]["stored"].boolean);
 }

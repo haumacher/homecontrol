@@ -105,6 +105,22 @@ low-water mark); it now queues and a task of its own writes (doc/ehome.md, "The 
 On the device no handler on the loop writes to a WebSocket: both transports queue (the POSIX build
 writes synchronously into the kernel's socket buffer).
 
+## Off the loop
+
+Work that holds the CPU or the flash for long and needs none of the loop's state goes to the
+platform: the password hash (`WebResponse::needs_hash`, computed by the HTTP server's task), HTTP
+fetches (`HttpFetcher`, a task or thread per fetch, the pieces handed to the loop), the WebSocket
+writes (a sender task), and since #68 a generic job through `hc::Worker`
+(`core/include/hc/platform/worker.h`): `run(job, done)` runs `job` on the worker's thread and then
+`done` on the loop, one job at a time. The ESP's `EspWorker` (`hc_platform`) creates the task
+`hc_work` (4 KB stack, priority 2) for each job and deletes it after, as the fetchers do, so its
+stack is heap only while it runs, and posts `done` through the `LoopQueue`; POSIX's `ThreadWorker`
+runs a thread per job and brings `done` over the `LoopExecutor`; the tests' `ManualWorker`
+(`core/test/fake_worker.h`) runs the job and `done` when the test says. The one job today is the
+runtime image's store (doc/image.md "Storing off the loop"). A job touches only what is safe beside
+the loop: its own data, the BlobStore on blobs nobody else writes meanwhile (doc/persistence.md
+"Threads"), the log.
+
 ## Tests
 
 The core's unit tests (`core/test/`, doctest vendored in `third_party/doctest/`) run on the host

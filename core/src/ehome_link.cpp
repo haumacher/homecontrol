@@ -682,6 +682,13 @@ void EhomeLink::drop_request() {
 	held_length_ = 0;
 	loop_.cancel(stream_timer_);
 	stream_timer_ = TimerHandle();
+	if (deferring_) {
+		// The store goes on (the image service holds the body); only its answer is lost with the session.
+		Log::warn(kTag, "the deferred answer to request %s is dropped with the session", request_id_);
+	}
+	deferring_ = false;
+	loop_.cancel(deferred_timer_);
+	deferred_timer_ = TimerHandle();
 }
 
 void EhomeLink::answer(const char* id, int status, const char* code, const char* text) {
@@ -775,6 +782,12 @@ void EhomeLink::request(const JsonSpan& message) {
 			std::snprintf(text, sizeof(text), "the request body is longer than %u bytes", static_cast<unsigned>(limit));
 			Log::warn(kTag, "request %s %s refused: %s", method, path_, text);
 			answer(id, 413, "api.body_too_large", text);
+			discard_ = bytes;
+			return;
+		}
+		if (const char* busy = api_.body_refusal(method_, path_)) {
+			Log::warn(kTag, "request %s %s %s refused: %s", id, method, path_, busy);
+			answer(id, 503, "image.busy", busy);
 			discard_ = bytes;
 			return;
 		}
@@ -887,13 +900,65 @@ void EhomeLink::dispatch() {
 	}
 	req.body = text;
 	req.body_length = body_.size();
+	req.body_holder = text != nullptr ? &body_ : nullptr;
 	WebResponse response(out_ + kPrefix, kMaxResponseBody);
 	api_.handle(req, response);
-	body_.release(); // the routes are done with it when handle() returns (as with the HTTP servers' buffers)
+	// The routes are done with it when handle() returns (as with the HTTP servers' buffers), unless the
+	// image service took it over for its store off the loop (#68): then there is nothing left here.
+	body_.release();
+	send_response(response);
+}
+
+void EhomeLink::deferred_ready() {
+	if (!deferring_) {
+		return;
+	}
+	if (out_ == nullptr) {
+		drop_request();
+		return;
+	}
+	WebResponse response(out_ + kPrefix, kMaxResponseBody);
+	response.deferred = true;
+	response.deferred_kind = deferred_kind_;
+	response.deferred_token = deferred_token_;
+	if (!api_.poll_deferred(response)) {
+		return;
+	}
+	deferring_ = false;
+	loop_.cancel(deferred_timer_);
+	deferred_timer_ = TimerHandle();
+	send_response(response);
+}
+
+void EhomeLink::deferred_timeout() {
+	deferred_timer_ = TimerHandle();
+	if (!deferring_ || out_ == nullptr) {
+		return;
+	}
+	WebResponse response(out_ + kPrefix, kMaxResponseBody);
+	response.deferred = true;
+	response.deferred_kind = deferred_kind_;
+	response.deferred_token = deferred_token_;
+	if (!api_.poll_deferred(response)) {
+		Log::warn(kTag, "request %s: the answer did not come within %u s", request_id_,
+			static_cast<unsigned>(WebApi::kDeferredLimitMs / 1000));
+		WebApi::refuse(response, 504, "api.timeout", "the answer did not come in time");
+	}
+	deferring_ = false;
 	send_response(response);
 }
 
 void EhomeLink::send_response(WebResponse& response) {
+	if (response.deferred && response.deferred_kind == WebApi::kDeferredImageStore) {
+		// A deployed image is being stored off the loop (#68): the answer follows (deferred_ready()).
+		deferring_ = true;
+		deferred_kind_ = response.deferred_kind;
+		deferred_token_ = response.deferred_token;
+		deferred_timer_ = loop_.schedule_at(api_.controller().clock().monotonic_ms() + WebApi::kDeferredLimitMs,
+			Callback::member<EhomeLink, &EhomeLink::deferred_timeout>(this));
+		Log::info(kTag, "request %s: %s runs, its answer follows when it is stored", request_id_, path_);
+		return;
+	}
 	if (response.deferred || response.needs_hash) {
 		// Only the enrollment defers and only a login hashes: both are refused to E-Home before.
 		WebApi::refuse(response, 500, "ehome.unsupported", "this route cannot answer over the E-Home connection");
@@ -1111,6 +1176,7 @@ void EhomeLink::enroll(const WebRequest& request, WebResponse& response) {
 		Callback::member<EhomeLink, &EhomeLink::enroll_timeout>(this));
 	Log::info(kTag, "enrolling with %s (the code from E-Home, entered by %s)", url, request.source);
 	response.deferred = true;
+	response.deferred_kind = WebApi::kDeferredEnroll;
 	response.length = 0;
 }
 

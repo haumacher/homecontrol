@@ -57,10 +57,48 @@ place, so the service tears the new configuration down and loads the stored imag
 (`restore`). The text is stored only after the apply succeeded; a store failure leaves the image
 running and is reported (`stored: false`).
 
+**Storing off the loop (#68).** Writing the text to LittleFS was the largest step of a deploy on the
+C6 (393 of about 790 ms for the test system's 23 KB image) and needs no parsed state: the verified
+bytes stay in the staging area (or the heap buffer) anyway. So `ImageService::load()` takes the
+received body over from the receiver (`WebRequest::body_holder`, `ImageBody::take`) and hands the
+write to the platform's `Worker` (`hc/platform/worker.h`): on the ESP a task `hc_work` created for
+the job (4 KB stack, priority 2, below the loop; it exists only while it stores, so the stack costs
+RAM only then, and its unused stack is logged with the job's end), on POSIX a thread, in the tests a
+`ManualWorker` the test steps. The image runs from the end of `load()`; the `steps` line says
+`store 0 ms (started off the loop)`, and `image '…' revision N stored (B bytes in M ms, off the
+loop)` follows when the worker is done. Only then is the body released (the staging area is free
+again) and the deploy answered: `PUT /api/image` defers its answer (`WebResponse::deferred` with
+`WebApi::kDeferredImageStore` and the store's ticket; the HTTP servers poll it every 100 ms, the
+E-Home connection is told at once) and answers as before, `stored: true`, or `stored: false` with
+`storeError` when the flash refused (the image runs, the previous stored image stays complete). The
+answer carries the metadata of the deployed image as it was loaded; one fetched after a later store
+began is `409 image.superseded`, never another deploy's outcome.
+
+While the store runs: a deploy is refused `503 image.busy` with `Retry-After: 1`, before its body is
+read (`WebApi::body_refusal()`, asked by the ESP and POSIX servers and the E-Home connection) or, if
+it slipped in, by `load()` before anything is looked at (`Report::Kind::busy`); `DELETE /api/image`
+is refused the same way; a reload for the providers that fails returns to the image being stored
+(its text is at hand, the flash may hold either generation); `GET /api/image` serves the previous
+stored image until the manifest switches (its token changes with it). A restart at any moment
+keeps a whole image: `ImageStore` writes the new generation's chunks first and switches the
+manifest last, each blob an atomic replace (LittleFS: a temporary file renamed over the blob;
+littlefs commits a rename atomically), so the flash holds the previous image until the manifest is
+written and the new one after (`Image store off the loop: a restart at any moment…`). The worker and
+the loop use the BlobStore at the same time, on different blobs (doc/persistence.md "Threads"); a
+chunk goes to `BlobStore::write()` in 4 KB pieces, so the loop waits at most for one piece's write
+when it needs the file system's lock meanwhile (value and ring saves). The flash's own erase and
+program operations still stop every task on the single-core C6 while they run (the cache is off),
+but each is short and the loop runs between them.
+Without a worker, without a holder (the POSIX `--image` file at start, a small image the E-Home
+connection got inline in the request) or when the worker cannot start (no memory for the task,
+logged), the store runs within `load()` as before. The console's `image load <url>` hands its
+download buffer over too (`ImageBody::adopt`).
+
 **The loop during a load.** The load runs on the loop in one handler; a line after the `loaded`
 line gives the steps (`steps: signature … ms, parse …, apply …, MQTT …, UI model …, store …`).
 On the C6 the test system's 23 KB image (revision 7) held the loop about 800 ms, and the 20 ms and
-50 ms timers missed their periods meanwhile. A deploy is a rare operator action, so the load stays
+50 ms timers missed their periods meanwhile; since #68 the store (about 390 ms of it) runs off the
+loop, above. A deploy is a rare operator action, so the load stays
 one handler: running it off the loop would need a second, concurrent copy of the parsed state (the
 heap #66 had to win back) and a model that the loop's readers do not see half built (#66).
 

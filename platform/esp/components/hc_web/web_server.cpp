@@ -659,10 +659,16 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 		std::snprintf(text, sizeof(text), "the request body is longer than %u bytes", static_cast<unsigned>(limit));
 		return send_refusal(req, 413, "api.body_too_large", text);
 	}
-	// A large body (the runtime image) in the image staging area (#66) or a heap buffer of its own,
-	// released on every path out.
-	image::ImageBody large;
 	HttpMethod method = method_of(req->method);
+	if (const char* busy = api_.body_refusal(method, job.path)) {
+		// The previous image is still being stored off the loop (#68): not even the body is read.
+		Log::warn(kTag, "refusing %s: %s", job.path, busy);
+		httpd_resp_set_hdr(req, "Retry-After", "1");
+		return send_refusal(req, 503, "image.busy", busy);
+	}
+	// A large body (the runtime image) in the image staging area (#66) or a heap buffer of its own,
+	// released on every path out (unless the image service took it over for its store, #68).
+	image::ImageBody large;
 	bool use_large = req->content_len > WebApi::kMaxBody;
 	if (use_large) {
 		const char* staging_refusal = nullptr;
@@ -731,6 +737,7 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 	request.source = job.source;
 	request.body = body;
 	request.body_length = received;
+	request.body_holder = use_large ? &large : nullptr;
 
 	if (!run_on_loop()) {
 		if (use_large) {

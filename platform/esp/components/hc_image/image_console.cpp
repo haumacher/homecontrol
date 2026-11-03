@@ -202,8 +202,15 @@ void ImageConsole::finish() {
 		Log::warn(kTag, "image download from %s failed: %s", url_, error_);
 	} else {
 		Log::info(kTag, "image downloaded from %s: %u bytes", url_, static_cast<unsigned>(length_));
-		if (!service_.load(buffer_, length_, image::Source::console, true, has_signature_ ? signature_ : nullptr)) {
+		// The service may keep the buffer for its store off the loop (#68); otherwise it is freed below.
+		image::ImageBody body;
+		body.adopt(buffer_, length_);
+		buffer_ = nullptr;
+		if (!service_.load(body.text(), length_, image::Source::console, true, has_signature_ ? signature_ : nullptr,
+				&body)) {
 			Log::warn(kTag, "the downloaded image was refused (`image status` lists the problems)");
+		} else if (service_.store_pending()) {
+			Log::info(kTag, "the image runs; it is being stored (the log says when it is)");
 		}
 	}
 	std::free(buffer_);

@@ -31,6 +31,7 @@ class TelegramLog;
 }
 
 namespace image {
+class ImageBody;
 class ImageService;
 }
 
@@ -57,6 +58,11 @@ struct WebRequest {
 	const char* source = "";          ///< The client's address (rate limiting, log).
 	const char* body = nullptr;
 	size_t body_length = 0;
+	/// The receiver's ImageBody that holds `body` (its text()), or nullptr for a buffer that ends with
+	/// the request. A route that reads the body after handle() returned takes it over
+	/// (ImageBody::take): PUT /api/image while its image is stored off the loop (homecontrol #68).
+	/// The receiver releases what is left with it as before.
+	image::ImageBody* body_holder = nullptr;
 	/// Set by the platform on the second pass, after it computed the hash WebResponse asked for.
 	const PasswordHash* hash = nullptr;
 	/// The request came over the E-Home connection (doc/ehome.md): the principal "E-Home", with a
@@ -90,6 +96,10 @@ struct WebResponse {
 	/// WebApi::poll_deferred() on the event loop every kDeferredPollMs until it returns true, then
 	/// sends this response. The core bounds the wait itself (EhomeLink::kEnrollTimeoutMs).
 	bool deferred = false;
+	/// What a deferred answer waits for (WebApi::kDeferred*) and its ticket, set by the core with
+	/// `deferred`; the platform keeps them (the same response object) for poll_deferred().
+	uint8_t deferred_kind = 0;
+	uint32_t deferred_token = 0;
 
 	/// The request needs a password hash: the platform derives `hash_params` from the password
 	/// (Crypto::pbkdf2_sha256, off the event loop) and calls handle() again with WebRequest::hash.
@@ -134,6 +144,10 @@ public:
 	/// waits before it gives up (504 api.timeout; the core answers before).
 	static constexpr uint32_t kDeferredPollMs = 100;
 	static constexpr uint32_t kDeferredLimitMs = 60000;
+	/// WebResponse::deferred_kind: the E-Home enrollment's answer; the store of a deployed image
+	/// (homecontrol #68: PUT /api/image is answered when the image is on the flash).
+	static constexpr uint8_t kDeferredEnroll = 1;
+	static constexpr uint8_t kDeferredImageStore = 2;
 
 	WebApi(Controller& controller, DatapointModel& model, Auth& auth, WebHost& host);
 
@@ -187,6 +201,13 @@ public:
 	/// PUT /api/image (homecontrol #66), nullptr (a heap buffer) for everything else.
 	ImageStaging* body_staging(HttpMethod method, const char* path) const;
 
+	/// Why a body for `method` `path` would be refused now, before a receiver takes it (nullptr: it
+	/// would not): PUT /api/image while the previous image is still being stored off the loop
+	/// (homecontrol #68). The receivers answer 503 "image.busy" with this reason and Retry-After
+	/// kBusyRetryS, without reading the body. Any thread; load() decides in the end.
+	const char* body_refusal(HttpMethod method, const char* path) const;
+	static constexpr uint32_t kBusyRetryS = 1;
+
 	/// A piece of the stored image for a streamed response (WebResponse::stream), on the loop. False
 	/// when the stored image changed since the response began (the platform aborts the transfer).
 	bool read_stream(uint32_t token, size_t offset, char* buffer, size_t size, size_t& length);
@@ -221,6 +242,8 @@ public:
 
 private:
 	void image_changed();
+	/// The store of a deployed image ended (on the loop): a deferred answer is ready.
+	void image_stored();
 	void auth_session(const WebRequest& request, WebResponse& response);
 	void auth_onboard(const WebRequest& request, WebResponse& response);
 	void auth_login(const WebRequest& request, WebResponse& response);

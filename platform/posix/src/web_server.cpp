@@ -3,6 +3,8 @@
  */
 #include "hc/posix/web_server.h"
 
+#include "hc/image/image_body.h"
+
 #include "hc/language_packs.h"
 #include "hc/platform/blob_store.h"
 
@@ -303,6 +305,23 @@ bool WebServer::start() {
 			json_error(res, 413, "api.body_too_large", text.c_str());
 			return;
 		}
+		if (const char* busy = api_.body_refusal(method_of(req.method), req.path.c_str())) {
+			// The previous image is still being stored off the loop (#68).
+			res.set_header("Retry-After", std::to_string(WebApi::kBusyRetryS));
+			json_error(res, 503, "image.busy", busy);
+			return;
+		}
+		// A body above kMaxBody (the runtime image) goes into an ImageBody, which the image service may
+		// keep for its store off the loop (#68) beyond this handler (httplib's buffer ends with it).
+		image::ImageBody large;
+		const char* body = req.body.data();
+		if (req.body.size() > WebApi::kMaxBody) {
+			if (!large.begin(req.body.size(), api_.body_staging(method_of(req.method), req.path.c_str())) ||
+				!large.append(req.body.data(), req.body.size()) || (body = large.finish()) == nullptr) {
+				json_error(res, 507, "api.no_memory", "the controller has not enough free memory for this body");
+				return;
+			}
+		}
 		std::string query;
 		for (const auto& p : req.params) {
 			if (!query.empty()) {
@@ -323,8 +342,9 @@ bool WebServer::start() {
 		request.requested_with = req.has_header("X-Requested-With") ? requested_with.c_str() : nullptr;
 		request.image_signature = req.has_header("X-Image-Signature") ? image_signature.c_str() : nullptr;
 		request.source = req.remote_addr.c_str();
-		request.body = req.body.data();
+		request.body = body;
 		request.body_length = req.body.size();
+		request.body_holder = large.active() ? &large : nullptr;
 		std::unique_ptr<char[]> buffer(new char[kResponseBuffer]);
 		WebResponse response(buffer.get(), kResponseBuffer);
 		if (!executor_.run([&] { api_.handle(request, response); })) {

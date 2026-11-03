@@ -68,7 +68,7 @@ bool EspImageStaging::begin(size_t size, const char** reason) {
 	}
 	bool expected = false;
 	if (!busy_.compare_exchange_strong(expected, true)) {
-		*reason = "another image is being received";
+		*reason = "another image is being received or stored";
 		return false;
 	}
 	size_ = size;

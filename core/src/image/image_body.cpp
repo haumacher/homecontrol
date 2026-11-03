@@ -3,6 +3,7 @@
  */
 #include "hc/image/image_body.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <new>
 
@@ -51,15 +52,20 @@ const char* ImageBody::finish() {
 	if (!active_ || have_ != size_) {
 		return nullptr;
 	}
+	if (text_ != nullptr) {
+		return text_; // finished before (or adopted)
+	}
 	if (staging_ == nullptr) {
 		heap_[size_] = '\0';
-		return heap_;
+		text_ = heap_;
+		return text_;
 	}
 	const char nul = '\0';
 	if (!staging_->append(&nul, 1)) {
 		return nullptr;
 	}
-	return staging_->finish();
+	text_ = staging_->finish();
+	return text_;
 }
 
 void ImageBody::release() {
@@ -67,11 +73,48 @@ void ImageBody::release() {
 		staging_->end();
 		staging_ = nullptr;
 	}
-	delete[] heap_;
+	if (malloced_) {
+		std::free(heap_);
+	} else {
+		delete[] heap_;
+	}
 	heap_ = nullptr;
+	malloced_ = false;
+	text_ = nullptr;
 	size_ = 0;
 	have_ = 0;
 	active_ = false;
+}
+
+void ImageBody::take(ImageBody& other) {
+	if (&other == this) {
+		return;
+	}
+	release();
+	staging_ = other.staging_;
+	heap_ = other.heap_;
+	malloced_ = other.malloced_;
+	text_ = other.text_;
+	size_ = other.size_;
+	have_ = other.have_;
+	active_ = other.active_;
+	other.staging_ = nullptr;
+	other.heap_ = nullptr;
+	other.malloced_ = false;
+	other.text_ = nullptr;
+	other.size_ = 0;
+	other.have_ = 0;
+	other.active_ = false;
+}
+
+void ImageBody::adopt(char* block, size_t size) {
+	release();
+	heap_ = block;
+	malloced_ = true;
+	text_ = block;
+	size_ = size;
+	have_ = size;
+	active_ = block != nullptr;
 }
 
 } // namespace image

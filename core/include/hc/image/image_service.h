@@ -4,6 +4,7 @@
 #ifndef HC_IMAGE_IMAGE_SERVICE_H
 #define HC_IMAGE_IMAGE_SERVICE_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -14,6 +15,7 @@
 #include "hc/history.h"
 #include "hc/image/dynamic_specs.h"
 #include "hc/image/image.h"
+#include "hc/image/image_body.h"
 #include "hc/image/image_store.h"
 #include "hc/image/loader.h"
 #include "hc/image/model_view.h"
@@ -24,6 +26,7 @@
 #include "hc/knx/tunnel.h"
 #include "hc/platform/blob_store.h"
 #include "hc/platform/image_staging.h"
+#include "hc/platform/worker.h"
 #include "hc/rules/engine.h"
 #include "hc/scheduler.h"
 #include "hc/value_store.h"
@@ -57,6 +60,17 @@ namespace image {
 /// RAM: the service tears the new one down and loads the stored (previous) image again; without
 /// one the device has no image. The text is stored only after a successful load.
 ///
+/// The store off the loop (homecontrol #68, doc/image.md "Storing"): writing the text to the flash
+/// takes a few hundred milliseconds and needs no parsed state. With a Worker (set_worker()) and the
+/// received body handed over (load()'s `holder`), the service keeps the body and the worker writes
+/// it while the loop runs on; the image runs from the end of load(), the answer to the deployer
+/// waits for the store (`stored` callback, store_answer()). Meanwhile a further load that would
+/// store, and an unload, are refused as busy (nothing is looked at); a reload for the providers
+/// that fails returns to the image being stored (its text is at hand). ImageStore writes the new
+/// generation first and switches the manifest last, so a restart during the store loads the
+/// previous image. Without a worker, a holder, or when the worker cannot start, the store runs
+/// within load() as before.
+///
 /// Dynamic datapoints (doc/image.md "Dynamic datapoints"): registered DynamicSpecProviders (the
 /// Zigbee adapter) add datapoints of their own. The model is the image's datapoints, at the
 /// image's positions, followed by every provider's specs; a name that appears twice refuses the
@@ -68,7 +82,8 @@ namespace image {
 /// holds the providers' datapoints alone. With a provider registered the service keeps the
 /// applied plan's tables (the "load tables" of the log) for these reloads.
 ///
-/// Threading: everything on the event loop's thread.
+/// Threading: everything on the event loop's thread, except store_pending() (any thread) and the
+/// store's job, which runs on the worker's thread and touches only the held body and the ImageStore.
 class ImageService : public LedInput, private ScheduleListener, private QuietReports, private DynamicSpecListener {
 public:
 	/// Most providers registered at the same time.
@@ -102,13 +117,23 @@ public:
 	/// with one that does not verify as `bad_signature`, both with the key's fingerprint in the
 	/// reason, before anything is parsed or written. An image above kMaxImageBytes is refused as too
 	/// large first. Without a key a signature is not checked (as before the key pairing).
-	bool load(const char* text, size_t length, Source source, bool store, const uint8_t* signature = nullptr);
+	///
+	/// `holder` (optional) is the ImageBody that holds `text` (its text()). With `store`, a holder and
+	/// a worker, the service takes the holder over (ImageBody::take) and stores off the loop: load()
+	/// returns true when the image runs, store_pending() is true, stored_ok() false with store_error()
+	/// "being stored"; when the store has finished, on the loop, the body is released, the outcome is in
+	/// stored_ok()/store_error() and store_answer(), and `stored` (if given) is called. Otherwise the
+	/// holder stays with the caller and the store happens within the call. While a store is pending a
+	/// load with `store` is refused at once (Report::Kind::busy), the running image stays.
+	bool load(const char* text, size_t length, Source source, bool store, const uint8_t* signature = nullptr,
+		ImageBody* holder = nullptr, Callback stored = Callback());
 
 	/// Loads the stored image (the boot load). False without one or when it fails (logged).
 	bool load_stored(Source source);
 
 	/// Removes the image: no datapoints, no rules, no schedules; the persisted values, rings,
 	/// schedule records and parameter overrides of the image are deleted, the stored text removed.
+	/// Refused (false, `error`) while a store is pending.
 	bool unload(const char** error);
 
 	/// Writes what the value store and the history hold pending (before a reboot).
@@ -122,6 +147,26 @@ public:
 	/// Whether the last successful load was stored; the reason when not.
 	bool stored_ok() const { return stored_ok_; }
 	const char* store_error() const { return store_error_; }
+
+	/// The worker that stores off the loop (homecontrol #68; nullptr: within load()). The worker
+	/// outlives the service, or has no job in flight when the service goes.
+	void set_worker(Worker* worker) { worker_ = worker; }
+	/// Whether a store runs off the loop. Atomic: a receiver on another thread may ask before it takes
+	/// a body (WebApi::body_refusal()); the answer may be stale by then, load() decides.
+	bool store_pending() const { return store_pending_.load(std::memory_order_acquire); }
+	/// The ticket of the last store started off the loop (0: none since start); a deferred answer
+	/// asks store_answer() with it.
+	uint32_t store_ticket() const { return answer_.ticket; }
+
+	/// The answer to a deploy whose store ran off the loop.
+	enum class StoreAnswer : uint8_t {
+		pending,    ///< The store of `ticket` runs: ask again.
+		ready,      ///< Written: the deployed image's write_info() members, `stored` its outcome.
+		superseded, ///< A later store began meanwhile: this deploy's outcome is gone (nothing written).
+	};
+	/// Writes the members of write_info() for the deploy of `ticket` (its image's metadata and counts
+	/// as loaded, `stored` and `storeError` as the store ended) into the open object of `json`.
+	StoreAnswer store_answer(uint32_t ticket, JsonWriter& json) const;
 
 	/// For GET /api/image: the stored text's size, a token that changes with it, and its bytes.
 	bool stored(size_t& bytes) const { return store_.stored(bytes); }
@@ -199,6 +244,14 @@ private:
 	struct Composed;
 
 	bool apply(Plan& plan, Source source);
+	/// Starts the store of `text` off the loop with `holder`'s body; false (nothing taken) when it
+	/// cannot (the reason logged): the caller stores within load().
+	bool store_off_loop(const char* text, size_t length, ImageBody& holder, Callback stored);
+	/// The worker's job (on its thread) and its end (on the loop).
+	static void store_job(void* self);
+	void store_done();
+	static void write_info_of(JsonWriter& json, const ImageInfo& info, Source source, bool stored,
+		const char* store_error);
 	/// The signature gate of load(): true when the image may be parsed.
 	bool authorize(const char* text, size_t length, Source source, const uint8_t* signature);
 	bool compose(const Plan* plan, Composed& out, Report& report);
@@ -250,6 +303,26 @@ private:
 	ExternalValues* external_ = nullptr;
 	Mqtt* mqtt_ = nullptr;
 	ImageStaging* staging_ = nullptr;
+	Worker* worker_ = nullptr;
+	/// The store off the loop: the body it reads (taken from the receiver), the text in it, the outcome
+	/// the job writes (read on the loop after `done`), the caller's callback.
+	std::atomic<bool> store_pending_{false};
+	ImageBody pending_body_;
+	const char* pending_text_ = nullptr;
+	size_t pending_length_ = 0;
+	bool job_ok_ = false;
+	const char* job_error_ = nullptr;
+	uint32_t job_ms_ = 0;
+	Callback stored_;
+	/// The deploy whose store ran (or runs) off the loop, for its deferred answer: its image's
+	/// metadata as loaded (the image may change before the answer is fetched), the outcome.
+	struct Answer {
+		uint32_t ticket = 0;
+		ImageInfo info;
+		Source source = Source::api;
+		bool stored = false;
+		char error[64] = {};
+	} answer_;
 	ModelView view_;
 	DynamicSpecProvider* providers_[kMaxProviders] = {};
 	size_t provider_count_ = 0;

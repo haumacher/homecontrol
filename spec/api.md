@@ -541,7 +541,9 @@ The header `X-Image-Signature: <128 hex digits>` carries the image's detached Ed
 (E-Home connection: the request's `signature` member; section "Signed runtime images" below). While
 the device holds the installation key it checks the signature over the body's exact bytes before
 anything is parsed or written; without a key the header is not checked. The device validates the
-image completely, then swaps it in on the event loop and stores it. 200:
+image completely, then swaps it in on the event loop and stores it. The answer comes when the image
+is on the flash (homecontrol #68: the store runs beside the event loop, the image runs already;
+about 0.4 s for 23 KB on the C6): 200:
 
 ```json
 {"ok": true,
@@ -553,7 +555,12 @@ image completely, then swaps it in on the event loop and stores it. 200:
 ```
 
 `stored: false` with `storeError` when the image runs but could not be written (after a restart
-the previous one loads). A refusal changes nothing and reports every problem:
+the previous one loads, complete: a restart during the store also leaves the previous image). While
+the previous deploy is still being stored, a deploy is refused 503 `image.busy` with `Retry-After: 1`
+before its body is read (nothing changes; deploy again). Should an answer be fetched only after a
+later deploy's store began (a deploy within the HTTP server's 100 ms poll of the answer), it is 409
+`image.superseded`: GET /api/status and GET /api/image tell what runs and is stored. A refusal
+changes nothing and reports every problem:
 
 ```json
 {"error": "the image is invalid", "code": "image.invalid",
@@ -570,11 +577,11 @@ major schema version), 422 `image.invalid`, 413 `image.too_large`, 507 `image.no
 body), 403 `image.unsigned` (the device holds the installation key and the image comes without a
 signature), 403 `image.bad_signature` (the signature does not verify under the installation key,
 or the stored key is damaged), 400 `image.bad_signature` (the header is not 128 hex digits, with or
-without a key). Both 403 refusals name the fingerprint of the key the device expects in
+without a key), 503 `image.busy` (above). Both 403 refusals name the fingerprint of the key the device expects in
 `refusals[0].reason`; they are 403, not 401, because a 401 means an expired login to the UI. The size
 limit comes first (413), then the signature, then the loader's refusals: a correctly signed image
 with invalid content gets the loader's code. A load takes up to a few hundred milliseconds on the
-device; requests meanwhile wait.
+device; requests meanwhile wait (the store after it does not hold them).
 
 ### `GET /api/image`
 
@@ -586,7 +593,8 @@ chunked). 404 `image.none` when none is stored. A deployment tool compares it, o
 
 Unloads the image and removes it with the persisted values and history rings; the device returns
 to setup (LED: short pulse). 200 `{"ok": true, "loaded": false}`; 500 `image.storage_error` when
-the stored copy could not be removed (the image is unloaded anyway).
+the stored copy could not be removed (the image is unloaded anyway); 503 `image.busy` with
+`Retry-After: 1` while a deployed image is still being stored (nothing changes).
 
 All three: 404 `image.unavailable` in a build without the image service (POSIX `--demo`), 405
 `api.method_not_allowed` for other methods.
@@ -937,7 +945,8 @@ only. Refused with 403 `ehome.forbidden` (and logged): `/api/auth/*` (onboarding
 `/api/ehome*` (enrollment, disconnect, accepting a key), and writing `update.url` or any `ehome.*`
 setting. One
 request at a time per socket; a second before the response is refused 429 `ehome.busy` (a second
-that announces `length` closes the socket: its binary messages could not be told apart). The device
+that announces `length` closes the socket: its binary messages could not be told apart). The response
+to `PUT /api/image` comes when the image is stored (above), the request is running until then. The device
 pings every 30 s; a pong missing after 10 s closes the socket and the backoff reconnects it.
 
 ### Signed runtime images (issue #35)

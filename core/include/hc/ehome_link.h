@@ -153,6 +153,10 @@ public:
 	/// `response` holds the answer.
 	bool poll_enroll(WebResponse& response);
 
+	/// A deferred answer of the API may be ready (WebApi calls it when a deployed image's store ended,
+	/// homecontrol #68): the answer of the request waiting for it goes out now.
+	void deferred_ready();
+
 	/// The `ehome` member of the status (its value: an object).
 	void write_status(JsonWriter& json) const;
 
@@ -212,6 +216,8 @@ private:
 	void stream_next();
 	void schedule_stream();
 	void drop_request();
+	/// The deferred answer's time limit (WebApi::kDeferredLimitMs) passed.
+	void deferred_timeout();
 	void enroll(const WebRequest& request, WebResponse& response);
 	void disconnect(WebResponse& response);
 	void finish_enroll(int status, const char* code, const char* text);
@@ -279,6 +285,12 @@ private:
 	const char* held_ = nullptr;
 	size_t held_length_ = 0;
 	uint64_t held_ms_ = 0;
+	/// The request's answer waits for the API (WebResponse::deferred: a deployed image's store, #68);
+	/// busy_ stays set until it went out.
+	bool deferring_ = false;
+	uint8_t deferred_kind_ = 0;
+	uint32_t deferred_token_ = 0;
+	TimerHandle deferred_timer_;
 
 	// The enrollment in progress.
 	enum class Enroll : uint8_t { none, running, done };

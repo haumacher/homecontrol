@@ -47,6 +47,7 @@ const char* report_code(Report::Kind kind) {
 		case Report::Kind::apply: return "image.apply_failed";
 		case Report::Kind::unsigned_image: return "image.unsigned";
 		case Report::Kind::bad_signature: return "image.bad_signature";
+		case Report::Kind::busy: return "image.busy";
 		default: return "image.invalid";
 	}
 }
@@ -60,6 +61,7 @@ const char* report_text(Report::Kind kind) {
 		case Report::Kind::apply: return "the image was valid but could not be applied";
 		case Report::Kind::unsigned_image: return "the device holds the installation key: the image needs its signature";
 		case Report::Kind::bad_signature: return "the image's signature does not verify under the installation key";
+		case Report::Kind::busy: return "the previous image is still being stored; deploy again in a moment";
 		default: return "the image is invalid";
 	}
 }
@@ -86,6 +88,10 @@ ImageService::ImageService(Controller& controller, DatapointModel& model, BlobSt
 }
 
 ImageService::~ImageService() {
+	if (store_pending()) {
+		// The worker still reads the held body: it must have finished before (doc of set_worker()).
+		Log::error(kTag, "the image service goes while its image is being stored off the loop");
+	}
 	if (reload_pending_) {
 		controller_.loop().cancel(reload_timer_);
 	}
@@ -129,6 +135,12 @@ void ImageService::start() {
 }
 
 bool ImageService::load_stored(Source source) {
+	if (store_pending()) {
+		// The image being stored off the loop is the one to return to (the flash holds the previous
+		// one or is being switched to this one): its text is at hand, the store keeps running.
+		Log::info(kTag, "the image being stored is loaded again from its received text");
+		return load(pending_text_, pending_length_, source, false);
+	}
 	size_t bytes = 0;
 	if (!store_.stored(bytes)) {
 		return false;
@@ -202,8 +214,18 @@ bool ImageService::authorize(const char* text, size_t length, Source source, con
 	return false;
 }
 
-bool ImageService::load(const char* text, size_t length, Source source, bool store, const uint8_t* signature) {
+bool ImageService::load(const char* text, size_t length, Source source, bool store, const uint8_t* signature,
+	ImageBody* holder, Callback stored) {
 	uint64_t begin = controller_.clock().monotonic_ms();
+	if (store && store_pending()) {
+		// The worker reads the previous image's body: refused before anything is looked at (#68).
+		report_.clear();
+		report_.add(Report::Kind::busy, "", "the previous image (revision %u) is still being stored: deploy again "
+			"in a moment", static_cast<unsigned>(answer_.info.revision));
+		Log::warn(kTag, "image from %s refused: the previous one is still being stored; the %s", source_name(source),
+			loaded_ ? "loaded image stays" : "device keeps no image");
+		return false;
+	}
 	// An image above the limit is refused as too large by the loader, before its signature counts.
 	if (length <= kMaxImageBytes && !authorize(text, length, source, signature)) {
 		return false;
@@ -259,13 +281,19 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	uint64_t t_mqtt = clock.monotonic_ms();
 	view_.build(text, length, model_);
 	uint64_t t_view = clock.monotonic_ms();
-	if (store) {
+	bool background = false;
+	if (store && holder != nullptr && worker_ != nullptr) {
+		background = store_off_loop(text, length, *holder, stored);
+	}
+	if (store && !background) {
 		const char* error = nullptr;
 		stored_ok_ = store_.write(text, length, &error);
 		std::snprintf(store_error_, sizeof(store_error_), "%s", stored_ok_ ? "" : error);
 		if (!stored_ok_) {
 			Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", error);
 		}
+	} else if (background) {
+		// stored_ok_/store_error_ say "being stored" (store_off_loop) until store_done().
 	} else if (source != Source::boot && source != Source::restore) {
 		stored_ok_ = false;
 		std::snprintf(store_error_, sizeof(store_error_), "not stored");
@@ -288,10 +316,11 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	// covers this load (homecontrol #66: it must stay above 30 KB during a deploy).
 	Log::info(kTag, "  heap after the load %u B free, lowest since boot %u B", static_cast<unsigned>(memory.free_bytes),
 		static_cast<unsigned>(memory.min_free_bytes));
-	Log::info(kTag, "  steps: signature %u ms, parse %u ms, apply %u ms, MQTT %u ms, UI model %u ms, store %u ms",
+	Log::info(kTag, "  steps: signature %u ms, parse %u ms, apply %u ms, MQTT %u ms, UI model %u ms, store %u ms%s",
 		static_cast<unsigned>(t_signature - begin), static_cast<unsigned>(t_parse - t_signature),
 		static_cast<unsigned>(t_apply - t_parse), static_cast<unsigned>(t_mqtt - t_apply),
-		static_cast<unsigned>(t_view - t_mqtt), static_cast<unsigned>(t_store - t_view));
+		static_cast<unsigned>(t_view - t_mqtt), static_cast<unsigned>(t_store - t_view),
+		background ? " (started off the loop)" : "");
 	if (info_.zigbee_datapoints > 0 || dynamic_count_ > 0) {
 		Log::info(kTag, "  %u Zigbee binding(s); %u datapoint(s) of the providers", static_cast<unsigned>(info_.zigbee_datapoints),
 			static_cast<unsigned>(dynamic_count_));
@@ -300,6 +329,84 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		changed_();
 	}
 	return true;
+}
+
+bool ImageService::store_off_loop(const char* text, size_t length, ImageBody& holder, Callback stored) {
+	if (holder.text() != text || !holder.active()) {
+		Log::warn(kTag, "the image is stored on the loop: the body handed over does not hold its text");
+		return false;
+	}
+	// The fields the job reads, before it may start.
+	pending_text_ = text;
+	pending_length_ = length;
+	job_ok_ = false;
+	job_error_ = nullptr;
+	job_ms_ = 0;
+	store_pending_.store(true, std::memory_order_release);
+	const char* error = nullptr;
+	if (!worker_->run(Callback{&ImageService::store_job, this}, Callback::member<ImageService, &ImageService::store_done>(this),
+			&error)) {
+		store_pending_.store(false, std::memory_order_release);
+		pending_text_ = nullptr;
+		pending_length_ = 0;
+		Log::warn(kTag, "the image is stored on the loop: the worker did not start (%s)", error != nullptr ? error : "?");
+		return false;
+	}
+	pending_body_.take(holder);
+	stored_ = stored;
+	stored_ok_ = false;
+	std::snprintf(store_error_, sizeof(store_error_), "being stored");
+	answer_.ticket = answer_.ticket + 1 != 0 ? answer_.ticket + 1 : 1;
+	answer_.info = info_;
+	answer_.source = source_;
+	answer_.stored = false;
+	answer_.error[0] = '\0';
+	return true;
+}
+
+void ImageService::store_job(void* context) {
+	// On the worker's thread: only the held text and the ImageStore (doc/persistence.md "Threads").
+	ImageService& self = *static_cast<ImageService*>(context);
+	uint64_t start = self.controller_.clock().monotonic_ms();
+	const char* error = nullptr;
+	self.job_ok_ = self.store_.write(self.pending_text_, self.pending_length_, &error);
+	self.job_error_ = error;
+	self.job_ms_ = static_cast<uint32_t>(self.controller_.clock().monotonic_ms() - start);
+}
+
+void ImageService::store_done() {
+	stored_ok_ = job_ok_;
+	std::snprintf(store_error_, sizeof(store_error_), "%s",
+		job_ok_ ? "" : job_error_ != nullptr ? job_error_ : "the storage refused a write");
+	answer_.stored = stored_ok_;
+	std::snprintf(answer_.error, sizeof(answer_.error), "%s", store_error_);
+	if (stored_ok_) {
+		Log::info(kTag, "image '%s' revision %u stored (%u bytes in %u ms, off the loop)", answer_.info.project_id,
+			static_cast<unsigned>(answer_.info.revision), static_cast<unsigned>(pending_length_),
+			static_cast<unsigned>(job_ms_));
+	} else {
+		Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", store_error_);
+	}
+	pending_text_ = nullptr;
+	pending_length_ = 0;
+	pending_body_.release(); // the staging area is free for the next deploy
+	store_pending_.store(false, std::memory_order_release);
+	Callback stored = stored_;
+	stored_ = Callback();
+	if (stored) {
+		stored();
+	}
+}
+
+ImageService::StoreAnswer ImageService::store_answer(uint32_t ticket, JsonWriter& json) const {
+	if (ticket == 0 || ticket != answer_.ticket) {
+		return StoreAnswer::superseded;
+	}
+	if (store_pending()) {
+		return StoreAnswer::pending;
+	}
+	write_info_of(json, answer_.info, answer_.source, answer_.stored, answer_.error);
+	return StoreAnswer::ready;
 }
 
 void ImageService::apply_settings(const Plan& plan) {
@@ -825,7 +932,7 @@ bool ImageService::fail_applied(Source source, const char* path, const char* for
 	tear_down();
 	if (!restoring_) {
 		size_t bytes = 0;
-		if (store_.stored(bytes)) {
+		if (store_pending() || store_.stored(bytes)) {
 			Log::warn(kTag, "loading the stored image again");
 			restoring_ = true;
 			load_stored(Source::restore);
@@ -872,6 +979,11 @@ void ImageService::tear_down() {
 }
 
 bool ImageService::unload(const char** error) {
+	if (store_pending()) {
+		*error = "the image is still being stored: remove it in a moment";
+		Log::warn(kTag, "unload refused: the image is still being stored");
+		return false;
+	}
 	engine_.flush();
 	bool had = loaded_;
 	loaded_ = false;
@@ -949,30 +1061,35 @@ void ImageService::write_status(JsonWriter& json) const {
 }
 
 void ImageService::write_info(JsonWriter& json) const {
+	write_info_of(json, info_, source_, stored_ok_, store_error_);
+}
+
+void ImageService::write_info_of(JsonWriter& json, const ImageInfo& info, Source source, bool stored,
+	const char* store_error) {
 	json.member("ok", true);
 	json.key("image").begin_object()
-		.member("schemaVersion", info_.schema_version)
-		.member("projectId", info_.project_id)
-		.member("revision", info_.revision)
-		.member("generatedAt", info_.generated_at)
-		.member("generator", info_.generator)
-		.member("name", info_.name)
-		.member("bytes", static_cast<uint32_t>(info_.bytes))
+		.member("schemaVersion", info.schema_version)
+		.member("projectId", info.project_id)
+		.member("revision", info.revision)
+		.member("generatedAt", info.generated_at)
+		.member("generator", info.generator)
+		.member("name", info.name)
+		.member("bytes", static_cast<uint32_t>(info.bytes))
 		.end_object();
 	json.key("counts").begin_object()
-		.member("datapoints", static_cast<uint32_t>(info_.datapoints))
-		.member("knx", static_cast<uint32_t>(info_.knx_datapoints))
-		.member("rules", static_cast<uint32_t>(info_.rules))
-		.member("schedules", static_cast<uint32_t>(info_.schedules))
-		.member("locations", static_cast<uint32_t>(info_.locations))
-		.member("functions", static_cast<uint32_t>(info_.functions))
-		.member("historyRings", static_cast<uint32_t>(info_.history_rings))
-		.member("timeMaster", info_.time_master)
+		.member("datapoints", static_cast<uint32_t>(info.datapoints))
+		.member("knx", static_cast<uint32_t>(info.knx_datapoints))
+		.member("rules", static_cast<uint32_t>(info.rules))
+		.member("schedules", static_cast<uint32_t>(info.schedules))
+		.member("locations", static_cast<uint32_t>(info.locations))
+		.member("functions", static_cast<uint32_t>(info.functions))
+		.member("historyRings", static_cast<uint32_t>(info.history_rings))
+		.member("timeMaster", info.time_master)
 		.end_object();
-	json.member("source", source_name(source_));
-	json.member("stored", stored_ok_);
-	if (!stored_ok_ && store_error_[0] != '\0') {
-		json.member("storeError", store_error_);
+	json.member("source", source_name(source));
+	json.member("stored", stored);
+	if (!stored && store_error != nullptr && store_error[0] != '\0') {
+		json.member("storeError", store_error);
 	}
 }
 

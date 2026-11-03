@@ -168,8 +168,15 @@ bool ImageStore::write(const char* text, size_t length, const char** error) {
 		char name[BlobStore::kMaxNameLength + 1];
 		chunk_name(generation, i, name, sizeof(name));
 		size_t size = length - i * kChunkSize < kChunkSize ? length - i * kChunkSize : kChunkSize;
-		BlobChunk chunk{text + i * kChunkSize, size};
-		BlobStatus status = store_.write(name, &chunk, 1);
+		// In pieces of kPieceSize: the store writes each with a call of its own (LittleFS: one write()
+		// each), so the file system's lock, which the loop may wait for while this runs in the worker
+		// task (#68), is held for one piece at a time, not for the whole chunk.
+		BlobChunk pieces[kChunkSize / kPieceSize];
+		size_t count = 0;
+		for (size_t at = 0; at < size; at += kPieceSize) {
+			pieces[count++] = BlobChunk{text + i * kChunkSize + at, size - at < kPieceSize ? size - at : kPieceSize};
+		}
+		BlobStatus status = store_.write(name, pieces, count);
 		if (status != BlobStatus::ok) {
 			Log::error(kTag, "storing the image: chunk %s: %s; the stored image is unchanged", name,
 				blob_status_name(status));
