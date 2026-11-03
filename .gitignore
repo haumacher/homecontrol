@@ -29,3 +29,11 @@ homecontrol.settings
 # Language packs copied by the POSIX build from web/ui/lang (doc/i18n.md); only the base is versioned here
 /web/ui/dist/lang/*
 !/web/ui/dist/lang/en.json
+# The WebAssembly block spike (spike/blocks-wasm, doc/blocks-wasm.md): build outputs and fetched code
+/spike/blocks-wasm/esp/build-*/
+/spike/blocks-wasm/esp/managed_components/
+/spike/blocks-wasm/esp/sdkconfig
+/spike/blocks-wasm/esp/sdkconfig.old
+/spike/blocks-wasm/blocks/rust/target/
+/spike/blocks-wasm/blocks/c/bulk.c
+/spike/blocks-wasm/java/target/

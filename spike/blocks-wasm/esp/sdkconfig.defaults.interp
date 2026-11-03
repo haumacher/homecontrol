@@ -1,0 +1,5 @@
+# Copyright (c) 2026 Bernhard Haumacher
+# Fast interpreter only.
+# CONFIG_WAMR_ENABLE_AOT is not set
+CONFIG_WAMR_ENABLE_INTERP=y
+CONFIG_WAMR_INTERP_FAST=y

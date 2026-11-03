@@ -1,0 +1,5 @@
+# Copyright (c) 2026 Bernhard Haumacher
+# Fast interpreter and AOT (the measurement app).
+CONFIG_WAMR_ENABLE_AOT=y
+CONFIG_WAMR_ENABLE_INTERP=y
+CONFIG_WAMR_INTERP_FAST=y

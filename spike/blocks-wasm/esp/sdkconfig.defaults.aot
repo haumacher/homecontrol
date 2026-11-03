@@ -1,0 +1,4 @@
+# Copyright (c) 2026 Bernhard Haumacher
+# AOT only.
+CONFIG_WAMR_ENABLE_AOT=y
+# CONFIG_WAMR_ENABLE_INTERP is not set

@@ -92,6 +92,10 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   console, `doc/core.md` for the core and its event loop, `doc/ota.md` for the OTA update and the
   firmware upload, `doc/i18n.md` for the UI languages and language packs, `doc/ehome.md` for the
   E-Home connection.
+- `spike/blocks-wasm/` — the WebAssembly block spike (#59, `doc/blocks-wasm.md`): the draft block
+  ABI, the test block in C/Rust/Zig with its built modules, the host test on WAMR
+  (`spike/blocks-wasm/host`, its own CMake project), the Chicory test (`java/`) and the C6
+  measurement app (`esp/`, flashed to ota_0 only). Not part of the core or the firmware build.
 - `third_party/` — vendored code with its license (doctest, the unit test framework; cpp-httplib,
   the POSIX build's HTTP server; Monocypher 4.0.2, the core's Ed25519 for signed runtime images and
   update manifests, compiled as C into both builds).

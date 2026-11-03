@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+	Copyright (c) 2026 Bernhard Haumacher
+
+	The Java side of the WebAssembly block spike (issue #59, doc/blocks-wasm.md): the same .wasm
+	files as the device and the host test, run in Chicory (pure Java, no JNI), replaying
+	fixtures/series.csv to the bits of fixtures/expected.csv.
+
+	mvn -f spike/blocks-wasm/java/pom.xml test
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<groupId>org.homecontrol.spike</groupId>
+	<artifactId>blocks-wasm-java</artifactId>
+	<version>0.1.0-SNAPSHOT</version>
+
+	<properties>
+		<maven.compiler.release>21</maven.compiler.release>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<chicory.version>1.7.5</chicory.version>
+	</properties>
+
+	<dependencies>
+		<dependency>
+			<groupId>com.dylibso.chicory</groupId>
+			<artifactId>runtime</artifactId>
+			<version>${chicory.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<version>5.11.4</version>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<version>3.5.2</version>
+				<configuration>
+					<systemPropertyVariables>
+						<spike.dir>${project.basedir}/..</spike.dir>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+</project>

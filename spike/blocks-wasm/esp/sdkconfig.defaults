@@ -1,0 +1,38 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# The spike app's settings (issue #59): the controller's flash, console and partition table, so the
+# app runs from ota_0 at 0x100000 under the bootloader already on the board, and the controller's
+# memory protection (PMP IRAM/DRAM split: the heap is not executable) and task watchdog.
+
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../platform/esp/partitions-4MB.csv"
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# The optimization level stays the IDF default (-Og), as in the controller.
+
+# As in the controller: FreeRTOS trace facility (WAMR's ESP port reads the stack base through
+# vTaskGetInfo), the task watchdog panics after 10 s, the PMP split stays on.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT=y
+
+# WAMR: no WASI, no libc builtins, no pthread library for modules.
+CONFIG_WAMR_BUILD_RELEASE=y
+# CONFIG_WAMR_ENABLE_LIBC_BUILTIN is not set
+# CONFIG_WAMR_ENABLE_LIBC_WASI is not set
+# CONFIG_WAMR_ENABLE_LIB_PTHREAD is not set
+# CONFIG_WAMR_ENABLE_MULTI_MODULE is not set
+# CONFIG_WAMR_ENABLE_REF_TYPES is not set
+# CONFIG_WAMR_ENABLE_SHARED_MEMORY is not set
+CONFIG_WAMR_INTERP_LOADER_NORMAL=y
+
+# The spike writes its scratch region (AOT code to execute in place, a LittleFS) into the unused
+# tail of ota_0, the partition it runs from; the IDF aborts such a write by default. Spike only:
+# the controller would keep modules in a data partition.
+CONFIG_SPI_FLASH_DANGEROUS_WRITE_ALLOWED=y

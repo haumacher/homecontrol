@@ -192,3 +192,28 @@ outside world (weather, external services).
   firmware refuses an image that uses them, and a 1.2 firmware names the versions when a newer image
   meets its strict objects; the device reports the newest schema it reads (`schema`), so E-Home
   warns before a deploy.
+- **2026-11-03 — Loaded blocks as WebAssembly: go, with the WAMR interpreter (recommendation of
+  the spike #59 for the author; not yet adopted).** Measured on the 4 MB C6 (doc/blocks-wasm.md).
+  - Recommended: WAMR 2.4.5, unpatched, with the classic interpreter. Its flash cost is 66.6 KB of
+    the about 260 KB free in ota_0.
+  - Every call has a budget through instruction metering. An endless loop stops with its reason
+    and the controller keeps running.
+  - Every trap tested (out of bounds, stack overflow, `unreachable`, division by zero) stops only
+    its block.
+  - Steady state allocates nothing.
+  - A module is shrunk to its data plus its stack (custom page sizes are supported by neither WAMR
+    nor Chicory). There is one module instance per block type, and its blocks are state records
+    in it: 8 room controllers cost 12 KB.
+  - The same `.wasm` from C, Rust or Zig gives bit-identical outputs on the device, on the host and
+    in Chicory (pure Java, for E-Home's simulation).
+  - Rejected: AOT. It is faster, but it cannot be stopped in a loop (no metering, terminate
+    ignored), and it needs an executable flash region in the partition table.
+  - Alternative: the fast interpreter, at about 25 % less time per call, with 4 times slower loads
+    and more RAM for larger modules.
+  - Conditions:
+    - the event loop becomes a pthread, which WAMR requires on ESP-IDF;
+    - the native stack boundary is set once (without it every call costs 200 µs more);
+    - a fault stops every block of its type, and restart instantiates again.
+  - Limit: heap, the same on every C6 board. About 30 KB for loaded blocks of the controller's
+    110 KB free: two or three small types; a 20 KB module costs about 38 KB.
+  - The 4 MB board is not ruled out, and an 8 MB board would not add RAM.

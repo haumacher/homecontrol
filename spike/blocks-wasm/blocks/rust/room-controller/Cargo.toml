@@ -1,0 +1,21 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# The spike's PI room controller in Rust (issue #59, doc/blocks-wasm.md): the same block as
+# blocks/c/room_controller.c against the draft ABI, no_std, no WASI, no allocator.
+[package]
+name = "room-controller"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
+debug = false
+strip = true

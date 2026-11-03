@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# The same memory layout as the C blocks (build-blocks.sh): the stack below the data, 4 KB, one
+# page that never grows, __heap_base and __data_end exported so WAMR shrinks the memory.
+[target.wasm32-unknown-unknown]
+rustflags = [
+	"-C", "target-cpu=mvp",
+	"-C", "link-arg=--stack-first",
+	"-C", "link-arg=-zstack-size=4096",
+	"-C", "link-arg=--initial-memory=65536",
+	"-C", "link-arg=--max-memory=65536",
+	"-C", "link-arg=--export=__heap_base",
+	"-C", "link-arg=--export=__data_end",
+]
