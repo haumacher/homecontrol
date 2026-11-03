@@ -342,7 +342,7 @@ does not know is left out.
 {"uptime_s": 3725, "now_ms": 3725012,
  "device": {"name", "version", "build", "ui"}, "boot": {...}, "update": {...},
  "chip": {"available": true, "model": "ESP32-C6", "revision": "v0.1", "cores": 1, "cpu_mhz": 160,
-          "flash_size": 4194304, "flash_mode": "dio", "flash_freq": "80m", "idf": "v5.3", "ota_state": "valid"},
+          "flash_size": 4194304, "flash_mode": "dio", "flash_freq": "80m", "idf": "v5.5.6", "ota_state": "valid"},
  "led": "ready", "time": {"synchronized": true, "local": "..."}, "improv": {"active": false},
  "memory": {"available": true, "free": 181240, "min_free": 150112, "largest": 90100, "total": 401000},
  "temperature": {"available": true, "celsius": 41.2, "accuracy": 2, "source": "die sensor"},

@@ -47,6 +47,8 @@ Sizes measured on 2026-10-17 (esp32c6, ESP-IDF 5.3):
 | updater with the upload server (esp_http_server, page; 2026-10-18) | 825,712 B (0xC9970), +30,288 B over the 795,424 B before it | 960 KB | 16 % |
 | application (`homecontrol.bin`, with the OTA client) | 1,239,776 B (0x12EAE0) | 2752 KB | 56 % |
 | application before this package (single-app table) | 1,034,576 B | | |
+| updater on ESP-IDF 5.5.6 (2026-11-03) | 845,872 B (0xCE430) | 960 KB | 14 % |
+| application on ESP-IDF 5.5.6 with Zigbee and E-Home (2026-11-03), 2,355,696 B on 5.3 before | 2,393,856 B (0x248700) | 2752 KB | 15 % |
 
 The updater partition is the measured updater plus about 20 %, rounded up to 64 KB; the 4 MB
 application has 2752 KB (originally everything that left the storage at least 256 KB; the storage

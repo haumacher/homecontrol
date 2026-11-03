@@ -36,12 +36,12 @@ jobs:
       - name: Build the application
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.3
+          esp_idf_version: v5.5.6
           target: esp32c6
           path: platform/esp
       - name: Build the OTA updater
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.3
+          esp_idf_version: v5.5.6
           target: esp32c6
           path: platform/esp/updater

@@ -102,8 +102,9 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
 
 - **Host**: `cmake -S platform/posix -B build -G Ninja && cmake --build build && ctest --test-dir build --output-on-failure`.
   The core's tests are the fast edit loop; run them after every core change.
-- **ESP-IDF v5.3** is installed at `~/tools/esp/esp-idf` (tools in `~/.espressif`). Every Bash
-  call that uses it must source it first: `source ~/tools/esp/esp-idf/export.sh` (the shell state
+- **ESP-IDF v5.5.6** is installed at `~/tools/esp/esp-idf-v5.5` (tools in `~/.espressif`; the v5.3 in
+  `~/tools/esp/esp-idf` belongs to other projects). Every Bash
+  call that uses it must source it first: `source ~/tools/esp/esp-idf-v5.5/export.sh` (the shell state
   does not persist between calls). Each target builds in its own directory, with its sdkconfig
   inside it (settings belong in `sdkconfig.defaults`):
   `cd platform/esp && idf.py -B build-esp32c6 set-target esp32c6 && idf.py -B build-esp32c6 build`

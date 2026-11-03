@@ -174,3 +174,10 @@ outside world (weather, external services).
   by the manifest's SHA-256, the updater unchanged. Ed25519 is Monocypher 4.0.2 (BSD-2/CC0, audited,
   two C files, verify and sign) in `third_party/`: the core keeps no mbedTLS. spec/api.md "Signed
   runtime images", doc/ota.md "Manifest signature".
+- **2026-11-03 — ESP-IDF 5.5.6 instead of 5.3 (#49).** Supersedes "No IDF upgrade" of 2026-10-17.
+  IDF 5.3's WebSocket transport keeps the bytes that arrive with the handshake answer in its own
+  buffer, but `ws_poll_read` asks only the socket, so a challenge E-Home sends right after the 101
+  waited for the next TCP segment and the authentication timed out on every reconnect. The fix is
+  upstream in 5.5.5 and later (no 5.3.x or 5.4.x has it); upgrading beats patching the IDF. The
+  Zigbee SDK stays on the 1.6 line (ZBOSS), which declares `idf >= 5.0` and builds unchanged; the
+  application grew by 38 KB (doc/ota.md).

@@ -21,14 +21,15 @@ platform only moves requests and frames between the stack and the event loop.
 The image format of the bindings and the JSON of the database and the adapter are in
 `spec/zigbee.md`.
 
-## Decision: esp-zigbee-lib 1.6 (ZBOSS) on IDF 5.3
+## Decision: esp-zigbee-lib 1.6 (ZBOSS) on IDF 5.5
 
 Espressif ships two lines of its Zigbee SDK. The 2.x line (Espressif's own stack) recommends IDF
 5.5.4; the 1.x line is the long-term-support line on the ZBOSS stack, recommends IDF 5.3.2 and
-declares `idf >= 5.0`. The project builds on IDF 5.3.0, so it takes `espressif/esp-zigbee-lib ~1.6.8`
+declares `idf >= 5.0`. The project took it on IDF 5.3.0 and keeps it on IDF 5.5.6 (the upgrade of
+2026-11-03, ROADMAP.md), so it takes `espressif/esp-zigbee-lib ~1.6.8`
 with `espressif/esp-zboss-lib ~1.6.4` (`main/idf_component.yml`, only for the targets esp32c6 and
-esp32h2, pinned in `dependencies.lock.esp32c6`). It builds and links on 5.3.0. Moving to 2.x means
-an IDF upgrade first; the core does not depend on the SDK, only `hc_zigbee` does.
+esp32h2, pinned in `dependencies.lock.esp32c6`). It builds and links on 5.3.0 and 5.5.6. Moving to 2.x is
+possible on IDF 5.5 now, but is a decision of its own; the core does not depend on the SDK, only `hc_zigbee` does.
 
 The SDK runs as coordinator (`CONFIG_ZB_ZCZR`) on the native radio (`CONFIG_ZB_RADIO_NATIVE`).
 Green Power stays enabled (the SDK's default for a coordinator: the Green Power proxy belongs to
