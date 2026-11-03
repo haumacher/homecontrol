@@ -616,7 +616,7 @@ void LiveFeed::pump() {
 			json.release();
 			bool done = id >= model.size();
 			json.end_array().member("done", done).end_object();
-			if (!c.transport->ws_send(c.handle, out_, json.length())) {
+			if (!c.transport->ws_send_bulk(c.handle, out_, json.length())) {
 				blocked = true; // retried on writable() or the next tick
 				break;
 			}
@@ -732,7 +732,7 @@ void LiveFeed::monitor_flush() {
 				continue;
 			}
 			json.end_array().member("next", next).end_object();
-			if (!c.transport->ws_send(c.handle, out_, json.length())) {
+			if (!c.transport->ws_send_bulk(c.handle, out_, json.length())) {
 				blocked = true; // retried on writable() or the next tick; the ring may overtake it (gap)
 				break;
 			}

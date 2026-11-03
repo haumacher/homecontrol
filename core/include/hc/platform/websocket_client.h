@@ -22,6 +22,8 @@ public:
 	virtual void ws_client_binary(const uint8_t* data, size_t length, bool last) = 0;
 	/// A pong arrived (the answer to send_ping()).
 	virtual void ws_client_pong() = 0;
+	/// The client sent a queued message, so its send room grew (once per want_writable()).
+	virtual void ws_client_writable() = 0;
 	/// The connection attempt failed or an established connection ended; `reason` says why
 	/// ("cannot connect: ESP_ERR_ESP_TLS_FAILED_CONNECT_TO_HOST", "closed by the server (1008)",
 	/// "a text message longer than 4096 bytes"). After it the client is idle until the next
@@ -45,9 +47,12 @@ protected:
 /// Incoming text messages are reassembled up to kMaxText bytes; a longer one ends the session (the
 /// reason names the limit). Binary messages are handed in pieces, unbounded.
 ///
-/// Sending happens on the loop's thread; the platform may block for a bounded time (the ESP client
-/// writes into the TLS socket with a timeout; a write that times out ends the session). A send
-/// that returns false was not sent (not connected, the platform cannot take it now).
+/// Sending: a send queues one whole message and never blocks the loop on the network; messages go
+/// out whole and in the order they were queued (the ESP client copies them into a bounded send
+/// queue that a task of its own drains; a write that times out there ends the session). A send
+/// that returns false was not queued, nothing of it is sent: not connected, or the queue has no
+/// room for it now (send_room()). want_writable() then asks for ws_client_writable() once the
+/// queue has sent a message. A platform that sends synchronously (POSIX) never runs out of room.
 ///
 /// Every call is made on the event loop's thread.
 class WebSocketClient {
@@ -71,6 +76,13 @@ public:
 
 	/// Sends a ping frame; ws_client_pong() reports the answer.
 	virtual bool send_ping() = 0;
+
+	/// The longest message a send takes now (0: none; SIZE_MAX: the platform sends synchronously).
+	virtual size_t send_room() = 0;
+
+	/// Asks for one ws_client_writable() after the queue has sent its next message (at once when it
+	/// sent one since the last send_room() or refused send). Ignored without a session or a queue.
+	virtual void want_writable() = 0;
 
 	/// Ends the session with a close frame carrying `code` and `reason` (best effort) and drops the
 	/// connection. No callback follows. Never blocks the loop for the closing handshake.

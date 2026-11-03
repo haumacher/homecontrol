@@ -24,6 +24,12 @@ public:
 	/// client is gone): the feed then resynchronizes the client later (LiveFeed::writable()).
 	virtual bool ws_send(uint32_t client, const char* text, size_t length) = 0;
 
+	/// Queues a message of a stream the feed resumes by itself (snapshot chunks, monitor batches):
+	/// a transport with a bounded queue may refuse it earlier than ws_send(), keeping room for single
+	/// messages and the transport's own (an E-Home response). The feed retries it on
+	/// LiveFeed::writable() or the next tick. By default the same as ws_send().
+	virtual bool ws_send_bulk(uint32_t client, const char* text, size_t length) { return ws_send(client, text, length); }
+
 	/// Sends a close frame with `code` and `reason` and closes the connection. The platform reports
 	/// LiveFeed::closed() afterwards as for any other close.
 	virtual void ws_close(uint32_t client, uint16_t code, const char* reason) = 0;

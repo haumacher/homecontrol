@@ -44,6 +44,9 @@ public:
 	bool send_text(const char* text, size_t length) override;
 	bool send_binary(const uint8_t* data, size_t length) override;
 	bool send_ping() override;
+	/// Writes are synchronous (the kernel's socket buffer is the queue): never short of room.
+	size_t send_room() override { return SIZE_MAX; }
+	void want_writable() override {}
 	void close(uint16_t code, const char* reason) override;
 
 	// Implementation: the state shared with the reader thread (websocket_client.cpp).

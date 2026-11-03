@@ -117,6 +117,15 @@ public:
 	static constexpr size_t kMaxEnrollAnswer = 2048;
 	/// The live feed's client handle of the E-Home socket.
 	static constexpr uint32_t kFeedHandle = 0xE4031u;
+	/// The response envelope's prefix and the whole envelope (the prefix, the body, the closing brace).
+	static constexpr size_t kPrefix = 96;
+	static constexpr size_t kOutBytes = kPrefix + kMaxResponseBody + 2;
+	/// Room the live feed's bulk messages (snapshot chunks, monitor batches) leave in the client's
+	/// send queue: a whole response and the small messages beside it.
+	static constexpr size_t kBulkReserve = kOutBytes + 256;
+	/// How long an answer waits for room in the client's send queue before the link gives up on the
+	/// connection.
+	static constexpr uint32_t kHoldMs = 10000;
 
 	EhomeLink(WebApi& api, LiveFeed& feed, WebSocketClient& client, HttpFetcher& fetcher);
 	~EhomeLink();
@@ -164,10 +173,12 @@ public:
 	void ws_client_text(const char* text, size_t length) override;
 	void ws_client_binary(const uint8_t* data, size_t length, bool last) override;
 	void ws_client_pong() override;
+	void ws_client_writable() override;
 	void ws_client_closed(const char* reason) override;
 
 	// WsTransport: the live feed's messages to E-Home
 	bool ws_send(uint32_t client, const char* text, size_t length) override;
+	bool ws_send_bulk(uint32_t client, const char* text, size_t length) override;
 	void ws_close(uint32_t client, uint16_t code, const char* reason) override;
 
 	// FetchReceiver: E-Home's answer to the enrollment
@@ -201,6 +212,8 @@ private:
 	void finish_enroll(int status, const char* code, const char* text);
 	void enroll_timeout();
 	bool send_text(const char* text, size_t length);
+	bool send_or_hold(const char* text, size_t length);
+	void release_held();
 	void key_message(const JsonSpan& message);
 	void key_route(const WebRequest& request, WebResponse& response);
 	void drop_pending_key(const char* why);
@@ -253,7 +266,13 @@ private:
 	size_t stream_length_ = 0;
 	size_t stream_sent_ = 0;
 	bool stream_posted_ = false;
+	bool stream_waiting_ = false; ///< The next piece waits for room in the send queue.
 	TimerHandle stream_timer_;
+	/// The answer (or a streamed answer's header) that found no room in the client's send queue: in
+	/// out_, sent on ws_client_writable() or the tick before any further message of the live feed.
+	const char* held_ = nullptr;
+	size_t held_length_ = 0;
+	uint64_t held_ms_ = 0;
 
 	// The enrollment in progress.
 	enum class Enroll : uint8_t { none, running, done };
@@ -268,10 +287,9 @@ private:
 	FetchBody answer_body_{nullptr, 0, "E-Home's answer"};
 	void free_answer();
 
-	/// The response envelope: the prefix, the body WebApi writes, the closing brace. On the heap
-	/// while a session runs (connect() to its end), so a controller without E-Home pays nothing.
-	static constexpr size_t kPrefix = 96;
-	static constexpr size_t kOutBytes = kPrefix + kMaxResponseBody + 2;
+	/// The response envelope (kOutBytes): the prefix, the body WebApi writes, the closing brace. On
+	/// the heap while a session runs (connect() to its end), so a controller without E-Home pays
+	/// nothing.
 	char* out_ = nullptr;
 	void free_out();
 };

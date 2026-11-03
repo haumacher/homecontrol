@@ -141,9 +141,22 @@ after the TLS handshake and the heap at that moment.
   answer streams into `EhomeLink`'s own 2 KB buffer, `kMaxEnrollAnswer`, refused beyond it)
   and the `EhomeLink`. The client task reassembles a text message (at most 4096 bytes) and hands
   binary pieces (1 KB, straight from the client's receive buffer) to the loop through the
-  `LoopQueue`, waiting until the loop consumed each, so one slot carries everything in order. The
-  loop sends under the client's separate send lock (`CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK`) with
-  a 2 s timeout. Closing hands the session to a short-lived task that sends the close frame, stops
+  `LoopQueue`, waiting until the loop consumed each, so one slot carries everything in order.
+  Sending (issue #55): the loop copies each message whole into the session's 6 KB send queue (a
+  ring, a 4-byte header per message) or the send is refused (`send_room()`); the session's sender
+  task `hc_ehome_tx` (priority 3, below the loop and the network tasks) drains it in order under
+  the client's separate send lock (`CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK`) with a 2 s timeout, a
+  message that wraps around the ring's end as two fragments of one message, and posts
+  `ws_client_writable()` after a message when the core asked (`want_writable()`). The write is
+  what the loop must not wait for: on the C6 it costs about 6 ms of CPU per 1.3 KB message (the
+  TLS record and the frame mask), and a message that finds lwIP's send buffer below its low-water
+  mark (`TCP_SNDLOWAT`, 2881 of 5760 B) waits about 60 ms in `esp_transport_poll_write` for the
+  server's ACK. The live feed's bulk messages (the snapshot's chunks, the monitor's batches) are
+  admitted only while they leave `EhomeLink::kBulkReserve` (a whole answer and 256 B) free; an
+  answer that finds no room is held in the response envelope and sent first on writable or the
+  next tick (the feed waits behind it; after `kHoldMs`, 10 s, the link gives up on the
+  connection), a streamed answer's next piece and a ping wait for room the same way. Closing hands
+  the session to its sender task, which drops what is still queued, sends the close frame, stops
   the client task and frees everything, so the loop never waits for the network. The library's own
   ping and reconnect are off: the core pings and backs off.
 - **POSIX** (`platform/posix`): `PosixWebSocketClient` on the core's WebSocket codec (client role)
@@ -162,9 +175,11 @@ Nothing is allocated while the controller is not enrolled or the connection is o
 | Session: the text reassembly buffer and the hand-over slot (heap) | about 4400 |
 | Client receive and send buffers (`buffer_size` 1024 each) | 2048 |
 | Client task stack (issue #45: 2612 B used against the development CA) | 5120 |
+| Send queue (issue #55, heap per session) | 6144 |
+| Sender task stack (issue #55: 1572 B used, a session with the snapshot) and its TCB | 3072 + about 350 |
 | Client structure, configuration, its event loop, locks | about 1500 |
 | TLS steady state with dynamic buffers (context, session, record buffers per record) | 3000 to 5000 |
-| **Connected, total** | **about 20 000 to 22 000** |
+| **Connected, total** | **about 29 500 to 31 500** |
 | A request body announced with `length` (heap, freed after the answer) | its length (the image: up to 256 KB, 507 when no block is that large) |
 
 The TLS handshake is the peak: with `CONFIG_MBEDTLS_DYNAMIC_BUFFER` the incoming record buffer is

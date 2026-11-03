@@ -97,7 +97,12 @@ loop longer than 25 ms is logged with the address of its function (`slow timer|p
 handler 0x… took N ms`, and `slow message handler` for the ESP's `LoopQueue`): `addr2line -C -f -e
 homecontrol.elf 0x…` names it, typically `Callback::invoke_member<hc::X, &hc::X::method>`. That is
 how #50 found the scheduler's 333 ms evaluation (the sun computed for ten dates per astro entry,
-now cached by the TimeService).
+now cached by the TimeService), and #55 the live feed's `pump` holding the loop 111 and 164 ms when
+E-Home joined: the E-Home client wrote each snapshot chunk into the TLS socket on the loop (about
+6 ms of CPU each, and about 60 ms waiting for the server's ACK when lwIP's send buffer was below its
+low-water mark); it now queues and a task of its own writes (doc/ehome.md, "The platforms").
+On the device no handler on the loop writes to a WebSocket: both transports queue (the POSIX build
+writes synchronously into the kernel's socket buffer).
 
 ## Tests
 

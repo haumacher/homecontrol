@@ -403,12 +403,22 @@ void EhomeLink::tick() {
 			if (pong_due_ms_ != 0 && now >= pong_due_ms_) {
 				fail("no pong from E-Home within %u s", static_cast<unsigned>(kPongTimeoutMs / 1000));
 			} else if (now >= ping_at_ms_) {
-				ping_at_ms_ = now + kPingMs;
-				if (!client_.send_ping()) {
+				if (client_.send_ping()) {
+					ping_at_ms_ = now + kPingMs;
+					if (pong_due_ms_ == 0) {
+						pong_due_ms_ = now + kPongTimeoutMs;
+					}
+				} else if (client_.send_room() == 0) {
+					Log::debug(kTag, "the send queue is full: the ping goes out with the next tick");
+				} else {
 					fail("cannot send the ping");
-				} else if (pong_due_ms_ == 0) {
-					pong_due_ms_ = now + kPongTimeoutMs;
+					break;
 				}
+			}
+			release_held();
+			if (stream_waiting_) {
+				stream_waiting_ = false;
+				schedule_stream(); // the writable callback could not be posted
 			}
 			break;
 	}
@@ -446,8 +456,62 @@ void EhomeLink::ws_client_pong() {
 	pong_due_ms_ = 0;
 }
 
+void EhomeLink::ws_client_writable() {
+	if (phase_ != Phase::connected) {
+		return;
+	}
+	release_held();
+	if (stream_waiting_) {
+		stream_waiting_ = false;
+		schedule_stream();
+	}
+	feed_.writable();
+}
+
 bool EhomeLink::send_text(const char* text, size_t length) {
-	return socket_ && client_.send_text(text, length);
+	if (!socket_) {
+		return false;
+	}
+	if (client_.send_text(text, length)) {
+		return true;
+	}
+	client_.want_writable(); // a full queue: whoever was refused retries on ws_client_writable()
+	return false;
+}
+
+bool EhomeLink::send_or_hold(const char* text, size_t length) {
+	if (send_text(text, length)) {
+		return true;
+	}
+	if (phase_ != Phase::connected) {
+		return false; // not a matter of room: the connection is gone
+	}
+	held_ = text;
+	held_length_ = length;
+	held_ms_ = api_.controller().clock().monotonic_ms();
+	Log::debug(kTag, "request %s: the answer (%u bytes) waits for room in the send queue", request_id_,
+		static_cast<unsigned>(length));
+	return true;
+}
+
+void EhomeLink::release_held() {
+	if (held_ == nullptr) {
+		return;
+	}
+	if (!send_text(held_, held_length_)) {
+		if (api_.controller().clock().monotonic_ms() - held_ms_ >= kHoldMs) {
+			fail("the answer to request %s (%u bytes) found no room in the send queue within %u s", request_id_,
+				static_cast<unsigned>(held_length_), static_cast<unsigned>(kHoldMs / 1000));
+		}
+		return;
+	}
+	held_ = nullptr;
+	held_length_ = 0;
+	if (streaming_) {
+		schedule_stream(); // the held message was the stream's header
+	} else {
+		busy_ = false;
+	}
 }
 
 void EhomeLink::ws_client_text(const char* text, size_t length) {
@@ -567,7 +631,27 @@ void EhomeLink::handshake_message(const JsonSpan& message, const JsonSpan& type)
 
 bool EhomeLink::ws_send(uint32_t client, const char* text, size_t length) {
 	(void)client;
-	return phase_ == Phase::connected && send_text(text, length);
+	if (phase_ != Phase::connected) {
+		return false;
+	}
+	if (held_ != nullptr) {
+		client_.want_writable(); // the held answer goes first
+		return false;
+	}
+	return send_text(text, length);
+}
+
+bool EhomeLink::ws_send_bulk(uint32_t client, const char* text, size_t length) {
+	(void)client;
+	if (phase_ != Phase::connected) {
+		return false;
+	}
+	size_t room = client_.send_room();
+	if (held_ != nullptr || room < length || room - length < kBulkReserve) {
+		client_.want_writable();
+		return false;
+	}
+	return send_text(text, length);
 }
 
 void EhomeLink::ws_close(uint32_t client, uint16_t code, const char* reason) {
@@ -589,6 +673,9 @@ void EhomeLink::drop_request() {
 	discard_ = 0;
 	busy_ = false;
 	streaming_ = false;
+	stream_waiting_ = false;
+	held_ = nullptr;
+	held_length_ = 0;
 	loop_.cancel(stream_timer_);
 	stream_timer_ = TimerHandle();
 }
@@ -795,23 +882,27 @@ void EhomeLink::send_response(WebResponse& response) {
 		Log::debug(kTag, "request %s: GET %s → %d", request_id_, path_, response.status);
 	}
 	if (response.stream) {
-		char header[256];
-		JsonWriter json(header, sizeof(header));
+		// The header goes into out_ (the pieces follow there once it is sent), so it can be held.
+		char* header = out_;
+		JsonWriter json(header, kPrefix + kMaxResponseBody);
 		json.begin_object().member("type", "response").key("id").raw(request_id_, std::strlen(request_id_))
 			.member("status", static_cast<int32_t>(response.status))
 			.member("length", static_cast<uint64_t>(response.stream_length))
 			.member("content_type", response.content_type)
 			.end_object();
-		if (json.overflowed() || !send_text(header, json.length())) {
-			Log::warn(kTag, "the answer to request %s was not sent", request_id_);
-			busy_ = false;
-			return;
-		}
 		streaming_ = true;
 		stream_token_ = response.stream_token;
 		stream_length_ = response.stream_length;
 		stream_sent_ = 0;
-		schedule_stream();
+		if (json.overflowed() || !send_or_hold(header, json.length())) {
+			Log::warn(kTag, "the answer to request %s was not sent", request_id_);
+			streaming_ = false;
+			busy_ = false;
+			return;
+		}
+		if (held_ == nullptr) {
+			schedule_stream();
+		}
 		return;
 	}
 	char prefix[kPrefix];
@@ -837,9 +928,11 @@ void EhomeLink::send_response(WebResponse& response) {
 	char* start = body - n;
 	std::memcpy(start, prefix, static_cast<size_t>(n));
 	body[body_length] = '}';
-	busy_ = false;
-	if (!send_text(start, static_cast<size_t>(n) + body_length + 1)) {
+	if (!send_or_hold(start, static_cast<size_t>(n) + body_length + 1)) {
 		Log::warn(kTag, "the answer to request %s (%d) was not sent", request_id_, response.status);
+		busy_ = false;
+	} else if (held_ == nullptr) {
+		busy_ = false;
 	}
 }
 
@@ -863,6 +956,11 @@ void EhomeLink::stream_next() {
 	size_t want = stream_length_ - stream_sent_;
 	if (want > kStreamPiece) {
 		want = kStreamPiece;
+	}
+	if (client_.send_room() < want) {
+		stream_waiting_ = true; // the next piece when the queue has room for it
+		client_.want_writable();
+		return;
 	}
 	size_t got = 0;
 	if (!api_.read_stream(stream_token_, stream_sent_, out_, want, got) || got == 0) {

@@ -61,32 +61,54 @@ public:
 		return true;
 	}
 	bool send_text(const char* text, size_t length) override {
-		if (!session || fail_sends) {
+		if (!session || fail_sends || length > room) {
 			return false;
 		}
+		take(length);
 		texts.push_back(std::string(text, length));
+		order.push_back(texts.back());
 		return true;
 	}
 	bool send_binary(const uint8_t* data, size_t length) override {
-		if (!session) {
+		if (!session || length > room) {
 			return false;
 		}
+		take(length);
 		binary.append(reinterpret_cast<const char*>(data), length);
 		++binary_messages;
+		order.push_back("<binary>");
 		return true;
 	}
 	bool send_ping() override {
-		if (!session) {
+		if (!session || room == 0) {
 			return false;
 		}
 		++pings;
 		return true;
 	}
+	size_t send_room() override { return session ? room : 0; }
+	void want_writable() override { ++writable_wanted; }
 	void close(uint16_t code, const char* reason) override {
 		closes.push_back({code, reason});
 		session = false;
 	}
 
+	// ---- A bounded send queue (room == SIZE_MAX: unbounded, as on POSIX) ----
+	void take(size_t length) {
+		if (room != SIZE_MAX) {
+			room -= length;
+			queued += length;
+		}
+	}
+	/// The queue sent everything: its room is `capacity` again, the link hears of it if it asked.
+	void drain(size_t capacity) {
+		room = capacity;
+		queued = 0;
+		if (writable_wanted > 0) {
+			writable_wanted = 0;
+			listener_->ws_client_writable();
+		}
+	}
 	// ---- The test plays the server ----
 	void open() { listener_->ws_client_opened(); }
 	void deliver(const std::string& text) { listener_->ws_client_text(text.data(), text.size()); }
@@ -120,6 +142,10 @@ public:
 	};
 	bool refuse_connect = false;
 	bool fail_sends = false;
+	size_t room = SIZE_MAX;
+	size_t queued = 0;
+	int writable_wanted = 0;
+	std::vector<std::string> order; ///< Every message sent, in order ("<binary>" for a binary one).
 	bool session = false;
 	int connects = 0;
 	int pings = 0;
@@ -1101,4 +1127,184 @@ TEST_CASE("E-Home key probe: a small image sent as the request's text body honou
 	CHECK(f.client.sent("key_accepted").size() + f.client.sent("error").size() >= 1);
 	CHECK(socket_put_image(f, 23, image_fixture("example.json"), signature_of(kKeySeed, image_fixture("example.json")))["status"].number == 200);
 	CHECK(f.link.state() == EhomeState::connected);
+}
+
+// ---- The bounded send queue (issue #55) --------------------------------------------------------
+
+namespace {
+
+/// Loads the example image over the socket (with an unbounded queue): 15 datapoints, a snapshot of
+/// several chunks.
+void load_example(EhomeFixture& f) {
+	std::string image = image_fixture("example.json");
+	f.client.deliver("{\"type\":\"request\",\"id\":100,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(image.size()) + "}");
+	f.client.deliver_binary(image, 1024);
+	REQUIRE(f.response(100)["status"].number == 200);
+}
+
+} // namespace
+
+TEST_CASE("E-Home queue: the snapshot takes the send queue only beside the reserve, resumes on writable, whole and in order") {
+	EhomeFixture f;
+	f.handshake();
+	load_example(f);
+	f.run();
+	// A queue with room for one chunk beside the reserve (as the ESP client's).
+	const size_t capacity = EhomeLink::kBulkReserve + hc::LiveFeed::kMessageSize + 200;
+	f.client.drain(capacity);
+	f.client.texts.clear();
+	f.client.deliver("{\"type\":\"subscribe\"}");
+	f.run();
+	CHECK(f.client.sent("status").size() == 1); // a single message takes the reserve too
+	// The status leaves no room for a chunk beside the reserve: the snapshot waits for writable.
+	std::vector<Json> chunks = f.client.sent("datapoints");
+	CHECK(chunks.empty());
+	CHECK(f.client.writable_wanted > 0);
+	for (int turn = 0; turn < 20 && (chunks.empty() || !chunks.back()["done"].boolean); ++turn) {
+		size_t had = chunks.size();
+		f.client.drain(capacity);
+		f.run();
+		chunks = f.client.sent("datapoints");
+		CHECK(chunks.size() <= had + 1); // one chunk per drained queue: the second would eat into the reserve
+	}
+	REQUIRE(chunks.size() >= 2);
+	double next = 0;
+	for (const Json& c : chunks) {
+		CHECK(c["snapshot"].boolean);
+		CHECK(c["from"].number == next); // in order, nothing skipped, nothing twice
+		next = c["from"].number + static_cast<double>(c["updates"].items.size());
+	}
+	CHECK(chunks.back()["done"].boolean);
+	CHECK(next == chunks.back()["count"].number);
+	CHECK_FALSE(f.capture.sink.contains("full resync follows"));
+	CHECK(f.link.state() == EhomeState::connected);
+}
+
+TEST_CASE("E-Home queue: an answer without room waits, goes out before the feed's next message, keeps the request slot") {
+	EhomeFixture f;
+	f.handshake();
+	load_example(f);
+	f.client.deliver("{\"type\":\"subscribe\"}");
+	f.run();
+	REQUIRE(f.client.sent("datapoints").back()["done"].boolean);
+
+	f.client.room = 64; // the queue is nearly full
+	f.client.deliver("{\"type\":\"request\",\"id\":7,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	CHECK_FALSE(f.response(7).has("status"));
+	CHECK(f.capture.sink.contains("request 7: the answer"));
+	// The slot stays taken: the next request is refused (its short answer fits).
+	f.client.room = 1000;
+	f.client.deliver("{\"type\":\"request\",\"id\":8,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	CHECK(f.response(8)["status"].number == 429);
+	// The feed waits behind the held answer: an update is not sent before it.
+	size_t before = f.client.order.size();
+	f.client.deliver("{\"type\":\"ping\"}");
+	CHECK(f.client.order.size() == before); // the feed's pong is held back too
+	f.client.drain(SIZE_MAX);
+	f.run();
+	REQUIRE(f.response(7)["status"].number == 200);
+	size_t answer = 0;
+	for (size_t i = 0; i < f.client.order.size(); ++i) {
+		Json m = parse(f.client.order[i]);
+		if (m["type"].text == "response" && m["id"].number == 7) {
+			answer = i;
+		}
+	}
+	CHECK(answer == before); // the first message after the queue drained
+	// The feed resynchronizes the client that missed a message, after the answer.
+	CHECK(f.client.sent("datapoints").back()["done"].boolean);
+	CHECK(f.link.state() == EhomeState::connected);
+	// The slot is free again.
+	f.client.deliver("{\"type\":\"request\",\"id\":9,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	CHECK(f.response(9)["status"].number == 200);
+}
+
+TEST_CASE("E-Home queue: an answer that finds no room for kHoldMs ends the connection with the reason") {
+	EhomeFixture f;
+	f.handshake();
+	f.client.room = 16;
+	f.client.deliver("{\"type\":\"request\",\"id\":7,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	f.advance(EhomeLink::kHoldMs - 1000);
+	CHECK(f.link.state() == EhomeState::connected);
+	CHECK(f.client.closes.empty());
+	f.advance(2000);
+	CHECK(f.client.closes.size() == 1);
+	CHECK(f.capture.sink.contains("the answer to request 7 ("));
+	CHECK(f.capture.sink.contains("found no room in the send queue within 10 s"));
+}
+
+TEST_CASE("E-Home queue: a streamed answer waits for room piece by piece; a full queue delays the ping, never fails it") {
+	EhomeFixture f;
+	f.handshake();
+	load_example(f);
+	std::string image = image_fixture("example.json");
+	f.client.binary.clear();
+	f.client.room = EhomeLink::kStreamPiece + 100;
+	f.client.deliver("{\"type\":\"request\",\"id\":9,\"method\":\"GET\",\"path\":\"/api/image\"}");
+	CHECK(f.response(9)["status"].number == 200);
+	f.run();
+	CHECK(f.client.binary.size() == EhomeLink::kStreamPiece); // the second piece waits
+	for (int turn = 0; turn < 20 && f.client.binary.size() < image.size(); ++turn) {
+		f.client.drain(EhomeLink::kStreamPiece + 100);
+		f.run();
+	}
+	CHECK(f.client.binary == image);
+	CHECK(f.capture.sink.contains("request 9: " + std::to_string(image.size()) + " bytes sent"));
+
+	f.client.room = 0;
+	f.advance(EhomeLink::kPingMs);
+	CHECK(f.client.pings == 0);
+	CHECK(f.link.state() == EhomeState::connected);
+	f.client.drain(SIZE_MAX);
+	f.advance(1000);
+	CHECK(f.client.pings == 1);
+	CHECK(f.link.state() == EhomeState::connected);
+}
+
+TEST_CASE("E-Home queue probe: a drop mid-snapshot with an answer held; the new session starts clean") {
+	// homecontrol #55 review: nothing of the old session (the held answer, the rest of its
+	// snapshot) reaches the new one, the request slot is free again, and the new session's
+	// snapshot is whole from the first datapoint.
+	EhomeFixture f;
+	f.handshake();
+	load_example(f);
+	f.run();
+	const size_t capacity = EhomeLink::kBulkReserve + hc::LiveFeed::kMessageSize + 200;
+	f.client.drain(capacity);
+	f.client.deliver("{\"type\":\"subscribe\"}");
+	f.run();
+	f.client.drain(capacity);
+	f.run();
+	REQUIRE_FALSE(f.client.sent("datapoints").empty());
+	REQUIRE_FALSE(f.client.sent("datapoints").back()["done"].boolean);
+	f.client.room = 16; // an answer finds no room and is held
+	f.client.deliver("{\"type\":\"request\",\"id\":7,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	REQUIRE_FALSE(f.response(7).has("status"));
+
+	f.client.drop("network gone");
+	f.run();
+	CHECK(f.link.state() == EhomeState::failed);
+	f.client.texts.clear();
+	f.client.order.clear();
+	f.client.room = SIZE_MAX;
+	f.advance(EhomeLink::kHoldMs + 2000); // past the hold limit and the backoff
+	CHECK(f.client.connects == 2);
+	f.handshake();
+	CHECK(f.link.state() == EhomeState::connected);
+	f.run();
+	for (const std::string& m : f.client.order) {
+		Json json = parse(m);
+		bool old_answer = json["type"].text == "response" && json["id"].number == 7;
+		CHECK_FALSE(old_answer); // never the old answer
+		CHECK(json["type"].text != "datapoints"); // no snapshot before the new subscribe
+	}
+	f.client.deliver("{\"type\":\"subscribe\"}");
+	f.run();
+	std::vector<Json> chunks = f.client.sent("datapoints");
+	REQUIRE_FALSE(chunks.empty());
+	CHECK(chunks.front()["from"].number == 0);
+	CHECK(chunks.back()["done"].boolean);
+	f.client.deliver("{\"type\":\"request\",\"id\":9,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	CHECK(f.response(9)["status"].number == 200); // the slot is free
 }

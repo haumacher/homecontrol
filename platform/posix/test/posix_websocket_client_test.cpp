@@ -134,6 +134,7 @@ struct Recorder : hc::WebSocketClientListener {
 		binary.append(reinterpret_cast<const char*>(data), length);
 	}
 	void ws_client_pong() override { ++pongs; }
+	void ws_client_writable() override {}
 	void ws_client_closed(const char* reason) override { reasons.push_back(reason); }
 	int opened = 0;
 	int pongs = 0;
