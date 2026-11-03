@@ -36,7 +36,16 @@ bool LoopQueue::post(LoopMessage::Handler handler, void* context, int32_t number
 	message.handler = handler;
 	message.context = context;
 	message.number = number;
-	std::snprintf(message.text, sizeof(message.text), "%s", text == nullptr ? "" : text);
+	// A plain bounded copy: post() runs on foreign tasks with small stacks (the IDF's sys_evt among
+	// them), where the ROM's snprintf (newlib's full _svfprintf_r) once overflowed the stack (#48).
+	size_t length = 0;
+	if (text != nullptr) {
+		while (length + 1 < sizeof(message.text) && text[length] != '\0') {
+			message.text[length] = text[length];
+			++length;
+		}
+	}
+	message.text[length] = '\0';
 	if (xQueueSend(queue_, &message, 0) != pdTRUE) {
 		ESP_LOGE(kTag, "event-loop queue full (depth %u), dropping %s", static_cast<unsigned>(kDepth), what);
 		return false;

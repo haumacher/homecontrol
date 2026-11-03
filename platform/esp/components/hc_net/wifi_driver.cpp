@@ -8,6 +8,7 @@
 
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_netif.h"
 #include "esp_wifi.h"
 #include "esp_wps.h"
 #include "sdkconfig.h"
@@ -356,8 +357,9 @@ void WifiDriver::on_ip_event(void* arg, esp_event_base_t, int32_t id, void* data
 	WifiDriver* self = static_cast<WifiDriver*>(arg);
 	if (id == IP_EVENT_STA_GOT_IP) {
 		const ip_event_got_ip_t* event = static_cast<const ip_event_got_ip_t*>(data);
+		// lwIP's formatter, not printf: this runs on the IDF's sys_evt task (#48).
 		char ip[16];
-		std::snprintf(ip, sizeof(ip), IPSTR, IP2STR(&event->ip_info.ip));
+		esp_ip4addr_ntoa(&event->ip_info.ip, ip, sizeof(ip));
 		self->queue_.post(&handle_got_ip, self, 0, ip, "IP GOT_IP");
 	} else if (id == IP_EVENT_STA_LOST_IP) {
 		self->queue_.post(&handle_lost_ip, self, 0, nullptr, "IP LOST_IP");
