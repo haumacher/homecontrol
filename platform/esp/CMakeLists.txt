@@ -15,6 +15,7 @@ set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
 include("${CMAKE_CURRENT_LIST_DIR}/hc_project.cmake")
 set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults" "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults.app")
 hc_add_flash_defaults()
+hc_add_extra_ca_defaults()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
@@ -24,6 +25,7 @@ idf_build_set_property(DEPENDENCIES_LOCK "${CMAKE_CURRENT_LIST_DIR}/dependencies
 project(homecontrol)
 
 hc_check_partition_table()
+hc_check_extra_ca()
 
 # ---- The OTA layout in the flash targets ------------------------------------------------------
 #

@@ -61,6 +61,25 @@ The enrollment's HTTP answer waits for E-Home's (`WebResponse::deferred`: the we
   accepted only together with an `http://` E-Home address, for development.
 - The connection exists only while the owner switches it on; E-Home cannot switch it on.
 
+## TLS during development
+
+A development E-Home behind a local TLS proxy (E-Home's `bin/dev-tls.sh`, its `doc/controllers.md`
+"TLS during development") has a certificate of a local CA that the IDF bundle does not know. A build
+with the CMake variable `HC_EXTRA_CA` (a PEM file of CA certificates; `platform/esp/hc_project.cmake`)
+trusts it in addition to the bundle, through the IDF's `CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE`:
+
+```
+idf.py -B build-esp32c6-devtls -DHC_EXTRA_CA=$HOME/.config/ehome/dev-tls/ca.pem set-target esp32c6
+idf.py -B build-esp32c6-devtls build
+```
+
+The configure step prints "Development build: trusts the CA certificates of …". Like the flash
+size, the variable applies when the build directory's sdkconfig is created, and the configure step
+refuses an sdkconfig that does not match it in either direction, so a build directory configured
+without `HC_EXTRA_CA` never trusts a development CA. The extra trust covers every TLS client of the
+application that uses the bundle (E-Home, the update check, MQTT, image downloads), not the
+updater. A release is never built with it.
+
 ## Installation key
 
 Signed runtime images (issue #35, spec/api.md "Signed runtime images"): E-Home holds an Ed25519 key
