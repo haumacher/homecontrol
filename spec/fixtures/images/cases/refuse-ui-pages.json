@@ -1,0 +1,28 @@
+{"comment": "Control pages (schema 1.1, spec/runtime-image.md 3.9): unknown targets, an element of no or several kinds (the 1.0 draft's chart flag among them), readOnly outside a datapoint element, duplicate and missing page ids, a bad icon and label. readOnly false on a datapoint that is not writable is no refusal: it simply stays read-only.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "ui.pages[0].icon", "reason": "icon 'a moon' must have 1..31 characters"},
+   {"path": "ui.pages[0].sections[0].elements[0].function", "reason": "unknown function 'nothing'"},
+   {"path": "ui.pages[0].sections[0].elements[1].datapoint", "reason": "unknown datapoint 'nothing'"},
+   {"path": "ui.pages[0].sections[0].elements[2]", "reason": "names exactly one of function, datapoint or chart; this one names several"},
+   {"path": "ui.pages[0].sections[0].elements[3]", "reason": "this one names none"},
+   {"path": "ui.pages[0].sections[0].elements[4].readOnly", "reason": "readOnly applies to a datapoint element only"},
+   {"path": "ui.pages[0].sections[0].elements[5]", "reason": "this one names several"},
+   {"path": "ui.pages[0].sections[0].elements[7].label", "reason": "the label must be a string or an object"},
+   {"path": "ui.pages[1].id", "reason": "duplicate page id 'main'"},
+   {"path": "ui.pages[1].sections[0]", "reason": "a section must be an object"},
+   {"path": "ui.pages[2]", "reason": "id is missing"}]},
+ "image": {"schemaVersion": "1.1", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "t", "type": "real"}, {"id": "lamp", "type": "boolean", "writable": true}],
+ "functions": [{"id": "light", "label": "Light", "kind": "light", "datapoints": {"command": "lamp"}}],
+ "ui": {"pages": [
+   {"id": "main", "label": "Main", "icon": "a moon", "sections": [{"label": "S", "elements": [
+     {"function": "nothing"},
+     {"datapoint": "nothing"},
+     {"function": "light", "datapoint": "t"},
+     {"label": "only a label"},
+     {"function": "light", "readOnly": true},
+     {"datapoint": "t", "chart": true},
+     {"datapoint": "t", "readOnly": false},
+     {"datapoint": "lamp", "label": 5}]}]},
+   {"id": "main", "sections": [7]},
+   {"label": "No id"}]}}

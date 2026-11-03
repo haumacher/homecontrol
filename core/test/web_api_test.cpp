@@ -477,11 +477,17 @@ TEST_CASE("WebApi.History: buckets, refusals, a datapoint without history") {
 	auto& points = series[0]["points"].items;
 	REQUIRE(points.size() >= 3);
 	REQUIRE(points.size() <= 4);
-	// A bucket of several samples: [t, last, min, max, count].
+	// A bucket of several samples: [t, last, min, max, count, mean] (the mean since issue #54).
 	auto& last = points.back();
-	REQUIRE(last.items.size() == 5);
+	REQUIRE(last.items.size() == 6);
 	CHECK(last.items[1].number == doctest::Approx(31.5));
 	CHECK(last.items[2].number <= last.items[1].number);
+	CHECK(last.items[5].number >= last.items[2].number);
+	CHECK(last.items[5].number <= last.items[3].number);
+	CHECK(last.items[5].number < last.items[3].number); // rising samples: the mean is below the maximum
+	// The store that answered: the raw ring, with its reach (the seam of the archives, issue #56).
+	CHECK(series[0]["store"].text == "raw");
+	CHECK(series[0]["retention_s"].number > 0);
 	CHECK(series[1]["code"].text == "history.none");
 
 	// Defaults: the last 24 h, 48 points.

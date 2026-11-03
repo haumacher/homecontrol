@@ -25,6 +25,10 @@
 	--shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 	--font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 	--mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+	/* The chart palette in series order (12 slots, checked for colour-vision deficiencies against
+	   the surface of each theme). */
+	--s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300;
+	--s7: #9085e9; --s8: #e66767; --s9: #2fa5b8; --s10: #a86c1f; --s11: #7a7fd0; --s12: #b0478a;
 	color-scheme: dark;
 }
 
@@ -43,6 +47,8 @@
 		--error: #c62828;
 		--error-bg: rgba(229, 57, 53, 0.10);
 		--shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+		--s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+		--s7: #6250d6; --s8: #e34948; --s9: #1e93a8; --s10: #9a5e12; --s11: #6670c8; --s12: #a83c80;
 		color-scheme: light;
 	}
 }
@@ -60,6 +66,8 @@
 	--error: #c62828;
 	--error-bg: rgba(229, 57, 53, 0.10);
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+	--s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+	--s7: #6250d6; --s8: #e34948; --s9: #1e93a8; --s10: #9a5e12; --s11: #6670c8; --s12: #a83c80;
 	color-scheme: light;
 }
 
@@ -148,6 +156,10 @@ svg {
 	color: var(--text);
 	text-decoration: none;
 	font-weight: 500;
+}
+
+.nav-item[hidden] {
+	display: none;
 }
 
 .nav-item svg {
@@ -1331,4 +1343,251 @@ input.number {
 	margin: 0.25rem 0 0;
 	padding-left: 1.25rem;
 	font-size: 0.9em;
+}
+
+/* ---- Control pages (spec/runtime-image.md 3.9) ---------------------------------------------- */
+
+.tile.kind-value {
+	flex-direction: column;
+	align-items: stretch;
+	gap: 8px;
+	padding: 8px 10px;
+}
+
+.tile-main.static {
+	cursor: default;
+}
+
+.tile-main.static:hover {
+	background: transparent;
+}
+
+.element-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.element-input {
+	flex: 1;
+	min-width: 0;
+	min-height: 40px;
+	padding: 6px 10px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-small);
+	background: var(--surface-2);
+	color: var(--text);
+	font: inherit;
+}
+
+input[type="color"].element-input {
+	padding: 2px;
+	min-width: 64px;
+	flex: none;
+}
+
+.element-unit {
+	color: var(--text-2);
+}
+
+.element-input:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.chart-tile {
+	flex-direction: column;
+	align-items: stretch;
+	gap: 4px;
+	padding: 8px 10px;
+	min-width: 0;
+	overflow: hidden;
+}
+
+.chart-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 4px 8px;
+	min-height: 32px;
+}
+
+/* On a narrow tile the tools wrap below the title instead of cutting it. */
+.chart-head .tile-name {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.chart-tools {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: auto;
+}
+
+.chart-tools .segmented button {
+	white-space: nowrap;
+}
+
+.icon-button.small {
+	width: 32px;
+	height: 32px;
+}
+
+.icon-button.small svg {
+	width: 20px;
+	height: 20px;
+}
+
+.icon-button:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
+.segmented.small button {
+	min-height: 28px;
+	min-width: 40px;
+	padding: 2px 8px;
+	font-size: 13px;
+}
+
+.chart-plot {
+	flex: 1;
+	min-height: 0;
+}
+
+.chart-plot .series-chart {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+.chart-empty {
+	margin: 8px 0;
+}
+
+.chart-unit {
+	font-size: 10px;
+}
+
+.series-chart .chart-line {
+	stroke: currentColor;
+}
+
+.series-chart .chart-band {
+	fill: currentColor;
+	opacity: 0.18;
+}
+
+.chart-bar,
+.chart-strip,
+.chart-point {
+	fill: currentColor;
+}
+
+.chart-strip-bg {
+	fill: var(--surface-2);
+}
+
+.chart-reference {
+	stroke: var(--text-2);
+	stroke-width: 1;
+	stroke-dasharray: 6 4;
+}
+
+.chart-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px 10px;
+	font-size: 12px;
+}
+
+.legend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 24px;
+	padding: 0 4px;
+	border: 0;
+	border-radius: var(--radius-small);
+	background: transparent;
+	color: var(--text);
+	font: inherit;
+	cursor: pointer;
+}
+
+.legend-item[aria-pressed="false"] {
+	color: var(--text-2);
+	text-decoration: line-through;
+}
+
+.legend-item[aria-pressed="false"] .legend-swatch {
+	opacity: 0.3;
+}
+
+.legend-swatch {
+	display: inline-block;
+	width: 12px;
+	height: 3px;
+	border-radius: 2px;
+	background: currentColor;
+	vertical-align: middle;
+}
+
+.legend-swatch.strip {
+	height: 8px;
+}
+
+.chart-hint {
+	margin: 0;
+	font-size: 12px;
+	color: var(--text-2);
+}
+.series-1 {
+	color: var(--s1);
+}
+
+.series-2 {
+	color: var(--s2);
+}
+
+.series-3 {
+	color: var(--s3);
+}
+
+.series-4 {
+	color: var(--s4);
+}
+
+.series-5 {
+	color: var(--s5);
+}
+
+.series-6 {
+	color: var(--s6);
+}
+
+.series-7 {
+	color: var(--s7);
+}
+
+.series-8 {
+	color: var(--s8);
+}
+
+.series-9 {
+	color: var(--s9);
+}
+
+.series-10 {
+	color: var(--s10);
+}
+
+.series-11 {
+	color: var(--s11);
+}
+
+.series-12 {
+	color: var(--s12);
 }

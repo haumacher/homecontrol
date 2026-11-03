@@ -363,6 +363,11 @@ TEST_CASE("History: range() decimates into buckets with min, max and last") {
 		CHECK(points[b].max == *std::max_element(first, first + 10));
 		CHECK(points[b].last == values[b * 10 + 9]);
 		CHECK(points[b].last_t == t0 + (b * 10 + 9) * 10);
+		double sum = 0;
+		for (auto v = first; v != first + 10; ++v) {
+			sum += *v;
+		}
+		CHECK(points[b].mean == doctest::Approx(sum / 10)); // issue #54: the chart's mean line
 	}
 
 	// An uneven split never gives more than max_points, and every sample is in one bucket.
@@ -381,6 +386,9 @@ TEST_CASE("History: range() decimates into buckets with min, max and last") {
 	REQUIRE(points.size() == 10);
 	CHECK(points[0].t == t0 + 100);
 	CHECK(points[0].last == values[10]);
+	CHECK(points[0].mean == values[10]); // a single sample is its own mean
+	CHECK(boot.history.retention_s(0) == 1000);
+	CHECK(boot.history.retention_s(2) == 0);
 
 	// Refusals.
 	HistoryPoint out[4];
@@ -407,6 +415,7 @@ TEST_CASE("History: a boolean bucket's max says it was on at some time") {
 		CHECK(p.min == 0.0);
 		CHECK(p.max == 1.0);
 		CHECK(p.last == 0.0);
+		CHECK(p.mean == doctest::Approx(1.0 / p.count)); // the on-share: one on sample per bucket
 	}
 }
 

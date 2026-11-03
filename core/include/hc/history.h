@@ -57,6 +57,7 @@ struct HistoryPoint {
 	double max;
 	double last;    ///< The value of the bucket's last sample.
 	uint32_t count; ///< Samples in the bucket.
+	double mean;    ///< The mean of the bucket's samples (for a boolean the share of samples that are on).
 };
 
 /// The limits the platform sets for the history.
@@ -133,6 +134,9 @@ public:
 
 	/// Samples in the ring of a datapoint (0 without history).
 	size_t samples(uint16_t id) const;
+
+	/// How far back the ring of a datapoint reaches, in seconds (its retention; 0 without history).
+	uint32_t retention_s(uint16_t id) const;
 
 	/// Number of rings.
 	size_t size() const { return count_; }

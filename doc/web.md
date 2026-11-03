@@ -183,8 +183,8 @@ from a lost password), `crash` (a test of the dump pipeline) and `web demo` (a d
 
 `web/ui/dist/` is the UI as it is served: `index.html`, one stylesheet and ES modules (router,
 pages, the tiles, the detail sheet, the charts, the live connection, the text lookup) and the
-language packs, about 148 KB, 49 KB gzip-compressed (42 KB before the language packs, 19 KB before
-the dashboard; the budget is 120 KB). No framework and
+language packs, about 275 KB, 89 KB gzip-compressed (200 KB and 65 KB before the control pages, 42 KB
+before the language packs, 19 KB before the dashboard; the budget is 120 KB gzip-compressed). No framework and
 no bundler: browsers load ES modules natively, the code stays readable in the device's own files,
 and there is no node toolchain in the build. Rejected: Preact/Lit (another dependency and a build
 step for a handful of pages); server-rendered pages (state on the device, a reload per action);
@@ -221,7 +221,10 @@ the live state. Every control is a native button, input or select (keyboard oper
 visible) with a touch target of at least 44 px. No external resources (fonts, icons and scripts
 are all local).
 
-- **Overview**: the dashboard (below). Without an image, in a build without images (POSIX `--demo`)
+- **Control pages** (issue #54, below): when the image has `ui.pages`, one navigation entry per
+  page in image order, with its label and icon; the first is the start page `/`, the others are
+  `/page/<id>`; the Overview entry is hidden then.
+- **Overview**: the dashboard (below), the start page when the image has no control pages. Without an image, in a build without images (POSIX `--demo`)
   or for an image without functions: one plain tile per datapoint with its live value, a writable
   boolean toggles on a tap, and a line says why there is no dashboard.
 - **Rules**: one card per rule: the enable switch (or a badge when the image fixes it), the state,
@@ -305,9 +308,53 @@ the min/max band, a read-out under the pointer), and the technology binding of e
 (KNX: DPT, sending and listening addresses).
 
 The dashboard reads `GET /api/model` once (paged), the live values from the WebSocket, the history
-from `GET /api/history`; nothing about the image is parsed in the browser. Rejected: E-Home's
-explicit visualization pages for now (the image's `ui` member stays reserved); a layout editor on
-the device (engineering is E-Home's job).
+from `GET /api/history`; nothing about the image is parsed in the browser. Rejected: a layout
+editor on the device (engineering is E-Home's job).
+
+### Control pages
+
+E-Home's pages (`ui.pages`, spec/runtime-image.md 3.9) replace the generated overview as the start
+page. `app.js` reads them with `GET /api/pages` (paged, `pages.js` assembles the five lists into
+pages, sections and elements) after the login and whenever the live status shows another image,
+rebuilds the navigation and draws the page shown again. A page is its sections, each with its title
+(none when the section has no label) and a grid of tiles (the overview's grid, no free positioning):
+
+- **function**: the overview's tile by kind (`tiles.js`), with the element's label in place of the
+  function's, and its detail sheet.
+- **datapoint** (`elements.js`): a value tile with the label (the element's, else the datapoint's),
+  the value with its unit, quality and age. The control is chosen by the value type, and only when
+  the datapoint is writable and the element is not `readOnly` (a writable datapoint shown read-only
+  says "display only"): boolean a toggle on the icon; unsigned, signed, real a number input with the
+  unit, plus a slider where `/api/model` gives `min` and `max` (rule parameters, DPT 5.001 and
+  5.003); enumeration a select of its `choices` (a rule parameter's), else the number input; time
+  of day, date, date-time the browser's `time`, `date`, `datetime-local` inputs (seconds included);
+  string a text input; color the colour picker; anything else the value as text. A command goes over
+  the WebSocket like every other; a refusal stays on the tile for 8 s with its reason ("Not set:
+  outside min..max"). Rule parameters and `rule/<id>/enabled` are such datapoints.
+- **chart** (`elements.js`, drawn by `chart.js`'s `seriesChart`, inline SVG at the tile's pixel
+  size, redrawn on resize): `width` columns (capped at the grid's columns on this screen, `full`
+  the whole row) and `height` 2 or 4 rows of 64 px. The head holds the title, the presets as a
+  segmented control, and ◀ ▶ to step one range back and forth (▶ disabled at now). Series in the
+  fixed palette `--s1`..`--s12` of `style.css` (12 slots checked for colour-vision deficiencies
+  against both themes' surfaces); the lines and bars carry the colour, every text stays in the text
+  colours. Left and right axes each automatic or fixed by the image, with the unit of the first
+  series on it; lines through the buckets' mean (`mean`) or last value (`last`), breaking at a gap
+  of more than 2.5 buckets; a min/max band for `band` on a chart of a single series; `consumption`
+  as bars of the delta between adjacent buckets' last values (an hour, a day or a month per bar,
+  aligned to the local hour or midnight, with one bucket before the window queried for the first
+  bar; a negative delta, or an empty bucket next to it, is a gap); booleans as strips beneath the
+  plot whose opacity is the bucket's on-share; reference lines dashed across the plot with their
+  label and value (a datapoint's follows its live value). The legend (more than one series) toggles
+  a series on a tap; a read-out under the pointer gives the time and every visible series' value.
+  The history comes from `GET /api/history`: 48 buckets per line series, several series per request
+  within the 160 points; refreshed every 5 minutes while the window ends now. When a series'
+  `retention_s` is shorter than the range, the line "Only the last 24 h are stored." says so (the
+  raw ring is the only store until the archives of homecontrol#56).
+
+`chart.js` grew from 6.3 KB to 16.5 KB (the overview's sparkline and the detail sheet's chart are
+unchanged); with `elements.js` (18.7 KB), `pages.js` (7.8 KB), the styles and the texts the UI grows
+by about 46 KB, 14 KB gzip-compressed as the firmware holds it. The firmware as a whole grows by
+26.3 KB (0x25bc50 to 0x262590 bytes on the ESP32-C6), the core's loader, page table and API included.
 
 ### Texts
 

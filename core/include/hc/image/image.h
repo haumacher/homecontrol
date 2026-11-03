@@ -14,10 +14,11 @@ namespace image {
 
 /// The runtime image (spec/runtime-image.md): what E-Home deploys, as one JSON document.
 
-/// The schema version this firmware reads: major 1, minor 0. An image with a higher major version
-/// is refused (named in the report); a higher minor version loads (its additions are ignorable).
+/// The schema version this firmware reads: major 1, minor 1 (1.1 adds the control pages `ui.pages`,
+/// issue #54). An image with a higher major version is refused (named in the report); a higher minor
+/// version loads (its additions are ignorable).
 constexpr uint32_t kSchemaMajor = 1;
-constexpr uint32_t kSchemaMinor = 0;
+constexpr uint32_t kSchemaMinor = 1;
 
 /// Largest image in bytes. The device reads the whole text into RAM once at load (the parse works
 /// in place on it), so a load needs this much free heap in one block on top of the tables.
@@ -31,6 +32,37 @@ constexpr size_t kMaxNesting = 48;
 constexpr size_t kMaxDatapoints = 1024;
 constexpr size_t kMaxLocations = 256;
 constexpr size_t kMaxFunctions = 512;
+
+/// Limits of the control pages (`ui.pages`, spec/runtime-image.md 3.9 and 5), over all pages.
+constexpr size_t kMaxPages = 16;
+constexpr size_t kMaxSections = 128;
+constexpr size_t kMaxElements = 512;   ///< Function, datapoint and chart elements.
+constexpr size_t kMaxSeries = 256;     ///< The series of all charts.
+constexpr size_t kMaxReferences = 128; ///< The reference lines of all charts.
+/// Longest page id and icon name (A-Z a-z 0-9 _ . -).
+constexpr size_t kMaxPageId = 32;
+constexpr size_t kMaxIcon = 31;
+
+/// The time ranges of a chart (`range` and `presets`): 1 h, 24 h, 7 d, 30 d, 1 y.
+constexpr size_t kChartRanges = 5;
+/// "1h", "24h", "7d", "30d", "1y" for 0..4; nullptr beyond.
+const char* chart_range_name(size_t range);
+/// The range's length in seconds (a year is 365 days).
+uint32_t chart_range_seconds(size_t range);
+/// The index of a range name; -1 if unknown.
+int chart_range_of(const char* name);
+
+/// How a chart series reduces the samples of a bucket.
+enum class Consolidation : uint8_t {
+	mean,        ///< The mean line (default for a real or boolean: the on-share of a boolean strip).
+	last,        ///< The bucket's last value (default for unsigned and signed).
+	band,        ///< The mean line with the min/max band (a band only on a chart of a single series).
+	consumption, ///< Bars of the delta between consecutive buckets' last values (meter readings).
+};
+/// "mean", "last", "band", "consumption".
+const char* consolidation_name(Consolidation consolidation);
+/// The consolidation of a name; false if unknown.
+bool consolidation_of(const char* name, Consolidation& out);
 
 /// Longest texts kept from the `image` member (bytes, without the NUL).
 constexpr size_t kMaxProjectId = 63;

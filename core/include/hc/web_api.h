@@ -230,6 +230,7 @@ private:
 	void coredump(WebResponse& response);
 	void image(const WebRequest& request, WebResponse& response);
 	void ui_model(const WebRequest& request, WebResponse& response);
+	void ui_pages(const WebRequest& request, WebResponse& response);
 	void history(const WebRequest& request, WebResponse& response);
 	void rules(const WebRequest& request, WebResponse& response);
 	void rule_parameter(const char* rule, const char* parameter, const WebRequest& request, WebResponse& response);

@@ -590,8 +590,8 @@ All three: 404 `image.unavailable` in a build without the image service (POSIX `
 ## Dashboard
 
 What the device UI reads of the runtime image to build its pages: the model of rooms and functions,
-the history, the rules and the schedules. Authenticated like every endpoint; the two `PUT`s with
-the CSRF header when the cookie is used. All five: 404 `image.unavailable` in a build without the
+the control pages, the history, the rules and the schedules. Authenticated like every endpoint; the
+two `PUT`s with the CSRF header when the cookie is used. All six: 404 `image.unavailable` in a build without the
 image service (POSIX `--demo`), 405 `api.method_not_allowed` for other methods.
 
 ### `GET /api/model[?from=<n>]`
@@ -625,8 +625,11 @@ a client builds the dashboard without the image. Without an image: 200 `{"loaded
 - The datapoints of the rule parameters (spec/rules.md 8.6, after the image's own) have the
   technology `rules` and a member `"parameter": {"rule": "<ruleId>", "parameter": "<parameterId>"}`;
   their `label` is the parameter's label (the rule's `name` for the enable switch `enabled`), their
-  `unit` the parameter's unit, `ms` for a duration. A client may show them with the rule's
-  controls of `/api/rules` instead of as separate datapoints.
+  `unit` the parameter's unit, `ms` for a duration, and `min`, `max`, `step` and `choices`
+  (`[{"value", "label"}]`) as the parameter declares them (as in `/api/rules`). A client may show
+  them with the rule's controls of `/api/rules` instead of as separate datapoints.
+- `min` and `max` also come with a KNX datapoint of a scaled type with a fixed range (DPT 5.001:
+  0..100, 5.003: 0..360). A control page offers a slider where a datapoint has both.
 - `loaded_ms` is when the image was applied (with `source`: deployed when and how).
 - **Paging**: the entries share one index space, the locations first, then the functions, then the
   datapoints; a page holds as many as fit the response buffer (8 KB). Continue with
@@ -634,6 +637,44 @@ a client builds the dashboard without the image. Without an image: 200 `{"loaded
   another generation on a later page starts over.
 
 Refusals: 507 `model.no_memory` (the device could not hold the model of this image; the image
+runs), 500 `api.response_too_large`.
+
+### `GET /api/pages[?from=<n>]`
+
+The control pages of the image (spec/runtime-image.md 3.9, issue #54), as five flat lists in one
+paged index space: the pages, then the sections, the elements, the chart series and the reference
+lines. An entry names its owner by its index in the owner's list; a client concatenates the lists of
+every page of the response and assembles the tree.
+
+```json
+{"loaded": true, "generation": 3, "total": 20, "from": 0,
+ "pages": [{"id": "evening", "label": {"de": "Abend", "en": "Evening"}, "icon": "moon", "sections": 2}],
+ "sections": [{"page": 0, "label": {"de": "Wohnzimmer"}, "elements": 5}, {"page": 0, "elements": 1}],
+ "elements": [{"section": 0, "function": "living-light", "label": {"de": "Decke"}},
+              {"section": 0, "datapoint": 3, "readOnly": true},
+              {"section": 1, "chart": {"label": {"de": "Temperaturen"}, "width": "full", "height": 4, "range": "24h",
+                                       "presets": ["24h", "7d", "30d", "1y"],
+                                       "axes": {"left": {"min": null, "max": null}, "right": {"min": 0, "max": 100}}}}],
+ "series": [{"element": 2, "datapoint": 3, "label": {"de": "Wohnzimmer"}, "axis": "left", "consolidation": "mean"},
+            {"element": 2, "datapoint": 5, "axis": "left", "consolidation": "mean"}],
+ "references": [{"element": 2, "value": 21, "label": {"de": "Soll"}, "axis": "left"},
+                {"element": 2, "datapoint": 10, "axis": "left"}],
+ "next": null}
+```
+
+- A function element names the function by its image id (as `/api/model` lists it), a datapoint
+  element, a series and a reference line the datapoint by its id of `/api/datapoints` and the live
+  feed. `readOnly` is present only when true.
+- A chart's members are resolved: the defaults filled in (`width` `"full"`, `height` 2, `range`
+  `"24h"`, `presets` `[range]`, each axis bound `null` when automatic) and each series'
+  `consolidation` given (the image's, or the default for the datapoint's type).
+- `label`, `icon` are left out when the image has none; a label is passed as the image gives it.
+- **Paging** as `/api/model`: a response holds what fits the 8 KB buffer, `from=<next>` continues
+  until `next` is `null`, and a changed `generation` means start over.
+- Without an image `loaded` is false; without pages (or without an image) every list is empty: the
+  UI shows the generated overview.
+
+Refusals: 507 `model.no_memory` (the device could not hold the UI model of this image; the image
 runs), 500 `api.response_too_large`.
 
 ### `GET /api/history?ids=<id>[,<id>...][&from=<unix>][&to=<unix>][&points=<n>]`
@@ -644,12 +685,19 @@ the number of ids at most 160):
 
 ```json
 {"from": 1792145000, "to": 1792231400, "width_s": 1800,
- "series": [{"id": 4, "points": [[1792145412, 21.5], [1792147200, 21.75, 21.5, 22, 6]]},
+ "series": [{"id": 4, "store": "raw", "retention_s": 86400,
+             "points": [[1792145412, 21.5], [1792147200, 21.75, 21.5, 22, 6, 21.7]]},
             {"id": 0, "code": "history.none", "error": "this datapoint has no history"}]}
 ```
 
-A point is `[t, value]` for a bucket with one sample (`t` its time) or `[t, last, min, max, count]`
-for a bucket of several (`t` the bucket's start). Empty buckets are left out; values have float
+A point is `[t, value]` for a bucket with one sample (`t` its time) or `[t, last, min, max, count,
+mean]` for a bucket of several (`t` the bucket's start; `mean` since issue #54, the mean of the
+bucket's samples: for a boolean the share of samples that are on). `store` names the store that
+answered and `retention_s` how far back it reaches: today always `"raw"`, the datapoint's ring with
+its retention. A client asking for more than that gets what the ring has and says "only the last ...
+stored". The consolidated archives of homecontrol#56 will answer here as further stores (the one
+whose resolution fits `width_s` and whose reach covers `from`), named in `store`; a client that
+ignores `store` keeps working. Empty buckets are left out; values have float
 precision. Refusals: 400 `history.bad_query` (ids missing, malformed or more than 8; `from >= to`;
 `points` 0 or too many), 409 `history.no_time` (the wall clock is not synchronized and `from` or
 `to` is missing).

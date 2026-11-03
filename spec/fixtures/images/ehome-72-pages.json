@@ -1,0 +1,57 @@
+{
+	"comment": "Schema 1.1: the ui.pages E-Home exports for the acceptance case of issue #54's amendment, verbatim from ehome#72 (the member ui); the image around it is hand-written. Placeholder addresses 1/x/y.",
+	"image": {"schemaVersion": "1.1", "projectId": "ehome-72", "revision": 1, "generator": "E-Home (ehome#72), ui verbatim",
+	          "name": "E-Home pages"},
+	"datapoints": [
+		{"id": "1/0/1", "label": {"de": "Außentemperatur", "en": "Outdoor temperature"}, "type": "real", "unit": "°C",
+		 "knx": {"dpt": "9.001", "listen": ["1/0/1"]}},
+		{"id": "holiday", "label": {"de": "Urlaub", "en": "Holiday"}, "type": "boolean", "writable": true, "virtual": {}},
+		{"id": "1/2/1", "type": "boolean", "writable": true, "transmit": true, "knx": {"dpt": "1.001", "send": "1/2/1"}},
+		{"id": "1/2/2", "type": "boolean", "writable": true, "transmit": true, "knx": {"dpt": "1.001", "send": "1/2/2"}},
+		{"id": "1/2/3", "type": "boolean", "writable": true, "transmit": true, "knx": {"dpt": "1.001", "send": "1/2/3"}},
+		{"id": "1/2/4", "type": "boolean", "writable": true, "transmit": true, "knx": {"dpt": "1.001", "send": "1/2/4"}},
+		{"id": "1/3/1", "label": {"de": "Wohnzimmertemperatur", "en": "Living room temperature"}, "type": "real", "unit": "°C",
+		 "history": {"retention": 86400, "spacing": 300}, "knx": {"dpt": "9.001", "listen": ["1/3/1"]}},
+		{"id": "1/3/5", "label": {"de": "Luftfeuchte", "en": "Humidity"}, "type": "real", "unit": "%",
+		 "history": {"retention": 86400, "spacing": 300}, "knx": {"dpt": "9.007", "listen": ["1/3/5"]}},
+		{"id": "1/1/7", "label": {"de": "Heizung", "en": "Heating"}, "type": "boolean",
+		 "history": {"retention": 86400, "spacing": 300}, "knx": {"dpt": "1.001", "listen": ["1/1/7"]}},
+		{"id": "1/1/8", "type": "boolean", "writable": true, "transmit": true, "knx": {"dpt": "1.001", "send": "1/1/8"}}
+	],
+	"locations": [{"id": "living", "label": {"de": "Wohnzimmer", "en": "Living room"}, "kind": "room"},
+	              {"id": "kitchen", "label": {"de": "Küche", "en": "Kitchen"}, "kind": "room"}],
+	"functions": [
+		{"id": "living-lamp", "label": {"de": "Stehlampe", "en": "Floor lamp"}, "kind": "light", "room": "living",
+		 "datapoints": {"command": "1/2/1"}},
+		{"id": "living-light", "label": {"de": "Deckenlicht", "en": "Ceiling light"}, "kind": "light", "room": "living",
+		 "datapoints": {"command": "1/2/2"}},
+		{"id": "reading-light", "label": {"de": "Leselicht", "en": "Reading light"}, "kind": "light", "room": "living",
+		 "datapoints": {"command": "1/2/3"}},
+		{"id": "kitchen-light", "label": {"de": "Licht", "en": "Light"}, "kind": "light", "room": "kitchen",
+		 "datapoints": {"command": "1/2/4"}}
+	],
+	"rules": [
+		{"id": "heat", "name": {"de": "Heizung", "en": "Heating"}, "enabledAdjustable": true,
+		 "parameters": [{"id": "setpoint", "label": {"de": "Sollwert", "en": "Setpoint"}, "type": "real", "default": 21.0,
+		                 "min": 15.0, "max": 26.0, "step": 0.5, "unit": "°C"}],
+		 "reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "1/3/1"}],
+		                "actions": [{"kind": "write", "datapoint": "1/1/8",
+		                             "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}
+	],
+	"history": {"budget": 16384},
+	"ui": {"pages": [
+ {"id": "evening", "label": {"de": "Abend", "en": "Evening"}, "icon": "moon", "sections": [
+  {"label": {"de": "Wohnzimmer", "en": "Living room"}, "elements": [
+   {"function": "living-lamp"}, {"function": "living-light"}, {"function": "reading-light"},
+   {"function": "kitchen-light", "label": {"de": "Küche", "en": "Kitchen"}}]},
+  {"elements": [{"datapoint": "1/0/1", "readOnly": true}, {"datapoint": "holiday"},
+   {"datapoint": "rule/heat/setpoint", "label": {"de": "Solltemperatur", "en": "Setpoint"}},
+   {"datapoint": "rule/heat/enabled", "label": {"de": "Heizregel"}}]}]},
+ {"id": "klima", "label": {"de": "Klima", "en": "Klima"}, "sections": [{"label": {"de": "Temperaturen"}, "elements": [
+  {"chart": {"label": {"de": "Temperaturen"}, "width": "full", "height": 4, "range": "24h", "presets": ["24h", "7d", "30d", "1y"],
+   "axes": {"left": {"min": null, "max": null}, "right": {"min": 0, "max": 100}},
+   "series": [{"datapoint": "1/3/1", "label": {"de": "Wohnzimmer"}, "axis": "left", "consolidation": "mean"},
+              {"datapoint": "1/3/5", "axis": "right", "consolidation": "mean"}, {"datapoint": "1/1/7", "label": {"de": "Heizung"}}],
+   "references": [{"value": 21, "axis": "left", "label": {"de": "Soll"}}, {"datapoint": "rule/heat/setpoint", "axis": "left"}]}},
+  {"function": "kitchen-light"}]}]}]}
+}

@@ -38,6 +38,18 @@ void ModelView::clear() {
 	function_count_ = 0;
 	datapoints_ = nullptr;
 	datapoint_count_ = 0;
+	pages_ = nullptr;
+	page_count_ = 0;
+	sections_ = nullptr;
+	section_count_ = 0;
+	elements_ = nullptr;
+	element_count_ = 0;
+	charts_ = nullptr;
+	chart_count_ = 0;
+	series_ = nullptr;
+	series_count_ = 0;
+	references_ = nullptr;
+	reference_count_ = 0;
 	steps_ = nullptr;
 	step_count_ = 0;
 	fixed_schedules_ = nullptr;
@@ -230,6 +242,14 @@ bool ModelView::build(const char* text, size_t length, const DatapointModel& mod
 		}
 	}
 
+	// The control pages (validated by the Loader: every reference resolves, the limits hold).
+	JsonSpan ui;
+	JsonSpan pages;
+	if (ok && json_member(root, "ui", ui) && ui.kind == JsonSpan::Kind::object && json_member(ui, "pages", pages) &&
+		pages.kind == JsonSpan::Kind::array) {
+		ok = build_pages(pages, model);
+	}
+
 	// Rule parameter steps.
 	if (ok && json_member(root, "rules", list) && list.kind == JsonSpan::Kind::array) {
 		size_t count = 0;
@@ -297,6 +317,210 @@ bool ModelView::build(const char* text, size_t length, const DatapointModel& mod
 		return false;
 	}
 	return true;
+}
+
+bool ModelView::build_pages(const JsonSpan& pages, const DatapointModel& model) {
+	// Count first: one table per kind, each allocated once.
+	size_t n_pages = 0, n_sections = 0, n_elements = 0, n_charts = 0, n_series = 0, n_references = 0;
+	auto each = [](const JsonSpan& object, const char* name, auto&& visit) {
+		JsonSpan list;
+		if (object.kind != JsonSpan::Kind::object || !json_member(object, name, list) ||
+			list.kind != JsonSpan::Kind::array) {
+			return;
+		}
+		size_t position = 0;
+		JsonSpan item;
+		while (json_next_item(list, position, item)) {
+			visit(item);
+		}
+	};
+	{
+		size_t position = 0;
+		JsonSpan page;
+		while (json_next_item(pages, position, page)) {
+			++n_pages;
+			each(page, "sections", [&](const JsonSpan& section) {
+				++n_sections;
+				each(section, "elements", [&](const JsonSpan& element) {
+					++n_elements;
+					JsonSpan chart;
+					if (json_member(element, "chart", chart)) {
+						++n_charts;
+						each(chart, "series", [&](const JsonSpan&) { ++n_series; });
+						each(chart, "references", [&](const JsonSpan&) { ++n_references; });
+					}
+				});
+			});
+		}
+	}
+	pages_ = arena_.array<Page>(n_pages);
+	sections_ = arena_.array<Section>(n_sections);
+	elements_ = arena_.array<Element>(n_elements);
+	charts_ = arena_.array<Chart>(n_charts);
+	series_ = arena_.array<Series>(n_series);
+	references_ = arena_.array<Reference>(n_references);
+	if ((n_pages > 0 && pages_ == nullptr) || (n_sections > 0 && sections_ == nullptr) ||
+		(n_elements > 0 && elements_ == nullptr) || (n_charts > 0 && charts_ == nullptr) ||
+		(n_series > 0 && series_ == nullptr) || (n_references > 0 && references_ == nullptr)) {
+		return false;
+	}
+	bool ok = true;
+	auto label = [&](const JsonSpan& object) -> const char* {
+		JsonSpan value;
+		if (!json_member(object, "label", value)) {
+			return nullptr;
+		}
+		const char* copy = arena_.copy(value.data, value.length);
+		ok = ok && copy != nullptr;
+		return copy;
+	};
+	auto text = [&](const JsonSpan& object, const char* name) -> const char* {
+		JsonSpan value;
+		char buffer[64];
+		size_t length = 0;
+		if (!json_member(object, name, value) || !json_string(value, buffer, sizeof(buffer), &length)) {
+			return nullptr;
+		}
+		const char* copy = arena_.copy(buffer, length);
+		ok = ok && copy != nullptr;
+		return copy;
+	};
+	auto datapoint_of = [&](const JsonSpan& object) -> uint16_t {
+		JsonSpan value;
+		char name[Datapoint::kMaxName + 1];
+		const Datapoint* dp = json_member(object, "datapoint", value) && json_string(value, name, sizeof(name))
+			? model.find(name) : nullptr;
+		return dp != nullptr ? dp->id() : 0;
+	};
+	auto axis_of = [](const JsonSpan& object) -> uint8_t {
+		JsonSpan value;
+		return json_member(object, "axis", value) && json_string_equals(value, "right") ? 1 : 0;
+	};
+	auto range_of = [](const JsonSpan& value) -> int {
+		char name[8];
+		return json_string(value, name, sizeof(name)) ? chart_range_of(name) : -1;
+	};
+	size_t position = 0;
+	JsonSpan page;
+	while (ok && json_next_item(pages, position, page)) {
+		size_t page_index = page_count_++;
+		Page& p = pages_[page_index];
+		p.id = text(page, "id");
+		p.label = label(page);
+		p.icon = text(page, "icon");
+		p.sections = 0;
+		each(page, "sections", [&](const JsonSpan& section) {
+			if (!ok) {
+				return;
+			}
+			size_t section_index = section_count_++;
+			Section& s = sections_[section_index];
+			s.label = label(section);
+			s.page = static_cast<uint16_t>(page_index);
+			s.elements = 0;
+			++p.sections;
+			each(section, "elements", [&](const JsonSpan& item) {
+				if (!ok) {
+					return;
+				}
+				size_t element_index = element_count_++;
+				Element& e = elements_[element_index];
+				e.label = label(item);
+				e.section = static_cast<uint16_t>(section_index);
+				e.read_only = false;
+				e.target = 0;
+				++s.elements;
+				JsonSpan value;
+				if (json_member(item, "function", value)) {
+					e.kind = ElementKind::function;
+					for (size_t f = 0; f < function_count_; ++f) {
+						if (json_string_equals(value, functions_[f].id)) {
+							e.target = static_cast<uint16_t>(f);
+						}
+					}
+				} else if (json_member(item, "datapoint", value)) {
+					e.kind = ElementKind::datapoint;
+					e.target = datapoint_of(item);
+					bool read_only = false;
+					e.read_only = json_member(item, "readOnly", value) && json_bool(value, read_only) && read_only;
+				} else {
+					JsonSpan chart;
+					json_member(item, "chart", chart);
+					e.kind = ElementKind::chart;
+					e.target = static_cast<uint16_t>(chart_count_);
+					Chart& c = charts_[chart_count_++];
+					c.label = label(chart);
+					c.fixed = 0;
+					c.width = 0;
+					double number = 0;
+					if (json_member(chart, "width", value) && json_number(value, number)) {
+						c.width = static_cast<uint8_t>(number);
+					}
+					c.height = json_member(chart, "height", value) && json_number(value, number) ? static_cast<uint8_t>(number) : 2;
+					int range = json_member(chart, "range", value) ? range_of(value) : -1;
+					c.range = static_cast<uint8_t>(range >= 0 ? range : 1);
+					c.presets = 0;
+					each(chart, "presets", [&](const JsonSpan& preset) {
+						int r = range_of(preset);
+						c.presets = static_cast<uint8_t>(c.presets | (r >= 0 ? 1u << r : 0u));
+					});
+					if (c.presets == 0) {
+						c.presets = static_cast<uint8_t>(1u << c.range);
+					}
+					JsonSpan axes;
+					for (int a = 0; a < 2; ++a) {
+						c.min[a] = 0;
+						c.max[a] = 0;
+						JsonSpan limits;
+						if (!json_member(chart, "axes", axes) || !json_member(axes, a == 0 ? "left" : "right", limits)) {
+							continue;
+						}
+						if (json_member(limits, "min", value) && json_number(value, c.min[a])) {
+							c.fixed = static_cast<uint8_t>(c.fixed | (1u << (2 * a)));
+						}
+						if (json_member(limits, "max", value) && json_number(value, c.max[a])) {
+							c.fixed = static_cast<uint8_t>(c.fixed | (2u << (2 * a)));
+						}
+					}
+					each(chart, "series", [&](const JsonSpan& series) {
+						if (!ok) {
+							return;
+						}
+						Series& r = series_[series_count_++];
+						r.label = label(series);
+						r.element = static_cast<uint16_t>(element_index);
+						r.datapoint = datapoint_of(series);
+						r.axis = axis_of(series);
+						char name[16];
+						const Datapoint* dp = model.get(r.datapoint);
+						ValueType type = dp != nullptr ? dp->type() : ValueType::real;
+						r.consolidation = type == ValueType::unsigned_int || type == ValueType::signed_int
+							? Consolidation::last : Consolidation::mean;
+						if (json_member(series, "consolidation", value) && json_string(value, name, sizeof(name))) {
+							consolidation_of(name, r.consolidation);
+						}
+					});
+					each(chart, "references", [&](const JsonSpan& reference) {
+						if (!ok) {
+							return;
+						}
+						Reference& r = references_[reference_count_++];
+						r.label = label(reference);
+						r.element = static_cast<uint16_t>(element_index);
+						r.axis = axis_of(reference);
+						r.value = 0;
+						r.datapoint = 0;
+						JsonSpan v;
+						r.constant = json_member(reference, "value", v) && json_number(v, r.value);
+						if (!r.constant) {
+							r.datapoint = datapoint_of(reference);
+						}
+					});
+				}
+			});
+		});
+	}
+	return ok;
 }
 
 double ModelView::parameter_step(const char* rule, const char* parameter) const {

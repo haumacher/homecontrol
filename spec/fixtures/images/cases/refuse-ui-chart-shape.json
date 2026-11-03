@@ -1,0 +1,20 @@
+{"comment": "Chart elements: the series member is required (an empty array is accepted: elements[1]), the presets offer the chart's range once each, a reference line draws a number.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "ui.pages[0].sections[0].elements[0].chart", "reason": "a chart needs its series (an empty array draws an empty chart)"},
+   {"path": "ui.pages[0].sections[0].elements[2].chart.presets", "reason": "the presets do not offer the chart's range 24h"},
+   {"path": "ui.pages[0].sections[0].elements[3].chart.presets[1]", "reason": "the preset 7d is listed twice"},
+   {"path": "ui.pages[0].sections[0].elements[4].chart.presets", "reason": "presets must name at least one range"},
+   {"path": "ui.pages[0].sections[0].elements[5].chart", "reason": "a chart must be an object"},
+   {"path": "ui.pages[0].sections[0].elements[6].chart.references[0].datapoint", "reason": "a reference line needs a numeric datapoint; 'heating' is boolean"},
+   {"path": "ui.pages[0].sections[0].elements[6].chart.references[1].value", "reason": "value must be a number"}]},
+ "image": {"schemaVersion": "1.1", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "temp", "type": "real", "history": {"retention": 3600, "spacing": 60}},
+   {"id": "heating", "type": "boolean", "history": {"retention": 3600, "spacing": 60}}],
+ "ui": {"pages": [{"id": "p", "sections": [{"elements": [
+   {"chart": {"label": "No series"}},
+   {"chart": {"series": []}},
+   {"chart": {"presets": ["7d"], "series": [{"datapoint": "temp"}]}},
+   {"chart": {"range": "7d", "presets": ["7d", "7d"], "series": [{"datapoint": "temp"}]}},
+   {"chart": {"presets": [], "series": [{"datapoint": "temp"}]}},
+   {"chart": true},
+   {"chart": {"series": [{"datapoint": "temp"}, {"datapoint": "heating"}], "references": [{"datapoint": "heating"}, {"value": "21"}]}}]}]}]}}

@@ -237,6 +237,46 @@ const char* value_type_label(ValueType type) {
 	return "none";
 }
 
+namespace {
+
+constexpr const char* kRangeNames[kChartRanges] = {"1h", "24h", "7d", "30d", "1y"};
+constexpr uint32_t kRangeSeconds[kChartRanges] = {3600, 86400, 7 * 86400, 30 * 86400, 365 * 86400};
+constexpr const char* kConsolidationNames[] = {"mean", "last", "band", "consumption"};
+
+} // namespace
+
+const char* chart_range_name(size_t range) {
+	return range < kChartRanges ? kRangeNames[range] : nullptr;
+}
+
+uint32_t chart_range_seconds(size_t range) {
+	return range < kChartRanges ? kRangeSeconds[range] : 0;
+}
+
+int chart_range_of(const char* name) {
+	for (size_t i = 0; i < kChartRanges; ++i) {
+		if (std::strcmp(kRangeNames[i], name) == 0) {
+			return static_cast<int>(i);
+		}
+	}
+	return -1;
+}
+
+const char* consolidation_name(Consolidation consolidation) {
+	size_t i = static_cast<size_t>(consolidation);
+	return i < sizeof(kConsolidationNames) / sizeof(kConsolidationNames[0]) ? kConsolidationNames[i] : "?";
+}
+
+bool consolidation_of(const char* name, Consolidation& out) {
+	for (size_t i = 0; i < sizeof(kConsolidationNames) / sizeof(kConsolidationNames[0]); ++i) {
+		if (std::strcmp(kConsolidationNames[i], name) == 0) {
+			out = static_cast<Consolidation>(i);
+			return true;
+		}
+	}
+	return false;
+}
+
 // ---- The parser -------------------------------------------------------------------------------
 
 namespace {
@@ -1587,7 +1627,8 @@ bool role_type_fits(uint8_t types, ValueType type) {
 	}
 }
 
-void parse_functions(Ctx& c, const JsonSpan& root, const Ids& locations, const Index& index) {
+/// The functions; `ids` receives their ids (for the elements of the control pages).
+void parse_functions(Ctx& c, const JsonSpan& root, const Ids& locations, const Index& index, Ids& ids) {
 	JsonSpan list;
 	if (!c.member(root, "functions", list)) {
 		return;
@@ -1607,7 +1648,6 @@ void parse_functions(Ctx& c, const JsonSpan& root, const Ids& locations, const I
 			static_cast<unsigned>(kMaxFunctions));
 		return;
 	}
-	Ids ids;
 	ids.ids = c.plan.arena.array<char*>(count);
 	if (count > 0 && ids.ids == nullptr) {
 		c.no_memory("the functions");
@@ -2221,6 +2261,434 @@ void parse_history(Ctx& c, const JsonSpan& root, size_t cap) {
 	}
 }
 
+// ---- Control pages (spec/runtime-image.md 3.9) -------------------------------------------------
+
+/// The items of an array (0 for anything else).
+size_t items_of(const JsonSpan& list) {
+	if (list.kind != JsonSpan::Kind::array) {
+		return 0;
+	}
+	size_t count = 0;
+	size_t position = 0;
+	JsonSpan item;
+	while (json_next_item(list, position, item)) {
+		++count;
+	}
+	return count;
+}
+
+/// The items of the array `name` of `object` (0 when it is missing or not an array).
+size_t items_of(const JsonSpan& object, const char* name) {
+	JsonSpan list;
+	return object.kind == JsonSpan::Kind::object && json_member(object, name, list) ? items_of(list) : 0;
+}
+
+/// How much the pages hold, counted before anything is validated, for the limits of section 5.
+struct PageCounts {
+	size_t pages = 0;
+	size_t sections = 0;
+	size_t elements = 0;
+	size_t series = 0;
+	size_t references = 0;
+};
+
+PageCounts count_pages(const JsonSpan& pages) {
+	PageCounts n;
+	size_t p = 0;
+	JsonSpan page;
+	while (json_next_item(pages, p, page)) {
+		++n.pages;
+		JsonSpan sections;
+		if (page.kind != JsonSpan::Kind::object || !json_member(page, "sections", sections) ||
+			sections.kind != JsonSpan::Kind::array) {
+			continue;
+		}
+		size_t s = 0;
+		JsonSpan section;
+		while (json_next_item(sections, s, section)) {
+			++n.sections;
+			JsonSpan elements;
+			if (section.kind != JsonSpan::Kind::object || !json_member(section, "elements", elements) ||
+				elements.kind != JsonSpan::Kind::array) {
+				continue;
+			}
+			size_t e = 0;
+			JsonSpan element;
+			while (json_next_item(elements, e, element)) {
+				++n.elements;
+				JsonSpan chart;
+				if (element.kind == JsonSpan::Kind::object && json_member(element, "chart", chart)) {
+					n.series += items_of(chart, "series");
+					n.references += items_of(chart, "references");
+				}
+			}
+		}
+	}
+	return n;
+}
+
+/// An optional label member.
+void optional_label(Ctx& c, const JsonSpan& object, const char* name = "label") {
+	JsonSpan value;
+	if (c.member(object, name, value)) {
+		Path p(c, ".%s", name);
+		c.label(value);
+	}
+}
+
+/// A string member of the names in `names` (nullptr-terminated); the index, or -1 after a refusal.
+int read_choice(Ctx& c, const JsonSpan& value, const char* const* names, const char* what, const char* list) {
+	char text[16];
+	if (!c.string(value, text, sizeof(text), 1, sizeof(text) - 1, true, what)) {
+		return -1;
+	}
+	for (int i = 0; names[i] != nullptr; ++i) {
+		if (std::strcmp(names[i], text) == 0) {
+			return i;
+		}
+	}
+	c.refuse("unknown %s \"%s\" (%s)", what, text, list);
+	return -1;
+}
+
+/// A datapoint member naming a datapoint of the image; its index, -1 after a refusal.
+int read_datapoint(Ctx& c, const JsonSpan& value, const Index& index) {
+	char name[Datapoint::kMaxName + 1];
+	if (!c.string(value, name, sizeof(name), 1, Datapoint::kMaxName, true, "datapoint")) {
+		return -1;
+	}
+	int dp = index.find(name);
+	if (dp < 0) {
+		c.refuse("unknown datapoint '%s'", name);
+	}
+	return dp;
+}
+
+constexpr const char* kAxisNames[] = {"left", "right", nullptr};
+
+/// An optional `axis` member: "left" or "right".
+void read_axis(Ctx& c, const JsonSpan& object) {
+	JsonSpan value;
+	if (c.member(object, "axis", value)) {
+		Path p(c, ".axis");
+		read_choice(c, value, kAxisNames, "axis", "left, right");
+	}
+}
+
+void parse_chart(Ctx& c, const JsonSpan& chart, const Index& index) {
+	Path p(c, ".chart");
+	if (!c.object(chart, "a chart")) {
+		return;
+	}
+	optional_label(c, chart);
+	JsonSpan value;
+	if (c.member(chart, "width", value)) {
+		Path q(c, ".width");
+		double width = 0;
+		bool ok = value.kind == JsonSpan::Kind::string ? json_string_equals(value, "full")
+			: value.kind == JsonSpan::Kind::number && json_number(value, width) && std::floor(width) == width &&
+				width >= 1 && width <= 4;
+		if (!ok) {
+			c.refuse("width must be 1, 2, 3, 4 (columns) or \"full\"");
+		}
+	}
+	if (c.member(chart, "height", value)) {
+		Path q(c, ".height");
+		double height = 0;
+		if (value.kind != JsonSpan::Kind::number || !json_number(value, height) || (height != 2 && height != 4)) {
+			c.refuse("height must be 2 or 4 (tile rows)");
+		}
+	}
+	static const char* const kRanges[] = {"1h", "24h", "7d", "30d", "1y", nullptr};
+	static const char* const kRangeList = "1h, 24h, 7d, 30d, 1y";
+	int range = 1; // 24h
+	if (c.member(chart, "range", value)) {
+		Path q(c, ".range");
+		range = read_choice(c, value, kRanges, "range", kRangeList);
+	}
+	if (c.member(chart, "presets", value)) {
+		Path q(c, ".presets");
+		if (c.array(value, "presets")) {
+			unsigned seen = 0;
+			size_t position = 0;
+			size_t i = 0;
+			JsonSpan item;
+			while (json_next_item(value, position, item)) {
+				Path a(c, "[%u]", static_cast<unsigned>(i++));
+				int preset = read_choice(c, item, kRanges, "range", kRangeList);
+				if (preset >= 0 && (seen & (1u << preset)) != 0) {
+					c.refuse("the preset %s is listed twice", kRanges[preset]);
+				}
+				if (preset >= 0) {
+					seen |= 1u << preset;
+				}
+			}
+			if (i == 0) {
+				c.refuse("presets must name at least one range (or be left out: the range alone)");
+			} else if (range >= 0 && (seen & (1u << range)) == 0) {
+				c.refuse("the presets do not offer the chart's range %s", kRanges[range]);
+			}
+		}
+	}
+	if (c.member(chart, "axes", value)) {
+		Path q(c, ".axes");
+		if (c.object(value, "axes")) {
+			for (const char* const* axis = kAxisNames; *axis != nullptr; ++axis) {
+				JsonSpan limits;
+				if (!c.member(value, *axis, limits)) {
+					continue;
+				}
+				Path a(c, ".%s", *axis);
+				if (!c.object(limits, "an axis")) {
+					continue;
+				}
+				double bound[2] = {0, 0};
+				bool fixed[2] = {false, false};
+				static const char* const kBounds[] = {"min", "max"};
+				for (int b = 0; b < 2; ++b) {
+					JsonSpan v;
+					if (!c.member(limits, kBounds[b], v) || v.kind == JsonSpan::Kind::null) {
+						continue; // automatic
+					}
+					Path m(c, ".%s", kBounds[b]);
+					fixed[b] = c.number(v, -1e9, 1e9, bound[b], kBounds[b]);
+				}
+				if (fixed[0] && fixed[1] && bound[0] >= bound[1]) {
+					c.refuse("min must be less than max");
+				}
+			}
+		}
+	}
+	JsonSpan series;
+	if (!c.member(chart, "series", series)) {
+		c.refuse("a chart needs its series (an empty array draws an empty chart)");
+	} else {
+		Path q(c, ".series");
+		if (c.array(series, "series")) {
+			static const char* const kConsolidations[] = {"mean", "last", "band", "consumption", nullptr};
+			size_t position = 0;
+			size_t i = 0;
+			JsonSpan item;
+			while (json_next_item(series, position, item) && !c.stopped()) {
+				Path a(c, "[%u]", static_cast<unsigned>(i++));
+				if (!c.object(item, "a series")) {
+					continue;
+				}
+				int dp = -1;
+				if (!c.member(item, "datapoint", value)) {
+					c.refuse("a series needs its datapoint");
+				} else {
+					Path b(c, ".datapoint");
+					dp = read_datapoint(c, value, index);
+					if (dp >= 0 && (c.plan.datapoints[dp].flags & DatapointFlags::kHistory) == 0) {
+						c.refuse("datapoint '%s' keeps no history: a series needs one", c.plan.datapoints[dp].name);
+						dp = -1;
+					}
+				}
+				optional_label(c, item);
+				read_axis(c, item);
+				if (c.member(item, "consolidation", value)) {
+					Path b(c, ".consolidation");
+					int consolidation = read_choice(c, value, kConsolidations, "consolidation",
+						"mean, last, band, consumption");
+					if (consolidation == static_cast<int>(Consolidation::consumption) && dp >= 0 &&
+						c.plan.datapoints[dp].type == ValueType::boolean) {
+						c.refuse("consumption needs a numeric datapoint; '%s' is boolean", c.plan.datapoints[dp].name);
+					}
+				}
+			}
+		}
+	}
+	JsonSpan references;
+	if (c.member(chart, "references", references)) {
+		Path q(c, ".references");
+		if (c.array(references, "references")) {
+			size_t position = 0;
+			size_t i = 0;
+			JsonSpan item;
+			while (json_next_item(references, position, item) && !c.stopped()) {
+				Path a(c, "[%u]", static_cast<unsigned>(i++));
+				if (!c.object(item, "a reference line")) {
+					continue;
+				}
+				JsonSpan constant;
+				JsonSpan datapoint;
+				bool has_value = c.member(item, "value", constant);
+				bool has_datapoint = c.member(item, "datapoint", datapoint);
+				if (has_value == has_datapoint) {
+					c.refuse("a reference line has exactly one of value (a constant) or datapoint (its current value)");
+				} else if (has_value) {
+					Path b(c, ".value");
+					double v = 0;
+					c.number(constant, -1e9, 1e9, v, "value");
+				} else {
+					Path b(c, ".datapoint");
+					int dp = read_datapoint(c, datapoint, index);
+					if (dp >= 0) {
+						ValueType type = c.plan.datapoints[dp].type;
+						if (type != ValueType::unsigned_int && type != ValueType::signed_int && type != ValueType::real) {
+							c.refuse("a reference line needs a numeric datapoint; '%s' is %s", c.plan.datapoints[dp].name,
+								value_type_label(type));
+						}
+					}
+				}
+				optional_label(c, item);
+				read_axis(c, item);
+			}
+		}
+	}
+}
+
+void parse_ui(Ctx& c, const JsonSpan& root, const Ids& functions, const Index& index) {
+	JsonSpan ui;
+	if (!c.member(root, "ui", ui)) {
+		return;
+	}
+	Path p(c, "ui");
+	if (!c.object(ui, "'ui'")) {
+		return;
+	}
+	JsonSpan pages;
+	if (!c.member(ui, "pages", pages)) {
+		return;
+	}
+	Path q(c, ".pages");
+	if (!c.array(pages, "'pages'")) {
+		return;
+	}
+	PageCounts n = count_pages(pages);
+	struct Limit {
+		size_t count;
+		size_t max;
+		const char* what;
+	};
+	const Limit limits[] = {{n.pages, kMaxPages, "pages"}, {n.sections, kMaxSections, "sections"},
+		{n.elements, kMaxElements, "elements"}, {n.series, kMaxSeries, "chart series"},
+		{n.references, kMaxReferences, "reference lines"}};
+	bool within = true;
+	for (const Limit& limit : limits) {
+		if (limit.count > limit.max) {
+			c.refuse("%u %s exceed the limit of %u", static_cast<unsigned>(limit.count), limit.what,
+				static_cast<unsigned>(limit.max));
+			within = false;
+		}
+	}
+	if (!within) {
+		return;
+	}
+	const char* ids[kMaxPages] = {};
+	size_t id_count = 0;
+	size_t position = 0;
+	size_t i = 0;
+	JsonSpan page;
+	while (json_next_item(pages, position, page) && !c.stopped()) {
+		Path a(c, "[%u]", static_cast<unsigned>(i++));
+		if (!c.object(page, "a page")) {
+			continue;
+		}
+		JsonSpan value;
+		if (!c.member(page, "id", value)) {
+			c.refuse("id is missing");
+		} else {
+			Path b(c, ".id");
+			char id[kMaxPageId + 1];
+			if (c.string(value, id, sizeof(id), 1, kMaxPageId, true, "page id")) {
+				if (!id_valid(id, kMaxPageId, true)) {
+					c.refuse("page id '%s' must have 1..32 characters of A-Z a-z 0-9 _ . -", id);
+				} else {
+					bool duplicate = false;
+					for (size_t k = 0; k < id_count && !duplicate; ++k) {
+						duplicate = std::strcmp(ids[k], id) == 0;
+					}
+					const char* copy = duplicate ? nullptr : c.plan.arena.copy(id, std::strlen(id));
+					if (duplicate) {
+						c.refuse("duplicate page id '%s'", id);
+					} else if (copy == nullptr) {
+						c.no_memory("the page ids");
+					} else {
+						ids[id_count++] = copy;
+					}
+				}
+			}
+		}
+		optional_label(c, page);
+		if (c.member(page, "icon", value)) {
+			Path b(c, ".icon");
+			char icon[kMaxIcon + 1];
+			if (c.string(value, icon, sizeof(icon), 1, kMaxIcon, true, "icon") && !id_valid(icon, kMaxIcon, true)) {
+				c.refuse("icon '%s' must have 1..31 characters of A-Z a-z 0-9 _ . -", icon);
+			}
+		}
+		JsonSpan sections;
+		if (!c.member(page, "sections", sections)) {
+			continue;
+		}
+		Path b(c, ".sections");
+		if (!c.array(sections, "sections")) {
+			continue;
+		}
+		size_t s_position = 0;
+		size_t s = 0;
+		JsonSpan section;
+		while (json_next_item(sections, s_position, section) && !c.stopped()) {
+			Path d(c, "[%u]", static_cast<unsigned>(s++));
+			if (!c.object(section, "a section")) {
+				continue;
+			}
+			optional_label(c, section);
+			JsonSpan elements;
+			if (!c.member(section, "elements", elements)) {
+				continue;
+			}
+			Path e(c, ".elements");
+			if (!c.array(elements, "elements")) {
+				continue;
+			}
+			size_t e_position = 0;
+			size_t k = 0;
+			JsonSpan element;
+			while (json_next_item(elements, e_position, element) && !c.stopped()) {
+				Path f(c, "[%u]", static_cast<unsigned>(k++));
+				if (!c.object(element, "an element")) {
+					continue;
+				}
+				JsonSpan function;
+				JsonSpan datapoint;
+				JsonSpan chart;
+				bool has_function = c.member(element, "function", function);
+				bool has_datapoint = c.member(element, "datapoint", datapoint);
+				bool has_chart = c.member(element, "chart", chart);
+				int kinds = (has_function ? 1 : 0) + (has_datapoint ? 1 : 0) + (has_chart ? 1 : 0);
+				if (kinds != 1) {
+					c.refuse("an element names exactly one of function, datapoint or chart; this one names %s",
+						kinds == 0 ? "none" : "several");
+					continue;
+				}
+				optional_label(c, element);
+				if (c.member(element, "readOnly", value)) {
+					Path g(c, ".readOnly");
+					bool read_only = false;
+					if (c.boolean(value, read_only, "readOnly") && !has_datapoint) {
+						c.refuse("readOnly applies to a datapoint element only");
+					}
+				}
+				if (has_function) {
+					Path g(c, ".function");
+					char name[40];
+					if (c.string(function, name, sizeof(name), 1, 32, true, "function") && functions.find(name) < 0) {
+						c.refuse("unknown function '%s'", name);
+					}
+				} else if (has_datapoint) {
+					Path g(c, ".datapoint");
+					read_datapoint(c, datapoint, index);
+				} else {
+					parse_chart(c, chart, index);
+				}
+			}
+		}
+	}
+}
+
 // ---- Rules ------------------------------------------------------------------------------------
 
 struct PlanSchedules : rules::ScheduleDirectory {
@@ -2322,14 +2790,11 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 	});
 	Ids locations;
 	parse_locations(c, root, locations);
-	parse_functions(c, root, locations, index);
+	Ids functions;
+	parse_functions(c, root, locations, index, functions);
 	parse_schedules(c, root, index);
 	parse_history(c, root, history_cap_);
-	JsonSpan ui;
-	if (c.member(root, "ui", ui)) {
-		Path p(c, "ui");
-		c.object(ui, "'ui'");
-	}
+	parse_ui(c, root, functions, index);
 	JsonSpan external;
 	if (c.member(root, "external", external)) {
 		Path p(c, "external");

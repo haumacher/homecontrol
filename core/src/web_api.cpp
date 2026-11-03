@@ -4,10 +4,12 @@
 #include "hc/web_api.h"
 
 #include "hc/diagnostics.h"
+#include "hc/dpt.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 
 #include "hc/ehome_link.h"
 #include "hc/image/image_service.h"
@@ -465,10 +467,11 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 	}
 	// ---- What the dashboard reads of the image ----
 	bool model_path = std::strcmp(path, "/api/model") == 0;
+	bool pages_path = std::strcmp(path, "/api/pages") == 0;
 	bool history_path = std::strcmp(path, "/api/history") == 0;
 	bool rules_path = std::strcmp(path, "/api/rules") == 0 || starts_with(path, "/api/rules/");
 	bool schedules_path = std::strcmp(path, "/api/schedules") == 0 || starts_with(path, "/api/schedules/");
-	if (!model_path && !history_path && !rules_path && !schedules_path) {
+	if (!model_path && !pages_path && !history_path && !rules_path && !schedules_path) {
 		refuse(response, 404, "api.not_found", "no such API endpoint");
 		return;
 	}
@@ -476,13 +479,16 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		refuse(response, 404, "image.unavailable", "this build has no runtime image service");
 		return;
 	}
-	if (model_path || history_path || std::strcmp(path, "/api/rules") == 0 || std::strcmp(path, "/api/schedules") == 0) {
+	if (model_path || pages_path || history_path || std::strcmp(path, "/api/rules") == 0 ||
+		std::strcmp(path, "/api/schedules") == 0) {
 		if (request.method != HttpMethod::get) {
 			refuse(response, 405, "api.method_not_allowed", "use GET");
 			return;
 		}
 		if (model_path) {
 			ui_model(request, response);
+		} else if (pages_path) {
+			ui_pages(request, response);
 		} else if (history_path) {
 			history(request, response);
 		} else if (rules_path) {
@@ -1597,11 +1603,49 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		}
 		if (parameter) {
 			const rules::Rule& rule = set.rule(param_rule);
+			const rules::Parameter& decl = set.parameter(rule.first_parameter + param_index);
 			json.key("parameter")
 				.begin_object()
 				.member("rule", set.str(rule.id))
-				.member("parameter", set.str(set.parameter(rule.first_parameter + param_index).id))
+				.member("parameter", set.str(decl.id))
 				.end_object();
+			// The parameter's range and choices, for the control of a page element (spec/api.md).
+			if (decl.min != rules::kNone) {
+				json.key("min");
+				write_val(json, set.constant(decl.min));
+			}
+			if (decl.max != rules::kNone) {
+				json.key("max");
+				write_val(json, set.constant(decl.max));
+			}
+			double step = view.parameter_step(set.str(rule.id), set.str(decl.id));
+			if (step > 0) {
+				json.member("step", step);
+			}
+			if (decl.choice_count > 0) {
+				json.key("choices").begin_array();
+				for (size_t c = 0; c < decl.choice_count; ++c) {
+					const rules::Choice& choice = set.choice(decl.first_choice + c);
+					json.begin_object().key("value");
+					write_val(json, set.constant(choice.value));
+					write_label(json, set, "label", choice.label, choice.label_json);
+					json.end_object();
+				}
+				json.end_array();
+			}
+		} else if (d.binding != nullptr) {
+			// The fixed range of a scaled KNX type (5.001 percent, 5.003 angle).
+			JsonSpan binding;
+			JsonSpan knx;
+			JsonSpan dpt;
+			if (json_parse(d.binding, std::strlen(d.binding), binding) && json_member(binding, "knx", knx) &&
+				json_member(knx, "dpt", dpt)) {
+				char text[16];
+				std::optional<Dpt> type = json_string(dpt, text, sizeof(text)) ? Dpt::parse(text) : std::nullopt;
+				if (type && type->main == 5 && (type->sub == 1 || type->sub == 3)) {
+					json.member("min", static_cast<uint32_t>(0)).member("max", static_cast<uint32_t>(type->sub == 1 ? 100 : 360));
+				}
+			}
 		}
 		json.member("history", dp != nullptr && dp->has_history());
 		json.end_object();
@@ -1615,6 +1659,152 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 	json.end_array();
 	if (written == 0 && index < total) {
 		refuse(response, 500, "api.response_too_large", "an entry of the model does not fit the server's buffer");
+		return;
+	}
+	json.release();
+	json.key("next");
+	if (index < total) {
+		json.number(static_cast<uint32_t>(index));
+	} else {
+		json.null();
+	}
+	json.end_object();
+	finish(response, json);
+}
+
+void WebApi::ui_pages(const WebRequest& request, WebResponse& response) {
+	const image::ModelView& view = image_->view();
+	if (image_->loaded() && view.no_memory()) {
+		refuse(response, 507, "model.no_memory", "the device had not enough memory for the UI model of this image");
+		return;
+	}
+	uint32_t from = 0;
+	query_uint(request.query, "from", from);
+	bool loaded = image_->loaded();
+	// Five lists in one index space: pages, sections, elements, series, reference lines.
+	const size_t counts[5] = {loaded ? view.page_count() : 0, loaded ? view.section_count() : 0,
+		loaded ? view.element_count() : 0, loaded ? view.series_count() : 0, loaded ? view.reference_count() : 0};
+	static const char* const kLists[5] = {"pages", "sections", "elements", "series", "references"};
+	size_t total = 0;
+	for (size_t count : counts) {
+		total += count;
+	}
+	JsonWriter json(response.body, response.capacity);
+	// The closing: the lists after a full one (empty) and `next`.
+	json.reserve(kClosingReserve + 64);
+	json.begin_object()
+		.member("loaded", loaded)
+		.member("generation", view.generation())
+		.member("total", static_cast<uint32_t>(total))
+		.member("from", from);
+	auto label = [&json](const char* text) {
+		if (text != nullptr) {
+			json.key("label").raw(text, std::strlen(text));
+		}
+	};
+	auto axis = [](uint8_t a) { return a == 0 ? "left" : "right"; };
+	size_t index = from;
+	size_t written = 0;
+	bool full = false;
+	size_t base = 0;
+	for (size_t list = 0; list < 5; ++list) {
+		json.key(kLists[list]).begin_array();
+		for (; !full && index >= base && index < base + counts[list]; ++index) {
+			JsonWriter::Mark mark = json.mark();
+			size_t i = index - base;
+			json.begin_object();
+			if (list == 0) {
+				const image::ModelView::Page& p = view.page(i);
+				json.member("id", p.id != nullptr ? p.id : "");
+				label(p.label);
+				if (p.icon != nullptr) {
+					json.member("icon", p.icon);
+				}
+				json.member("sections", static_cast<uint32_t>(p.sections));
+			} else if (list == 1) {
+				const image::ModelView::Section& s = view.section(i);
+				json.member("page", static_cast<uint32_t>(s.page));
+				label(s.label);
+				json.member("elements", static_cast<uint32_t>(s.elements));
+			} else if (list == 2) {
+				const image::ModelView::Element& e = view.element(i);
+				json.member("section", static_cast<uint32_t>(e.section));
+				label(e.label);
+				if (e.kind == image::ModelView::ElementKind::function) {
+					json.member("function", view.function(e.target).id);
+				} else if (e.kind == image::ModelView::ElementKind::datapoint) {
+					json.member("datapoint", static_cast<uint32_t>(e.target));
+					if (e.read_only) {
+						json.member("readOnly", true);
+					}
+				} else {
+					const image::ModelView::Chart& c = view.chart(e.target);
+					json.key("chart").begin_object();
+					label(c.label);
+					json.key("width");
+					if (c.width == 0) {
+						json.string("full");
+					} else {
+						json.number(static_cast<uint32_t>(c.width));
+					}
+					json.member("height", static_cast<uint32_t>(c.height))
+						.member("range", image::chart_range_name(c.range));
+					json.key("presets").begin_array();
+					for (size_t r = 0; r < image::kChartRanges; ++r) {
+						if ((c.presets & (1u << r)) != 0) {
+							json.string(image::chart_range_name(r));
+						}
+					}
+					json.end_array();
+					json.key("axes").begin_object();
+					for (int a = 0; a < 2; ++a) {
+						json.key(axis(static_cast<uint8_t>(a))).begin_object().key("min");
+						if ((c.fixed & (1u << (2 * a))) != 0) {
+							json.number(c.min[a]);
+						} else {
+							json.null();
+						}
+						json.key("max");
+						if ((c.fixed & (2u << (2 * a))) != 0) {
+							json.number(c.max[a]);
+						} else {
+							json.null();
+						}
+						json.end_object();
+					}
+					json.end_object().end_object();
+				}
+			} else if (list == 3) {
+				const image::ModelView::Series& r = view.series(i);
+				json.member("element", static_cast<uint32_t>(r.element))
+					.member("datapoint", static_cast<uint32_t>(r.datapoint));
+				label(r.label);
+				json.member("axis", axis(r.axis)).member("consolidation", image::consolidation_name(r.consolidation));
+			} else {
+				const image::ModelView::Reference& r = view.reference(i);
+				json.member("element", static_cast<uint32_t>(r.element));
+				if (r.constant) {
+					json.member("value", r.value);
+				} else {
+					json.member("datapoint", static_cast<uint32_t>(r.datapoint));
+				}
+				label(r.label);
+				json.member("axis", axis(r.axis));
+			}
+			json.end_object();
+			if (json.overflowed()) {
+				json.reset(mark);
+				json.release(); // the closing: this list's end, the empty lists after it, `next`
+				full = true;
+				break;
+			}
+			++written;
+		}
+		json.end_array();
+		base += counts[list];
+	}
+	if (written == 0 && index < total) {
+		refuse(response, 500, "api.response_too_large", "an entry of the pages does not fit the server's buffer");
 		return;
 	}
 	json.release();
@@ -1676,8 +1866,12 @@ void WebApi::history(const WebRequest& request, WebResponse& response) {
 			json.member("code", "history.none").member("error", "this datapoint has no history").end_object();
 			continue;
 		}
+		// The store that answers (spec/api.md "history"): today always the raw ring, which reaches back
+		// `retention_s`. The consolidated archives of issue #56 plug in here: the store whose
+		// resolution fits `width` and whose reach covers `from`, named in `store`.
+		json.member("store", "raw").member("retention_s", hist.retention_s(ids[i]));
 		// One bucket at a time (no point buffer): [t, last] for a single sample, [t, last, min, max,
-		// count] for a decimated bucket.
+		// count, mean] for a decimated bucket.
 		json.key("points").begin_array();
 		for (uint32_t b = 0; b < points; ++b) {
 			int64_t begin = from + b * width;
@@ -1694,6 +1888,7 @@ void WebApi::history(const WebRequest& request, WebResponse& response) {
 				write_sample(json, point.min);
 				write_sample(json, point.max);
 				json.number(point.count);
+				write_sample(json, point.mean);
 			}
 			json.end_array();
 		}

@@ -28,7 +28,7 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
   more than about 100 KB may find no free heap block of its size; the device then answers 507
   and keeps its image.
 - **I4. Versioned by `image.schemaVersion`, `<major>.<minor>`.** A newer major version is refused
-  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.0)`); a
+  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.1)`); a
   newer minor version of a known major loads. *Alternative:* a feature list (more precise, but
   E-Home would have to know which features a firmware has).
 - **I5. Unknown members are ignored, except in `rules` and `schedules`.** A minor version may add
@@ -62,7 +62,7 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
 	"schedules": [ ... ],
 	"rules": [ ... ],
 	"history": {"budget": 4096},
-	"ui": {}
+	"ui": {"pages": [ ... ]}
 }
 ```
 
@@ -79,7 +79,7 @@ Complete example: `spec/fixtures/images/example.json` (placeholder addresses `1/
 | `schedules` | no (none) | `spec/schedules.md` |
 | `rules` | no (none) | `spec/rules.md` |
 | `history` | no (budget = what the rings need) | 3.7 |
-| `ui` | no | 3.8 |
+| `ui` | no (no control pages: the generated overview) | 3.9 |
 
 Strings are 1..N bytes of valid UTF-8 without control characters; N is given per member. A
 *label* is either a string (1..63 bytes) or an object of language tags (2..8 characters of
@@ -91,7 +91,7 @@ Strings are 1..N bytes of valid UTF-8 without control characters; N is given per
 
 | Member | Type | Required | Meaning |
 |---|---|---|---|
-| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.0`. |
+| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.1` (section 8). |
 | `projectId` | string, 1..63 | yes | E-Home's project. Shown in the status. |
 | `revision` | integer 0..4294967295 | yes | E-Home's deployment counter, shown in the status and returned by PUT. The device does not refuse an older revision: rolling back is a deployment like any other. |
 | `generatedAt` | string, 1..31 | no | ISO 8601 time of the export. |
@@ -241,8 +241,107 @@ applied.
 
 ### 3.9 `ui`
 
-An object reserved for E-Home's presentation hints (dashboard order, icons). Version 1.0 defines
-no members; the device checks only that it is an object.
+E-Home's presentation: the **control pages** (issue #54, E-Home's side haumacher/ehome#72), the
+only member so far. Without `ui` or `pages`, or with an empty list, the device UI shows its
+generated overview of rooms and functions. Unknown members are ignored (I5). A 1.0 firmware checks
+only that `ui` is an object and keeps its overview, so an image with pages loads there too (I4).
+
+```json
+"ui": {"pages": [
+  {"id": "evening", "label": {"de": "Abend", "en": "Evening"}, "icon": "moon",
+   "sections": [
+     {"label": {"de": "Wohnzimmer"}, "elements": [
+       {"function": "living-light", "label": {"de": "Decke"}},
+       {"function": "evening"},
+       {"datapoint": "1/3/1", "readOnly": true},
+       {"datapoint": "rule/heat/setpoint"},
+       {"datapoint": "rule/presence/enabled", "label": {"de": "Anwesenheit"}}]},
+     {"elements": [
+       {"chart": {"label": {"de": "Temperaturen"}, "width": "full", "height": 4,
+         "range": "24h", "presets": ["24h", "7d", "30d", "1y"],
+         "axes": {"left": {"min": null, "max": null}, "right": {"min": 0, "max": 100}},
+         "series": [{"datapoint": "1/3/1", "label": {"de": "Wohnzimmer"}, "axis": "left", "consolidation": "mean"},
+                    {"datapoint": "1/3/5", "axis": "right", "consolidation": "mean"},
+                    {"datapoint": "1/1/7", "label": {"de": "Heizung"}}],
+         "references": [{"value": 21, "axis": "left", "label": {"de": "Soll"}},
+                        {"datapoint": "rule/heat/setpoint", "axis": "left"}]}}]}]}]}
+```
+
+Complete example: `spec/fixtures/images/pages.json`. One global set of pages, in navigation order;
+the first is the start page. There is no free positioning: a section is a grid of tiles in element
+order. E-Home expands a room into its function elements before export; an element may appear on
+several pages.
+
+A **page**:
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | 1..32 characters of `A-Z a-z 0-9 _ . -`, unique among the pages | yes | The page's address in the UI (`/page/<id>`). |
+| `label` | label | no | The navigation entry and the title (default: the id). |
+| `icon` | 1..31 characters of `A-Z a-z 0-9 _ . -` | no | A name of the UI's icon set (`moon`, `sun`, `home`, `bulb`, `chart`, `energy`, `thermometer`, `blind`, `power`, `play`, `calendar`, ...); an unknown name shows the default icon. |
+| `sections` | array of sections | no (none) | |
+
+A **section**: `label` (label, optional: the section's title; none, no title) and `elements` (array,
+optional). An **element** has exactly one of `function`, `datapoint` or `chart`, and an optional
+`label` that replaces the target's own:
+
+| Element | Members | Meaning |
+|---|---|---|
+| function | `function`: a function id (3.5) | The function's tile by its kind, with its detail sheet. |
+| datapoint | `datapoint`: a datapoint id (3.3, including the implied `rule/<ruleId>/<parameterId>` and `rule/<ruleId>/enabled`); `readOnly`: boolean, default false | A value tile; the control is chosen by the value type (doc/web.md "Control pages"), and shown only when the datapoint is writable and `readOnly` is not true. `readOnly: false` cannot make a datapoint writable: it stays read-only. `readOnly` on another element is refused. |
+| chart | `chart`: object, below | A history chart over the tiles' grid. |
+
+The 1.0 draft's `chart: true` flag of a datapoint element was replaced by the chart element: an
+element with `datapoint` and `chart` names two kinds and is refused.
+
+A **chart**:
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `label` | label | no | The title; the element's `label`, when it has one, replaces it. |
+| `width` | 1, 2, 3, 4 or `"full"` | no, `"full"` | Columns of the section's grid, capped at the columns a narrow screen has. |
+| `height` | 2 or 4 | no, 2 | Tile rows of 64 px: 2 hold a title and one or two series, 4 suit many series with the legend. |
+| `range` | `"1h"`, `"24h"`, `"7d"`, `"30d"`, `"1y"` (a year is 365 days) | no, `"24h"` | The range shown first. |
+| `presets` | array of ranges, each once, including `range` | no, `[range]` | The ranges the viewer switches between; the viewer also steps back and forth in time by one range. |
+| `axes` | `{"left": {"min", "max"}, "right": {"min", "max"}}`, each bound a number (−10⁹..10⁹) or `null` | no, automatic | A fixed bound per axis; `null` or absent is automatic. `min` < `max` when both are fixed. |
+| `series` | array of series, may be empty (an empty chart) | yes | In this order, coloured by a fixed palette of 12 in series order (no per-series colour). |
+| `references` | array of reference lines | no | Horizontal lines that cost no history. |
+
+A **series**: `datapoint` (required: a datapoint of the image **with a history ring**, 3.3),
+`label` (label; default the datapoint's), `axis` (`"left"`, `"right"`; default `"left"`; ignored for
+a boolean) and `consolidation`:
+
+- `mean`: the line through each bucket's mean; the default for a `real` and a `boolean`;
+- `last`: the line through each bucket's last value; the default for `unsigned` and `signed`;
+- `band`: the mean line with the bucket's min/max band (a band only on a chart of a single series;
+  with several series it is drawn as its mean line);
+- `consumption`: bars of the delta between consecutive buckets' last values, for meter readings
+  (refused for a boolean); a negative delta is a counter reset and is drawn as a gap.
+
+A **boolean** series is drawn as an on/off strip beneath the plot, without an axis; a consolidated
+bucket shows its on-share (with `mean`) or its last state (with `last`). A legend is shown with more
+than one series; tapping an entry hides or shows the series.
+
+A **reference line**: exactly one of `value` (a number: a constant such as 21 °C or a limit) or
+`datapoint` (a numeric datapoint, `unsigned`, `signed` or `real`: its current value, drawn across the
+whole chart and following the live value), plus `label` (label) and `axis` (default `"left"`).
+
+**Which history answers.** A chart queries the history of its series (spec/api.md "history") over its
+range. In this firmware that is the raw ring of each datapoint (its `retention`, at most 31 days):
+a range longer than the ring shows what the ring has, with the hint "only the last ... stored", never
+an error. The consolidated archives that serve long ranges (homecontrol#56) and the history settings
+E-Home derives from the charts' ranges (ehome#73) come later; the response's `store` names the store
+that answered.
+
+Refusals, each with its path (`ui.pages[0].sections[1].elements[0].chart.series[2].consolidation`):
+`ui` or `pages` of the wrong type; more than the limits of section 5 (at `ui.pages`, before anything
+else is checked); a page without `id`, a malformed or duplicate id, a malformed icon; a page, section,
+element, chart, series or line that is not an object; an element with none or several of `function`,
+`datapoint`, `chart`; `readOnly` outside a datapoint element; an unknown function or datapoint; a
+malformed label; a width, height, range, preset, consolidation or axis out of its set; presets that
+are empty, list a range twice or do not offer `range`; an axis with `min` >= `max`; a chart without
+series; a series datapoint without history; `consumption` on a boolean; a reference line with none
+or both of `value` and `datapoint`, or a datapoint that is not numeric.
 
 ### 3.10 `mqtt`
 
@@ -286,6 +385,7 @@ reason codes of `spec/rules.md` 10.1 (`malformed:`, `outputConflict:`, `unknownR
 | Image text | 256 KB |
 | Nesting | 48 levels (rule expressions nest deeply; the API's own bodies stay at 16) |
 | Datapoints / locations / functions | 1024 / 256 / 512 |
+| Control pages (`ui.pages`, over all pages) | 16 pages, 128 sections, 512 elements, 256 chart series, 128 reference lines |
 | Schedule entries | 128 (`spec/schedules.md`) |
 | Listening addresses per datapoint | 8 |
 | Reported refusals | 12 with path and reason; up to 100 counted |
@@ -295,6 +395,13 @@ blocks), plus the scratch model the rule validation builds. RAM kept: the model'
 rule set and its runtime, the schedules, the KNX tables and the history rings (the budget).
 Measured on the host (64-bit, so pointers count double): the example keeps about 9 KB besides its
 stored copy, of which 2.3 KB are history; the test-system template 3 KB plus 11.5 KB of history.
+
+The control pages are kept as flat tables in the UI model (`ModelView`, with each label's JSON text),
+measured on the host by `Pages.MemoryOfTheKeptPageTable`: `pages.json` (2 pages, 9 elements, 2 charts
+of 4 series) 1.0 KB; 512 datapoint elements with labels 16.2 KB; 128 charts with 256 series and 128
+reference lines 25.3 KB. On the C6 (32-bit pointers) an element costs about 12 bytes plus its label,
+a chart about 48, a series and a line about 12 and 24, plus the labels. A realistic set (a few pages
+of 20 to 50 elements) stays below 2 KB.
 
 ## 6. Applying an image
 
@@ -334,3 +441,5 @@ persisted values and history rings: the device returns to setup.
 ## 8. Changes
 
 - 1.0 (issue #8): first version.
+- 1.1 (issue #54): `ui.pages`, the control pages (3.9), with their limits (5). An image of 1.0 loads
+  unchanged; a 1.0 firmware loads an image of 1.1 and ignores its pages (I4, I5).

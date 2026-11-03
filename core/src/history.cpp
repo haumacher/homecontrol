@@ -515,7 +515,7 @@ HistoryStatus History::range(uint16_t id, int64_t from, int64_t to, HistoryPoint
 		for (uint32_t i = begin; i < end; ++i) {
 			const HistorySample& s = r->at(i);
 			double v = to_double(r->type, s.bits);
-			out[count++] = HistoryPoint{s.t, s.t, v, v, v, 1};
+			out[count++] = HistoryPoint{s.t, s.t, v, v, v, 1, v};
 		}
 		return HistoryStatus::ok;
 	}
@@ -527,8 +527,11 @@ HistoryStatus History::range(uint16_t id, int64_t from, int64_t to, HistoryPoint
 		double v = to_double(r->type, s.bits);
 		int64_t b = (static_cast<int64_t>(s.t) - from) / width;
 		if (b != bucket) {
+			if (count > 0) {
+				out[count - 1].mean /= out[count - 1].count; // the sum so far
+			}
 			bucket = b;
-			out[count++] = HistoryPoint{from + b * width, s.t, v, v, v, 1};
+			out[count++] = HistoryPoint{from + b * width, s.t, v, v, v, 1, v};
 			continue;
 		}
 		HistoryPoint& p = out[count - 1];
@@ -536,7 +539,11 @@ HistoryStatus History::range(uint16_t id, int64_t from, int64_t to, HistoryPoint
 		p.max = std::max(p.max, v);
 		p.last = v;
 		p.last_t = s.t;
+		p.mean += v;
 		++p.count;
+	}
+	if (count > 0) {
+		out[count - 1].mean /= out[count - 1].count;
 	}
 	return HistoryStatus::ok;
 }
@@ -544,6 +551,11 @@ HistoryStatus History::range(uint16_t id, int64_t from, int64_t to, HistoryPoint
 size_t History::samples(uint16_t id) const {
 	const Ring* r = ring(id);
 	return r != nullptr ? r->count : 0;
+}
+
+uint32_t History::retention_s(uint16_t id) const {
+	const Ring* r = ring(id);
+	return r != nullptr ? r->retention_s : 0;
 }
 
 void History::flush() {

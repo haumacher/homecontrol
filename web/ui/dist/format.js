@@ -126,6 +126,22 @@ export function formatWhen(seconds, now) {
 	return Math.abs(seconds - (now || Date.now() / 1000)) > 6 * 86400 ? fullDate.format(date) : dateTime.format(date);
 }
 
+/// A time axis tick, as short as the span of the axis allows: the time up to a day, weekday and
+/// time up to six days, the day and month up to 60 days, month and year beyond.
+export function formatTick(seconds, span) {
+	const date = new Date(seconds * 1000);
+	if (span <= 86400) {
+		return format("date-tick-time", { hour: "2-digit", minute: "2-digit" }).format(date);
+	}
+	if (span <= 6 * 86400) {
+		return dateTime.format(date);
+	}
+	if (span <= 60 * 86400) {
+		return format("date-tick-day", { day: "numeric", month: "short" }).format(date);
+	}
+	return format("date-tick-month", { month: "short", year: "numeric" }).format(date);
+}
+
 /// A number with a unit, at most `digits` fraction digits.
 export function formatNumber(value, unit, digits = 1) {
 	if (value === null || value === undefined || Number.isNaN(value)) {
