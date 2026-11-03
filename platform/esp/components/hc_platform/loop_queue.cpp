@@ -62,7 +62,15 @@ void LoopQueue::dispatch(TickType_t ticks) {
 	uint64_t started_ms = static_cast<uint64_t>(esp_timer_get_time()) / 1000u; // the EspClock's time base
 	size_t handled = 0;
 	do {
+		uint64_t one = static_cast<uint64_t>(esp_timer_get_time()) / 1000u;
 		message.handler(message.context, message);
+		// As the event loop's handlers (EventLoop::invoke, homecontrol #50): a message that holds the
+		// loop longer than 25 ms is logged with the address of its handler.
+		uint64_t took = static_cast<uint64_t>(esp_timer_get_time()) / 1000u - one;
+		if (took > 25) {
+			ESP_LOGW(kTag, "slow message handler %p took %llu ms", reinterpret_cast<void*>(message.handler),
+				static_cast<unsigned long long>(took));
+		}
 	} while (++handled < kDepth && xQueueReceive(queue_, &message, 0) == pdTRUE);
 	if (loop_ != nullptr) {
 		loop_->account_turn(started_ms, static_cast<uint64_t>(esp_timer_get_time()) / 1000u);

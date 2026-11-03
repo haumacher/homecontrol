@@ -176,6 +176,8 @@ private:
 	void heap_sift_down(size_t position);
 
 	void fire(uint8_t index, uint32_t generation, uint64_t now_ms);
+	/// Runs a callback; one that takes longer than kSlowHandlerMs is logged (`what`: its kind).
+	void invoke(const Callback& callback, const char* what);
 
 	TimerSlot slots_[kTimerCapacity];
 	uint8_t free_[kTimerCapacity];

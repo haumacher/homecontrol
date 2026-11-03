@@ -467,3 +467,62 @@ TEST_CASE("TimeService.SunEventsInLocalTimeOnTheSpringForwardDay") {
 	CHECK(std::string(saturday.zone) == "CET");
 	CHECK(saturday.hour == 5);
 }
+
+TEST_CASE("TimeService.SunTimesAreComputedOncePerDateAndLocation") {
+	// homecontrol #50: a schedule's next occurrence looks at ten dates, and one computation costs
+	// about 5 ms on the C6; the results are kept per date for the location they belong to.
+	Rig rig;
+	rig.time.start();
+	hc::GeoLocation where;
+	where.latitude = 48.137;
+	where.longitude = 11.575;
+	where.elevation_m = 520;
+	REQUIRE(rig.time.set_location(where));
+	auto date = [](unsigned day) {
+		Date d;
+		d.year = 2026;
+		d.month = 3;
+		d.day = static_cast<uint8_t>(day);
+		return d;
+	};
+	auto same = [](const hc::SunTimes& a, const hc::SunTimes& b) {
+		for (size_t i = 0; i < hc::kSunEventCount; ++i) {
+			if (a.present[i] != b.present[i] || (a.present[i] && a.utc[i] != b.utc[i])) {
+				return false;
+			}
+		}
+		return true;
+	};
+	hc::SunTimes sun;
+	REQUIRE(rig.time.sun_times(date(1), sun));
+	CHECK(same(sun, hc::sun_times(2026, 3, 1, where)));
+	CHECK(rig.time.sun_computations() == 1);
+	hc::SunTimes again;
+	REQUIRE(rig.time.sun_times(date(1), again));
+	CHECK(same(again, sun));
+	CHECK(rig.time.sun_computations() == 1);
+
+	// The window of the cache: its size in dates stays, the oldest is replaced.
+	for (unsigned day = 2; day <= hc::TimeService::kSunCacheSize; ++day) {
+		REQUIRE(rig.time.sun_times(date(day), sun));
+	}
+	CHECK(rig.time.sun_computations() == hc::TimeService::kSunCacheSize);
+	for (unsigned day = 1; day <= hc::TimeService::kSunCacheSize; ++day) {
+		REQUIRE(rig.time.sun_times(date(day), sun));
+	}
+	CHECK(rig.time.sun_computations() == hc::TimeService::kSunCacheSize);
+	REQUIRE(rig.time.sun_times(date(hc::TimeService::kSunCacheSize + 1), sun));
+	CHECK(rig.time.sun_computations() == hc::TimeService::kSunCacheSize + 1);
+	REQUIRE(rig.time.sun_times(date(1), sun));
+	CHECK(rig.time.sun_computations() == hc::TimeService::kSunCacheSize + 2);
+
+	// Another place: computed anew, never the old place's times.
+	where.latitude = -33.87;
+	where.longitude = 151.21;
+	where.elevation_m = 0;
+	REQUIRE(rig.time.set_location(where));
+	uint32_t before = rig.time.sun_computations();
+	REQUIRE(rig.time.sun_times(date(1), sun));
+	CHECK(rig.time.sun_computations() == before + 1);
+	CHECK(same(sun, hc::sun_times(2026, 3, 1, where)));
+}

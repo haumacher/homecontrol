@@ -446,3 +446,26 @@ TEST_CASE("EventLoop.NextDeadline") {
 	CHECK(loop.cancel(late));
 	CHECK(loop.next_deadline() == 1400);
 }
+
+TEST_CASE("EventLoop.LogsASlowHandlerWithItsFunction") {
+	// homecontrol #50: a handler that holds the loop longer than 25 ms is logged with the address of
+	// its function (addr2line names it), a posted callback, a timer and a periodic timer alike.
+	ScopedCapture capture;
+	hc_test::FakeClock clock;
+	clock.now_ms = 0;
+	EventLoop loop;
+	loop.set_clock(&clock);
+	Action quick{[&]() { clock.advance(25); }};
+	Action slow{[&]() { clock.advance(26); }};
+	loop.post(quick.callback());
+	loop.run_once(clock.now_ms);
+	CHECK_FALSE(capture.sink.contains("slow"));
+	loop.post(slow.callback());
+	loop.schedule_at(clock.now_ms, slow.callback());
+	loop.schedule_periodic(clock.now_ms, 1000, slow.callback());
+	loop.run_once(clock.now_ms);
+	CHECK(capture.sink.contains("slow posted handler 0x"));
+	CHECK(capture.sink.contains("slow timer handler 0x"));
+	CHECK(capture.sink.contains("slow periodic handler 0x"));
+	CHECK(capture.sink.contains(" took 26 ms"));
+}

@@ -92,7 +92,12 @@ skipped since boot (`missed_periods()`, each skip also a warning) and keeps its 
 time it began (`longest_turn_ms()`, `longest_turn_at_ms()`), measured on the clock the Controller
 hands it (`set_clock()`). A turn is one `run_once`, or a batch of messages the platform runs on the
 loop's thread outside it (`account_turn()`: the ESP's `LoopQueue::dispatch()`, where web requests and
-console commands run; POSIX's web jobs and KNX datagrams after its `poll()`).
+console commands run; POSIX's web jobs and KNX datagrams after its `poll()`). A handler that holds the
+loop longer than 25 ms is logged with the address of its function (`slow timer|periodic|posted
+handler 0x… took N ms`, and `slow message handler` for the ESP's `LoopQueue`): `addr2line -C -f -e
+homecontrol.elf 0x…` names it, typically `Callback::invoke_member<hc::X, &hc::X::method>`. That is
+how #50 found the scheduler's 333 ms evaluation (the sun computed for ten dates per astro entry,
+now cached by the TimeService).
 
 ## Tests
 

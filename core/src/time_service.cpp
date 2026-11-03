@@ -463,7 +463,26 @@ bool TimeService::sun_times(const Date& date, SunTimes& out) const {
 	if (!has_location_) {
 		return false;
 	}
+	if (sun_cache_count_ > 0 && (sun_cache_location_.latitude != location_.latitude ||
+			sun_cache_location_.longitude != location_.longitude ||
+			sun_cache_location_.elevation_m != location_.elevation_m)) {
+		sun_cache_count_ = 0;
+		sun_cache_next_ = 0;
+	}
+	for (size_t i = 0; i < sun_cache_count_; ++i) {
+		if (sun_cache_[i].date == date) {
+			out = sun_cache_[i].times;
+			return true;
+		}
+	}
 	out = hc::sun_times(date.year, date.month, date.day, location_);
+	++sun_computations_;
+	sun_cache_location_ = location_;
+	sun_cache_[sun_cache_next_] = SunCacheEntry{date, out};
+	sun_cache_next_ = (sun_cache_next_ + 1) % kSunCacheSize;
+	if (sun_cache_count_ < kSunCacheSize) {
+		++sun_cache_count_;
+	}
 	return true;
 }
 

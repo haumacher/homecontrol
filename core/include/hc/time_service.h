@@ -191,7 +191,20 @@ public:
 	bool to_local(int64_t utc_seconds, LocalTime& out) const override;
 	bool sun_times(const Date& date, SunTimes& out) const override;
 
+	/// How many dates' sun events were computed (not taken from the cache); a diagnostic for tests.
+	uint32_t sun_computations() const { return sun_computations_; }
+
+	/// The dates whose sun events are kept: the schedules' search window (yesterday and the next
+	/// eight days) with room to spare.
+	static constexpr size_t kSunCacheSize = 12;
+
 private:
+	/// The sun events of one date at `sun_cache_location_`.
+	struct SunCacheEntry {
+		Date date;
+		SunTimes times;
+	};
+
 	struct Registration {
 		TimeListener* listener;
 		uint8_t events;
@@ -212,6 +225,14 @@ private:
 	TimerHandle watch_;
 	GeoLocation location_;
 	bool has_location_ = false;
+	// One sun computation costs about 5 ms on a chip without an FPU (the C6), and a schedule's next
+	// occurrence looks at ten dates (homecontrol #50): the results are kept per date, for the
+	// location they were computed at, and replaced round-robin.
+	mutable SunCacheEntry sun_cache_[kSunCacheSize] = {};
+	mutable size_t sun_cache_count_ = 0;
+	mutable size_t sun_cache_next_ = 0;
+	mutable GeoLocation sun_cache_location_;
+	mutable uint32_t sun_computations_ = 0;
 	bool started_ = false;
 	bool notifying_ = false;
 	bool synchronized_ = false;

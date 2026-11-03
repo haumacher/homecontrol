@@ -85,6 +85,23 @@ bool EventLoop::post(Callback callback) {
 	return true;
 }
 
+/// A handler that holds the loop longer than this is logged with the address of its function
+/// (homecontrol #50: the 20 ms timers miss a period when one does; addr2line on the firmware's ELF
+/// names the handler).
+constexpr uint64_t kSlowHandlerMs = 25;
+
+void EventLoop::invoke(const Callback& callback, const char* what) {
+	uint64_t start = clock_ != nullptr ? clock_->monotonic_ms() : 0;
+	callback();
+	if (clock_ != nullptr) {
+		uint64_t took = clock_->monotonic_ms() - start;
+		if (took > kSlowHandlerMs) {
+			Log::warn(kTag, "slow %s handler %p took %llu ms", what, reinterpret_cast<void*>(callback.fn),
+				static_cast<unsigned long long>(took));
+		}
+	}
+}
+
 void EventLoop::run_once(uint64_t now_ms) {
 	if (running_) {
 		Log::error(kTag, "refusing nested run_once from within a handler");
@@ -114,7 +131,7 @@ void EventLoop::run_once(uint64_t now_ms) {
 		Callback callback = events_[event_head_];
 		event_head_ = (event_head_ + 1) % kEventCapacity;
 		--event_count_;
-		callback();
+		invoke(callback, "posted");
 	}
 
 	for (size_t i = 0; i < due_count; ++i) {
@@ -143,12 +160,12 @@ void EventLoop::fire(uint8_t index, uint32_t generation, uint64_t now_ms) {
 	Callback callback = slot.callback;
 	if (slot.period == 0) {
 		release(index);
-		callback();
+		invoke(callback, "timer");
 		return;
 	}
 
 	slot.state = SlotState::firing;
-	callback();
+	invoke(callback, "periodic");
 	if (slot.generation != generation || slot.state != SlotState::firing) {
 		return; // Cancelled from within its handler (the slot may already be reused).
 	}

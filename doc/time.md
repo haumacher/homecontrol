@@ -27,7 +27,7 @@ What consumers call; the service implements it and the tests fake it:
 | `monotonic_ms()` | the event loop's time base |
 | `now_utc()` | wall seconds since the epoch and `synchronized` |
 | `to_local(utc, LocalTime&)` | local civil time (fields, DST flag, zone abbreviation) |
-| `sun_times(date, SunTimes&)` | dawn, sunrise, sunset, dusk of a local date as UTC instants; false without a location; an event that does not occur is absent |
+| `sun_times(date, SunTimes&)` | dawn, sunrise, sunset, dusk of a local date as UTC instants; false without a location; an event that does not occur is absent. The TimeService keeps the last 12 dates' results for its location (one computation costs about 5 ms on the C6, which has no FPU, and a schedule's next occurrence looks at ten dates, #50) |
 | `synchronized()`, `local_time()`, `local_date()`, `utc_offset()` | helpers on top of the above; `local_time()` is false while not synchronized |
 | `local_to_utc(date, h, m, s)` | the UTC instant of a local time, with the DST rules of `spec/schedules.md` S1: a repeated time resolves to its first occurrence, a non-existent one to the end of the gap |
 | `sun_event_local(date, event, LocalTime&)` | what the rules' `sunrise()`, `sunset()`, `dawn()`, `dusk()` return (`spec/rules.md` 4.7) |
