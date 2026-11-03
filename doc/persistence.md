@@ -489,11 +489,14 @@ At the limits:
 |---|---|---|
 | Value records: 60 writes | 60 × 1/8 | 7.5 |
 | History: 64 KB of samples (e.g. five 24 h rings) | 16 + 5 | 21 |
-| **Total** | | **28.5** |
+| Block state records (issue #60, `doc/blocks.md`): 30 writes | 30 × 1/8 | 3.75 |
+| **Total** | | **32.25** |
 
-28.5 erases per hour × 87,600 hours = 2.5 million erases over 35 blocks = about **71,000 cycles
-per block, 71 % of the endurance** (52,000 over the 48 blocks before the core dump partition) after
-ten years of continuous worst case.
+32.25 erases per hour × 87,600 hours = 2.8 million erases over 35 blocks = about **81,000 cycles
+per block, 81 % of the endurance** (71 % without the blocks' records, 52,000 over the 48 blocks before
+the core dump partition) after ten years of continuous worst case. The blocks' records are paced to
+30 an hour in all (`spec/blocks.md` B13): an instance writes at most every `max(persistEvery,
+n × 120 s)`.
 
 With archives at both caps (64 KB of rings, 16 archives of one segment each, so 128 KB to write):
 the rings are saved every 4 hours, the archives hourly.
@@ -503,9 +506,10 @@ the rings are saved every 4 hours, the archives hourly.
 | Value records: 60 writes | 60 × 1/8 | 7.5 |
 | History rings: 64 KB every 4 hours | (16 + 5) / 4 | 5.25 |
 | Archives: 16 patches | 16 × 1.125 | 18 |
-| **Total** | | **30.75** |
+| Block state records: 30 writes | 30 × 1/8 | 3.75 |
+| **Total** | | **34.5** |
 
-2.7 million erases over 35 blocks: about **77,000 cycles, 77 %** (with the rings' margin of a whole
+3.0 million erases over 35 blocks: about **86,000 cycles, 86 %** (77 % without the blocks' records) (with the rings' margin of a whole
 erase per commit 44.75 an hour, 112 % over 35 blocks and 98 % over the 40 measured free). An image as
 E-Home derives it for a few charts writes a small fraction: an hourly archive patches its block
 once per save while its slot changes. A real house writes far

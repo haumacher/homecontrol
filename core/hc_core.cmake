@@ -37,6 +37,7 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/value_json.cpp"
 	"${HC_CORE_DIR}/src/web_api.cpp"
 	"${HC_CORE_DIR}/src/web_api_system.cpp"
+	"${HC_CORE_DIR}/src/web_api_blocks.cpp"
 	"${HC_CORE_DIR}/src/websocket.cpp"
 	"${HC_CORE_DIR}/src/astro.cpp"
 	"${HC_CORE_DIR}/src/time_service.cpp"
@@ -89,6 +90,20 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/rules/printer.cpp"
 	"${HC_CORE_DIR}/src/rules/engine.cpp"
 )
+# Blocks: the block types, the loader of the image's `blocks` and the runtime (issue #60,
+# spec/blocks.md, doc/blocks.md). The blocks' arithmetic must give the same bits as E-Home's Java
+# simulation (spec/blocks.md 13): no fused multiply-add.
+set(HC_CORE_BLOCK_SOURCES
+	"${HC_CORE_DIR}/src/blocks/block_type.cpp"
+	"${HC_CORE_DIR}/src/blocks/block_set.cpp"
+	"${HC_CORE_DIR}/src/blocks/block_runtime.cpp"
+	"${HC_CORE_DIR}/src/blocks/room_controller.cpp"
+)
+list(APPEND HC_CORE_SOURCES ${HC_CORE_BLOCK_SOURCES})
+# (Not in the ESP-IDF's script-mode pass that only collects the component's requirements.)
+if(NOT CMAKE_SCRIPT_MODE_FILE)
+	set_source_files_properties(${HC_CORE_BLOCK_SOURCES} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 # The runtime image: format, loader, storage, the service that applies it (issue #8, doc/image.md).
 list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/json_document.cpp"

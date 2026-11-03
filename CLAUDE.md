@@ -22,7 +22,9 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   the web server's portable half (JSON API `WebApi`, WebSocket feed `LiveFeed` and codec `websocket`,
   `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`), the monitor stream
   for E-Home's group monitor (`MonitorFeed`: KNX, Zigbee and the controller's actions, spec/api.md
-  "Monitor"), the rule interpreter (`hc::rules`, `doc/rules.md`), the runtime image (`hc::image`:
+  "Monitor"), the rule interpreter (`hc::rules`, `doc/rules.md`), the blocks (`hc::blocks`: the
+  block type interface and registry, the loader of the image's `blocks`, the runtime the rule engine
+  calls inside its cascades, the room controller; `spec/blocks.md`, `doc/blocks.md`), the runtime image (`hc::image`:
   `Loader`, `ImageService`, `ImageStore`, the RAM stand-in `MemoryBlobStore`, dynamic datapoints of
   providers such as the Zigbee adapter through `DynamicSpecProvider`; `doc/image.md`), the Zigbee
   adapter (`hc::zigbee`: `ZigbeeAdapter`, `DeviceDatabase`, the cluster mapping, over the platform's
@@ -74,8 +76,9 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
 - `spec/` — the contract with E-Home: the runtime image format (`spec/runtime-image.md`, fixtures
   and the KNX test-system template in `spec/fixtures/images/`), the Zigbee bindings and export
   (`spec/zigbee.md`), the REST and WebSocket API including the E-Home connection (`spec/api.md`),
-  the rule language, and the conformance fixtures both rule interpreters (C++ here, Java in E-Home)
-  must pass.
+  the rule language, the blocks (`spec/blocks.md`), and the conformance fixtures both rule
+  interpreters and block runtimes (C++ here, Java in E-Home) must pass (`spec/fixtures/rules/`,
+  `spec/fixtures/blocks/`).
 - `web/` — the device web UI in `web/ui/dist/` (plain ES modules and CSS, no framework, no build
   step; `doc/web.md`), gzip-compressed and compiled into the firmware by
   `platform/esp/tools/gen_ui_files.py` during the firmware build (an OTA update brings it along); every text goes through `t(key)`

@@ -1,0 +1,374 @@
+{
+	"title": "A window open for 2 h: after windowDelay the controller regulates to the frost setpoint, the output saturates at 0 and the integral does not wind up; closing returns at once.",
+	"note": "The integral at 11 min and at 130 min must be equal (no windup); custom gains without D and filter for hand-checkable numbers.",
+	"datapoints": [
+		{
+			"name": "temp",
+			"type": "real"
+		},
+		{
+			"name": "temp2",
+			"type": "real"
+		},
+		{
+			"name": "valve",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "win",
+			"type": "boolean"
+		},
+		{
+			"name": "mode",
+			"type": "enumeration"
+		},
+		{
+			"name": "presence",
+			"type": "boolean"
+		},
+		{
+			"name": "period",
+			"type": "boolean"
+		},
+		{
+			"name": "sp",
+			"type": "real"
+		},
+		{
+			"name": "on",
+			"type": "boolean"
+		},
+		{
+			"name": "summer",
+			"type": "boolean"
+		},
+		{
+			"name": "forced",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"temp": 20.5
+	},
+	"blocks": [
+		{
+			"id": "wz",
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"label": {
+				"en": "Living room",
+				"de": "Wohnzimmer"
+			},
+			"inputs": {
+				"temperature": "temp",
+				"window": "win"
+			},
+			"outputs": {
+				"valve": "valve"
+			},
+			"parameters": {
+				"system": "custom",
+				"xp": 2,
+				"tn": 60,
+				"td": 0,
+				"filter": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.5
+			}
+		},
+		{
+			"at": 600000,
+			"report": {
+				"datapoint": "win",
+				"value": true
+			}
+		},
+		{
+			"at": 630000,
+			"check": {
+				"datapoints": {
+					"block/wz/state": 1
+				}
+			}
+		},
+		{
+			"at": 661000,
+			"check": {
+				"datapoints": {
+					"block/wz/state": 2,
+					"block/wz/valve": 0.0
+				},
+				"blocks": {
+					"wz": {
+						"state": {
+							"integral": 4.166666666666666
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 900000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.3
+			}
+		},
+		{
+			"at": 1200000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.1
+			}
+		},
+		{
+			"at": 1500000,
+			"report": {
+				"datapoint": "temp",
+				"value": 19.9
+			}
+		},
+		{
+			"at": 1800000,
+			"report": {
+				"datapoint": "temp",
+				"value": 19.7
+			}
+		},
+		{
+			"at": 2100000,
+			"report": {
+				"datapoint": "temp",
+				"value": 19.5
+			}
+		},
+		{
+			"at": 2400000,
+			"report": {
+				"datapoint": "temp",
+				"value": 19.3
+			}
+		},
+		{
+			"at": 2700000,
+			"report": {
+				"datapoint": "temp",
+				"value": 19.1
+			}
+		},
+		{
+			"at": 3000000,
+			"report": {
+				"datapoint": "temp",
+				"value": 18.9
+			}
+		},
+		{
+			"at": 3300000,
+			"report": {
+				"datapoint": "temp",
+				"value": 18.7
+			}
+		},
+		{
+			"at": 3600000,
+			"report": {
+				"datapoint": "temp",
+				"value": 18.5
+			}
+		},
+		{
+			"at": 3900000,
+			"report": {
+				"datapoint": "temp",
+				"value": 18.3
+			}
+		},
+		{
+			"at": 4200000,
+			"report": {
+				"datapoint": "temp",
+				"value": 18.1
+			}
+		},
+		{
+			"at": 4500000,
+			"report": {
+				"datapoint": "temp",
+				"value": 17.9
+			}
+		},
+		{
+			"at": 4800000,
+			"report": {
+				"datapoint": "temp",
+				"value": 17.7
+			}
+		},
+		{
+			"at": 5100000,
+			"report": {
+				"datapoint": "temp",
+				"value": 17.5
+			}
+		},
+		{
+			"at": 5400000,
+			"report": {
+				"datapoint": "temp",
+				"value": 17.3
+			}
+		},
+		{
+			"at": 5700000,
+			"report": {
+				"datapoint": "temp",
+				"value": 17.1
+			}
+		},
+		{
+			"at": 6000000,
+			"report": {
+				"datapoint": "temp",
+				"value": 16.9
+			}
+		},
+		{
+			"at": 6300000,
+			"report": {
+				"datapoint": "temp",
+				"value": 16.7
+			}
+		},
+		{
+			"at": 6600000,
+			"report": {
+				"datapoint": "temp",
+				"value": 16.5
+			}
+		},
+		{
+			"at": 6900000,
+			"report": {
+				"datapoint": "temp",
+				"value": 16.3
+			}
+		},
+		{
+			"at": 7200000,
+			"report": {
+				"datapoint": "temp",
+				"value": 16.1
+			}
+		},
+		{
+			"at": 7500000,
+			"report": {
+				"datapoint": "temp",
+				"value": 15.9
+			}
+		},
+		{
+			"at": 7800000,
+			"report": {
+				"datapoint": "temp",
+				"value": 15.7
+			}
+		},
+		{
+			"at": 7800000,
+			"check": {
+				"blocks": {
+					"wz": {
+						"state": {
+							"integral": 4.166666666666666
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 7801000,
+			"report": {
+				"datapoint": "win",
+				"value": false
+			}
+		},
+		{
+			"at": 8100000,
+			"report": {
+				"datapoint": "temp",
+				"value": 16.5
+			}
+		}
+	],
+	"end": 8400000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 25.0
+			},
+			{
+				"at": 240000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 27.0
+			},
+			{
+				"at": 540000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 29.0
+			},
+			{
+				"at": 660000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 0.0
+			},
+			{
+				"at": 7801000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 100.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/wz/valve": 100.0,
+				"block/wz/switch": true,
+				"block/wz/demand": true,
+				"block/wz/activeSetpoint": 21.0,
+				"block/wz/state": 1,
+				"block/wz/p": 225.0,
+				"block/wz/i": 4.166666666666666,
+				"block/wz/d": 0.0,
+				"block/wz/error": 4.5,
+				"block/wz/filtered": 16.5
+			},
+			"blocks": {
+				"wz": {
+					"status": "running",
+					"state": {
+						"integral": 4.166666666666666
+					}
+				}
+			}
+		}
+	}
+}

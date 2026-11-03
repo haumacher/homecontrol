@@ -31,10 +31,15 @@ namespace hc::rules {
 /// is an identifier and never starts with '.', so the two key spaces cannot meet; the loader refuses
 /// an image in which a state key's hash collides with a parameter's. A store written before states
 /// were persisted simply has no such entries.
+///
+/// The overrides of the blocks' parameters (spec/blocks.md 8.2) share the store under the logical
+/// key `@<blockId>/<parameterId>` (`@` cannot begin a rule id); the rule engine keeps them when it
+/// prunes, the block runtime prunes them.
 class ParameterStore {
 public:
-	/// Longest logical key: a 32-byte rule id, '/', a 24-byte parameter id.
-	static constexpr size_t kMaxLogicalKey = 57;
+	/// Longest logical key: a 32-byte rule id, '/', a 24-byte parameter id; a block's override has
+	/// the key `@<blockId>/<parameterId>`, one byte longer (spec/blocks.md 8.2).
+	static constexpr size_t kMaxLogicalKey = 58;
 	/// The pseudo parameter id of a rule's persisted state.
 	static constexpr const char* kStateKey = ".state";
 

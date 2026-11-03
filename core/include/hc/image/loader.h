@@ -8,6 +8,7 @@
 #include <cstdint>
 
 #include "hc/astro.h"
+#include "hc/blocks/block_set.h"
 #include "hc/datapoint.h"
 #include "hc/history.h"
 #include "hc/image/image.h"
@@ -76,6 +77,7 @@ enum class Binding : uint8_t {
 	time_master, ///< The KNX time master (the datapoints its `knx.timeMaster` implies).
 	zigbee,      ///< The Zigbee adapter (its `zigbee` member, spec/zigbee.md), through the provider interface.
 	rule,        ///< The rule engine: a datapoint mirroring a rule parameter (`rule/<ruleId>/<parameterId>`, spec/rules.md 8.6).
+	block,       ///< The block runtime: a mirror `block/<id>/<x>` (spec/blocks.md 6).
 };
 
 /// A validated image, ready to apply: the specs the components take, in tables of the arena. The
@@ -124,6 +126,13 @@ struct Plan {
 	rules::RuleSet rule_set;
 	bool rules_compiled = false;
 
+	/// The `blocks` member (spec/blocks.md), compiled by the loader's check against the scratch model
+	/// (whose datapoints have the ids of the device's model): the image service hands the set to the
+	/// block runtime. `blocks_compiled` says whether it holds the image's blocks.
+	bool has_blocks = false;
+	blocks::BlockSet block_set;
+	bool blocks_compiled = false;
+
 	/// The `external` member (spec/external-values.md), handed to ExternalValues after the model swap.
 	bool has_external = false;
 	JsonSpan external;
@@ -160,6 +169,8 @@ public:
 
 	/// The device's cap of `history.archiveBudget` (HistoryLimits::archive_cap_bytes; default the C6's).
 	void set_archive_cap(size_t bytes) { archive_cap_ = bytes; }
+	/// The block types the image may use (default: the device's built-in library).
+	void set_block_registry(const blocks::BlockRegistry& registry) { registry_ = &registry; }
 
 	/// True when the image is valid; `plan` then holds it. Otherwise `report` names the refusals.
 	bool parse(const char* text, size_t length, Plan& plan, Report& report) const;
@@ -169,6 +180,7 @@ private:
 	size_t history_cap_;
 	size_t archive_cap_ = HistoryLimits().archive_cap_bytes;
 	const char* language_;
+	const blocks::BlockRegistry* registry_ = &blocks::BlockRegistry::device();
 };
 
 /// The value type named in the image ("boolean", "unsigned", "signed", "real", "string",

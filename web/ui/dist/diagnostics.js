@@ -11,6 +11,7 @@ import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
 import { formatAgo, formatBytes, formatDuration, formatNumber } from "/format.js";
 import { t, tv } from "/i18n.js";
+import { label, pages } from "/model.js";
 
 const kPollMs = 5000;
 
@@ -193,6 +194,84 @@ function taskCard(d) {
 		tasks.cpu ? null : h("p", { class: "muted" }, t("sys.cpu.na")));
 }
 
+/// A value of a block's port or state, with its unit.
+function blockValue(value, unit) {
+	if (value === null || value === undefined) {
+		return t("value.unknown");
+	}
+	if (typeof value === "boolean") {
+		return value ? t("value.on") : t("value.off");
+	}
+	return formatNumber(value, unit, Number.isInteger(value) ? 0 : 2);
+}
+
+/// One block (spec/blocks.md 9): status, fault and last problem, its calls, its inputs, outputs and
+/// state; the enable switch and the restart of a faulted block (PUT /api/blocks/<id>).
+function blockCard(block, nowMs, change) {
+	const ok = block.status === "running";
+	const ago = (ms) => formatAgo(nowMs - ms);
+	const feedback = h("p", { class: "error-text", role: "status" });
+	const send = (body) => change(block.id, body).catch((error) => {
+		feedback.textContent = errorText(error);
+	});
+	const actions = [];
+	if (block.status === "fault") {
+		actions.push(h("button", { type: "button", class: "button small", onclick: () => send({ restart: true }) }, t("blocks.restart")));
+	}
+	if (block.enabledAdjustable) {
+		actions.push(h("button", { type: "button", class: "button secondary small", onclick: () => send({ enabled: !block.enabled }) },
+			block.enabled ? t("blocks.disable") : t("blocks.enable")));
+	}
+	const io = (list, inputs) => h("table", { class: "table" },
+		h("tbody", null, list.map((port) => h("tr", null,
+			h("td", null, port.id),
+			h("td", { class: "num" }, blockValue(port.value, port.unit)),
+			h("td", { class: "muted" }, inputs
+				? ((port.datapoints || []).length
+					? [port.datapoints.join(", "), port.quality && port.quality !== "good" ? ` (${tv("blocks.quality.", port.quality)})` : ""].join("")
+					: t("blocks.unbound"))
+				: (port.datapoint || (port.diagnostic ? t("blocks.diagnostic") : t("blocks.unbound"))))))));
+	const state = Object.entries(block.state || {}).map(([k, v]) => `${k} ${formatNumber(v, "", Number.isInteger(v) ? 0 : 3)}`).join(" · ");
+	return h("section", { class: "card wide block", "data-block": block.id },
+		h("div", { class: "card-head" }, h("h2", null, label(block.label, block.id)), badge(ok, tv("blocks.status.", block.status))),
+		rows([
+			[t("blocks.type"), `${block.type} ${block.version}`],
+			block.fault ? [t("blocks.fault"), h("span", { class: "error-text" }, `${block.fault.reason} · ${ago(block.fault.ms)}`)] : null,
+			[t("blocks.calls"), block.lastCall
+				? t("blocks.calls.value", { count: block.calls, last: [block.lastCall.kind, block.lastCall.arg].filter(Boolean).join(" "), ago: ago(block.lastCall.ms) })
+				: String(block.calls)],
+			[t("blocks.time"), t("blocks.time.value", { total: block.timeMs, longest: block.longestMs })],
+			block.errors > 0 ? [t("rules.errors"), h("span", { class: "error-text" }, t("rules.errors_value", { count: block.errors }),
+				block.lastError ? ` · ${block.lastError.code}: ${block.lastError.text} (${ago(block.lastError.ms)})` : "")] : null,
+			state ? [t("blocks.state"), state] : null,
+		]),
+		h("h3", null, t("blocks.inputs")), io(block.inputs || [], true),
+		h("h3", null, t("blocks.outputs")), io(block.outputs || [], false),
+		actions.length ? h("div", { class: "actions" }, actions) : null,
+		feedback);
+}
+
+/// The section "Blocks" (spec/blocks.md 12): nothing without blocks.
+async function blockCards() {
+	const all = [];
+	let nowMs = 0;
+	try {
+		await pages("/api/blocks", (page) => {
+			all.push(...page.blocks);
+			nowMs = page.now_ms;
+		});
+	} catch (error) {
+		return error && error.code === "image.unavailable" ? [] : [card(t("blocks.title"), h("p", { class: "error-text" }, errorText(error)))];
+	}
+	if (!all.length) {
+		return [];
+	}
+	const change = async (id, body) => {
+		await api("PUT", `/api/blocks/${encodeURIComponent(id)}`, body);
+	};
+	return [h("h2", { class: "section-title" }, t("blocks.title")), ...all.map((b) => blockCard(b, nowMs, change))];
+}
+
 export function renderDiagnostics(content) {
 	const cards = h("div", { class: "cards" }, h("p", { class: "muted" }, t("app.loading")));
 	const message = h("p", { class: "message error", role: "alert", hidden: true });
@@ -202,12 +281,13 @@ export function renderDiagnostics(content) {
 	async function poll() {
 		try {
 			const d = await api("GET", "/api/system/diagnostics");
+			const blocks = await blockCards();
 			if (stopped) {
 				return;
 			}
 			message.hidden = true;
 			replace(cards, memoryCard(d), loopCard(d), chipCard(d), firmwareCard(d), networkCard(d), storageCard(d),
-				busCard(d), statusCard(d), taskCard(d));
+				busCard(d), statusCard(d), taskCard(d), ...blocks);
 		} catch (error) {
 			message.textContent = errorText(error);
 			message.hidden = false;

@@ -153,8 +153,8 @@ kind `datapoint` and an expression node of kind `datapoint` are different things
 
 The parameter id `enabled` is reserved for the enable switch (section 8.3). Datapoint names that
 start with `rule/` are reserved for the datapoints of the rule parameters (section 8.6), those that
-start with `schedule/` for the adjustable schedule times (`spec/schedules.md` 2.2); the image
-declares none.
+start with `schedule/` for the adjustable schedule times (`spec/schedules.md` 2.2), those that start
+with `block/` for the datapoints of the blocks (`spec/blocks.md` 6); the image declares none.
 
 ### 2.2 Rule
 
@@ -1006,7 +1006,7 @@ contract (the corpus compares them); the text after the code is free.
 | `parameterRefused` | warning | a parameter value was refused (UI, API or action) | every time |
 | `parameterReset` | warning | an override was deleted by a new image because it no longer fits (8.4) | every time |
 | `stateReset` | warning | a new image does not have the rule's current state (7.6); at boot, the persisted state is not declared or the rule has no states (7.10) | every time |
-| `loopGuard` | error | a cascade exceeded 32 derived firings (7.2); the entry names the culprit: the rule with the most derived firings in the cascade (the first in rule order on a tie) and their number | once per cascade |
+| `loopGuard` | error | a cascade exceeded 32 derived firings (7.2); the entry names the culprit: the rule with the most derived firings in the cascade (the first in rule order on a tie) and their number; with blocks (`spec/blocks.md` 5.1) their calls for derived events count too, and a block that called more than every rule is the culprit | once per cascade |
 | `queueOverflow` | error | the event queue was full; the event was dropped | once per cascade |
 
 "Once" keeps a flag per expression site: a site whose problem persists logs it on the first

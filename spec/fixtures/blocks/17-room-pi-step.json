@@ -1,0 +1,496 @@
+{
+	"title": "Room controller, continuous, radiator preset: the PI(D) step over the monotonic dt with the D term on the filtered value, a setpoint change, minChange.",
+	"note": "Open loop: the reports are the room's. With the radiator preset xp 3 K, tn 90 min, td 5 min, filter 2 min.",
+	"datapoints": [
+		{
+			"name": "temp",
+			"type": "real"
+		},
+		{
+			"name": "temp2",
+			"type": "real"
+		},
+		{
+			"name": "valve",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "win",
+			"type": "boolean"
+		},
+		{
+			"name": "mode",
+			"type": "enumeration"
+		},
+		{
+			"name": "presence",
+			"type": "boolean"
+		},
+		{
+			"name": "period",
+			"type": "boolean"
+		},
+		{
+			"name": "sp",
+			"type": "real"
+		},
+		{
+			"name": "on",
+			"type": "boolean"
+		},
+		{
+			"name": "summer",
+			"type": "boolean"
+		},
+		{
+			"name": "forced",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"temp": 19.8
+	},
+	"blocks": [
+		{
+			"id": "wz",
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"label": {
+				"en": "Living room",
+				"de": "Wohnzimmer"
+			},
+			"inputs": {
+				"temperature": "temp"
+			},
+			"outputs": {
+				"valve": "valve",
+				"switch": "sw"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 301000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.05
+			}
+		},
+		{
+			"at": 601000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.1
+			}
+		},
+		{
+			"at": 630000,
+			"setBlock": {
+				"block": "wz",
+				"parameters": {
+					"comfort": 22
+				}
+			}
+		},
+		{
+			"at": 901000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.2
+			}
+		},
+		{
+			"at": 1201000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.3
+			}
+		},
+		{
+			"at": 1501000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.45
+			}
+		},
+		{
+			"at": 1800000,
+			"check": {
+				"blocks": {
+					"wz": {
+						"state": {
+							"integral": 16.94686448710114
+						}
+					}
+				},
+				"datapoints": {
+					"block/wz/valve": 68.0
+				}
+			}
+		},
+		{
+			"at": 1801000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.6
+			}
+		},
+		{
+			"at": 2101000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.7
+			}
+		},
+		{
+			"at": 2401000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.85
+			}
+		},
+		{
+			"at": 2701000,
+			"report": {
+				"datapoint": "temp",
+				"value": 21.0
+			}
+		},
+		{
+			"at": 3001000,
+			"report": {
+				"datapoint": "temp",
+				"value": 21.1
+			}
+		},
+		{
+			"at": 3301000,
+			"report": {
+				"datapoint": "temp",
+				"value": 21.2
+			}
+		},
+		{
+			"at": 3601000,
+			"report": {
+				"datapoint": "temp",
+				"value": 21.3
+			}
+		}
+	],
+	"end": 3900000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 40.0
+			},
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "sw",
+				"value": true
+			},
+			{
+				"at": 60000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 27.0
+			},
+			{
+				"at": 120000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 30.0
+			},
+			{
+				"at": 180000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 32.0
+			},
+			{
+				"at": 300000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 34.0
+			},
+			{
+				"at": 360000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 31.0
+			},
+			{
+				"at": 420000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 33.0
+			},
+			{
+				"at": 600000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 35.0
+			},
+			{
+				"at": 630000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 65.0
+			},
+			{
+				"at": 720000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 67.0
+			},
+			{
+				"at": 840000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 69.0
+			},
+			{
+				"at": 960000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 64.0
+			},
+			{
+				"at": 1020000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 66.0
+			},
+			{
+				"at": 1080000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 68.0
+			},
+			{
+				"at": 1200000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 70.0
+			},
+			{
+				"at": 1260000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 64.0
+			},
+			{
+				"at": 1320000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 66.0
+			},
+			{
+				"at": 1380000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 68.0
+			},
+			{
+				"at": 1500000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 70.0
+			},
+			{
+				"at": 1560000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 61.0
+			},
+			{
+				"at": 1620000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 63.0
+			},
+			{
+				"at": 1680000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 65.0
+			},
+			{
+				"at": 1800000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 68.0
+			},
+			{
+				"at": 1860000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 58.0
+			},
+			{
+				"at": 1920000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 61.0
+			},
+			{
+				"at": 1980000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 63.0
+			},
+			{
+				"at": 2100000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 65.0
+			},
+			{
+				"at": 2160000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 59.0
+			},
+			{
+				"at": 2220000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 61.0
+			},
+			{
+				"at": 2280000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 63.0
+			},
+			{
+				"at": 2400000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 65.0
+			},
+			{
+				"at": 2460000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 55.0
+			},
+			{
+				"at": 2520000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 58.0
+			},
+			{
+				"at": 2640000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 61.0
+			},
+			{
+				"at": 2760000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 52.0
+			},
+			{
+				"at": 2820000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 55.0
+			},
+			{
+				"at": 2940000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 58.0
+			},
+			{
+				"at": 3060000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 53.0
+			},
+			{
+				"at": 3180000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 56.0
+			},
+			{
+				"at": 3360000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 51.0
+			},
+			{
+				"at": 3420000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 53.0
+			},
+			{
+				"at": 3540000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 55.0
+			},
+			{
+				"at": 3660000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 49.0
+			},
+			{
+				"at": 3720000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 51.0
+			},
+			{
+				"at": 3840000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 53.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/wz/valve": 53.0,
+				"block/wz/switch": true,
+				"block/wz/demand": true,
+				"block/wz/activeSetpoint": 22.0,
+				"block/wz/state": 1,
+				"block/wz/p": 23.839431072157545,
+				"block/wz/i": 31.00727190210019,
+				"block/wz/d": -1.2652443470605828,
+				"block/wz/error": 0.7151829321647263,
+				"block/wz/filtered": 21.284817067835274
+			},
+			"blocks": {
+				"wz": {
+					"status": "running",
+					"state": {
+						"integral": 31.00727190210019
+					}
+				}
+			}
+		}
+	}
+}

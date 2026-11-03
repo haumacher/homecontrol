@@ -83,7 +83,7 @@ WebSocket connections are closed with 1008 `auth.session_ended`.
 
 ```json
 {"device": {"name": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "...", "ui": "3c0dcd52e390bb91",
-            "schema": "1.2"},
+            "schema": "1.3"},
  "uptime_s": 5321,
  "network": {"state": "up", "ip": "192.0.2.10", "mode": "normal", "pairing": false, "mdns": "homecontrol-a1b2c3.local",
              "mdns_announced": true},
@@ -97,11 +97,12 @@ WebSocket connections are closed with 1008 `auth.session_ended`.
  "web": {"sessions": 1, "tokens": 0, "ws_clients": 1},
  "datapoints": 8,
  "image": {"loaded": true, "project": "example-house", "revision": 7, "name": "Example house", "source": "api",
-           "datapoints": 17, "rules": 2, "schedules": 2, "degraded": false}}
+           "datapoints": 17, "rules": 2, "schedules": 2, "blocks": 1, "degraded": false}}
 ```
 
 `device.schema` is the newest runtime image schema the firmware reads (`spec/runtime-image.md` I4,
-section 8): E-Home warns before deploying an image of a newer one.
+section 8): E-Home warns before deploying an image of a newer one, and refuses to deploy an image
+with `blocks` to a controller below 1.3 (`spec/blocks.md` B1).
 
 `image` (builds with the runtime image service): without an image `{"loaded": false}`, after a
 refused load while no image runs also `"refused": "<code>"`. `source` is how the image came: `boot` (the stored
@@ -814,6 +815,72 @@ member, a value not of the member's form, an empty `days`, members that contradi
 Returns the entry to the image's values: every member override and the switch's are removed. 200
 `{"ok": true, "schedule": {...}}`; 404 `schedule.unknown`. Path segments may be percent-encoded.
 
+## Blocks
+
+The blocks of the image (`spec/blocks.md`). Labels pass through as the image gives them; values
+are in the JSON forms of `spec/blocks.md` 4 (a boolean, a number, a time of day as
+`{"hour", "minute", "second"}`, a duration in ms).
+
+### `GET /api/blocks[?from=<n>]`
+
+The instances with their diagnostics (`spec/blocks.md` 9), paged like the rules (`count`, `from`,
+`next`):
+
+```json
+{"now_ms": 90211, "count": 1, "from": 0, "next": null,
+ "blocks": [{"id": "wz-heating", "type": "org.homecontrol.room-controller", "version": "1.0",
+             "label": {"en": "Living room heating", "de": "Heizung Wohnzimmer"},
+             "enabled": true, "enabledAdjustable": true, "enabledOverridden": false,
+             "status": "running", "fault": null,
+             "calls": 1503, "lastCall": {"kind": "period", "ms": 90000}, "timeMs": 4, "longestMs": 1,
+             "errors": 0, "lastError": null,
+             "state": {"integral": 23.4, "filtered": 20.9, "...": 0},
+             "inputs": [{"id": "temperature", "datapoints": ["1/3/0", "1/3/1"], "aggregation": "min",
+                         "value": 20.9, "quality": "good"}],
+             "outputs": [{"id": "valve", "datapoint": "1/3/30", "value": 37, "unit": "%"},
+                         {"id": "p", "datapoint": null, "value": 3.3, "diagnostic": true, "unit": "%"}],
+             "timers": [{"id": "pwm", "remaining_ms": 230000}],
+             "values": {"system": 0, "controlType": 0, "xp": 3, "comfort": 21, "...": 0},
+             "parameters": [{"id": "comfort", "label": "Comfort", "type": "real", "unit": "°C",
+                             "adjustable": true, "overridden": false, "value": 21, "default": 21,
+                             "min": 5, "max": 30, "step": 0.5}]}]}
+```
+
+`status` is `running`, `disabled` or `fault`; `fault` is `{"reason", "ms"}` while faulted;
+`lastCall` (`{"kind", "arg", "ms"}`: `start` with the reason, `input` with the port, `timer` with the
+timer, `period`, `parameter` with the parameter) and `lastError` (`{"code", "text", "ms"}`, the codes
+of `spec/blocks.md` 9) are `null` until they happen; `*_ms`/`ms` are monotonic like `now_ms`.
+`state` holds every field of the record; an input's `value` is `null` while unknown; an output's
+`value` is its mirror's, `datapoint` its binding or `null`. Reals in `state`, `values` and the ports
+have 9 significant digits. `values` holds every parameter's current value; `parameters` lists the
+adjustable ones in full (`default` is the image's value, `spec/blocks.md` B15; `choices`
+`[{"value", "id", "label"}]` where the type declares them); the rest of a parameter's declaration is
+in the type's manifest (`GET /api/blocks/types`). A room controller takes about 3.1 KB, within the
+4 KB answers of the E-Home connection.
+
+### `GET /api/blocks/types[?from=<n>]`
+
+The block types this firmware has, as their manifests (`spec/blocks.md` 3): `{"count", "from",
+"next", "types": [{"type", "version", "label", "description", "period", "persistEvery", "ports":
+[...], "parameters": [...], "state": [{"id", "persist"}], "timers": [...]}]}`. The room controller's
+manifest takes about 6.8 KB: it fits the device's 8 KB web answers, not the 4 KB of the E-Home
+connection (E-Home has the manifests of the built-in types itself).
+
+### `PUT /api/blocks/<id>`
+
+Body: any of `parameters` (an object of parameter ids to values; `null` resets one), `reset` (an
+array of parameter ids, each returned to the image's value), `enabled` (true|false), `restart`
+(true, only for a faulted block). The change is checked whole and applied whole, in that order, or
+refused whole naming the member: `{"error", "code", "member"}`; each applied part is a change of its
+own (`spec/blocks.md` 5.1) and runs before the answer. 200 `{"ok": true, "now_ms", "block": {...}}`,
+the block as in the list. Refusals: 404 `block.unknown`, 404 `block.unknown_parameter`, 403
+`block.not_adjustable` (a parameter the type does not let the inhabitant change, or the enable
+switch with `enabledAdjustable` false), 422 `block.invalid_value` (not a value of the type, outside
+`min`..`max`, not a choice), 409 `block.not_faulted` (`restart` of a block that runs), 400
+`block.malformed` (another member, a member of the wrong type), 400 `block.value_missing` (no
+member), 400 `api.bad_json`. Path segments may be percent-encoded. The parameters and the enable
+switch are also the datapoints `block/<id>/<x>`: a command to one is the same change.
+
 ## Other refusals
 
 404 `api.not_found` (no such endpoint), 405 `api.method_not_allowed`, 400 `api.bad_json` (with the
@@ -893,7 +960,7 @@ With `ehome.enabled` true the controller opens the WebSocket of `socket` (TLS) a
 
 ```
 E-Home → {"type": "challenge", "nonce": "<32 to 128 hex digits>"}
-device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "schema": "1.2", "key": "ce7d 4a41 a476 9ee3"}
+device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "schema": "1.3", "key": "ce7d 4a41 a476 9ee3"}
 E-Home → {"type": "ready", "installation": "<name>"}        or {"type": "refused", "code": "...", "error": "..."} and the close
 ```
 

@@ -1,0 +1,42 @@
+{
+	"title": "An unbound required input refuses the image with missingInput.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"arm": "flag"
+			}
+		}
+	],
+	"timeline": [],
+	"end": 0,
+	"expected": {
+		"loadRefused": "missingInput",
+		"path": "blocks[0].inputs.x"
+	}
+}

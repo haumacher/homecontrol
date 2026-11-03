@@ -140,6 +140,8 @@ inline bool parse_json(const std::string& text, Json& out, std::string& error) {
 
 /// The rule corpus files (spec/fixtures/rules/NN-*.json), sorted.
 std::vector<std::string> rule_corpus_files();
+/// The case files of `spec/fixtures/<directory>`, sorted.
+std::vector<std::string> corpus_files(const char* directory);
 
 /// A time zone given by a POSIX TZ string ("CET-1CEST,M3.5.0,M10.5.0/3", "UTC0"), evaluated here
 /// so that a test pins its zone without depending on the host's TZ or C library. Transition rules

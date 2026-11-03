@@ -1,0 +1,228 @@
+{
+	"title": "The mirrors of the parameters, the enable switch and an aggregated input take their values at a load without an event; later changes are events.",
+	"note": "spec/blocks.md 5.6 and spec/rules.md 7.6: values the image itself sets are no events. The swap at 4000 keeps the override gain = 2 quietly; the rule's second and third reactions are gone with it.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		},
+		{
+			"name": "seen",
+			"type": "real"
+		},
+		{
+			"name": "seenx",
+			"type": "real"
+		},
+		{
+			"name": "seenon",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"a": 4,
+		"b": 6
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": [
+					"a",
+					"b"
+				]
+			}
+		}
+	],
+	"rules": [
+		{
+			"id": "watch",
+			"name": "watch",
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "datapoint",
+							"datapoint": "block/c/gain"
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "seen",
+							"value": {
+								"kind": "datapoint",
+								"name": "block/c/gain"
+							}
+						}
+					]
+				},
+				{
+					"triggers": [
+						{
+							"kind": "datapoint",
+							"datapoint": "block/c/x"
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "seenx",
+							"value": {
+								"kind": "datapoint",
+								"name": "block/c/x"
+							}
+						}
+					]
+				},
+				{
+					"triggers": [
+						{
+							"kind": "datapoint",
+							"datapoint": "block/c/enabled"
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "seenon",
+							"value": {
+								"kind": "datapoint",
+								"name": "block/c/enabled"
+							}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/c/gain": 1.0,
+					"block/c/x": 5.0,
+					"block/c/enabled": true,
+					"seen": null,
+					"seenx": null
+				}
+			}
+		},
+		{
+			"at": 2000,
+			"setBlock": {
+				"block": "c",
+				"parameters": {
+					"gain": 2
+				}
+			}
+		},
+		{
+			"at": 3000,
+			"report": {
+				"datapoint": "a",
+				"value": 8
+			}
+		},
+		{
+			"at": 4000,
+			"image": {
+				"blocks": [
+					{
+						"id": "c",
+						"type": "org.homecontrol.conformance",
+						"version": "1.1",
+						"label": "Conformance c",
+						"inputs": {
+							"x": [
+								"a",
+								"b"
+							]
+						}
+					}
+				],
+				"rules": [
+					{
+						"id": "watch",
+						"name": "watch",
+						"reactions": [
+							{
+								"triggers": [
+									{
+										"kind": "datapoint",
+										"datapoint": "block/c/gain"
+									}
+								],
+								"actions": [
+									{
+										"kind": "write",
+										"datapoint": "seen",
+										"value": {
+											"kind": "datapoint",
+											"name": "block/c/gain"
+										}
+									}
+								]
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"at": 5000,
+			"setBlock": {
+				"block": "c",
+				"enabled": false
+			}
+		}
+	],
+	"end": 6000,
+	"expected": {
+		"commands": [
+			{
+				"at": 2000,
+				"rule": "watch",
+				"datapoint": "seen",
+				"value": 2.0
+			},
+			{
+				"at": 3000,
+				"rule": "watch",
+				"datapoint": "seenx",
+				"value": 7.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"seen": 2.0,
+				"seenx": 7.0,
+				"seenon": null,
+				"block/c/gain": 2.0,
+				"block/c/x": 7.0,
+				"block/c/enabled": false
+			}
+		}
+	}
+}

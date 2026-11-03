@@ -499,7 +499,8 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 	bool history_path = std::strcmp(path, "/api/history") == 0;
 	bool rules_path = std::strcmp(path, "/api/rules") == 0 || starts_with(path, "/api/rules/");
 	bool schedules_path = std::strcmp(path, "/api/schedules") == 0 || starts_with(path, "/api/schedules/");
-	if (!model_path && !pages_path && !history_path && !rules_path && !schedules_path) {
+	bool blocks_path = std::strcmp(path, "/api/blocks") == 0 || starts_with(path, "/api/blocks/");
+	if (!model_path && !pages_path && !history_path && !rules_path && !schedules_path && !blocks_path) {
 		refuse(response, 404, "api.not_found", "no such API endpoint");
 		return;
 	}
@@ -524,6 +525,35 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		} else {
 			schedules(request, response);
 		}
+		return;
+	}
+	if (blocks_path) {
+		// GET /api/blocks, GET /api/blocks/types, PUT /api/blocks/<id>
+		bool list = std::strcmp(path, "/api/blocks") == 0;
+		bool types = std::strcmp(path, "/api/blocks/types") == 0;
+		if (list || types) {
+			if (request.method != HttpMethod::get) {
+				refuse(response, 405, "api.method_not_allowed", "use GET");
+				return;
+			}
+			if (list) {
+				blocks_list(request, response);
+			} else {
+				block_types(request, response);
+			}
+			return;
+		}
+		const char* rest = path + 12;
+		char id[48];
+		if (std::strchr(rest, '/') != nullptr || !url_decode(rest, std::strlen(rest), id, sizeof(id))) {
+			refuse(response, 404, "api.not_found", "no such API endpoint (PUT /api/blocks/<id>)");
+			return;
+		}
+		if (request.method != HttpMethod::put) {
+			refuse(response, 405, "api.method_not_allowed", "use PUT");
+			return;
+		}
+		put_block(id, request, response);
 		return;
 	}
 	char first[48];

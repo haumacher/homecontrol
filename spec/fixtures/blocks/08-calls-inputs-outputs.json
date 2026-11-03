@@ -1,0 +1,199 @@
+{
+	"title": "Start, input calls by change and by update, the aggregated mean and its mirror, quality, a timer and the period.",
+	"note": "A repeated report of b is an update of an unchanged mean: no call (trigger change); `tick` calls on every update. A stale input writes no y.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		},
+		{
+			"name": "t",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"a": 10,
+		"b": 20
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": [
+					"a",
+					"b"
+				],
+				"tick": "t",
+				"arm": "flag"
+			},
+			"outputs": {
+				"y": "out",
+				"pulse": "led"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "a",
+				"value": 30
+			}
+		},
+		{
+			"at": 2000,
+			"report": {
+				"datapoint": "b",
+				"value": 20
+			}
+		},
+		{
+			"at": 3000,
+			"report": {
+				"datapoint": "t",
+				"value": true
+			}
+		},
+		{
+			"at": 3500,
+			"report": {
+				"datapoint": "t",
+				"value": true
+			}
+		},
+		{
+			"at": 4000,
+			"report": {
+				"datapoint": "flag",
+				"value": true
+			}
+		},
+		{
+			"at": 6000,
+			"check": {
+				"datapoints": {
+					"block/c/x": 25.0,
+					"out": 25.0
+				}
+			}
+		},
+		{
+			"at": 12000,
+			"stale": "a"
+		},
+		{
+			"at": 13000,
+			"stale": "b"
+		},
+		{
+			"at": 14000,
+			"report": {
+				"datapoint": "flag",
+				"value": false
+			}
+		},
+		{
+			"at": 15000,
+			"report": {
+				"datapoint": "flag",
+				"value": true
+			}
+		},
+		{
+			"at": 17000,
+			"report": {
+				"datapoint": "flag",
+				"value": false
+			}
+		}
+	],
+	"end": 25000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "out",
+				"value": 15.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 25.0
+			},
+			{
+				"at": 3000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 25.0
+			},
+			{
+				"at": 3500,
+				"block": "c",
+				"datapoint": "out",
+				"value": 25.0
+			},
+			{
+				"at": 4000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 25.0
+			},
+			{
+				"at": 9000,
+				"block": "c",
+				"datapoint": "led",
+				"value": true
+			},
+			{
+				"at": 12000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 20.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"out": 20.0,
+				"led": true,
+				"block/c/x": 25.0,
+				"block/c/y": 20.0,
+				"block/c/calls": 13,
+				"block/c/ticks": 2,
+				"block/c/pulse": true
+			},
+			"blocks": {
+				"c": {
+					"status": "running",
+					"calls": 13,
+					"state": {
+						"count": 13.0,
+						"ticks": 2.0,
+						"pulseOn": 1.0
+					}
+				}
+			}
+		}
+	}
+}

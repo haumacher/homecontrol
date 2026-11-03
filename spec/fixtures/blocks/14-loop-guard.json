@@ -1,0 +1,523 @@
+{
+	"title": "A block and a rule that feed each other are stopped by the loop guard after 32 derived firings and calls; the next external event runs normally again.",
+	"note": "The block's start writes y (a start is external); every rule firing and block call after it is derived.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		},
+		{
+			"name": "fb",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"a": 0
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"outputs": {
+				"y": "fb"
+			}
+		}
+	],
+	"rules": [
+		{
+			"id": "echo",
+			"name": "echo",
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "datapoint",
+							"datapoint": "fb"
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "a",
+							"value": {
+								"kind": "binary",
+								"op": "+",
+								"left": {
+									"kind": "datapoint",
+									"name": "fb"
+								},
+								"right": {
+									"kind": "literal",
+									"type": "real",
+									"value": 1
+								}
+							}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "a",
+				"value": 100
+			}
+		}
+	],
+	"end": 2000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 0.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 1.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 1.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 2.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 2.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 3.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 3.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 4.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 4.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 5.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 5.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 6.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 6.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 7.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 7.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 8.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 8.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 9.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 9.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 10.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 10.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 11.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 11.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 12.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 12.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 13.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 13.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 14.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 14.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 15.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 15.0
+			},
+			{
+				"at": 0,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 16.0
+			},
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 16.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 100.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 101.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 101.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 102.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 102.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 103.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 103.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 104.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 104.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 105.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 105.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 106.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 106.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 107.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 107.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 108.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 108.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 109.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 109.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 110.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 110.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 111.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 111.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 112.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 112.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 113.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 113.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 114.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 114.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 115.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 115.0
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"datapoint": "a",
+				"value": 116.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "fb",
+				"value": 116.0
+			}
+		],
+		"logs": [
+			{
+				"at": 0,
+				"rule": "echo",
+				"code": "loopGuard",
+				"culprit": "echo",
+				"firings": 16
+			},
+			{
+				"at": 1000,
+				"rule": "echo",
+				"code": "loopGuard",
+				"culprit": "echo",
+				"firings": 16
+			}
+		],
+		"final": {
+			"datapoints": {
+				"a": 116.0,
+				"fb": 116.0
+			},
+			"blocks": {
+				"c": {
+					"calls": 34,
+					"status": "running"
+				}
+			},
+			"firings": {
+				"echo": 32
+			}
+		}
+	}
+}

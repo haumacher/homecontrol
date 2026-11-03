@@ -10,6 +10,7 @@
 #include <cstring>
 #include <new>
 
+#include "hc/blocks/block_set.h"
 #include "hc/json_document.h"
 #include "hc/mqtt.h"
 #include "hc/network_settings.h"
@@ -349,6 +350,9 @@ struct Ctx {
 	size_t path_length = 0;
 
 	Ctx(Plan& p, Report& r) : plan(p), report(r) {}
+
+	/// The block types the image may use.
+	const blocks::BlockRegistry* registry = &blocks::BlockRegistry::device();
 
 	void refuse(const char* format, ...) HC_PRINTF_FORMAT(2, 3) {
 		char reason[Report::kMaxReason + 1];
@@ -1067,6 +1071,9 @@ void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, 
 				c.refuse("id '%s': the prefix '%s' is reserved for the datapoints of the schedules", spec.name,
 					kScheduleDatapointPrefix);
 				spec.name = nullptr;
+			} else if (spec.name != nullptr && std::strncmp(spec.name, "block/", 6) == 0) {
+				c.refuse("id '%s': the prefix 'block/' is reserved for the datapoints of the blocks", spec.name);
+				spec.name = nullptr;
 			}
 		}
 	}
@@ -1429,7 +1436,20 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 		return;
 	}
 	schedule_time_ids(root, schedule_ids, schedule_times);
-	size_t total = declared + implied + parameters + schedule_times;
+	// The blocks' datapoints (spec/blocks.md 6), after the schedules'.
+	JsonSpan blocks_member;
+	size_t block_datapoints = 0;
+	blocks::ImpliedDatapoint* block_list = nullptr;
+	if (c.member(root, "blocks", blocks_member)) {
+		block_datapoints = blocks::implied_datapoints(blocks_member, *c.registry, nullptr, 0);
+		block_list = id_scratch.array<blocks::ImpliedDatapoint>(block_datapoints);
+		if (block_datapoints > 0 && block_list == nullptr) {
+			c.no_memory("the datapoints of the blocks");
+			return;
+		}
+		blocks::implied_datapoints(blocks_member, *c.registry, block_list, block_datapoints);
+	}
+	size_t total = declared + implied + parameters + schedule_times + block_datapoints;
 	plan.datapoints = plan.arena.array<DatapointSpec>(total);
 	plan.bindings = plan.arena.array<Binding>(total);
 	KnxDraft* drafts = plan.arena.array<KnxDraft>(declared);
@@ -1500,6 +1520,17 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 		plan.datapoints[at].type = ValueType::time_of_day;
 		plan.datapoints[at].flags = DatapointFlags::kWritable | DatapointFlags::kTransmit;
 		plan.bindings[at] = Binding::schedule;
+		++at;
+	}
+	for (size_t i = 0; i < block_datapoints; ++i) {
+		plan.datapoints[at].name = plan.arena.copy(block_list[i].name, std::strlen(block_list[i].name));
+		if (plan.datapoints[at].name == nullptr) {
+			c.no_memory("the datapoints of the blocks");
+			return;
+		}
+		plan.datapoints[at].type = block_list[i].type;
+		plan.datapoints[at].flags = block_list[i].flags;
+		plan.bindings[at] = Binding::block;
 		++at;
 	}
 	if (c.stopped()) {
@@ -2378,6 +2409,7 @@ void parse_schedule(Ctx& c, const JsonSpan& item, ScheduleSpec& spec, const Inde
 					: c.plan.bindings[dp] == Binding::schedule ? "another schedule entry"
 					: c.plan.bindings[dp] == Binding::zigbee ? "the Zigbee adapter"
 					: c.plan.bindings[dp] == Binding::rule ? "the rule engine (a rule parameter)"
+					: c.plan.bindings[dp] == Binding::block ? "the block runtime (a block's datapoint)"
 					: "the time master");
 			} else {
 				c.plan.bindings[dp] = Binding::schedule;
@@ -3172,6 +3204,72 @@ void parse_rules(Ctx& c, const JsonSpan& root, const Clock& clock, const char* l
 	plan.rules_compiled = true;
 }
 
+// ---- Blocks -----------------------------------------------------------------------------------
+
+/// Which datapoints another component owns, for the blocks' outputs (spec/blocks.md B14).
+struct PlanOwners : blocks::BlockDirectory {
+	explicit PlanOwners(const Index& i) : index(i) {}
+	const char* owner(const char* datapoint) const override {
+		int dp = index.find(datapoint);
+		if (dp < 0) {
+			return nullptr;
+		}
+		switch (index.plan.bindings[dp]) {
+			case Binding::schedule: return "a schedule entry";
+			case Binding::time_master: return "the KNX time master";
+			case Binding::rule: return "the rule engine (a rule parameter)";
+			case Binding::block: return "the block runtime (a block's datapoint)";
+			default: return nullptr;
+		}
+	}
+	const Index& index;
+};
+
+void parse_blocks(Ctx& c, const JsonSpan& root, const Clock& clock, const Index& index) {
+	Plan& plan = c.plan;
+	JsonSpan blocks_member;
+	if (!c.member(root, "blocks", blocks_member)) {
+		return;
+	}
+	plan.has_blocks = true;
+	if (blocks_member.kind == JsonSpan::Kind::array) {
+		size_t position = 0;
+		JsonSpan item;
+		while (json_next_item(blocks_member, position, item)) {
+			++plan.info.blocks;
+		}
+	}
+	if (!c.report.ok()) {
+		return; // checked against the datapoints, the schedules and the rules: their refusals first
+	}
+	DatapointModel scratch(clock);
+	DatapointStatus status = scratch.load(plan.datapoints, plan.datapoint_count);
+	if (status != DatapointStatus::ok) {
+		Path p(c, "datapoints");
+		if (status == DatapointStatus::out_of_memory) {
+			c.no_memory("checking the blocks (a scratch datapoint model)");
+		} else {
+			c.refuse("the datapoint model refuses the datapoints: %s (the log names it)", datapoint_status_name(status));
+		}
+		return;
+	}
+	PlanOwners owners(index);
+	blocks::BlockLoadResult result = plan.block_set.load(blocks_member, scratch, owners, *c.registry);
+	if (!result.ok()) {
+		Report::Kind kind =
+			result.error == blocks::BlockError::out_of_memory ? Report::Kind::no_memory : Report::Kind::invalid;
+		if (result.strict) {
+			c.refuse_strict(kind, result.path, "block '%s': %s: %s", result.block, blocks::block_error_name(result.error),
+				result.text);
+		} else {
+			c.report.add(kind, result.path, "block '%s': %s: %s", result.block, blocks::block_error_name(result.error),
+				result.text);
+		}
+		return;
+	}
+	plan.blocks_compiled = true;
+}
+
 } // namespace
 
 bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) const {
@@ -3191,6 +3289,7 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 		return false;
 	}
 	Ctx c(plan, report);
+	c.registry = registry_;
 	if (root.kind != JsonSpan::Kind::object) {
 		c.refuse("the image must be a JSON object");
 		return false;
@@ -3248,6 +3347,9 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 	}
 	if (!c.stopped()) {
 		parse_rules(c, root, clock_, language_);
+	}
+	if (!c.stopped()) {
+		parse_blocks(c, root, clock_, index);
 	}
 	if (!report.ok()) {
 		Log::warn(kTag, "image refused: %u problem%s, first at %s: %s", static_cast<unsigned>(report.total),

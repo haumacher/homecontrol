@@ -1,0 +1,204 @@
+{
+	"title": "A fault writes the failsafe values once, stops the block until a restart, and the restart starts from the persisted record.",
+	"note": "The restart at 7500 faults again (x is still 160); after x drops to 50 the restart runs. The record was written at once after the boot's start (spec/blocks.md 8.1).",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"a": 5
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"outputs": {
+				"y": "out",
+				"pulse": "led"
+			},
+			"parameters": {
+				"faultAbove": 100
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 2000,
+			"report": {
+				"datapoint": "a",
+				"value": 20
+			}
+		},
+		{
+			"at": 5000,
+			"report": {
+				"datapoint": "a",
+				"value": 150
+			}
+		},
+		{
+			"at": 6000,
+			"report": {
+				"datapoint": "a",
+				"value": 160
+			}
+		},
+		{
+			"at": 7000,
+			"check": {
+				"blocks": {
+					"c": {
+						"status": "fault"
+					}
+				},
+				"datapoints": {
+					"out": -1.0
+				}
+			}
+		},
+		{
+			"at": 7500,
+			"setBlock": {
+				"block": "c",
+				"restart": true
+			}
+		},
+		{
+			"at": 7600,
+			"check": {
+				"blocks": {
+					"c": {
+						"status": "fault"
+					}
+				}
+			}
+		},
+		{
+			"at": 8000,
+			"report": {
+				"datapoint": "a",
+				"value": 50
+			}
+		},
+		{
+			"at": 9000,
+			"setBlock": {
+				"block": "c",
+				"restart": true
+			}
+		},
+		{
+			"at": 9500,
+			"setBlock": {
+				"block": "c",
+				"restart": true,
+				"refused": "not_faulted"
+			}
+		}
+	],
+	"end": 15000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "out",
+				"value": 5.0
+			},
+			{
+				"at": 2000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 20.0
+			},
+			{
+				"at": 5000,
+				"block": "c",
+				"datapoint": "out",
+				"value": -1.0
+			},
+			{
+				"at": 5000,
+				"block": "c",
+				"datapoint": "led",
+				"value": false
+			},
+			{
+				"at": 7500,
+				"block": "c",
+				"datapoint": "out",
+				"value": -1.0
+			},
+			{
+				"at": 7500,
+				"block": "c",
+				"datapoint": "led",
+				"value": false
+			},
+			{
+				"at": 9000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 50.0
+			}
+		],
+		"logs": [
+			{
+				"at": 5000,
+				"block": "c",
+				"code": "fault"
+			},
+			{
+				"at": 7500,
+				"block": "c",
+				"code": "fault"
+			}
+		],
+		"final": {
+			"datapoints": {
+				"out": 50.0,
+				"led": false,
+				"block/c/y": 50.0,
+				"block/c/calls": 2
+			},
+			"blocks": {
+				"c": {
+					"status": "running",
+					"state": {
+						"count": 2.0,
+						"ticks": 0.0
+					}
+				}
+			},
+			"records": {
+				"c": {
+					"count": 2.0,
+					"ticks": 0.0
+				}
+			}
+		}
+	}
+}

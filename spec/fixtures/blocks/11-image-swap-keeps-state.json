@@ -1,0 +1,152 @@
+{
+	"title": "A swap to a newer minor version of the same type keeps the state record and the overrides; the timers stop.",
+	"note": "The timer armed at 2000 (5 s) would have fired at 7000; the swap at 3000 stops it and the start does not re-arm it.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"a": 2
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.0",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a",
+				"arm": "flag"
+			},
+			"outputs": {
+				"y": "out"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"setBlock": {
+				"block": "c",
+				"parameters": {
+					"gain": 3
+				}
+			}
+		},
+		{
+			"at": 2000,
+			"report": {
+				"datapoint": "flag",
+				"value": true
+			}
+		},
+		{
+			"at": 3000,
+			"image": {
+				"blocks": [
+					{
+						"id": "c",
+						"type": "org.homecontrol.conformance",
+						"version": "1.1",
+						"label": "Conformance c",
+						"inputs": {
+							"x": "a",
+							"arm": "flag"
+						},
+						"outputs": {
+							"y": "out"
+						},
+						"parameters": {
+							"offset": 1
+						}
+					}
+				]
+			}
+		},
+		{
+			"at": 4000,
+			"report": {
+				"datapoint": "a",
+				"value": 4
+			}
+		}
+	],
+	"end": 21000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "out",
+				"value": 2.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 6.0
+			},
+			{
+				"at": 2000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 6.0
+			},
+			{
+				"at": 3000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 7.0
+			},
+			{
+				"at": 4000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 13.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"out": 13.0,
+				"block/c/gain": 3.0,
+				"block/c/pulse": null
+			},
+			"blocks": {
+				"c": {
+					"status": "running",
+					"calls": 6,
+					"state": {
+						"count": 6.0,
+						"ticks": 1.0
+					},
+					"parameters": {
+						"gain": 3.0,
+						"offset": 1.0
+					}
+				}
+			},
+			"persisted": {
+				"@c/gain": 3.0
+			}
+		}
+	}
+}

@@ -13,7 +13,11 @@
 #include <string>
 #include <vector>
 
+#include "conformance_block.h"
 #include "doctest.h"
+#include "fake_blob_store.h"
+#include "hc/blocks/block_runtime.h"
+#include "hc/blocks/block_set.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
 #include "hc/image/loader.h"
@@ -24,6 +28,7 @@
 #include "hc/time_service.h"
 #include "hc/rules/parameter_store.h"
 #include "hc/scheduler.h"
+#include "hc/value_store.h"
 #include "rules_test_support.h"
 #include "test_support.h"
 
@@ -42,10 +47,10 @@ using hc_test::JsonTree;
 
 namespace hc_test {
 
-std::vector<std::string> rule_corpus_files() {
+std::vector<std::string> corpus_files(const char* directory) {
 	std::vector<std::string> files;
 	std::error_code error;
-	for (const auto& entry : std::filesystem::directory_iterator(HC_SPEC_DIR "/fixtures/rules", error)) {
+	for (const auto& entry : std::filesystem::directory_iterator(std::string(HC_SPEC_DIR "/fixtures/") + directory, error)) {
 		std::string name = entry.path().filename().string();
 		if (name.size() > 5 && name.compare(name.size() - 5, 5, ".json") == 0) {
 			files.push_back(entry.path().string());
@@ -55,11 +60,17 @@ std::vector<std::string> rule_corpus_files() {
 	return files;
 }
 
+std::vector<std::string> rule_corpus_files() { return corpus_files("rules"); }
+
 } // namespace hc_test
 
 namespace {
 
 constexpr uint64_t kBase = 1000000; ///< Monotonic time of the corpus's time 0.
+
+/// The `blocks` of an image without blocks.
+constexpr char kEmptyArray[] = "[]";
+const hc::JsonSpan kNoBlocks{kEmptyArray, 2, hc::JsonSpan::Kind::array};
 
 /// The case's wall clock as the core's time service interface: UTC from the case's start and the
 /// monotonic clock, local time through the case's time zone (README "clock": `zone`, UTC without).
@@ -106,7 +117,7 @@ public:
 
 struct LogEntry {
 	uint64_t at;
-	std::string rule;
+	std::string rule; ///< The rule's id, or "block <id>" for an entry of the block runtime.
 	std::string code;
 	std::string level;
 	std::string message;
@@ -127,7 +138,7 @@ struct ReadEntry {
 	std::string datapoint;
 };
 
-class Recorder : public hc::rules::EngineObserver {
+class Recorder : public hc::rules::EngineObserver, public hc::blocks::BlockObserver {
 public:
 	explicit Recorder(const hc_test::FakeClock& clock) : clock_(clock) {}
 
@@ -139,7 +150,7 @@ public:
 	void loop_guard(const char* rule, const char* culprit, uint32_t firings) override {
 		REQUIRE(!logs.empty());
 		CHECK(logs.back().code == "loopGuard");
-		CHECK(logs.back().rule == rule);
+		CHECK((logs.back().rule == rule || logs.back().rule == std::string("block ") + rule)); // a rule or a block
 		logs.back().culprit = culprit;
 		logs.back().firings = firings;
 	}
@@ -151,6 +162,19 @@ public:
 	void rule_read(const char* rule, const hc::Datapoint& datapoint) override {
 		reads.push_back(ReadEntry{clock_.now_ms - kBase, rule, datapoint.name()});
 	}
+
+	// The block runtime (spec/fixtures/blocks/README.md): entries named "block <id>".
+	void block_logged(const char* block, hc::blocks::BlockLogCode code, hc::LogLevel level, const char* text) override {
+		const char* level_name = level == hc::LogLevel::error ? "error" : (level == hc::LogLevel::warn ? "warning" : "info");
+		logs.push_back(LogEntry{clock_.now_ms - kBase, std::string("block ") + block, hc::blocks::block_log_code_name(code),
+			level_name, text, std::string(), 0});
+	}
+
+	void block_commanded(const char* block, const hc::Datapoint& datapoint, const hc::Value& value) override {
+		commands.push_back(CommandEntry{clock_.now_ms - kBase, std::string("block ") + block, datapoint.name(),
+			hc::rules::val_from_datapoint(value)});
+	}
+
 
 	std::vector<LogEntry> logs;
 	std::vector<CommandEntry> commands;
@@ -290,8 +314,16 @@ public:
 				schedules_.unreadable.push_back(dp["name"].text);
 			}
 		}
-		load_model(case_["rules"]);
+		empty_rules_.kind = Json::Kind::array;
+		if (!hc::json_member(root, "blocks", blocks_span_)) {
+			blocks_span_ = kNoBlocks;
+		}
+		load_model(rules_of(case_), blocks_span_);
 		for (const auto& entry : case_["persisted"].members) {
+			if (entry.first.compare(0, 6, "block/") == 0) {
+				persist_record(entry.first.substr(6), entry.second);
+				continue;
+			}
 			size_t slash = entry.first.find('/');
 			REQUIRE(slash != std::string::npos);
 			Val v;
@@ -311,11 +343,11 @@ public:
 		for (const auto& entry : case_["initial"].members) {
 			report(entry.first, entry.second);
 		}
-		image_ = &case_["rules"];
+		image_ = &rules_of(case_);
 		engine_ = std::make_unique<Engine>(loop_, model_, clock_, settings_, time_);
 		engine_->set_observer(&recorder_);
 		LoadResult result = engine_->load(tree_.value(*image_), &schedules_);
-		if (case_["expected"].has("loadRefused")) {
+		if (case_["expected"].has("loadRefused") && (!result.ok() || !case_.has("blocks"))) {
 			CHECK_MESSAGE(!result.ok(), "the load must be refused");
 			CHECK(std::string(hc::rules::load_error_name(result.error)) == case_["expected"]["loadRefused"].text);
 			MESSAGE("refusal: " << std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
@@ -323,6 +355,22 @@ public:
 		}
 		REQUIRE_MESSAGE(result.ok(), "load refused: " << std::string(hc::rules::load_error_name(result.error)) << " rule "
 			<< std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
+		// The blocks after the rules (spec/fixtures/blocks/README.md).
+		hc::blocks::BlockSet set;
+		hc::blocks::BlockLoadResult block_result = set.load(blocks_span_, model_, owners_, hc_test::corpus_registry());
+		if (case_["expected"].has("loadRefused")) {
+			CHECK_MESSAGE(!block_result.ok(), "the load must be refused");
+			CHECK(std::string(hc::blocks::block_error_name(block_result.error)) == case_["expected"]["loadRefused"].text);
+			if (case_["expected"].has("path")) {
+				CHECK(std::string(block_result.path) == case_["expected"]["path"].text);
+			}
+			MESSAGE("refusal: " << std::string(block_result.block) << " at " << std::string(block_result.path) << ": "
+				<< std::string(block_result.text));
+			return;
+		}
+		REQUIRE_MESSAGE(block_result.ok(), "blocks refused at " << std::string(block_result.path) << ": "
+			<< std::string(hc::blocks::block_error_name(block_result.error)) << ": " << std::string(block_result.text));
+		make_blocks(std::move(set));
 		load_schedules(true);
 		engine_->start(StartReason::boot);
 		advance(0);
@@ -385,7 +433,7 @@ private:
 	/// The case's datapoints, owned by the test technologies, then the parameter datapoints of
 	/// `rules` (spec/rules.md 8.6) as the image loader derives them, unbound: the engine binds them;
 	/// then the time datapoints of the full schedule entries, which the scheduler binds.
-	void load_model(const Json& rules, bool keep_values = false) {
+	void load_model(const Json& rules, const hc::JsonSpan& blocks, bool keep_values = false) {
 		names_.clear();
 		specs_.clear();
 		std::vector<hc::ValueType> types;
@@ -414,6 +462,15 @@ private:
 				types.push_back(hc::ValueType::time_of_day);
 				flags.push_back(static_cast<uint8_t>(hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit));
 			}
+		}
+		// The blocks' mirrors (spec/blocks.md 6), as the image loader derives them.
+		std::vector<hc::blocks::ImpliedDatapoint> mirrors(
+			hc::blocks::implied_datapoints(blocks, hc_test::corpus_registry(), nullptr, 0));
+		hc::blocks::implied_datapoints(blocks, hc_test::corpus_registry(), mirrors.data(), mirrors.size());
+		for (const hc::blocks::ImpliedDatapoint& mirror : mirrors) {
+			names_.push_back(mirror.name);
+			types.push_back(mirror.type);
+			flags.push_back(mirror.flags);
 		}
 		for (size_t i = 0; i < names_.size(); ++i) {
 			specs_.push_back(DatapointSpec{names_[i].c_str(), types[i], flags[i]});
@@ -542,28 +599,42 @@ private:
 					}
 				}
 			}
-			load_model(step["image"]["rules"], true);
+			const Json& next_rules = rules_of(step["image"]);
+			hc::JsonSpan next_blocks = step["image"].has("blocks") ? timeline_member(current_step_, "image", "blocks") : kNoBlocks;
+			load_model(next_rules, next_blocks, true);
 			std::vector<uint16_t> previous;
 			for (size_t i = 0; i < model_.size(); ++i) {
 				auto it = std::find(old_names.begin(), old_names.end(), std::string(model_.get(static_cast<uint16_t>(i))->name()));
 				previous.push_back(it == old_names.end() ? hc::rules::kNone : static_cast<uint16_t>(it - old_names.begin()));
 			}
-			LoadResult result = engine_->load(tree_.value(step["image"]["rules"]), &schedules_, previous.data());
+			LoadResult result = engine_->load(tree_.value(next_rules), &schedules_, previous.data());
 			REQUIRE_MESSAGE(result.ok(), "image at " << at << " refused: " << std::string(hc::rules::load_error_name(result.error))
 				<< " rule " << std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
-			image_ = &step["image"]["rules"];
+			image_ = &next_rules;
+			blocks_span_ = next_blocks;
+			hc::blocks::BlockSet set;
+			hc::blocks::BlockLoadResult block_result = set.load(blocks_span_, model_, owners_, hc_test::corpus_registry());
+			REQUIRE_MESSAGE(block_result.ok(), "the blocks of the image at " << at << " are refused at "
+				<< std::string(block_result.path) << ": " << std::string(block_result.text));
+			REQUIRE(blocks_->adopt(std::move(set)));
 			load_schedules(false);
 			engine_->start(StartReason::image);
 		} else if (step.has("reboot")) {
 			scheduler_.reset();
+			blocks_.reset(); // an orderly reboot: its due records are written
 			engine_.reset();
-			load_model(*image_);
+			load_model(*image_, blocks_span_);
 			engine_ = std::make_unique<Engine>(loop_, model_, clock_, settings_, time_);
 			engine_->set_observer(&recorder_);
 			LoadResult result = engine_->load(tree_.value(*image_), &schedules_);
 			REQUIRE(result.ok());
+			hc::blocks::BlockSet set;
+			REQUIRE(set.load(blocks_span_, model_, owners_, hc_test::corpus_registry()).ok());
+			make_blocks(std::move(set));
 			load_schedules(true);
 			engine_->start(StartReason::boot);
+		} else if (step.has("setBlock")) {
+			set_block(step["setBlock"], at);
 		} else if (step.has("check")) {
 			compare_state(step["check"], "check at " + std::to_string(at));
 		} else {
@@ -672,6 +743,215 @@ private:
 		}
 	}
 
+
+	/// The `rules` of the case or of an image step; none: an empty array (block cases).
+	const Json& rules_of(const Json& image) const { return image.has("rules") ? image["rules"] : empty_rules_; }
+
+	/// Which datapoints another component owns (spec/blocks.md B14): the schedule outputs of the case
+	/// and the implied datapoints.
+	struct Owners : hc::blocks::BlockDirectory {
+		explicit Owners(const Schedules& s) : schedules(s) {}
+		const char* owner(const char* datapoint) const override {
+			if (schedules.owns_output(datapoint)) {
+				return "a schedule entry";
+			}
+			if (std::strncmp(datapoint, "rule/", 5) == 0) {
+				return "the rule engine";
+			}
+			if (std::strncmp(datapoint, "schedule/", 9) == 0) {
+				return "a schedule entry";
+			}
+			if (std::strncmp(datapoint, "block/", 6) == 0) {
+				return "the block runtime";
+			}
+			return nullptr;
+		}
+		const Schedules& schedules;
+	};
+
+	/// A new block runtime on the current engine with `set` (the boot or the reboot).
+	void make_blocks(hc::blocks::BlockSet&& set) {
+		blocks_ = std::make_unique<hc::blocks::BlockRuntime>(loop_, model_, clock_, settings_, blobs_, *engine_);
+		blocks_->set_observer(&recorder_);
+		REQUIRE(blocks_->adopt(std::move(set)));
+	}
+
+	/// README "persisted": a state record `block/<id>` written as the device writes it.
+	void persist_record(const std::string& id, const Json& record) {
+		uint32_t major = 0, minor = 0;
+		REQUIRE(std::sscanf(record["version"].text.c_str(), "%u.%u", &major, &minor) == 2);
+		const hc::blocks::BlockType* type = hc_test::corpus_registry().find(record["type"].text.c_str(),
+			static_cast<uint16_t>(major));
+		REQUIRE_MESSAGE(type != nullptr, "no block type " << record["type"].text);
+		const hc::blocks::Manifest& m = type->manifest();
+		std::vector<double> values(m.state_count);
+		for (size_t f = 0; f < m.state_count; ++f) {
+			values[f] = m.state[f].initial;
+		}
+		for (const auto& field : record["fields"].members) {
+			int f = m.field(field.first.c_str());
+			REQUIRE_MESSAGE(f >= 0, "no state field " << field.first);
+			values[static_cast<size_t>(f)] = field.second.number;
+		}
+		uint8_t data[hc::blocks::BlockLimits::kRecordBytes];
+		size_t length = 0;
+		REQUIRE(hc::blocks::BlockRuntime::encode_record(m, id.c_str(), values.data(), data, sizeof(data), length));
+		char name[hc::persist::kBlobNameSize];
+		hc::persist::blob_name(hc::blocks::BlockRuntime::kBlobPrefix, id.c_str(), name);
+		hc::BlobChunk chunk{data, length};
+		REQUIRE(blobs_.write(name, &chunk, 1) == hc::BlobStatus::ok);
+	}
+
+	/// README "setBlock": the change of PUT /api/blocks/<id>, checked whole, then applied.
+	void set_block(const Json& change, uint64_t at) {
+		const std::string& id = change["block"].text;
+		std::string refused = change.has("refused") ? change["refused"].text : "";
+		hc::JsonSpan parameters;
+		bool has_parameters = change.has("parameters");
+		if (has_parameters) {
+			parameters = timeline_member(current_step_, "setBlock", "parameters");
+		}
+		hc::blocks::ChangeStatus status = hc::blocks::ChangeStatus::ok;
+		const char* reason = "";
+		std::string member;
+		std::vector<std::pair<std::string, double>> values;
+		size_t position = 0;
+		hc::JsonSpan key, value;
+		while (has_parameters && status == hc::blocks::ChangeStatus::ok && hc::json_next_member(parameters, position, key, value)) {
+			char name[40];
+			REQUIRE(hc::json_string(key, name, sizeof(name)));
+			double v = 0;
+			status = blocks_->check_parameter(id.c_str(), name, &value, &v, &reason);
+			member = name;
+			values.emplace_back(name, v);
+		}
+		for (const Json& name : change["reset"].items) {
+			if (status == hc::blocks::ChangeStatus::ok) {
+				status = blocks_->check_parameter(id.c_str(), name.text.c_str(), nullptr, nullptr, &reason);
+				member = name.text;
+			}
+		}
+		if (status == hc::blocks::ChangeStatus::ok && change.has("enabled")) {
+			status = blocks_->check_enabled(id.c_str(), &reason);
+			member = "enabled";
+		}
+		if (status == hc::blocks::ChangeStatus::ok && change.has("restart")) {
+			status = blocks_->check_restart(id.c_str(), &reason);
+			member = "restart";
+		}
+		if (status != hc::blocks::ChangeStatus::ok && status != hc::blocks::ChangeStatus::not_faulted) {
+			blocks_->refused(id.c_str(), member.c_str(), reason);
+		}
+		std::string got = status == hc::blocks::ChangeStatus::ok ? "" : hc::blocks::change_status_name(status);
+		CHECK_MESSAGE(got == refused, "setBlock at " << at << ": " << (got.empty() ? "accepted" : got) << " (" << reason
+			<< "), expected " << (refused.empty() ? "accepted" : refused));
+		if (status != hc::blocks::ChangeStatus::ok) {
+			return;
+		}
+		for (const auto& v : values) {
+			REQUIRE(blocks_->set_parameter(id.c_str(), v.first.c_str(), v.second, &reason) == hc::blocks::ChangeStatus::ok);
+		}
+		for (const Json& name : change["reset"].items) {
+			REQUIRE(blocks_->reset_parameter(id.c_str(), name.text.c_str(), &reason) == hc::blocks::ChangeStatus::ok);
+		}
+		if (change.has("enabled")) {
+			REQUIRE(blocks_->set_enabled(id.c_str(), change["enabled"].boolean, &reason) == hc::blocks::ChangeStatus::ok);
+		}
+		if (change.has("restart")) {
+			REQUIRE(blocks_->restart(id.c_str(), &reason) == hc::blocks::ChangeStatus::ok);
+		}
+	}
+
+	int block_index(const std::string& id) {
+		int b = blocks_->find(id.c_str());
+		REQUIRE_MESSAGE(b >= 0, "no block " << id);
+		return b;
+	}
+
+	static bool same_number(double have, double want) {
+		return have == want || std::fabs(have - want) <= 1e-9 * std::max(1.0, std::max(std::fabs(have), std::fabs(want)));
+	}
+
+	static double number_of(const Json& json) {
+		return json.kind == Json::Kind::boolean ? (json.boolean ? 1 : 0) : json.number;
+	}
+
+	void compare_blocks(const Json& expected, const std::string& where) {
+		for (const auto& entry : expected.members) {
+			size_t b = static_cast<size_t>(block_index(entry.first));
+			const Json& want = entry.second;
+			hc::blocks::BlockDiagnostics d;
+			REQUIRE(blocks_->diagnostics(b, d));
+			const hc::blocks::Manifest& m = blocks_->set().at(b).type->manifest();
+			if (want.has("status")) {
+				CHECK_MESSAGE(std::string(hc::blocks::block_status_name(d.status)) == want["status"].text, where << ": block "
+					<< entry.first << " is " << hc::blocks::block_status_name(d.status) << ", expected " << want["status"].text);
+			}
+			if (want.has("calls")) {
+				CHECK_MESSAGE(d.calls == static_cast<uint32_t>(want["calls"].number), where << ": block " << entry.first
+					<< " made " << d.calls << " calls, expected " << want["calls"].text);
+			}
+			for (const auto& field : want["state"].members) {
+				int f = m.field(field.first.c_str());
+				REQUIRE_MESSAGE(f >= 0, "no state field " << field.first);
+				double have = blocks_->state(b)[f];
+				CHECK_MESSAGE(same_number(have, number_of(field.second)), where << ": " << entry.first << "." << field.first
+					<< " is " << have << ", expected " << field.second.text);
+			}
+			for (const auto& param : want["parameters"].members) {
+				int p = m.param(param.first.c_str());
+				REQUIRE_MESSAGE(p >= 0, "no parameter " << param.first);
+				double have = blocks_->param(b, static_cast<size_t>(p));
+				CHECK_MESSAGE(same_number(have, number_of(param.second)), where << ": parameter " << entry.first << "/"
+					<< param.first << " is " << have << ", expected " << param.second.text);
+			}
+		}
+	}
+
+	/// The complete set of persisted records (README "records"), after an orderly shutdown's writes.
+	void compare_records(const Json& expected, const std::string& where) {
+		blocks_->flush();
+		std::vector<std::string> expected_names;
+		for (const auto& entry : expected.members) {
+			char name[hc::persist::kBlobNameSize];
+			hc::persist::blob_name(hc::blocks::BlockRuntime::kBlobPrefix, entry.first.c_str(), name);
+			auto it = blobs_.blobs.find(name);
+			if (entry.second.kind == Json::Kind::null) {
+				CHECK_MESSAGE(it == blobs_.blobs.end(), where << ": a record of " << entry.first << " is stored");
+				continue;
+			}
+			expected_names.push_back(name);
+			if (it == blobs_.blobs.end()) {
+				CHECK_MESSAGE(false, where << ": no record of " << entry.first);
+				continue;
+			}
+			size_t b = static_cast<size_t>(block_index(entry.first));
+			const hc::blocks::Manifest& m = blocks_->set().at(b).type->manifest();
+			std::vector<double> values(m.state_count, std::nan(""));
+			const char* reason = "";
+			CHECK_MESSAGE(hc::blocks::BlockRuntime::decode_record(m, entry.first.c_str(), it->second.data(), it->second.size(),
+				values.data(), &reason), where << ": the record of " << entry.first << " is " << reason);
+			for (size_t f = 0; f < m.state_count; ++f) {
+				if (!m.state[f].persist) {
+					continue;
+				}
+				const Json& field = entry.second[m.state[f].id];
+				CHECK_MESSAGE(entry.second.has(m.state[f].id), where << ": the record of " << entry.first << " holds "
+					<< m.state[f].id << " = " << values[f] << ", not expected");
+				if (entry.second.has(m.state[f].id)) {
+					CHECK_MESSAGE(same_number(values[f], number_of(field)), where << ": the record of " << entry.first << ": "
+						<< m.state[f].id << " is " << values[f] << ", expected " << field.text);
+				}
+			}
+		}
+		for (const auto& blob : blobs_.blobs) {
+			if (blob.first.compare(0, 2, hc::blocks::BlockRuntime::kBlobPrefix) == 0) {
+				CHECK_MESSAGE(std::find(expected_names.begin(), expected_names.end(), blob.first) != expected_names.end(),
+					where << ": an unexpected record " << blob.first << " is stored");
+			}
+		}
+	}
+
 	int rule_index(const std::string& id) {
 		int r = engine_->rules().find_rule(id.c_str());
 		REQUIRE_MESSAGE(r >= 0, "no rule " << id);
@@ -738,6 +1018,12 @@ private:
 		if (expected.has("schedules")) {
 			compare_schedules(expected["schedules"], where);
 		}
+		if (expected.has("blocks")) {
+			compare_blocks(expected["blocks"], where);
+		}
+		if (expected.has("records")) {
+			compare_records(expected["records"], where);
+		}
 		if (expected.has("persisted")) {
 			engine_->persist_now(); // the delayed state writes (README: the store as an orderly shutdown leaves it)
 			compare_persisted(expected["persisted"], where);
@@ -788,10 +1074,11 @@ private:
 			const Json& c = expected["commands"].items[i];
 			const hc::Datapoint& dp = datapoint(c["datapoint"].text);
 			Val want = expected_value(hc::rules::type_of_datapoint(dp.type()), c["value"]);
-			want_commands += c["at"].text + " " + c["rule"].text + " " + c["datapoint"].text + " = " + text_of(want) + "\n";
+			std::string who = c.has("block") ? "block " + c["block"].text : c["rule"].text;
+			want_commands += c["at"].text + " " + who + " " + c["datapoint"].text + " = " + text_of(want) + "\n";
 			if (commands_ok) {
 				const CommandEntry& h = recorder_.commands[i];
-				commands_ok = h.at == static_cast<uint64_t>(c["at"].number) && h.rule == c["rule"].text &&
+				commands_ok = h.at == static_cast<uint64_t>(c["at"].number) && h.rule == who &&
 					h.datapoint == c["datapoint"].text && same(h.value, want);
 			}
 		}
@@ -825,17 +1112,19 @@ private:
 		bool logs_ok = recorder_.logs.size() == expected["logs"].items.size();
 		for (size_t i = 0; i < expected["logs"].items.size(); ++i) {
 			const Json& l = expected["logs"].items[i];
-			want_logs += l["at"].text + " " + l["rule"].text + " " + l["code"].text;
-			want_logs += l["code"].text == "log" ? " " + l["level"].text + " \"" + l["message"].text + "\"\n" : "\n";
+			std::string who = l.has("block") ? "block " + l["block"].text : l["rule"].text;
+			std::string level = l.has("level") ? l["level"].text : "info";
+			want_logs += l["at"].text + " " + who + " " + l["code"].text;
+			want_logs += l["code"].text == "log" ? " " + level + " \"" + l["message"].text + "\"\n" : "\n";
 			if (l.has("culprit")) {
 				want_logs.back() = ' ';
 				want_logs += "culprit " + l["culprit"].text + " " + std::to_string(static_cast<uint32_t>(l["firings"].number)) + "\n";
 			}
 			if (logs_ok) {
 				const LogEntry& h = recorder_.logs[i];
-				logs_ok = h.at == static_cast<uint64_t>(l["at"].number) && h.rule == l["rule"].text && h.code == l["code"].text;
+				logs_ok = h.at == static_cast<uint64_t>(l["at"].number) && h.rule == who && h.code == l["code"].text;
 				if (logs_ok && h.code == "log") {
-					logs_ok = h.level == l["level"].text && h.message == l["message"].text;
+					logs_ok = h.level == level && h.message == l["message"].text;
 				}
 				if (logs_ok && l.has("culprit")) {
 					logs_ok = h.culprit == l["culprit"].text && h.firings == static_cast<uint32_t>(l["firings"].number);
@@ -859,16 +1148,21 @@ private:
 	std::vector<std::string> names_;
 	std::vector<DatapointSpec> specs_;
 	const Json* image_ = nullptr;
+	Json empty_rules_;
+	hc::JsonSpan blocks_span_ = kNoBlocks;
+	hc_test::FakeBlobStore blobs_;
+	Owners owners_{schedules_};
 	std::unique_ptr<Engine> engine_;
+	std::unique_ptr<hc::blocks::BlockRuntime> blocks_; ///< Declared after the engine: destroyed first.
 	std::unique_ptr<SchedulePlan> schedule_plan_;
 	Firings firings_{*this};
 	std::unique_ptr<hc::Scheduler> scheduler_; ///< Declared after the engine: destroyed first.
 	size_t current_step_ = 0;
 };
 
-void run_case(const char* prefix) {
+void run_case(const char* prefix, const char* directory = "rules") {
 	std::string path;
-	for (const std::string& file : hc_test::rule_corpus_files()) {
+	for (const std::string& file : hc_test::corpus_files(directory)) {
 		if (std::filesystem::path(file).filename().string().compare(0, std::strlen(prefix), prefix) == 0) {
 			path = file;
 		}
@@ -950,4 +1244,39 @@ HC_RULE_CASE("58", "schedule-image-swap-overrides")
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
 	CHECK(files.size() == 58);
+}
+
+// The block conformance corpus (spec/fixtures/blocks/README.md), run by the same runner.
+#define HC_BLOCK_CASE(number, name) \
+	TEST_CASE("BlocksCorpus " number " " name) { run_case(number "-" name ".json", "blocks"); }
+
+HC_BLOCK_CASE("01", "load-refused-unknown-type")
+HC_BLOCK_CASE("02", "load-refused-missing-input")
+HC_BLOCK_CASE("03", "load-refused-type-mismatch")
+HC_BLOCK_CASE("04", "load-refused-output-owned")
+HC_BLOCK_CASE("05", "load-refused-parameter-bounds")
+HC_BLOCK_CASE("06", "load-refused-aggregation")
+HC_BLOCK_CASE("07", "load-refused-unknown-member")
+HC_BLOCK_CASE("08", "calls-inputs-outputs")
+HC_BLOCK_CASE("09", "fault-failsafe-restart")
+HC_BLOCK_CASE("10", "disable-enable-failsafe")
+HC_BLOCK_CASE("11", "image-swap-keeps-state")
+HC_BLOCK_CASE("12", "image-swap-drops-state")
+HC_BLOCK_CASE("13", "quiet-load")
+HC_BLOCK_CASE("14", "loop-guard")
+HC_BLOCK_CASE("15", "persistence-reboot")
+HC_BLOCK_CASE("16", "parameter-api")
+HC_BLOCK_CASE("17", "room-pi-step")
+HC_BLOCK_CASE("18", "room-window-no-windup")
+HC_BLOCK_CASE("19", "room-sensor-timeout")
+HC_BLOCK_CASE("20", "room-pwm")
+HC_BLOCK_CASE("21", "room-two-point")
+HC_BLOCK_CASE("22", "room-boost")
+HC_BLOCK_CASE("23", "room-valve-protection")
+HC_BLOCK_CASE("24", "room-modes")
+HC_BLOCK_CASE("25", "room-integral-reboot")
+
+TEST_CASE("BlocksCorpus every case has a test") {
+	std::vector<std::string> files = hc_test::corpus_files("blocks");
+	CHECK(files.size() == 25);
 }

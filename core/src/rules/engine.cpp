@@ -24,7 +24,7 @@ constexpr const char* kTag = "hc.rule";
 constexpr const char* kLogCodeNames[] = {"log", "conditionNoValue", "valueNoValue", "evalError", "writeRefused",
 	"timerRefused", "parameterRefused", "parameterReset", "stateReset", "loopGuard", "queueOverflow", "readRefused"};
 
-enum EventKind : uint8_t { kDatapoint, kSchedule, kTimer, kStart, kParameter, kStartAll, kSilence };
+enum EventKind : uint8_t { kDatapoint, kSchedule, kTimer, kStart, kParameter, kStartAll, kSilence, kBlock, kBlockDue };
 
 /// Event flags.
 constexpr uint8_t kChanged = 0x01;   ///< datapoint: value or quality changed.
@@ -658,6 +658,9 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	struct Keeper {
 		const Engine& engine;
 		bool keeps(const char* logical, const Val& value) const {
+			if (logical[0] == '@') {
+				return true; // a block's override: the block runtime prunes its own (spec/blocks.md 8.2)
+			}
 			const char* slash = std::strchr(logical, '/');
 			if (slash == nullptr || static_cast<size_t>(slash - logical) > 32) {
 				return false;
@@ -777,6 +780,13 @@ void Engine::drain() {
 				process_queue();
 				end_cascade();
 			}
+			// Then the blocks, each in a cascade of its own (spec/blocks.md 5.2).
+			for (size_t b = 0; host_ != nullptr && b < host_->start_count(); ++b) {
+				begin_cascade();
+				host_->start_block(b, reason);
+				process_queue();
+				end_cascade();
+			}
 		} else {
 			run_cascade(event);
 		}
@@ -825,6 +835,12 @@ void Engine::process_due_timers() {
 				best_sequence = s.sequence;
 			}
 		}
+		// Then the blocks' timers and periods: at an equal deadline the rules' come first (spec/blocks.md B7).
+		uint64_t block_deadline = host_ != nullptr ? host_->next_deadline() : EventLoop::kNever;
+		if (block_deadline <= now && (best == SIZE_MAX || block_deadline < best_deadline)) {
+			run_cascade(Event{kBlockDue, 0, 0, 0, 0});
+			continue;
+		}
 		if (best == SIZE_MAX) {
 			return;
 		}
@@ -857,6 +873,10 @@ void Engine::reschedule() {
 			if (runtime_->silences[i].armed && runtime_->silences[i].deadline < earliest) {
 				earliest = runtime_->silences[i].deadline;
 			}
+		}
+		if (host_ != nullptr) {
+			uint64_t block_deadline = host_->next_deadline();
+			earliest = block_deadline < earliest ? block_deadline : earliest;
 		}
 	}
 	if (earliest == EventLoop::kNever) {
@@ -943,7 +963,8 @@ void Engine::datapoint_updated(const DatapointUpdate& update) {
 			reschedule();
 		}
 	}
-	if (id >= runtime_->interest_bits || (runtime_->interest[id / 8] & (1u << (id % 8))) == 0) {
+	if ((id >= runtime_->interest_bits || (runtime_->interest[id / 8] & (1u << (id % 8))) == 0) &&
+		(host_ == nullptr || !host_->wants(id))) {
 		return;
 	}
 	Event event{kDatapoint, static_cast<uint8_t>(changed ? kChanged : 0), id, static_cast<uint16_t>(update.origin), 0};
@@ -1396,6 +1417,9 @@ void Engine::begin_cascade() {
 	for (size_t i = 0; i < runtime_->rule_count; ++i) {
 		runtime_->rules[i].cascade_firings = 0;
 	}
+	if (host_ != nullptr) {
+		host_->cascade_begun();
+	}
 }
 
 void Engine::end_cascade() {
@@ -1542,20 +1566,15 @@ void Engine::process_event(const Event& e, bool derived) {
 			if (derived_firings_ + 1 > Limits::kDerivedFirings) {
 				// Name the rule refused and the one that fired most in this cascade (the first in rule
 				// order on a tie), from the cascade's per-rule counters (spec 9.2).
-				size_t culprit = 0;
-				for (size_t i = 1; i < rt.rule_count; ++i) {
-					if (rt.rules[i].cascade_firings > rt.rules[culprit].cascade_firings) {
-						culprit = i;
-					}
-				}
+				const char* culprit = "-";
+				uint32_t most = 0;
+				guard_culprit(culprit, most);
 				++rr.loop_guards;
 				log_rule(r, LogCode::loop_guard, LogLevel::error, "cascade exceeded 32 derived firings",
 					"cascade refused after %u derived firings (most: %s with %u); the queue is emptied",
-					static_cast<unsigned>(Limits::kDerivedFirings), set_.str(set_.rule(culprit).id),
-					static_cast<unsigned>(rt.rules[culprit].cascade_firings));
+					static_cast<unsigned>(Limits::kDerivedFirings), culprit, static_cast<unsigned>(most));
 				if (observer_) {
-					observer_->loop_guard(set_.str(rule.id), set_.str(set_.rule(culprit).id),
-						rt.rules[culprit].cascade_firings);
+					observer_->loop_guard(set_.str(rule.id), culprit, most);
 				}
 				aborted_ = true;
 				queue_head_ = queue_count_ = 0;
@@ -1628,6 +1647,56 @@ void Engine::process_event(const Event& e, bool derived) {
 
 	for (size_t i = 0; i < matched; ++i) {
 		rt.node_flags[rt.matched[i]] = static_cast<uint8_t>(rt.node_flags[rt.matched[i]] & ~kMatched);
+	}
+
+	// 3. Blocks, in block order (spec/blocks.md 5.1).
+	if (host_ != nullptr && !aborted_) {
+		if (e.kind == kDatapoint) {
+			host_->datapoint_event(e.a, derived);
+		} else if (e.kind == kBlock) {
+			host_->block_event(e.flags, e.a, e.b, derived);
+		} else if (e.kind == kBlockDue) {
+			host_->run_due(cascade_ms_);
+		}
+	}
+}
+
+void Engine::guard_culprit(const char*& culprit, uint32_t& firings) const {
+	// The rule with the most derived firings in this cascade (the first in rule order on a tie),
+	// then the blocks' busiest when it called more (spec/rules.md 9.2, spec/blocks.md 5.1).
+	culprit = "-";
+	firings = 0;
+	for (size_t i = 0; runtime_ != nullptr && i < runtime_->rule_count; ++i) {
+		if (i == 0 || runtime_->rules[i].cascade_firings > firings) {
+			culprit = set_.str(set_.rule(i).id);
+			firings = runtime_->rules[i].cascade_firings;
+		}
+	}
+	const char* block = nullptr;
+	uint32_t calls = 0;
+	if (host_ != nullptr && host_->busiest(block, calls) && (calls > firings || runtime_->rule_count == 0)) {
+		culprit = block;
+		firings = calls;
+	}
+}
+
+bool Engine::derived_call(const char*& culprit, uint32_t& firings) {
+	if (derived_firings_ + 1 > Limits::kDerivedFirings) {
+		guard_culprit(culprit, firings);
+		aborted_ = true;
+		queue_head_ = queue_count_ = 0;
+		return false;
+	}
+	++derived_firings_;
+	return true;
+}
+
+void Engine::queue_block_event(uint8_t kind, uint16_t block, uint16_t arg) {
+	Event event{kBlock, kind, block, arg, 0};
+	if (in_cascade_) {
+		push_cascade(event, current_rule_);
+	} else if (push_inbound(event)) {
+		post_drain();
 	}
 }
 

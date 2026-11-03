@@ -1,0 +1,174 @@
+{
+	"title": "Valve protection on its weekday from protectionTime: the valve fully open for protectionDuration, before summer; once per day.",
+	"note": "2026-11-04 is a Wednesday (3). The step at 10:00:30 (180 s) starts the run; it ends at 10:05:30. Times in UTC.",
+	"datapoints": [
+		{
+			"name": "temp",
+			"type": "real"
+		},
+		{
+			"name": "temp2",
+			"type": "real"
+		},
+		{
+			"name": "valve",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "win",
+			"type": "boolean"
+		},
+		{
+			"name": "mode",
+			"type": "enumeration"
+		},
+		{
+			"name": "presence",
+			"type": "boolean"
+		},
+		{
+			"name": "period",
+			"type": "boolean"
+		},
+		{
+			"name": "sp",
+			"type": "real"
+		},
+		{
+			"name": "on",
+			"type": "boolean"
+		},
+		{
+			"name": "summer",
+			"type": "boolean"
+		},
+		{
+			"name": "forced",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"temp": 22.0,
+		"summer": true
+	},
+	"clock": {
+		"start": "2026-11-04T09:57:30",
+		"synchronized": true
+	},
+	"blocks": [
+		{
+			"id": "wz",
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"label": {
+				"en": "Living room",
+				"de": "Wohnzimmer"
+			},
+			"inputs": {
+				"temperature": "temp",
+				"summer": "summer"
+			},
+			"outputs": {
+				"valve": "valve",
+				"switch": "sw"
+			},
+			"parameters": {
+				"protectionDay": 3,
+				"protectionTime": {
+					"hour": 10,
+					"minute": 0,
+					"second": 0
+				},
+				"protectionDuration": 300000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 240000,
+			"check": {
+				"datapoints": {
+					"block/wz/state": 6,
+					"block/wz/valve": 100.0
+				}
+			}
+		},
+		{
+			"at": 300000,
+			"report": {
+				"datapoint": "temp",
+				"value": 22.0
+			}
+		}
+	],
+	"end": 720000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 0.0
+			},
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "sw",
+				"value": false
+			},
+			{
+				"at": 180000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 100.0
+			},
+			{
+				"at": 180000,
+				"block": "wz",
+				"datapoint": "sw",
+				"value": true
+			},
+			{
+				"at": 480000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 0.0
+			},
+			{
+				"at": 480000,
+				"block": "wz",
+				"datapoint": "sw",
+				"value": false
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/wz/valve": 0.0,
+				"block/wz/switch": false,
+				"block/wz/demand": false,
+				"block/wz/activeSetpoint": 21.0,
+				"block/wz/state": 7,
+				"block/wz/p": 0.0,
+				"block/wz/i": 0.0,
+				"block/wz/d": 0.0,
+				"block/wz/error": -1.0,
+				"block/wz/filtered": 22.0,
+				"sw": false
+			},
+			"blocks": {
+				"wz": {
+					"status": "running",
+					"state": {
+						"integral": 0.0,
+						"protectedOn": 20761.0
+					}
+				}
+			}
+		}
+	}
+}

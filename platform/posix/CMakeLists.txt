@@ -153,6 +153,8 @@ target_sources(hc_tests PRIVATE
 # The rule interpreter's tests (the corpus spec/fixtures/rules is read at run time).
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/rules_corpus_test.cpp"
+	"${HC_REPO_DIR}/core/test/conformance_block.cpp"
+	"${HC_REPO_DIR}/core/test/room_controller_test.cpp"
 	"${HC_REPO_DIR}/core/test/rules_unit_test.cpp"
 	"${HC_REPO_DIR}/core/test/allocation_counter.cpp"
 	"${HC_REPO_DIR}/core/test/rules_probe_test.cpp"

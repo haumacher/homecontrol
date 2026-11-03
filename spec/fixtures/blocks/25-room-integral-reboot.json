@@ -1,0 +1,257 @@
+{
+	"title": "The integral survives an orderly reboot (persisted at most every persistEvery and at the reboot); the filter starts again from the first report.",
+	"note": "After the reboot the temperature is unknown until its report at 31 min: fallback until then, the integral frozen at its restored value.",
+	"datapoints": [
+		{
+			"name": "temp",
+			"type": "real"
+		},
+		{
+			"name": "temp2",
+			"type": "real"
+		},
+		{
+			"name": "valve",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "win",
+			"type": "boolean"
+		},
+		{
+			"name": "mode",
+			"type": "enumeration"
+		},
+		{
+			"name": "presence",
+			"type": "boolean"
+		},
+		{
+			"name": "period",
+			"type": "boolean"
+		},
+		{
+			"name": "sp",
+			"type": "real"
+		},
+		{
+			"name": "on",
+			"type": "boolean"
+		},
+		{
+			"name": "summer",
+			"type": "boolean"
+		},
+		{
+			"name": "forced",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"temp": 20.0
+	},
+	"blocks": [
+		{
+			"id": "wz",
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"label": {
+				"en": "Living room",
+				"de": "Wohnzimmer"
+			},
+			"inputs": {
+				"temperature": "temp"
+			},
+			"outputs": {
+				"valve": "valve"
+			},
+			"parameters": {
+				"system": "custom",
+				"xp": 2,
+				"tn": 60,
+				"td": 0,
+				"filter": 1
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 600000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.2
+			}
+		},
+		{
+			"at": 1200000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.4
+			}
+		},
+		{
+			"at": 1800000,
+			"check": {
+				"blocks": {
+					"wz": {
+						"state": {
+							"integral": 20.333170413970965
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1801000,
+			"reboot": true
+		},
+		{
+			"at": 1802000,
+			"check": {
+				"blocks": {
+					"wz": {
+						"state": {
+							"integral": 20.333170413970965
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1860000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.4
+			}
+		}
+	],
+	"end": 2400000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 50.0
+			},
+			{
+				"at": 120000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 52.0
+			},
+			{
+				"at": 300000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 54.0
+			},
+			{
+				"at": 420000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 56.0
+			},
+			{
+				"at": 540000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 58.0
+			},
+			{
+				"at": 660000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 54.0
+			},
+			{
+				"at": 720000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 52.0
+			},
+			{
+				"at": 1080000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 54.0
+			},
+			{
+				"at": 1260000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 51.0
+			},
+			{
+				"at": 1320000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 49.0
+			},
+			{
+				"at": 1801000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 30.0
+			},
+			{
+				"at": 1861000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 51.0
+			},
+			{
+				"at": 2101000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 53.0
+			},
+			{
+				"at": 2341000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 55.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/wz/valve": 55.0,
+				"block/wz/switch": true,
+				"block/wz/demand": true,
+				"block/wz/activeSetpoint": 21.0,
+				"block/wz/state": 1,
+				"block/wz/p": 30.00000000000007,
+				"block/wz/i": 24.833170413970965,
+				"block/wz/d": 0.0,
+				"block/wz/error": 0.6000000000000014,
+				"block/wz/filtered": 20.4
+			},
+			"blocks": {
+				"wz": {
+					"status": "running",
+					"state": {
+						"integral": 24.833170413970965
+					}
+				}
+			},
+			"records": {
+				"wz": {
+					"integral": 24.833170413970965,
+					"protectedOn": 0.0
+				}
+			}
+		}
+	}
+}

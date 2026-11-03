@@ -1,0 +1,45 @@
+{
+	"title": "A parameter value outside its bounds refuses the image with invalidParameter.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"parameters": {
+				"gain": 11
+			}
+		}
+	],
+	"timeline": [],
+	"end": 0,
+	"expected": {
+		"loadRefused": "invalidParameter",
+		"path": "blocks[0].parameters.gain"
+	}
+}

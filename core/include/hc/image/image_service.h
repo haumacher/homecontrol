@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "hc/blocks/block_runtime.h"
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
@@ -49,7 +50,8 @@ namespace image {
 ///     whose id and type are unchanged (ticket #26);
 ///  3. the image's settings (tz, location, ntp.server) are written where they differ;
 ///  4. the value store and the history load (restores, orphan records removed);
-///  5. the rule engine loads the new rules (rules kept by id keep their state, timers, overrides);
+///  5. the rule engine loads the new rules (rules kept by id keep their state, timers, overrides),
+///     then the block runtime the new blocks (records and overrides kept by block id, spec/blocks.md 8);
 ///  6. the KNX adapter gets the image's mapping, the time master its configuration, the adapter
 ///     the merged mapping (doc/knx.md "Time master");
 ///  7. the scheduler loads the entries (persisted state kept by id);
@@ -224,6 +226,8 @@ public:
 
 	Scheduler& scheduler() { return scheduler_; }
 	rules::Engine& engine() { return engine_; }
+	/// The block runtime (spec/blocks.md): the image's `blocks`, called in the engine's cascades.
+	blocks::BlockRuntime& blocks() { return blocks_; }
 	ValueStore& value_store() { return value_store_; }
 	History& history() { return history_; }
 	knx::TimeMaster& time_master() { return time_master_; }
@@ -284,6 +288,7 @@ private:
 	RulesClock rules_clock_;
 	Scheduler scheduler_;
 	rules::Engine engine_;
+	blocks::BlockRuntime blocks_;
 	ValueStore value_store_;
 	History history_;
 	knx::TimeMaster time_master_;

@@ -1,0 +1,43 @@
+{
+	"title": "An unknown member of a block refuses the image with malformed (blocks are strict, B1).",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"jitter": 5
+		}
+	],
+	"timeline": [],
+	"end": 0,
+	"expected": {
+		"loadRefused": "malformed",
+		"path": "blocks[0]"
+	}
+}

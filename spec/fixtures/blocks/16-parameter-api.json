@@ -1,0 +1,229 @@
+{
+	"title": "Changes through the API and the parameter datapoints: validated, persisted as overrides, the default removes one, refusals name their reason.",
+	"note": "A command of the default 5000 to block/c/delay removes the override. The enable switch is fixed (enabledAdjustable false), so its datapoint is not writable.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"a": 2
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"outputs": {
+				"y": "out"
+			},
+			"enabledAdjustable": false
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"setBlock": {
+				"block": "c",
+				"parameters": {
+					"gain": 4
+				}
+			}
+		},
+		{
+			"at": 2000,
+			"setBlock": {
+				"block": "c",
+				"parameters": {
+					"gain": 20
+				},
+				"refused": "invalid_value"
+			}
+		},
+		{
+			"at": 3000,
+			"setBlock": {
+				"block": "c",
+				"parameters": {
+					"offset": 1
+				},
+				"refused": "not_adjustable"
+			}
+		},
+		{
+			"at": 4000,
+			"setBlock": {
+				"block": "c",
+				"parameters": {
+					"speed": 1
+				},
+				"refused": "unknown_parameter"
+			}
+		},
+		{
+			"at": 5000,
+			"setBlock": {
+				"block": "nope",
+				"parameters": {
+					"gain": 1
+				},
+				"refused": "unknown"
+			}
+		},
+		{
+			"at": 6000,
+			"setBlock": {
+				"block": "c",
+				"enabled": false,
+				"refused": "not_adjustable"
+			}
+		},
+		{
+			"at": 7000,
+			"command": {
+				"datapoint": "block/c/gain",
+				"value": 50,
+				"refused": true
+			}
+		},
+		{
+			"at": 8000,
+			"command": {
+				"datapoint": "block/c/delay",
+				"value": 9000
+			}
+		},
+		{
+			"at": 9000,
+			"check": {
+				"persisted": {
+					"@c/gain": 4.0,
+					"@c/delay": 9000
+				}
+			}
+		},
+		{
+			"at": 10000,
+			"setBlock": {
+				"block": "c",
+				"reset": [
+					"gain"
+				]
+			}
+		},
+		{
+			"at": 11000,
+			"command": {
+				"datapoint": "block/c/delay",
+				"value": 5000
+			}
+		}
+	],
+	"end": 12000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "out",
+				"value": 2.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 8.0
+			},
+			{
+				"at": 8000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 8.0
+			},
+			{
+				"at": 10000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 2.0
+			},
+			{
+				"at": 11000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 2.0
+			}
+		],
+		"logs": [
+			{
+				"at": 2000,
+				"block": "c",
+				"code": "parameterRefused"
+			},
+			{
+				"at": 3000,
+				"block": "c",
+				"code": "parameterRefused"
+			},
+			{
+				"at": 4000,
+				"block": "c",
+				"code": "parameterRefused"
+			},
+			{
+				"at": 5000,
+				"block": "nope",
+				"code": "parameterRefused"
+			},
+			{
+				"at": 6000,
+				"block": "c",
+				"code": "parameterRefused"
+			},
+			{
+				"at": 7000,
+				"block": "c",
+				"code": "parameterRefused"
+			}
+		],
+		"final": {
+			"datapoints": {
+				"out": 2.0,
+				"block/c/gain": 1.0,
+				"block/c/delay": 5000
+			},
+			"blocks": {
+				"c": {
+					"parameters": {
+						"gain": 1.0,
+						"delay": 5000
+					},
+					"state": {
+						"count": 6.0
+					}
+				}
+			},
+			"persisted": {}
+		}
+	}
+}

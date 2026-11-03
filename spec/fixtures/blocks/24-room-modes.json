@@ -1,0 +1,372 @@
+{
+	"title": "The setpoint from presence, the heating period, the HVAC mode and an external setpoint; frost mode, off, forced and summer.",
+	"note": "Mode 1 with a good external setpoint: the external setpoint wins (spec/blocks.md 14.5, 4 before 5); stale, the mode's comfort.",
+	"datapoints": [
+		{
+			"name": "temp",
+			"type": "real"
+		},
+		{
+			"name": "temp2",
+			"type": "real"
+		},
+		{
+			"name": "valve",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "win",
+			"type": "boolean"
+		},
+		{
+			"name": "mode",
+			"type": "enumeration"
+		},
+		{
+			"name": "presence",
+			"type": "boolean"
+		},
+		{
+			"name": "period",
+			"type": "boolean"
+		},
+		{
+			"name": "sp",
+			"type": "real"
+		},
+		{
+			"name": "on",
+			"type": "boolean"
+		},
+		{
+			"name": "summer",
+			"type": "boolean"
+		},
+		{
+			"name": "forced",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"temp": 20.0
+	},
+	"blocks": [
+		{
+			"id": "wz",
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"label": {
+				"en": "Living room",
+				"de": "Wohnzimmer"
+			},
+			"inputs": {
+				"temperature": "temp",
+				"mode": "mode",
+				"presence": "presence",
+				"heatingPeriod": "period",
+				"setpoint": "sp",
+				"enable": "on",
+				"forced": "forced",
+				"summer": "summer"
+			},
+			"outputs": {
+				"valve": "valve"
+			},
+			"parameters": {
+				"forcedPosition": 60,
+				"summerPosition": 5,
+				"system": "custom",
+				"xp": 2,
+				"tn": 60,
+				"td": 0,
+				"filter": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 120000,
+			"report": {
+				"datapoint": "presence",
+				"value": false
+			}
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"block/wz/activeSetpoint": 19.0
+				}
+			}
+		},
+		{
+			"at": 240000,
+			"report": {
+				"datapoint": "period",
+				"value": false
+			}
+		},
+		{
+			"at": 241000,
+			"check": {
+				"datapoints": {
+					"block/wz/activeSetpoint": 17.0
+				}
+			}
+		},
+		{
+			"at": 360000,
+			"report": {
+				"datapoint": "mode",
+				"value": 2
+			}
+		},
+		{
+			"at": 361000,
+			"check": {
+				"datapoints": {
+					"block/wz/activeSetpoint": 19.0
+				}
+			}
+		},
+		{
+			"at": 480000,
+			"report": {
+				"datapoint": "sp",
+				"value": 22.5
+			}
+		},
+		{
+			"at": 481000,
+			"check": {
+				"datapoints": {
+					"block/wz/activeSetpoint": 22.5
+				}
+			}
+		},
+		{
+			"at": 600000,
+			"report": {
+				"datapoint": "mode",
+				"value": 4
+			}
+		},
+		{
+			"at": 601000,
+			"check": {
+				"datapoints": {
+					"block/wz/activeSetpoint": 7.0,
+					"block/wz/state": 3
+				}
+			}
+		},
+		{
+			"at": 720000,
+			"report": {
+				"datapoint": "mode",
+				"value": 1
+			}
+		},
+		{
+			"at": 721000,
+			"report": {
+				"datapoint": "on",
+				"value": false
+			}
+		},
+		{
+			"at": 722000,
+			"check": {
+				"datapoints": {
+					"block/wz/activeSetpoint": 7.0,
+					"block/wz/state": 0
+				}
+			}
+		},
+		{
+			"at": 840000,
+			"report": {
+				"datapoint": "on",
+				"value": true
+			}
+		},
+		{
+			"at": 841000,
+			"report": {
+				"datapoint": "forced",
+				"value": true
+			}
+		},
+		{
+			"at": 842000,
+			"check": {
+				"datapoints": {
+					"block/wz/state": 8,
+					"block/wz/valve": 60.0,
+					"block/wz/demand": false
+				}
+			}
+		},
+		{
+			"at": 960000,
+			"report": {
+				"datapoint": "forced",
+				"value": false
+			}
+		},
+		{
+			"at": 961000,
+			"report": {
+				"datapoint": "summer",
+				"value": true
+			}
+		},
+		{
+			"at": 962000,
+			"check": {
+				"datapoints": {
+					"block/wz/state": 7,
+					"block/wz/valve": 5.0,
+					"block/wz/demand": false
+				}
+			}
+		},
+		{
+			"at": 1080000,
+			"report": {
+				"datapoint": "summer",
+				"value": false
+			}
+		},
+		{
+			"at": 1140000,
+			"setBlock": {
+				"block": "wz",
+				"parameters": {
+					"comfort": 20
+				}
+			}
+		},
+		{
+			"at": 1142000,
+			"stale": "sp"
+		}
+	],
+	"end": 1320000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 50.0
+			},
+			{
+				"at": 120000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 52.0
+			},
+			{
+				"at": 120000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 0.0
+			},
+			{
+				"at": 480000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 100.0
+			},
+			{
+				"at": 600000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 0.0
+			},
+			{
+				"at": 720000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 100.0
+			},
+			{
+				"at": 721000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 0.0
+			},
+			{
+				"at": 840000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 100.0
+			},
+			{
+				"at": 841000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 60.0
+			},
+			{
+				"at": 960000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 100.0
+			},
+			{
+				"at": 961000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 5.0
+			},
+			{
+				"at": 1080000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 100.0
+			},
+			{
+				"at": 1142000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 2.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/wz/valve": 2.0,
+				"block/wz/switch": true,
+				"block/wz/demand": true,
+				"block/wz/activeSetpoint": 20.0,
+				"block/wz/state": 1,
+				"block/wz/p": 0.0,
+				"block/wz/i": 1.6666666666666667,
+				"block/wz/d": 0.0,
+				"block/wz/error": 0.0,
+				"block/wz/filtered": 20.0
+			},
+			"blocks": {
+				"wz": {
+					"status": "running",
+					"state": {
+						"integral": 1.6666666666666667
+					}
+				}
+			}
+		}
+	}
+}

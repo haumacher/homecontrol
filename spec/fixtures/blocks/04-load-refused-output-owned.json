@@ -1,0 +1,55 @@
+{
+	"title": "An output bound to a schedule entry's output refuses the image with outputConflict.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		},
+		{
+			"name": "s.out",
+			"type": "boolean"
+		}
+	],
+	"schedules": [
+		{
+			"id": "s",
+			"output": "s.out"
+		}
+	],
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"outputs": {
+				"pulse": "s.out"
+			}
+		}
+	],
+	"timeline": [],
+	"end": 0,
+	"expected": {
+		"loadRefused": "outputConflict",
+		"path": "blocks[0].outputs.pulse"
+	}
+}

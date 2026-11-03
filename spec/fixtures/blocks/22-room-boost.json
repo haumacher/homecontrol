@@ -1,0 +1,252 @@
+{
+	"title": "A setpoint step of at least boostThreshold opens the valve fully until the error falls below half the threshold; the integral is frozen meanwhile.",
+	"note": "Mode 3 (night, 17 °C) to mode 1 (comfort, 21 °C) at 5 min: an error of 4 K >= 2 K boosts; the boost ends when the error is below 1 K.",
+	"datapoints": [
+		{
+			"name": "temp",
+			"type": "real"
+		},
+		{
+			"name": "temp2",
+			"type": "real"
+		},
+		{
+			"name": "valve",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "win",
+			"type": "boolean"
+		},
+		{
+			"name": "mode",
+			"type": "enumeration"
+		},
+		{
+			"name": "presence",
+			"type": "boolean"
+		},
+		{
+			"name": "period",
+			"type": "boolean"
+		},
+		{
+			"name": "sp",
+			"type": "real"
+		},
+		{
+			"name": "on",
+			"type": "boolean"
+		},
+		{
+			"name": "summer",
+			"type": "boolean"
+		},
+		{
+			"name": "forced",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"temp": 17.0,
+		"mode": 3
+	},
+	"blocks": [
+		{
+			"id": "wz",
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"label": {
+				"en": "Living room",
+				"de": "Wohnzimmer"
+			},
+			"inputs": {
+				"temperature": "temp",
+				"mode": "mode"
+			},
+			"outputs": {
+				"valve": "valve"
+			},
+			"parameters": {
+				"boostThreshold": 2,
+				"boostDuration": 3600000,
+				"system": "custom",
+				"xp": 2,
+				"tn": 60,
+				"td": 0,
+				"filter": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "temp",
+				"value": 17.0
+			}
+		},
+		{
+			"at": 300000,
+			"report": {
+				"datapoint": "mode",
+				"value": 1
+			}
+		},
+		{
+			"at": 301000,
+			"check": {
+				"datapoints": {
+					"block/wz/state": 4,
+					"block/wz/valve": 100.0
+				}
+			}
+		},
+		{
+			"at": 480000,
+			"report": {
+				"datapoint": "temp",
+				"value": 17.35
+			}
+		},
+		{
+			"at": 660000,
+			"report": {
+				"datapoint": "temp",
+				"value": 17.7
+			}
+		},
+		{
+			"at": 840000,
+			"report": {
+				"datapoint": "temp",
+				"value": 18.05
+			}
+		},
+		{
+			"at": 1020000,
+			"report": {
+				"datapoint": "temp",
+				"value": 18.4
+			}
+		},
+		{
+			"at": 1200000,
+			"report": {
+				"datapoint": "temp",
+				"value": 18.75
+			}
+		},
+		{
+			"at": 1380000,
+			"report": {
+				"datapoint": "temp",
+				"value": 19.1
+			}
+		},
+		{
+			"at": 1560000,
+			"report": {
+				"datapoint": "temp",
+				"value": 19.45
+			}
+		},
+		{
+			"at": 1740000,
+			"report": {
+				"datapoint": "temp",
+				"value": 19.8
+			}
+		},
+		{
+			"at": 1920000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.15
+			}
+		},
+		{
+			"at": 2100000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.5
+			}
+		},
+		{
+			"at": 2280000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.85
+			}
+		}
+	],
+	"end": 2700000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 0.0
+			},
+			{
+				"at": 300000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 100.0
+			},
+			{
+				"at": 1980000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 43.0
+			},
+			{
+				"at": 2100000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 45.0
+			},
+			{
+				"at": 2160000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 28.0
+			},
+			{
+				"at": 2340000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 11.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/wz/valve": 11.0,
+				"block/wz/switch": true,
+				"block/wz/demand": true,
+				"block/wz/activeSetpoint": 21.0,
+				"block/wz/state": 1,
+				"block/wz/p": 7.499999999999929,
+				"block/wz/i": 4.249999999999995,
+				"block/wz/d": 0.0,
+				"block/wz/error": 0.14999999999999858,
+				"block/wz/filtered": 20.85
+			},
+			"blocks": {
+				"wz": {
+					"status": "running",
+					"state": {
+						"integral": 4.249999999999995,
+						"boostUntil": 0.0
+					}
+				}
+			}
+		}
+	}
+}

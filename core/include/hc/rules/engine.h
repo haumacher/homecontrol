@@ -174,6 +174,34 @@ struct EngineMemory {
 	size_t per_action;  ///< Per action (the once-flags of readRefused).
 };
 
+/// The block runtime as the engine sees it (spec/blocks.md 5.1): blocks are called inside the rules'
+/// cascades, after the rules for each event, and their deadlines join the rule timers'. Implemented
+/// by hc::blocks::BlockRuntime. Every method is called by the engine on the event loop's thread.
+class BlockHost {
+public:
+	/// Whether an update of `datapoint` concerns a block (an input binding): an event for the engine.
+	virtual bool wants(uint16_t datapoint) const = 0;
+	/// Step 3 of processing an event: the update of `datapoint` (derived or not).
+	virtual void datapoint_event(uint16_t datapoint, bool derived) = 0;
+	/// An event the runtime queued with Engine::queue_block_event().
+	virtual void block_event(uint8_t kind, uint16_t block, uint16_t arg, bool derived) = 0;
+	/// The earliest deadline of a block timer or period; EventLoop::kNever for none.
+	virtual uint64_t next_deadline() const = 0;
+	/// Runs the earliest block deadline due at `now` (one timer or period), inside the engine's cascade.
+	virtual void run_due(uint64_t now) = 0;
+	/// The blocks to start after the rules (spec/blocks.md 5.2), each in a cascade of its own.
+	virtual size_t start_count() const = 0;
+	virtual void start_block(size_t index, StartReason reason) = 0;
+	/// A cascade begins: the per-block counts of derived calls start at 0.
+	virtual void cascade_begun() = 0;
+	/// The block with the most derived calls in the current cascade (the first in block order on a
+	/// tie); false when none was called for a derived event.
+	virtual bool busiest(const char*& id, uint32_t& calls) const = 0;
+
+protected:
+	~BlockHost() = default;
+};
+
 /// The rule interpreter (spec/rules.md section 7, doc/rules.md): owns the loaded RuleSet and its
 /// runtime (parameter values, timers, states, match memories, change tracking, diagnostics),
 /// listens to the datapoint model for triggers, runs cascades on the event loop and commands
@@ -266,6 +294,31 @@ public:
 		quiet_ = was;
 	}
 
+	/// The block runtime called inside the cascades (spec/blocks.md 5.1); nullptr: none.
+	void set_block_host(BlockHost* host) { host_ = host; }
+	/// For the block runtime: queues an event of its own (a parameter change, the enable switch, a
+	/// restart) for BlockHost::block_event(): a derived event inside a cascade, else an external one.
+	void queue_block_event(uint8_t kind, uint16_t block, uint16_t arg);
+	/// For the block runtime: counts a block call caused by a derived event against the loop guard
+	/// (spec/blocks.md 5.1). False when the call is refused: the cascade is aborted and `culprit`,
+	/// `firings` name the rule or block with the most derived firings or calls in it.
+	bool derived_call(const char*& culprit, uint32_t& firings);
+	/// Whether a cascade runs (blocks are called only inside one), and whether it was aborted.
+	bool in_cascade() const { return in_cascade_; }
+	bool aborted() const { return aborted_; }
+	/// The cascade time (monotonic ms) and wall time (false while not synchronized).
+	uint64_t cascade_ms() const { return cascade_ms_; }
+	bool cascade_wall(DateTime& out) const {
+		out = wall_;
+		return wall_valid_;
+	}
+	/// The block deadlines changed outside a cascade: the engine's loop timer follows.
+	void deadlines_changed() {
+		if (!in_cascade_) {
+			reschedule();
+		}
+	}
+
 	/// The technology that owns the parameter datapoints (named kTechnologyName).
 	const Technology& technology() const { return technology_; }
 	/// The rule and parameter index behind a parameter datapoint; false for another datapoint.
@@ -355,6 +408,8 @@ private:
 	void action_read(size_t rule, const Action& action);
 	void stop_timers(size_t rule);
 	void enable_changed(size_t rule, bool enabled);
+	/// The loop guard's culprit across the rules and the blocks.
+	void guard_culprit(const char*& culprit, uint32_t& firings) const;
 
 	// Silence triggers (spec 7.11).
 	void arm_silence(size_t index, uint64_t base);
@@ -400,6 +455,7 @@ private:
 	ParameterStore store_;
 	const TimeSource& time_;
 	EngineObserver* observer_ = nullptr;
+	BlockHost* host_ = nullptr;
 	bool listening_ = false;
 	ParameterTechnology technology_{*this};
 	bool quiet_ = false;          ///< Publishing at load: no events.

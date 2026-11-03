@@ -1,0 +1,158 @@
+{
+	"title": "The persisted fields survive an orderly reboot; a stored record of another type starts that block fresh (stateReset).",
+	"note": "Block d has no value yet (b is unknown): its calls write only `calls`.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"a": 1
+	},
+	"persisted": {
+		"block/c": {
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"fields": {
+				"count": 41,
+				"ticks": 7
+			}
+		},
+		"block/d": {
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"fields": {
+				"integral": 12.5
+			}
+		},
+		"@c/gain": {
+			"type": "real",
+			"value": 2
+		}
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"outputs": {
+				"y": "out"
+			}
+		},
+		{
+			"id": "d",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance d",
+			"inputs": {
+				"x": "b"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "a",
+				"value": 3
+			}
+		},
+		{
+			"at": 25000,
+			"reboot": true
+		},
+		{
+			"at": 26000,
+			"report": {
+				"datapoint": "a",
+				"value": 4
+			}
+		}
+	],
+	"end": 37000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "out",
+				"value": 2.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 6.0
+			},
+			{
+				"at": 26000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 8.0
+			}
+		],
+		"logs": [
+			{
+				"at": 0,
+				"block": "d",
+				"code": "stateReset"
+			}
+		],
+		"final": {
+			"datapoints": {
+				"out": 8.0
+			},
+			"blocks": {
+				"c": {
+					"state": {
+						"count": 48.0,
+						"ticks": 10.0
+					},
+					"parameters": {
+						"gain": 2.0
+					}
+				},
+				"d": {
+					"state": {
+						"count": 5.0,
+						"ticks": 3.0
+					}
+				}
+			},
+			"records": {
+				"c": {
+					"count": 48.0,
+					"ticks": 10.0
+				},
+				"d": {
+					"count": 5.0,
+					"ticks": 3.0
+				}
+			},
+			"persisted": {
+				"@c/gain": 2.0
+			}
+		}
+	}
+}

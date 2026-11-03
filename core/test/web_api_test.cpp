@@ -5,6 +5,8 @@
 
 #include "doctest.h"
 #include "hc/network_settings.h"
+#include "hc/blocks/room_controller.h"
+#include "hc/ehome_link.h"
 #include "hc/web_api.h"
 #include "web_test_support.h"
 
@@ -894,4 +896,294 @@ TEST_CASE("WebApi.Schedules: a command to schedule/<id>/time is a PUT") {
 	r = f.request(HttpMethod::post, path, R"({"value": {"day": 0, "hour": 9, "minute": 30, "second": 0}})", f.cookie);
 	CHECK(r.status != 200);
 	CHECK(f.get("/api/schedules", f.cookie).json["schedules"].items[0]["values"]["time"]["hour"].number == 7);
+}
+
+// ---- Blocks (issue #60, spec/blocks.md, spec/api.md "Blocks") ------------------------------------
+
+namespace {
+
+/// A room controller with a KNX-like virtual temperature, a valve, a window pair and a rule that
+/// follows the controller's state.
+const char* kBlocksImage = R"({
+	"image": {"schemaVersion": "1.3", "projectId": "blocks", "revision": 1},
+	"datapoints": [{"id": "temp", "type": "real", "writable": true, "virtual": {}},
+	               {"id": "valve", "type": "real", "writable": true, "virtual": {}},
+	               {"id": "win1", "type": "boolean", "writable": true, "virtual": {}},
+	               {"id": "win2", "type": "boolean", "writable": true, "virtual": {}},
+	               {"id": "heating", "type": "boolean", "writable": true, "virtual": {}}],
+	"blocks": [{"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": {"en": "Living", "de": "Wohnen"},
+	            "inputs": {"temperature": "temp", "window": ["win1", "win2"]}, "outputs": {"valve": "valve"},
+	            "parameters": {"system": "convector", "comfort": 21.5}}],
+	"rules": [{"id": "follow", "name": "Follow",
+		"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "block/wz/demand"}],
+			"actions": [{"kind": "write", "datapoint": "heating", "value": {"kind": "datapoint", "name": "block/wz/demand"}}]}]}]
+})";
+
+std::string with_block(const std::string& block) {
+	return R"({"image": {"schemaVersion": "1.3", "projectId": "refuse", "revision": 1},
+		"datapoints": [{"id": "temp", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "flag", "type": "boolean", "writable": true, "virtual": {}},
+		               {"id": "block/x", "type": "real", "virtual": {}}],
+		"blocks": [)" + block + "]}";
+}
+
+} // namespace
+
+TEST_CASE("Image.Blocks: schema 1.3; mirrors behind the image's datapoints; refusals with their paths") {
+	DashboardFixture f;
+	CHECK(std::string(hc::image::schema_version_text()) == "1.3");
+	f.load(kBlocksImage);
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.service.info().blocks == 1);
+	// spec/blocks.md 6: enabled, the adjustable setpoints, the outputs, the aggregated window.
+	const char* mirrors[] = {"block/wz/enabled", "block/wz/comfort", "block/wz/standby", "block/wz/night", "block/wz/frost",
+		"block/wz/valve", "block/wz/switch", "block/wz/demand", "block/wz/activeSetpoint", "block/wz/state", "block/wz/p",
+		"block/wz/i", "block/wz/d", "block/wz/error", "block/wz/filtered", "block/wz/window"};
+	for (const char* name : mirrors) {
+		CAPTURE(name);
+		const hc::Datapoint* dp = f.model.find(name);
+		REQUIRE(dp != nullptr);
+		CHECK(std::string(dp->technology()->name()) == "blocks");
+	}
+	CHECK(f.model.find("block/wz/temperature") == nullptr); // a single datapoint: no mirror
+	CHECK(f.model.find("block/wz/comfort")->value().as_real() == 21.5);
+	CHECK(f.model.find("block/wz/valve")->value().as_real() == 30); // no temperature yet: the fallback
+	CHECK(f.model.find("heating")->value().as_bool() == true);       // the rule followed the demand
+
+	// Refusals, each with its path (spec/blocks.md 11).
+	struct Refusal {
+		std::string block;
+		const char* path;
+		const char* reason;
+	} refusals[] = {
+		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.1", "label": "A", "inputs": {"temperature": "temp"}})",
+			"blocks[0].type", "unknownType"},
+		{R"({"id": "a", "type": "org.example.nothing", "version": "1.0", "label": "A"})", "blocks[0].type", "unknownType"},
+		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A"})",
+			"blocks[0].inputs.temperature", "missingInput"},
+		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "flag"}})",
+			"blocks[0].inputs.temperature", "typeError"},
+		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": ["temp", "nope"]}})",
+			"blocks[0].inputs.temperature[1]", "unknownReference"},
+		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "parameters": {"comfort": 40}})",
+			"blocks[0].parameters.comfort", "invalidParameter"},
+		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "parameters": {"outputMin": 60, "outputMax": 50}})",
+			"blocks[0].parameters.outputMin", "invalidParameter"},
+		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "outputs": {"valve": "block/a/p"}})",
+			"blocks[0].outputs.valve", "outputConflict"},
+		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "block/a/valve"}})",
+			"blocks[0].inputs.temperature", "forbidden"},
+	};
+	for (const Refusal& r : refusals) {
+		CAPTURE(r.block);
+		std::string text = with_block(r.block);
+		hc::image::Report report;
+		hc::image::Plan plan;
+		hc::image::Loader loader(f.fake.clock, hc::HistoryLimits().cap_bytes);
+		std::string without = text;
+		without.replace(without.find(R"(,
+		               {"id": "block/x", "type": "real", "virtual": {}})"), std::strlen(R"(,
+		               {"id": "block/x", "type": "real", "virtual": {}})"), "");
+		CHECK_FALSE(loader.parse(without.data(), without.size(), plan, report));
+		REQUIRE(report.count > 0);
+		CHECK(std::string(report.refusals[0].path) == r.path);
+		CHECK(std::string(report.refusals[0].reason).find(r.reason) != std::string::npos);
+	}
+	// The prefix block/ is reserved for the mirrors.
+	{
+		std::string text = with_block(R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}})");
+		hc::image::Report report;
+		hc::image::Plan plan;
+		hc::image::Loader loader(f.fake.clock, hc::HistoryLimits().cap_bytes);
+		CHECK_FALSE(loader.parse(text.data(), text.size(), plan, report));
+		CHECK(std::string(report.refusals[0].path) == "datapoints[2].id");
+	}
+	// Strict inside (B1): an unknown member of a newer minor schema names the firmware's version (I4).
+	{
+		std::string text = with_block(R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "wasm": "abc"})");
+		text.replace(text.find("\"1.3\""), 5, "\"1.4\"");
+		text.replace(text.find(R"(,
+		               {"id": "block/x", "type": "real", "virtual": {}})"), std::strlen(R"(,
+		               {"id": "block/x", "type": "real", "virtual": {}})"), "");
+		hc::image::Report report;
+		hc::image::Plan plan;
+		hc::image::Loader loader(f.fake.clock, hc::HistoryLimits().cap_bytes);
+		CHECK_FALSE(loader.parse(text.data(), text.size(), plan, report));
+		CHECK(std::string(report.refusals[0].path) == "blocks[0]");
+		CHECK(std::string(report.refusals[0].reason).find("unknown member 'wasm'") != std::string::npos);
+		CHECK(std::string(report.refusals[0].reason).find("update the firmware") != std::string::npos);
+	}
+}
+
+TEST_CASE("WebApi.Blocks: list, types, changes applied whole or refused whole, restart only after a fault") {
+	DashboardFixture f;
+	f.load(kBlocksImage);
+	f.controller.run_once();
+	f.controller.run_once();
+	auto status = f.get("/api/status", f.cookie);
+	REQUIRE(status.status == 200);
+	CHECK(status.json["device"]["schema"].text == "1.3");
+	CHECK(status.json["image"]["blocks"].number == 1);
+	auto r = f.get("/api/blocks", f.cookie);
+	REQUIRE(r.status == 200);
+	REQUIRE(r.json["blocks"].items.size() == 1);
+	// One room controller fits the E-Home connection's 4 KB answers (EhomeLink::kMaxResponseBody).
+	MESSAGE("GET /api/blocks with one room controller: " << r.body.size() << " bytes");
+	CHECK(r.body.size() < hc::EhomeLink::kMaxResponseBody);
+	const auto& b = r.json["blocks"].items[0];
+	CHECK(b["id"].text == "wz");
+	CHECK(b["version"].text == "1.0");
+	CHECK(b["label"]["de"].text == "Wohnen");
+	CHECK(b["status"].text == "running");
+	CHECK(b["inputs"].items[5]["id"].text == "window");
+	CHECK(b["inputs"].items[5]["aggregation"].text == "any");
+	CHECK(b["outputs"].items[0]["datapoint"].text == "valve");
+	CHECK(b["outputs"].items[0]["value"].number == 30);
+	CHECK(b["state"].has("integral"));
+	auto types = f.get("/api/blocks/types", f.cookie);
+	REQUIRE(types.status == 200);
+	MESSAGE("GET /api/blocks/types: " << types.body.size() << " bytes");
+	CHECK(b["values"]["system"].number == 2);
+	CHECK(b["parameters"].items.size() == 4); // the adjustable setpoints
+	CHECK(types.json["types"].items[0]["type"].text == "org.homecontrol.room-controller");
+	CHECK(types.json["types"].items[0]["ports"].items[0]["aggregations"].items[0].text == "mean");
+
+	// A change is checked whole: the valid comfort is not applied with the invalid night.
+	auto refused = f.put("/api/blocks/wz", R"({"parameters": {"comfort": 22, "night": 99}})");
+	CHECK(refused.status == 422);
+	CHECK(refused.json["code"].text == "block.invalid_value");
+	CHECK(refused.json["member"].text == "night");
+	CHECK(f.model.find("block/wz/comfort")->value().as_real() == 21.5);
+	CHECK(f.put("/api/blocks/wz", R"({"parameters": {"xp": 4}})").json["code"].text == "block.not_adjustable");
+	CHECK(f.put("/api/blocks/nope", R"({"enabled": false})").status == 404);
+	CHECK(f.put("/api/blocks/wz", R"({"restart": true})").json["code"].text == "block.not_faulted");
+	CHECK(f.put("/api/blocks/wz", R"({"bogus": 1})").json["code"].text == "block.malformed");
+	auto ok = f.put("/api/blocks/wz", R"({"parameters": {"comfort": 22.5}, "enabled": false})");
+	REQUIRE(ok.status == 200);
+	CHECK(ok.json["block"]["status"].text == "disabled");
+	CHECK(ok.json["block"]["enabledOverridden"].boolean);
+	CHECK(f.model.find("block/wz/comfort")->value().as_real() == 22.5);
+	CHECK(f.model.find("valve")->value().as_real() == 30); // the failsafe value
+	auto back = f.put("/api/blocks/wz", R"({"enabled": true, "reset": ["comfort"]})");
+	REQUIRE(back.status == 200);
+	CHECK(back.json["block"]["status"].text == "running");
+	CHECK(f.model.find("block/wz/comfort")->value().as_real() == 21.5);
+
+	// The image survives a reload from the store with its blocks' overrides (the boot path).
+	CHECK(f.put("/api/blocks/wz", R"({"parameters": {"night": 16}})").status == 200);
+	REQUIRE(f.service.load_stored(hc::image::Source::boot));
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/wz/night")->value().as_real() == 16);
+}
+
+TEST_CASE("Blocks probe: a rule sets a block's parameter in its cascade; a block reads another block's output") {
+	DashboardFixture f;
+	f.load(R"({
+		"image": {"schemaVersion": "1.3", "projectId": "chain", "revision": 1},
+		"datapoints": [{"id": "temp", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "party", "type": "boolean", "writable": true, "virtual": {}}],
+		"blocks": [{"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Living",
+		            "inputs": {"temperature": "temp"}, "parameters": {"system": "custom", "filter": 0}},
+		           {"id": "echo", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Echo",
+		            "inputs": {"temperature": "block/wz/filtered"}, "parameters": {"system": "custom", "filter": 0}}],
+		"rules": [{"id": "party", "name": "Party",
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "party"}],
+				"actions": [{"kind": "write", "datapoint": "block/wz/comfort", "value": {"kind": "literal", "type": "real", "value": 23}}]}]}]
+	})");
+	f.controller.run_once();
+	f.controller.run_once();
+	REQUIRE(f.model.command(f.model.find("temp")->id(), hc::Value::of_real(20.25)) == hc::DatapointStatus::ok);
+	// The temperature input calls no step (trigger none): the next period takes it.
+	f.fake.clock.advance(61000);
+	for (int i = 0; i < 4; ++i) {
+		f.controller.run_once();
+	}
+	CHECK(f.model.find("block/wz/filtered")->value().as_real() == 20.25);
+	CHECK(f.model.find("block/echo/state")->value().as_enum() == hc::blocks::RoomController::heating);
+	// Two room controllers do not fit one page of the test's buffer: the list pages (next).
+	auto r = f.get("/api/blocks", f.cookie);
+	REQUIRE(r.status == 200);
+	CHECK(r.json["count"].number == 2);
+	uint32_t next = r.json["next"].kind == hc_test::Json::Kind::number ? static_cast<uint32_t>(r.json["next"].number) : 1;
+	auto second = f.get("/api/blocks?from=" + std::to_string(next), f.cookie);
+	REQUIRE(second.status == 200);
+	REQUIRE(!second.json["blocks"].items.empty());
+	CHECK(second.json["blocks"].items.back()["id"].text == "echo");
+	CHECK(second.json["blocks"].items.back()["inputs"].items[0]["value"].number == 20.25);
+	// The rule's write to the parameter's datapoint is a parameter change in its cascade: the
+	// controller steps at once with the new setpoint, and the override is persisted.
+	REQUIRE(f.model.command(f.model.find("party")->id(), hc::Value::of_bool(true)) == hc::DatapointStatus::ok);
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/wz/comfort")->value().as_real() == 23);
+	CHECK(f.model.find("block/wz/activeSetpoint")->value().as_real() == 23);
+	CHECK(f.service.blocks().overridden(0, hc::blocks::RoomController::kComfort));
+}
+
+TEST_CASE("Blocks review probe: a schedule's output drives the setpoint; a diagnostic charted through a declared datapoint") {
+	DashboardFixture f; // 2026-10-17 12:03:12 local time (the fixture's zone has a fixed offset of +2 h), synchronized
+	f.load(R"({
+		"image": {"schemaVersion": "1.3", "projectId": "sched", "revision": 1},
+		"datapoints": [{"id": "temp", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "day", "type": "boolean", "virtual": {}},
+		               {"id": "heat", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "wz.filtered", "type": "real", "writable": true, "virtual": {},
+		                "history": {"retention": 86400, "spacing": 60}},
+		               {"id": "seen", "type": "signed", "writable": true, "virtual": {}}],
+		"schedules": [{"id": "morning", "label": "Morning", "kind": "weekly", "days": [1, 2, 3, 4, 5, 6, 7],
+		               "time": {"hour": 12, "minute": 30, "second": 0}, "output": "day"}],
+		"blocks": [{"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Living",
+		            "inputs": {"temperature": "temp", "heatingPeriod": "day"},
+		            "outputs": {"valve": "heat", "filtered": "wz.filtered"},
+		            "parameters": {"system": "custom", "filter": 0, "td": 0}}],
+		"rules": [{"id": "count", "name": "Count",
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "block/wz/activeSetpoint"}],
+				"actions": [{"kind": "write", "datapoint": "seen", "value": {"kind": "datapoint", "name": "block/wz/activeSetpoint"}}]}]}]
+	})");
+	REQUIRE(f.model.command(f.model.find("temp")->id(), hc::Value::of_real(19.0)) == hc::DatapointStatus::ok);
+	for (int s = 0; s < 120; s += 10) {
+		f.fake.clock.wall_seconds += 10;
+		f.fake.clock.advance(10000);
+		f.controller.run_once();
+	}
+	// Not fired yet today: the schedule's output is false, heatingPeriod false is night.
+	CHECK(f.model.find("day")->value().as_bool() == false);
+	CHECK(f.model.find("block/wz/activeSetpoint")->value().as_real() == 17);
+	CHECK(f.model.find("block/wz/state")->value().as_enum() == hc::blocks::RoomController::heating);
+	CHECK(f.model.find("wz.filtered")->value().as_real() == 19.0);
+	CHECK(f.model.find("heat")->value().as_real() == 0); // 2 K above the setpoint
+	// The firing at 12:30 is an event: the controller steps at once to comfort.
+	while (f.fake.clock.wall_seconds < 1792231392 + 27 * 60 + 10) {
+		f.fake.clock.wall_seconds += 10;
+		f.fake.clock.advance(10000);
+		f.controller.run_once();
+	}
+	CHECK(f.model.find("day")->value().as_bool() == true);
+	CHECK(f.model.find("block/wz/activeSetpoint")->value().as_real() == 21);
+	CHECK(f.model.find("seen")->value().as_signed() == 21);
+	double valve = f.model.find("heat")->value().as_real();
+	CHECK(valve > 60); // 2 K error, xp 3: the proportional term alone is 66 %
+	CHECK(valve == f.model.find("block/wz/valve")->value().as_real());
+	// The declared datapoint behind the diagnostic carries its history.
+	REQUIRE(f.model.command(f.model.find("temp")->id(), hc::Value::of_real(19.5)) == hc::DatapointStatus::ok);
+	for (int s = 0; s < 600; s += 10) {
+		f.fake.clock.wall_seconds += 10;
+		f.fake.clock.advance(10000);
+		f.controller.run_once();
+	}
+	int64_t now = f.fake.clock.wall_seconds;
+	auto id = f.model.find("wz.filtered")->id();
+	auto r = f.get("/api/history?ids=" + std::to_string(id) + "&from=" + std::to_string(now - 1800) + "&to=" +
+		std::to_string(now) + "&points=6", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	auto& points = r.json["series"].items[0]["points"].items;
+	REQUIRE_FALSE(points.empty());
+	CHECK(points.back().items[1].number == 19.5);
+	bool saw19 = false;
+	for (auto& p : points) {
+		saw19 = saw19 || p.items[2].number == 19.0;
+	}
+	CHECK(saw19);
 }

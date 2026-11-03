@@ -267,6 +267,11 @@ private:
 	void reset_schedule(const char* id, WebResponse& response);
 	void schedule_changed(size_t index, WebResponse& response);
 	void write_rule(JsonWriter& json, size_t index);
+	// The blocks (web_api_blocks.cpp, spec/api.md "Blocks").
+	void blocks_list(const WebRequest& request, WebResponse& response);
+	void block_types(const WebRequest& request, WebResponse& response);
+	void put_block(const char* id, const WebRequest& request, WebResponse& response);
+	void write_block(JsonWriter& json, size_t index);
 	// The console's commands (web_api_system.cpp)
 	void system(const char* what, const WebRequest& request, WebResponse& response);
 	void system_action(SystemAction action, const WebRequest& request, WebResponse& response);

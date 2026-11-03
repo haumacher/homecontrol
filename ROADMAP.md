@@ -217,3 +217,10 @@ outside world (weather, external services).
   - Limit: heap, the same on every C6 board. About 30 KB for loaded blocks of the controller's
     110 KB free: two or three small types; a 20 KB module costs about 38 KB.
   - The 4 MB board is not ruled out, and an 8 MB board would not add RAM.
+- **2026-11-03 — Blocks: the contract (issue #60, `spec/blocks.md`).** Virtual devices with typed
+  ports, parameters and a state record, run inside the rules' cascades after the rules, built-in C++
+  types first (the room controller 1.0), WebAssembly types later against the same interface (the
+  five calls, the state record selected by `self`). Image schema 1.3 with E-Home as the guard (a
+  1.2 firmware would ignore `blocks`); one namespace `block/<id>/<x>`; aggregation per instance;
+  one record per instance paced to 30 writes an hour; a corpus run by the core and E-Home's
+  simulation, its expected values from an independent model of the specification.

@@ -14,16 +14,16 @@ namespace image {
 
 /// The runtime image (spec/runtime-image.md): what E-Home deploys, as one JSON document.
 
-/// The schema version this firmware reads, the only place it is set: major 1, minor 2 (1.1 adds the
+/// The schema version this firmware reads, the only place it is set: major 1, minor 3 (1.1 adds the
 /// control pages `ui.pages`, issue #54; 1.2 the adjustable schedule members, issue #58, and the
-/// history archives, issue #56). An image with a higher major version is refused (named in the
+/// history archives, issue #56; 1.3 the blocks, issue #60). An image with a higher major version is refused (named in the
 /// report); a higher minor version loads (its additions are ignorable), except where a strict
-/// object (rules, schedules) meets a member this firmware does not know: that refusal says the
+/// object (rules, schedules, blocks) meets a member this firmware does not know: that refusal says the
 /// image is newer than the firmware reads (spec/runtime-image.md I4).
 constexpr uint32_t kSchemaMajor = 1;
-constexpr uint32_t kSchemaMinor = 2;
+constexpr uint32_t kSchemaMinor = 3;
 
-/// "1.2": kSchemaMajor.kSchemaMinor as text (the API's `schema`, spec/api.md).
+/// "1.3": kSchemaMajor.kSchemaMinor as text (the API's `schema`, spec/api.md).
 const char* schema_version_text();
 
 /// Largest image in bytes. The device reads the whole text into RAM once at load (the parse works
@@ -103,6 +103,7 @@ struct ImageInfo {
 	size_t zigbee_datapoints = 0; ///< With a `zigbee` binding.
 	size_t rules = 0;
 	size_t schedules = 0;
+	size_t blocks = 0;
 	size_t locations = 0;
 	size_t functions = 0;
 	size_t history_rings = 0;

@@ -79,6 +79,7 @@ ImageService::ImageService(Controller& controller, DatapointModel& model, BlobSt
 	  rules_clock_(controller.time()),
 	  scheduler_(controller.loop(), controller.time(), controller.settings(), &model),
 	  engine_(controller.loop(), model, controller.clock(), controller.settings(), rules_clock_),
+	  blocks_(controller.loop(), model, controller.clock(), controller.settings(), blobs, engine_),
 	  value_store_(controller.loop(), controller.clock(), model, blobs, value_limits),
 	  history_(controller.loop(), controller.clock(), model, blobs, history_limits, &controller.time_zone_platform()),
 	  time_master_(controller.loop(), controller.time(), model, adapter),
@@ -312,6 +313,11 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		static_cast<unsigned>(length), static_cast<unsigned>(arena_used), static_cast<unsigned>(arena),
 		plan_ != nullptr ? " (kept for the providers' reloads)" : "", static_cast<unsigned>(view_.used()),
 		static_cast<unsigned>(view_.bytes()));
+	if (blocks_.size() > 0) {
+		blocks::BlockMemory bm = blocks_.memory();
+		Log::info(kTag, "  %u block%s: runtime %u B, compiled %u B", static_cast<unsigned>(blocks_.size()),
+			blocks_.size() == 1 ? "" : "s", static_cast<unsigned>(bm.runtime), static_cast<unsigned>(bm.set));
+	}
 	// Its own line: the one above is cut at the log's message length. The lowest figure since boot
 	// covers this load (homecontrol #66: it must stay above 30 KB during a deploy).
 	Log::info(kTag, "  heap after the load %u B free, lowest since boot %u B", static_cast<unsigned>(memory.free_bytes),
@@ -718,6 +724,12 @@ bool ImageService::apply(Plan& plan, Source source) {
 		return fail_applied(source, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
 			result.text);
 	}
+	// 5b: the blocks, compiled by the loader's check (spec/blocks.md); the engine calls them.
+	bool blocks_adopted = plan.blocks_compiled ? blocks_.adopt(std::move(plan.block_set)) : blocks_.adopt(blocks::BlockSet());
+	plan.blocks_compiled = false;
+	if (!blocks_adopted) {
+		return fail_applied(source, "blocks", "no memory for the blocks' runtime");
+	}
 
 	// 6, 7, 7b: KNX and the time master, the schedules, the external values.
 	if (!bind_technologies(plan, source)) {
@@ -824,8 +836,10 @@ bool ImageService::reload_dynamic(const char* why) {
 		return false;
 	}
 	bind_providers(plan, composed);
-	// The load dropped the rule engine's binding of the parameter datapoints (spec/rules.md 8.6).
+	// The load dropped the rule engine's binding of the parameter datapoints (spec/rules.md 8.6) and
+	// the block runtime's of its mirrors (spec/blocks.md 6).
 	engine_.bind_parameters();
+	blocks_.bind();
 	accept_dynamic();
 	++dynamic_reloads_;
 	// The image's datapoints are at their positions: the rules' ids stay valid. Every component that
@@ -961,6 +975,7 @@ void ImageService::tear_down() {
 	}
 	dynamic_count_ = 0;
 	drop_plan();
+	blocks_.clear(false); // the records and overrides stay for the image loaded next
 	NoSchedules none;
 	JsonSpanDocument document;
 	engine_.load(document.value(JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array}), &none, nullptr);
@@ -996,6 +1011,7 @@ bool ImageService::unload(const char** error) {
 		}
 		dynamic_count_ = 0;
 	}
+	blocks_.clear(true); // with their persisted records and overrides
 	NoSchedules none;
 	JsonSpanDocument document;
 	engine_.load(document.value(JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array}), &none, nullptr);
@@ -1030,6 +1046,8 @@ bool ImageService::unload(const char** error) {
 void ImageService::flush() {
 	value_store_.flush();
 	history_.flush();
+	blocks_.flush(); // the blocks' state records (spec/blocks.md 8.1)
+	engine_.persist_now();
 }
 
 bool ImageService::image_degraded() const {
@@ -1054,6 +1072,7 @@ void ImageService::write_status(JsonWriter& json) const {
 			.member("datapoints", static_cast<uint32_t>(info_.datapoints))
 			.member("rules", static_cast<uint32_t>(info_.rules))
 			.member("schedules", static_cast<uint32_t>(info_.schedules))
+			.member("blocks", static_cast<uint32_t>(info_.blocks))
 			.member("degraded", image_degraded());
 	} else if (!report_.ok()) {
 		json.member("refused", report_code(report_.kind));

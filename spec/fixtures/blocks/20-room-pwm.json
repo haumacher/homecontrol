@@ -1,0 +1,243 @@
+{
+	"title": "PWM: the switch is on for valve% of each cycle; a cycle restarts when the state changes.",
+	"note": "The on-time is cycle * valve / 100 ms (whole percent of a 10 min cycle: 6 s steps); the pwm timer ends it. Forced at 14 min and back at 16.5 min: each state change starts a new cycle.",
+	"datapoints": [
+		{
+			"name": "temp",
+			"type": "real"
+		},
+		{
+			"name": "temp2",
+			"type": "real"
+		},
+		{
+			"name": "valve",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "win",
+			"type": "boolean"
+		},
+		{
+			"name": "mode",
+			"type": "enumeration"
+		},
+		{
+			"name": "presence",
+			"type": "boolean"
+		},
+		{
+			"name": "period",
+			"type": "boolean"
+		},
+		{
+			"name": "sp",
+			"type": "real"
+		},
+		{
+			"name": "on",
+			"type": "boolean"
+		},
+		{
+			"name": "summer",
+			"type": "boolean"
+		},
+		{
+			"name": "forced",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"temp": 20.0
+	},
+	"blocks": [
+		{
+			"id": "wz",
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"label": {
+				"en": "Living room",
+				"de": "Wohnzimmer"
+			},
+			"inputs": {
+				"temperature": "temp",
+				"forced": "forced"
+			},
+			"outputs": {
+				"valve": "valve",
+				"switch": "sw"
+			},
+			"parameters": {
+				"forcedPosition": 50,
+				"controlType": "pwm",
+				"cycle": 600000,
+				"system": "custom",
+				"xp": 2,
+				"tn": 60,
+				"td": 0,
+				"filter": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 720000,
+			"report": {
+				"datapoint": "temp",
+				"value": 20.6
+			}
+		},
+		{
+			"at": 840000,
+			"report": {
+				"datapoint": "forced",
+				"value": true
+			}
+		},
+		{
+			"at": 990000,
+			"report": {
+				"datapoint": "forced",
+				"value": false
+			}
+		},
+		{
+			"at": 1500000,
+			"report": {
+				"datapoint": "temp",
+				"value": 21.4
+			}
+		}
+	],
+	"end": 2400000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 50.0
+			},
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "sw",
+				"value": true
+			},
+			{
+				"at": 120000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 52.0
+			},
+			{
+				"at": 300000,
+				"block": "wz",
+				"datapoint": "sw",
+				"value": false
+			},
+			{
+				"at": 300000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 54.0
+			},
+			{
+				"at": 420000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 56.0
+			},
+			{
+				"at": 540000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 58.0
+			},
+			{
+				"at": 600000,
+				"block": "wz",
+				"datapoint": "sw",
+				"value": true
+			},
+			{
+				"at": 720000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 60.0
+			},
+			{
+				"at": 780000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 30.0
+			},
+			{
+				"at": 840000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 50.0
+			},
+			{
+				"at": 990000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 31.0
+			},
+			{
+				"at": 1176000,
+				"block": "wz",
+				"datapoint": "sw",
+				"value": false
+			},
+			{
+				"at": 1320000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 33.0
+			},
+			{
+				"at": 1560000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 0.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/wz/valve": 0.0,
+				"block/wz/switch": false,
+				"block/wz/demand": false,
+				"block/wz/activeSetpoint": 21.0,
+				"block/wz/state": 1,
+				"block/wz/p": -19.99999999999993,
+				"block/wz/i": 13.666666666666654,
+				"block/wz/d": 0.0,
+				"block/wz/error": -0.3999999999999986,
+				"block/wz/filtered": 21.4,
+				"sw": false
+			},
+			"blocks": {
+				"wz": {
+					"status": "running",
+					"state": {
+						"integral": 13.666666666666654,
+						"switchOn": 0.0
+					}
+				}
+			}
+		}
+	}
+}

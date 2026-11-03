@@ -1,0 +1,185 @@
+{
+	"title": "Disabling writes the failsafe values and stops the calls; enabling starts with the reason enable; a disabled block at boot writes its failsafe values.",
+	"note": "The period does not run while disabled; enabling at 15000 re-bases its grid: one period at 25000 (the boot grid would give 20000).",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"a": 5
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"outputs": {
+				"y": "out",
+				"pulse": "led"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 2000,
+			"command": {
+				"datapoint": "block/c/enabled",
+				"value": false
+			}
+		},
+		{
+			"at": 3000,
+			"report": {
+				"datapoint": "a",
+				"value": 7
+			}
+		},
+		{
+			"at": 4000,
+			"check": {
+				"blocks": {
+					"c": {
+						"status": "disabled"
+					}
+				},
+				"datapoints": {
+					"out": -1.0
+				}
+			}
+		},
+		{
+			"at": 15000,
+			"command": {
+				"datapoint": "block/c/enabled",
+				"value": true
+			}
+		},
+		{
+			"at": 16000,
+			"report": {
+				"datapoint": "a",
+				"value": 9
+			}
+		},
+		{
+			"at": 27000,
+			"setBlock": {
+				"block": "c",
+				"enabled": false
+			}
+		},
+		{
+			"at": 28000,
+			"reboot": true
+		},
+		{
+			"at": 29000,
+			"report": {
+				"datapoint": "a",
+				"value": 11
+			}
+		}
+	],
+	"end": 40000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "out",
+				"value": 5.0
+			},
+			{
+				"at": 2000,
+				"block": "c",
+				"datapoint": "out",
+				"value": -1.0
+			},
+			{
+				"at": 2000,
+				"block": "c",
+				"datapoint": "led",
+				"value": false
+			},
+			{
+				"at": 15000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 7.0
+			},
+			{
+				"at": 16000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 9.0
+			},
+			{
+				"at": 27000,
+				"block": "c",
+				"datapoint": "out",
+				"value": -1.0
+			},
+			{
+				"at": 27000,
+				"block": "c",
+				"datapoint": "led",
+				"value": false
+			},
+			{
+				"at": 28000,
+				"block": "c",
+				"datapoint": "out",
+				"value": -1.0
+			},
+			{
+				"at": 28000,
+				"block": "c",
+				"datapoint": "led",
+				"value": false
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"out": -1.0,
+				"led": false,
+				"block/c/enabled": false,
+				"block/c/calls": null
+			},
+			"blocks": {
+				"c": {
+					"status": "disabled",
+					"state": {
+						"count": 4.0,
+						"ticks": 1.0
+					}
+				}
+			},
+			"persisted": {
+				"@c/enabled": false
+			}
+		}
+	}
+}

@@ -1,0 +1,170 @@
+{
+	"title": "A swap to another major version starts the state fresh (stateReset) and drops the overrides that no longer fit (parameterReset).",
+	"note": "Version 2.0 narrows gain to 0..5 (8 is out of bounds) and has no delay (gone); both overrides are dropped and logged (B4).",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"a": 2
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"outputs": {
+				"y": "out"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"setBlock": {
+				"block": "c",
+				"parameters": {
+					"gain": 8,
+					"delay": 2000
+				}
+			}
+		},
+		{
+			"at": 2000,
+			"report": {
+				"datapoint": "a",
+				"value": 3
+			}
+		},
+		{
+			"at": 3000,
+			"image": {
+				"blocks": [
+					{
+						"id": "c",
+						"type": "org.homecontrol.conformance",
+						"version": "2.0",
+						"label": "Conformance c",
+						"inputs": {
+							"x": "a"
+						},
+						"outputs": {
+							"y": "out"
+						}
+					}
+				]
+			}
+		},
+		{
+			"at": 4000,
+			"report": {
+				"datapoint": "a",
+				"value": 5
+			}
+		}
+	],
+	"end": 5000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "out",
+				"value": 2.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 16.0
+			},
+			{
+				"at": 1000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 16.0
+			},
+			{
+				"at": 2000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 24.0
+			},
+			{
+				"at": 3000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 3.0
+			},
+			{
+				"at": 4000,
+				"block": "c",
+				"datapoint": "out",
+				"value": 5.0
+			}
+		],
+		"logs": [
+			{
+				"at": 3000,
+				"block": "c",
+				"code": "stateReset"
+			},
+			{
+				"at": 3000,
+				"block": "c",
+				"code": "parameterReset"
+			},
+			{
+				"at": 3000,
+				"block": "c",
+				"code": "parameterReset"
+			}
+		],
+		"final": {
+			"datapoints": {
+				"out": 5.0,
+				"block/c/gain": 1.0
+			},
+			"blocks": {
+				"c": {
+					"status": "running",
+					"state": {
+						"count": 2.0
+					},
+					"parameters": {
+						"gain": 1.0
+					}
+				}
+			},
+			"persisted": {},
+			"records": {
+				"c": {
+					"count": 2.0,
+					"ticks": 0.0
+				}
+			}
+		}
+	}
+}

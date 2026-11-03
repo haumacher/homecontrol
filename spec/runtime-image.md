@@ -2,7 +2,7 @@
 
 *Specification of issue #8: the document E-Home deploys to a controller, describing everything the
 controller runs: the datapoints and their KNX addresses, rooms and functions, the time master, the
-schedules, the rules, the history budget and the settings the project fixes. Implemented by
+schedules, the rules, the blocks, the history budget and the settings the project fixes. Implemented by
 `hc::image` (`core/include/hc/image/`, design and operation in `doc/image.md`); transported by
 `PUT /api/image` (`spec/api.md`). Members follow the conventions of `spec/rules.md` (camelCase
 names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images/`.*
@@ -28,21 +28,23 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
   more than about 100 KB may find no free heap block of its size; the device then answers 507
   and keeps its image.
 - **I4. Versioned by `image.schemaVersion`, `<major>.<minor>`.** A newer major version is refused
-  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.2)`); a
+  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.3)`); a
   newer minor version of a known major loads, and an older minor version too. Where a newer minor
-  meets the strict objects of I5 (a rule or schedule member this firmware does not know), the
-  refusal adds that the firmware is older than the image, from firmware 1.2 on:
-  `malformed: unknown member 'jitter' (the image's schema 1.3 is newer than this firmware reads, up
-  to 1.2: update the firmware)`. The device reports the newest version it reads as `schema` in
+  meets the strict objects of I5 (a rule, schedule or block member this firmware does not know),
+  the refusal adds that the firmware is older than the image, from firmware 1.2 on:
+  `malformed: unknown member 'jitter' (the image's schema 1.4 is newer than this firmware reads, up
+  to 1.3: update the firmware)`. The device reports the newest version it reads as `schema` in
   `GET /api/status` and in the E-Home connection's `auth` (`spec/api.md`), so E-Home can warn
-  before a deploy. *Alternative:* a feature list (more precise, but E-Home would have to know which
-  features a firmware has).
-- **I5. Unknown members are ignored, except in `rules` and `schedules`.** A minor version may add
-  members; an older firmware loads the image without them. The rule and schedule objects keep
-  their own strict policy (`spec/rules.md` 10, `spec/schedules.md` 2: unknown members are refused,
-  `description` and `comment` are allowed everywhere), because a misspelt trigger or time must not
-  silently disappear. A top-level `comment` (or anywhere outside rules and schedules) is ignored
-  too.
+  before a deploy, and refuses to deploy what the controller cannot run: an image with `blocks` to
+  a controller below 1.3 (`spec/blocks.md` B1; one that reports no schema counts as at most 1.1),
+  because an older firmware would ignore the member and run no blocks. *Alternative:* a feature
+  list (more precise, but E-Home would have to know which features a firmware has).
+- **I5. Unknown members are ignored, except in `rules`, `schedules` and `blocks`.** A minor version
+  may add members; an older firmware loads the image without them. The rule, schedule and block
+  objects keep their own strict policy (`spec/rules.md` 10, `spec/schedules.md` 2,
+  `spec/blocks.md` 4: unknown members are refused, `description` and `comment` are allowed
+  everywhere), because a misspelt trigger or time must not silently disappear. A top-level
+  `comment` (or anywhere outside rules, schedules and blocks) is ignored too.
 - **I6. A missing optional member means "none".** No `rules`: no rules; no `knx.timeMaster`: no time
   master; no `settings.tz`: the device keeps its own setting. Nothing defaults to "keep what the
   previous image had": an image describes the whole configuration.
@@ -67,6 +69,7 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
 	"knx": {"timeMaster": { ... }},
 	"schedules": [ ... ],
 	"rules": [ ... ],
+	"blocks": [ ... ],
 	"history": {"budget": 4096},
 	"ui": {"pages": [ ... ]}
 }
@@ -84,6 +87,7 @@ Complete example: `spec/fixtures/images/example.json` (placeholder addresses `1/
 | `knx` | no (no time master) | 3.6 |
 | `schedules` | no (none) | `spec/schedules.md` |
 | `rules` | no (none) | `spec/rules.md` |
+| `blocks` | no (none) | `spec/blocks.md` (1.3) |
 | `history` | no (budget = what the rings need) | 3.7 |
 | `ui` | no (no control pages: the generated overview) | 3.9 |
 
@@ -97,7 +101,7 @@ Strings are 1..N bytes of valid UTF-8 without control characters; N is given per
 
 | Member | Type | Required | Meaning |
 |---|---|---|---|
-| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.2` (section 8). |
+| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.3` (section 8). |
 | `projectId` | string, 1..63 | yes | E-Home's project. Shown in the status. |
 | `revision` | integer 0..4294967295 | yes | E-Home's deployment counter, shown in the status and returned by PUT. The device does not refuse an older revision: rolling back is a deployment like any other. |
 | `generatedAt` | string, 1..31 | no | ISO 8601 time of the export. |
@@ -178,6 +182,15 @@ datapoints, the loader adds `schedule/<scheduleId>/time` for every entry of kind
 (within the entry's bounds), transmitting, not persisted by the datapoint model and without
 history; the scheduler owns it. Ids starting with `schedule/` are reserved: a declared one refuses
 the image.
+
+Implied datapoints of the blocks (`spec/blocks.md` 6, issue #60): behind the schedules' datapoints,
+the loader adds for every block in block order `block/<id>/enabled`, `block/<id>/<parameter>` for
+each adjustable parameter of its type, `block/<id>/<output>` for each output, and
+`block/<id>/<input>` for each input bound to more than one datapoint (the aggregated value). The
+enable switch and the parameters are writable (the switch only while `enabledAdjustable`), the
+outputs and aggregated inputs are not; none is persisted by the datapoint model or has a history;
+the block runtime owns them (technology `blocks`). Ids starting with `block/` are reserved: a
+declared one refuses the image.
 
 The Zigbee binding (issue #29; the bindings, the checks and their refusals in `spec/zigbee.md`
 "Bindings"): the datapoint stands for one function of one endpoint of a joined (or not yet joined)
@@ -424,9 +437,11 @@ with invalid content reports the loader's kind, an unsigned one never reaches th
 signature is detached (the header `X-Image-Signature`, the socket's `signature`, a `.sig` file); the
 document itself does not change.
 
-Rules are validated last and only when everything before is valid, because their references are
-checked against the image's datapoints and schedules. Rule and schedule reasons start with the
-reason codes of `spec/rules.md` 10.1 (`malformed:`, `outputConflict:`, `unknownReference:`, ...).
+Rules are validated after everything else and only when everything before is valid, because their
+references are checked against the image's datapoints and schedules; the blocks come last
+(`spec/blocks.md` 11, `blocks[2].inputs.temperature`). Rule, schedule and block reasons start with
+the reason codes of `spec/rules.md` 10.1 (`malformed:`, `outputConflict:`, `unknownReference:`,
+...; blocks add `unknownType:` and `missingInput:`).
 
 ## 5. Limits and RAM
 
@@ -437,6 +452,7 @@ reason codes of `spec/rules.md` 10.1 (`malformed:`, `outputConflict:`, `unknownR
 | Datapoints / locations / functions | 1024 / 256 / 512 |
 | Control pages (`ui.pages`, over all pages) | 16 pages, 128 sections, 512 elements, 256 chart series, 128 reference lines |
 | Schedule entries | 128 (`spec/schedules.md`) |
+| Blocks | 32 (`spec/blocks.md` 11) |
 | Listening addresses per datapoint | 8 |
 | History | per datapoint a ring of up to 2048 samples and 4 archives of up to 2048 slots; RAM `history.budget` and flash `history.archiveBudget` at most 64 KB each (3.7) |
 | Reported refusals | 12 with path and reason; up to 100 counted |
@@ -468,11 +484,13 @@ The event loop applies a valid image in this order:
    where the model has no kept value; the history saves its rings and restores them by datapoint
    name into the new rings (`doc/persistence.md`).
 5. The rules are loaded; each rule's runtime (timers, states, parameter overrides, change
-   tracking) follows its id (`spec/rules.md` 7.6), datapoints are followed by name.
+   tracking) follows its id (`spec/rules.md` 7.6), datapoints are followed by name. Then the blocks:
+   state records and overrides follow the block id (`spec/blocks.md` 8.1), the mirrors are bound.
 6. The KNX adapter gets the new group address table; then the time master, whose broadcast
    addresses are merged into the table. Read-on-start datapoints are read again.
 7. The schedules are loaded.
-8. The rules start with reason `boot` (the first image after a restart) or `image` (a swap).
+8. The rules start with reason `boot` (the first image after a restart) or `image` (a swap), then
+   the blocks (`spec/blocks.md` 5.2).
 
 A failure from step 3 on (out of memory, a component refusing what the loader accepted) tears the
 new configuration down and loads the stored image again (source `restore`); without a stored image
@@ -512,3 +530,9 @@ persisted values and history rings: the device returns to setup.
   an `at` as a date and time) and `step` is in seconds for the times (1..86400), in milliseconds
   for `offset` (whole seconds) and `every` (whole minutes), and absent for `at`; `days` has no
   bounds.
+- 1.3 (issue #60): the member `blocks`, the virtual devices of `spec/blocks.md` (the first type the
+  room controller `org.homecontrol.room-controller` 1.0), strict inside (I5); the implied datapoints
+  `block/<id>/<x>` (3.3), the prefix `block/` reserved; the limit of 32 blocks (5). E-Home writes 1.3.
+  An image of 1.0 to 1.2 loads unchanged. A firmware that reads only up to 1.2 would ignore `blocks`
+  (I5) and run none: E-Home deploys an image with blocks only to a controller that reports 1.3 or
+  newer (I4, `spec/blocks.md` B1). The corpus is `spec/fixtures/blocks/`.
