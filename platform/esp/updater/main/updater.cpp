@@ -18,6 +18,7 @@
 
 #include "sdkconfig.h"
 
+#include "driver/gpio.h"
 #include "esp_app_desc.h"
 #include "esp_event.h"
 #include "esp_flash_partitions.h"
@@ -497,9 +498,12 @@ const char* upload_state_name(UploadState state) {
 	return "?";
 }
 
-/// Network timeout of one receive while an image streams in, and how many in a row are tolerated.
+/// Network timeout of one receive while an image streams in, and how many in a row are tolerated:
+/// a stall of up to 2 minutes. On the ESP32-C6 the WiFi link loses segments while the flash is
+/// written, and TCP's retransmission timeout doubles with each loss in a row (15 s were measured
+/// during an upload); 3 timeouts of 10 s ended uploads that TCP would have recovered (#69).
 constexpr int kUploadRecvTimeoutS = 10;
-constexpr int kUploadRecvRetries = 3;
+constexpr int kUploadRecvRetries = 12;
 
 std::atomic<UploadState> g_upload_state{UploadState::awaiting};
 std::atomic<uint32_t> g_upload_received{0};
@@ -510,6 +514,59 @@ std::atomic<bool> g_upload_abort{false};
 std::atomic<bool> g_upload_restart{false};
 char g_upload_error[160] = {};
 char g_upload_token[hc::kUploadTokenLength + 1] = {};
+
+/// Recovery with the button (#69): while ota_0 holds no bootable application, holding the button
+/// (CONFIG_HC_WPS_BUTTON_GPIO) for kButtonHoldUs authorizes an upload without the one-time token
+/// until g_button_until_us. Someone at the device could flash it over USB as well; a device with a
+/// working application is never opened this way (the application issues the token).
+constexpr int64_t kButtonHoldUs = 3 * 1000000;
+constexpr int64_t kButtonWindowUs = 5 * 60 * 1000000LL;
+std::atomic<int64_t> g_button_until_us{0};
+bool g_button_ready = false;
+int64_t g_button_down_since_us = 0;
+
+/// Configures the button as an input with the pull-up; false without one.
+bool button_init() {
+#if CONFIG_HC_WPS_BUTTON_GPIO >= 0
+	gpio_config_t io = {};
+	io.pin_bit_mask = 1ULL << CONFIG_HC_WPS_BUTTON_GPIO;
+	io.mode = GPIO_MODE_INPUT;
+	io.pull_up_en = GPIO_PULLUP_ENABLE;
+	g_button_ready = gpio_config(&io) == ESP_OK;
+#endif
+	return g_button_ready;
+}
+
+/// Polls the button; true once it has been held for kButtonHoldUs (then again only after a release).
+bool button_held(int64_t now) {
+#if CONFIG_HC_WPS_BUTTON_GPIO >= 0
+	if (!g_button_ready) {
+		return false;
+	}
+	bool pressed = gpio_get_level(static_cast<gpio_num_t>(CONFIG_HC_WPS_BUTTON_GPIO)) == 0;
+	if (!pressed) {
+		g_button_down_since_us = 0;
+		return false;
+	}
+	if (g_button_down_since_us == 0) {
+		g_button_down_since_us = now;
+		return false;
+	}
+	if (g_button_down_since_us > 0 && now - g_button_down_since_us >= kButtonHoldUs) {
+		g_button_down_since_us = -1; // fired; wait for the release
+		return true;
+	}
+#else
+	(void) now;
+#endif
+	return false;
+}
+
+/// Whether the button window is open now.
+bool button_window_open() {
+	int64_t until = g_button_until_us.load();
+	return until != 0 && esp_timer_get_time() < until;
+}
 char g_upload_version[33] = {};
 const esp_partition_t* g_upload_app = nullptr;
 
@@ -545,6 +602,10 @@ async function state() {
 		const left = s.remaining_s === null ? "no time limit (the device has no application to start)"
 			: `${s.remaining_s} s left, then the application starts again`;
 		$("state").textContent = `Updater ${s.updater}: ${s.state.replace("_", " ")}, ${left}.`;
+		if (s.button_s !== null && s.button_s !== undefined) {
+			$("state").textContent += ` The device's button was held: an image is accepted without an access key for ${s.button_s} s.`;
+			$("upload").style.display = "block";
+		}
 		if (s.error) say(s.error, "error");
 		return s;
 	} catch (e) { return null; }
@@ -580,7 +641,7 @@ $("send").onclick = () => {
 	if (!file) { say("Choose a file first.", "error"); return; }
 	const xhr = new XMLHttpRequest();
 	xhr.open("PUT", "/firmware");
-	xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+	if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
 	xhr.upload.onprogress = (e) => {
 		if (!e.lengthComputable) return;
 		const p = Math.round((100 * e.loaded) / e.total);
@@ -595,7 +656,8 @@ $("send").onclick = () => {
 			say(`Installed ${body.version}; the device restarts…`);
 			waitForApplication(`Installed ${body.version}.`);
 		} else if (xhr.status === 401) {
-			say("The access key of this upload is not valid. Start the upload again from the application's Settings page.", "error");
+			say(body.error || "The access key of this upload is not valid. Start the upload again from the application's Settings page.", "error");
+			$("send").disabled = false;
 		} else {
 			say(body.error || `The updater refused the file (HTTP ${xhr.status}).`, "error");
 			$("send").disabled = false;
@@ -609,7 +671,9 @@ $("send").onclick = () => {
 state().then((s) => {
 	if (s && s.state === "done") { say("The image is installed; the device restarts…"); waitForApplication("Installed."); return; }
 	if (token) { $("upload").style.display = "block"; return; }
-	say("This device waits for a firmware file. The upload is started from the Settings page of the application, which leaves its access key in that browser tab; this tab has none. Start the application to return.");
+	say(s && s.remaining_s === null
+		? "This device waits for a firmware file and has no application to start. The upload is started from the Settings page of the application, which leaves its access key in that browser tab; this tab has none. Without it: hold the device's button for 3 s, then choose the file here within 5 minutes."
+		: "This device waits for a firmware file. The upload is started from the Settings page of the application, which leaves its access key in that browser tab; this tab has none. Start the application to return.");
 });
 setInterval(() => { if ($("send").disabled === false) state(); }, 5000);
 </script></body></html>
@@ -626,7 +690,7 @@ void send_json(httpd_req_t* request, const char* status, const char* body, size_
 esp_err_t refuse(httpd_req_t* request, const char* status, const char* code, const char* why) {
 	ESP_LOGW(kTag, "%s %s refused (%s): %s", request->method == HTTP_PUT ? "PUT" : request->method == HTTP_POST ? "POST" : "GET",
 		request->uri, code, why);
-	char body[256];
+	char body[320];
 	hc::JsonWriter json(body, sizeof(body));
 	json.begin_object().member("error", why).member("code", code).end_object();
 	send_json(request, status, body, json.length());
@@ -656,6 +720,15 @@ esp_err_t handle_status(httpd_req_t* request) {
 		int64_t left = (deadline - esp_timer_get_time()) / 1000000;
 		json.number(static_cast<uint32_t>(left > 0 ? left : 0));
 	}
+	// Seconds left of the button window (#69), null when it is closed.
+	json.key("button_s");
+	int64_t until = g_button_until_us.load();
+	int64_t button_left = until == 0 ? 0 : (until - esp_timer_get_time()) / 1000000;
+	if (button_left > 0) {
+		json.number(static_cast<uint32_t>(button_left));
+	} else {
+		json.null();
+	}
 	json.member("error", g_upload_error).end_object();
 	send_json(request, "200 OK", body, json.length());
 	return ESP_OK;
@@ -683,6 +756,8 @@ int receive(httpd_req_t* request, uint8_t* buffer, size_t length) {
 	for (int timeouts = 0;;) {
 		int n = httpd_req_recv(request, reinterpret_cast<char*>(buffer), length);
 		if (n == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < kUploadRecvRetries) {
+			ESP_LOGW(kTag, "upload: no data for %d s; waiting up to %d s", timeouts * kUploadRecvTimeoutS,
+				kUploadRecvRetries * kUploadRecvTimeoutS);
 			continue;
 		}
 		return n > 0 ? n : -1;
@@ -705,12 +780,20 @@ esp_err_t handle_firmware(httpd_req_t* request) {
 	}
 	char authorization[64] = {};
 	size_t header = httpd_req_get_hdr_value_len(request, "Authorization");
-	if (header == 0 || header >= sizeof(authorization) ||
-		httpd_req_get_hdr_value_str(request, "Authorization", authorization, sizeof(authorization)) != ESP_OK ||
-		!hc::upload_authorized(g_upload_token, authorization)) {
+	bool by_token = header != 0 && header < sizeof(authorization) &&
+		httpd_req_get_hdr_value_str(request, "Authorization", authorization, sizeof(authorization)) == ESP_OK &&
+		g_upload_token[0] != '\0' && hc::upload_authorized(g_upload_token, authorization);
+	bool by_button = !by_token && button_window_open() && inspect(g_upload_app) != hc::AppImageState::valid;
+	if (!by_token && !by_button) {
 		std::memset(authorization, 0, sizeof(authorization));
 		return refuse(request, "401 Unauthorized", "updater.unauthorized",
-			"missing or wrong upload token: start the upload from the application's Settings page");
+			inspect(g_upload_app) == hc::AppImageState::valid
+				? "missing or wrong upload token: start the upload from the application's Settings page"
+				: "missing or wrong upload token: start the upload from the application's Settings page, or, as "
+				  "ota_0 holds no application, hold the device's button for 3 s and send the image within 5 minutes");
+	}
+	if (by_button) {
+		ESP_LOGW(kTag, "upload authorized by the button");
 	}
 	std::memset(authorization, 0, sizeof(authorization));
 	size_t total = request->content_len;
@@ -878,6 +961,10 @@ void serve_upload(const esp_partition_t* app, const hc::UpdateInstruction& instr
 			}
 		}
 		int64_t now = esp_timer_get_time();
+		if (button_held(now) && inspect(app) != hc::AppImageState::valid) {
+			g_button_until_us.store(now + kButtonWindowUs);
+			ESP_LOGW(kTag, "button held: an upload without the token is accepted for 5 minutes at http://%s/", g_ip);
+		}
 		int64_t deadline = g_upload_deadline_us.load();
 		UploadState state = g_upload_state.load();
 		bool running = state == UploadState::writing || state == UploadState::verifying;
@@ -910,7 +997,24 @@ void serve_upload(const esp_partition_t* app, const hc::UpdateInstruction& instr
 				ESP_LOGI(kTag, "waiting for the network to serve the firmware upload (%s)", left);
 			}
 		}
-		delay_ms(500);
+		delay_ms(250);
+	}
+}
+
+/// Waits `ms` while ota_0 holds no application and nothing is pending, watching the button: held,
+/// it serves an upload authorized by the button alone (#69; does not return then).
+void wait_watching_button(const esp_partition_t* app, uint32_t ms) {
+	int64_t end = esp_timer_get_time() + static_cast<int64_t>(ms) * 1000;
+	while (esp_timer_get_time() < end) {
+		int64_t now = esp_timer_get_time();
+		if (button_held(now)) {
+			g_button_until_us.store(now + kButtonWindowUs);
+			ESP_LOGW(kTag, "button held: serving an upload without the token for 5 minutes");
+			hc::UpdateInstruction none;
+			std::memset(none.token, 0, sizeof(none.token));
+			serve_upload(app, none, 0); // does not return
+		}
+		delay_ms(100);
 	}
 }
 
@@ -920,6 +1024,7 @@ extern "C" void app_main(void) {
 	hc::Log::set_sink(&g_sink);
 	ESP_LOGI(kTag, "HomeControl updater %s (%s)", hc::kVersion, hc::build_id());
 	init_nvs();
+	button_init();
 
 	const esp_partition_t* app = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
 	if (app == nullptr) {
@@ -945,7 +1050,12 @@ extern "C" void app_main(void) {
 			hc::app_image_state_name(image), hc::updater_action_name(step.action), step.reason);
 		if (step.delay_ms > 0) {
 			ESP_LOGI(kTag, "next step in %u s", static_cast<unsigned>(step.delay_ms / 1000));
-			delay_ms(step.delay_ms);
+			if (step.action == hc::UpdaterAction::wait && g_button_ready) {
+				ESP_LOGI(kTag, "or hold the button for 3 s to upload an image from the browser");
+				wait_watching_button(app, step.delay_ms);
+			} else {
+				delay_ms(step.delay_ms);
+			}
 		}
 		switch (step.action) {
 		case hc::UpdaterAction::boot_app:

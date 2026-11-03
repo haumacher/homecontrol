@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Bernhard Haumacher
 #
-# The updater does not build hc_net; the one network option it shares with the application is
-# declared here under the same name, and its value comes from ../sdkconfig.defaults.
+# The updater does not build hc_net; the options it shares with the application are declared here
+# under the same names, and their values come from ../sdkconfig.defaults.
 
 menu "HomeControl network"
 
@@ -14,5 +14,16 @@ menu "HomeControl network"
 			esp_wifi_set_max_tx_power() when the station starts. The project default (44, 11 dBm)
 			comes from platform/esp/sdkconfig.defaults; the development C6 browns out at full power
 			(doc/hardware.md).
+
+	config HC_WPS_BUTTON_GPIO
+		int "GPIO of the WPS button (active low; -1: no button)"
+		range -1 48
+		default 9 if IDF_TARGET_ESP32C6
+		default 0 if IDF_TARGET_ESP32S3
+		default -1
+		help
+			The application's WPS button (components/hc_net/Kconfig). In the updater, while ota_0
+			holds no bootable application, holding it for 3 s authorizes an upload from the browser
+			for 5 minutes without the one-time token (doc/ota.md "Recovery with the button").
 
 endmenu

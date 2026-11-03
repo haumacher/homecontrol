@@ -324,7 +324,22 @@ changes anyway, the page says so and the device is found in the router's list.
 (log `boot application: no firmware upload within 10 minutes ...`); the application then reports
 `firmware upload abandoned: no image was installed` and erases the instruction. With ota_0 missing or
 rolled back it serves without a limit and logs `waiting for the firmware upload at http://<IP>/ (no
-time limit, ...)` every minute. A running upload is never cut off by the timeout.
+time limit, ...)` every minute. A running upload is never cut off by the timeout. While an image streams in, the updater
+waits up to 2 minutes for the next data (12 receive timeouts of 10 s, each logged `upload: no data
+for n s`): on the ESP32-C6 the WiFi link loses segments while the flash is written, and TCP's
+retransmission timeout doubles with each loss in a row (#69: 15 s measured, about 6 % of the bytes
+sent again, ~14 KB/s). A failed upload keeps the one-time token while the updater runs, so the page
+or a client can send the image again without a new one.
+
+**Recovery with the button.** A client that loses the one-time token after ota_0 was overwritten (it
+gave up, the browser tab was closed) cannot get a new one: the application that issues it is gone.
+While ota_0 holds no bootable application, holding the device's button (`CONFIG_HC_WPS_BUTTON_GPIO`,
+the BOOT button of the devkits, also the application's WPS button) for 3 s authorizes an upload
+without the token for 5 minutes (log `button held: ...`, `button_s` in `GET /status`, a hint on
+the updater's page and in the 401 answer). The updater also watches the button while it waits with
+no application and no instruction (`next step in 300 s ... or hold the button`), and then serves
+the upload page. Security: the window needs someone at the device, who could flash it over USB as
+well; a device with a working application is never opened this way.
 
 ## Rollback and power loss
 
