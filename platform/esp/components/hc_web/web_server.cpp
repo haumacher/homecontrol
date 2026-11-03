@@ -26,6 +26,7 @@
 #include "lwip/sockets.h"
 #include "mbedtls/md.h"
 #include "mbedtls/pkcs5.h"
+#include "hc/image/image_body.h"
 #include "hc/log.h"
 #include "hc/network_settings.h"
 #include "hc/signature.h"
@@ -658,21 +659,25 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 		std::snprintf(text, sizeof(text), "the request body is longer than %u bytes", static_cast<unsigned>(limit));
 		return send_refusal(req, 413, "api.body_too_large", text);
 	}
-	// A large body (the runtime image) in a heap buffer of its own, released on every path out.
-	struct HeapBody {
-		char* data = nullptr;
-		~HeapBody() { std::free(data); }
-	} heap;
-	char* body = job.body;
-	if (req->content_len > WebApi::kMaxBody) {
-		heap.data = static_cast<char*>(std::malloc(req->content_len + 1));
-		if (heap.data == nullptr) {
-			Log::warn(kTag, "refusing a %u-byte body for %s: no heap block that large (largest %u B)",
+	// A large body (the runtime image) in the image staging area (#66) or a heap buffer of its own,
+	// released on every path out.
+	image::ImageBody large;
+	HttpMethod method = method_of(req->method);
+	bool use_large = req->content_len > WebApi::kMaxBody;
+	if (use_large) {
+		const char* staging_refusal = nullptr;
+		if (!large.begin(req->content_len, api_.body_staging(method, job.path), &staging_refusal)) {
+			Log::warn(kTag, "refusing a %u-byte body for %s: no heap block that large (largest %u B)%s%s",
 				static_cast<unsigned>(req->content_len), job.path,
-				static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+				static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
+				staging_refusal != nullptr ? "; the staging area declined: " : "",
+				staging_refusal != nullptr ? staging_refusal : "");
 			return send_refusal(req, 507, "api.no_memory", "the device has not enough free memory for this body");
 		}
-		body = heap.data;
+		if (staging_refusal != nullptr) {
+			Log::info(kTag, "the %u-byte body for %s goes to the heap: %s", static_cast<unsigned>(req->content_len),
+				job.path, staging_refusal);
+		}
 	}
 	job.kind = Job::Kind::api;
 	job.request = WebRequest();
@@ -680,19 +685,36 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 
 	size_t received = 0;
 	while (received < req->content_len) {
-		int n = httpd_req_recv(req, body + received, req->content_len - received);
+		// A large body passes through the job's buffer in pieces.
+		char* into = use_large ? job.body : job.body + received;
+		size_t room = use_large ? WebApi::kMaxBody : req->content_len - received;
+		size_t want = req->content_len - received < room ? req->content_len - received : room;
+		int n = httpd_req_recv(req, into, want);
 		if (n == HTTPD_SOCK_ERR_TIMEOUT) {
 			continue;
 		}
 		if (n <= 0) {
 			return ESP_FAIL; // connection lost: httpd closes it
 		}
+		if (use_large && !large.append(into, static_cast<size_t>(n))) {
+			Log::warn(kTag, "refusing the body for %s: the staging area failed", job.path);
+			return send_refusal(req, 507, "api.no_memory", "the device could not store this body");
+		}
 		received += static_cast<size_t>(n);
 	}
-	body[received] = '\0';
+	const char* body = job.body;
+	if (use_large) {
+		body = large.finish();
+		if (body == nullptr) {
+			Log::warn(kTag, "refusing the body for %s: the staged body cannot be read", job.path);
+			return send_refusal(req, 507, "api.no_memory", "the device could not read this body back");
+		}
+	} else {
+		job.body[received] = '\0';
+	}
 
 	WebRequest& request = job.request;
-	request.method = method_of(req->method);
+	request.method = method;
 	request.path = job.path;
 	request.query = query != nullptr ? query : "";
 	request.cookie = copy_session_cookie(req, job.cookie, sizeof(job.cookie)) ? job.cookie : nullptr;
@@ -711,8 +733,8 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 	request.body_length = received;
 
 	if (!run_on_loop()) {
-		if (heap.data != nullptr) {
-			wait_job();
+		if (use_large) {
+			wait_job(); // the late job still reads the body
 		}
 		return send_refusal(req, 503, "api.busy", "the controller is busy; try again");
 	}
@@ -751,7 +773,7 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 			return send_refusal(req, 504, "api.timeout", "the answer did not come in time");
 		}
 	}
-	if (heap.data == nullptr) {
+	if (!use_large) {
 		std::memset(job.body, 0, received + 1); // may hold a password
 	}
 

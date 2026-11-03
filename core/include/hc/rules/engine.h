@@ -223,6 +223,12 @@ public:
 	/// a datapoint by it. Call flush() before the model is replaced: queued events carry old ids.
 	LoadResult load(const JsonValue& rules, const ScheduleDirectory* schedules, const uint16_t* previous_ids);
 
+	/// As load() with `previous_ids`, for a set the caller compiled and validated already against a
+	/// model whose datapoints have the ids of this engine's model (the image loader's check, which
+	/// compiles the rules once per image: homecontrol #66). Swaps it in like load(); on refusal (no
+	/// memory for the runtime) nothing changes and `set` is gone.
+	LoadResult adopt(RuleSet&& set, const uint16_t* previous_ids);
+
 	/// Starts every rule with `reason` (boot or image, spec 7.5), each in its own cascade, after
 	/// re-baselining the match memories (7.4). Queued; runs on the loop.
 	void start(StartReason reason);

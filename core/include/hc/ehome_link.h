@@ -10,6 +10,7 @@
 #include "hc/backoff.h"
 #include "hc/event_loop.h"
 #include "hc/fetch_body.h"
+#include "hc/image/image_body.h"
 #include "hc/json.h"
 #include "hc/live_feed.h"
 #include "hc/platform/http_fetcher.h"
@@ -126,6 +127,10 @@ public:
 	/// How long an answer waits for room in the client's send queue before the link gives up on the
 	/// connection.
 	static constexpr uint32_t kHoldMs = 10000;
+	/// A body whose frames stop arriving for this long is reported once, with the bytes received
+	/// (homecontrol #66: a deploy whose frames stopped after the announcement). The connection's own
+	/// guards (the pong) decide when it ends.
+	static constexpr uint32_t kBodyStallMs = 5000;
 
 	EhomeLink(WebApi& api, LiveFeed& feed, WebSocketClient& client, HttpFetcher& fetcher);
 	~EhomeLink();
@@ -256,10 +261,11 @@ private:
 	HttpMethod method_ = HttpMethod::get;
 	char path_[256] = {};           ///< The path; the query follows its NUL.
 	const char* query_ = "";
-	char* body_ = nullptr;          ///< A body announced with `length` (heap, length + 1).
-	size_t body_length_ = 0;
-	size_t body_have_ = 0;
+	/// A body announced with `length`: the image staging area for PUT /api/image, else the heap.
+	image::ImageBody body_;
 	size_t discard_ = 0;            ///< Binary bytes of a refused request still to be dropped.
+	uint64_t body_progress_ms_ = 0; ///< When the body began or its last frame arrived.
+	bool body_stall_logged_ = false;
 	// A streamed answer in progress.
 	bool streaming_ = false;
 	uint32_t stream_token_ = 0;

@@ -145,7 +145,8 @@ after the TLS handshake and the heap at that moment.
   Sending (issue #55): the loop copies each message whole into the session's 6 KB send queue (a
   ring, a 4-byte header per message) or the send is refused (`send_room()`); the session's sender
   task `hc_ehome_tx` (priority 3, below the loop and the network tasks) drains it in order under
-  the client's separate send lock (`CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK`) with a 2 s timeout, a
+  the client's separate send lock (`CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK`) with a 10 s timeout (2 s before #66, which ended
+  the session at a single lost TCP segment while a 32 KB image streamed to E-Home), a
   message that wraps around the ring's end as two fragments of one message, and posts
   `ws_client_writable()` after a message when the core asked (`want_writable()`). The write is
   what the loop must not wait for: on the C6 it costs about 6 ms of CPU per 1.3 KB message (the
@@ -157,7 +158,15 @@ after the TLS handshake and the heap at that moment.
   next tick (the feed waits behind it; after `kHoldMs`, 10 s, the link gives up on the
   connection), a streamed answer's next piece and a ping wait for room the same way. Closing hands
   the session to its sender task, which drops what is still queued, sends the close frame, stops
-  the client task and frees everything, so the loop never waits for the network. The library's own
+  the client task and frees everything, so the loop never waits for the network. Until that
+  teardown has ended a new connection is refused (`the previous connection is still closing`, the
+  core backs off and retries): E-Home replaces the old session of a controller that connects again
+  (`ehome.replaced`), and two TLS sessions at once cost about 30 KB and fragmented the heap so that
+  a 32 KB image no longer found a block (#66). A body whose frames stop arriving for
+  `EhomeLink::kBodyStallMs` (5 s) is reported once with the bytes received (`request … the body
+  stalls at N of M bytes`); the pong decides when the connection ends. Once, on the first deploy
+  after a boot, a deploy's frames stopped right after the announcement: the client task delivered
+  nothing more, pongs included, while the loop ran on; the cause is not known. The library's own
   ping and reconnect are off: the core pings and backs off.
 - **POSIX** (`platform/posix`): `PosixWebSocketClient` on the core's WebSocket codec (client role)
   over a TCP socket with a reader thread, plain `ws://` only (there is no TLS in the host build;
@@ -180,7 +189,7 @@ Nothing is allocated while the controller is not enrolled or the connection is o
 | Client structure, configuration, its event loop, locks | about 1500 |
 | TLS steady state with dynamic buffers (context, session, record buffers per record) | 3000 to 5000 |
 | **Connected, total** | **about 29 500 to 31 500** |
-| A request body announced with `length` (heap, freed after the answer) | its length (the image: up to 256 KB, 507 when no block is that large) |
+| A request body announced with `length` (heap, freed after the answer) | its length; a `PUT /api/image` body goes to the staging area behind the updater's image instead (#66, doc/ota.md "The staging area": 0 B of heap, up to 148 KB on the C6), to the heap when the area declines (logged), 507 when no block is that large either |
 
 The TLS handshake is the peak: with `CONFIG_MBEDTLS_DYNAMIC_BUFFER` the incoming record buffer is
 allocated at the size of the record being read, the largest being E-Home's certificate message

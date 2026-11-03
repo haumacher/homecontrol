@@ -221,7 +221,6 @@ EhomeLink::~EhomeLink() {
 		api_.set_ehome(nullptr);
 	}
 	free_answer();
-	delete[] body_;
 	delete[] out_;
 }
 
@@ -414,6 +413,12 @@ void EhomeLink::tick() {
 					fail("cannot send the ping");
 					break;
 				}
+			}
+			if (body_.active() && !body_stall_logged_ && now - body_progress_ms_ >= kBodyStallMs) {
+				body_stall_logged_ = true;
+				Log::warn(kTag, "request %s %s: the body stalls at %u of %u bytes, nothing arrived for %u s", request_id_,
+					path_, static_cast<unsigned>(body_.have()), static_cast<unsigned>(body_.size()),
+					static_cast<unsigned>((now - body_progress_ms_) / 1000));
 			}
 			release_held();
 			if (stream_waiting_) {
@@ -666,10 +671,7 @@ void EhomeLink::ws_close(uint32_t client, uint16_t code, const char* reason) {
 
 void EhomeLink::drop_request() {
 	has_signature_ = false;
-	delete[] body_;
-	body_ = nullptr;
-	body_length_ = 0;
-	body_have_ = 0;
+	body_.release();
 	discard_ = 0;
 	busy_ = false;
 	streaming_ = false;
@@ -774,18 +776,24 @@ void EhomeLink::request(const JsonSpan& message) {
 			discard_ = bytes;
 			return;
 		}
-		body_ = new (std::nothrow) char[bytes + 1];
-		if (body_ == nullptr) {
-			Log::warn(kTag, "request %s %s refused: no heap block of %u bytes for its body", method, path_,
-				static_cast<unsigned>(bytes));
+		const char* staging_refusal = nullptr;
+		ImageStaging* staging = api_.body_staging(method_, path_);
+		if (!body_.begin(bytes, staging, &staging_refusal)) {
+			Log::warn(kTag, "request %s %s refused: no heap block of %u bytes for its body%s%s%s", method, path_,
+				static_cast<unsigned>(bytes), staging_refusal != nullptr ? " (the staging area declined: " : "",
+				staging_refusal != nullptr ? staging_refusal : "", staging_refusal != nullptr ? ")" : "");
 			answer(id, 507, "api.no_memory", "the device has not enough free memory for this body");
 			discard_ = bytes;
 			return;
 		}
-		body_length_ = bytes;
-		body_have_ = 0;
+		if (staging_refusal != nullptr) {
+			Log::info(kTag, "request %s: the body goes to the heap: %s", id, staging_refusal);
+		}
 		busy_ = true;
-		Log::info(kTag, "request %s: %s %s, receiving %u bytes", id, method, path_, static_cast<unsigned>(bytes));
+		body_progress_ms_ = api_.controller().clock().monotonic_ms();
+		body_stall_logged_ = false;
+		Log::info(kTag, "request %s: %s %s, receiving %u bytes%s", id, method, path_, static_cast<unsigned>(bytes),
+			body_.staged() ? " into the staging area" : "");
 		return; // dispatched when the last byte arrived (ws_client_binary)
 	}
 	JsonSpan body;
@@ -834,19 +842,25 @@ void EhomeLink::ws_client_binary(const uint8_t* data, size_t length, bool last) 
 			return;
 		}
 	}
-	if (body_ == nullptr) {
+	if (!body_.active()) {
 		fail("E-Home sent a binary frame no request announced");
 		return;
 	}
-	if (length > body_length_ - body_have_) {
+	if (length > body_.size() - body_.have()) {
 		fail("E-Home sent more body bytes than request %s announced (%u)", request_id_,
-			static_cast<unsigned>(body_length_));
+			static_cast<unsigned>(body_.size()));
 		return;
 	}
-	std::memcpy(body_ + body_have_, data, length);
-	body_have_ += length;
-	if (body_have_ == body_length_) {
-		body_[body_length_] = '\0';
+	if (!body_.append(data, length)) {
+		Log::warn(kTag, "request %s %s refused: the staging area failed while the body arrived", request_id_, path_);
+		answer(request_id_, 507, "api.no_memory", "the device could not store this body");
+		discard_ = body_.size() - body_.have() - length;
+		body_.release();
+		busy_ = false;
+		return;
+	}
+	body_progress_ms_ = api_.controller().clock().monotonic_ms();
+	if (body_.have() == body_.size()) {
 		dispatch();
 	}
 }
@@ -860,14 +874,20 @@ void EhomeLink::dispatch() {
 	req.source = "E-Home";
 	req.ehome = true;
 	req.image_signature = has_signature_ ? signature_ : nullptr;
-	req.body = body_;
-	req.body_length = body_length_;
+	const char* text = body_.active() ? body_.finish() : nullptr;
+	if (body_.active() && text == nullptr) {
+		Log::warn(kTag, "request %s %s refused: the staged body cannot be read", request_id_, path_);
+		body_.release();
+		WebResponse failed(out_ + kPrefix, kMaxResponseBody);
+		WebApi::refuse(failed, 507, "api.no_memory", "the device could not read this body back");
+		send_response(failed);
+		return;
+	}
+	req.body = text;
+	req.body_length = body_.size();
 	WebResponse response(out_ + kPrefix, kMaxResponseBody);
 	api_.handle(req, response);
-	delete[] body_; // the routes are done with it when handle() returns (as with the HTTP servers' buffers)
-	body_ = nullptr;
-	body_length_ = 0;
-	body_have_ = 0;
+	body_.release(); // the routes are done with it when handle() returns (as with the HTTP servers' buffers)
 	send_response(response);
 }
 

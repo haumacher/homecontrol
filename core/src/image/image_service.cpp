@@ -205,6 +205,9 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	if (length <= kMaxImageBytes && !authorize(text, length, source, signature)) {
 		return false;
 	}
+	// The steps' times for the split line below (homecontrol #66: the load holds the loop).
+	const Clock& clock = controller_.clock();
+	uint64_t t_signature = clock.monotonic_ms();
 	Plan* plan = new (std::nothrow) Plan();
 	if (plan == nullptr) {
 		report_.clear();
@@ -212,7 +215,9 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		Log::error(kTag, "image (%s) not loaded: no memory", source_name(source));
 		return false;
 	}
-	Loader loader(controller_.clock(), history_limits_.cap_bytes);
+	char language[setting::kMaxUiLangLength + 1];
+	read_ui_lang(controller_.settings(), language, kTag); // as the engine reads it: the rules compile once
+	Loader loader(controller_.clock(), history_limits_.cap_bytes, language);
 	if (!loader.parse(text, length, *plan, report_)) {
 		Log::warn(kTag, "image from %s refused (%s): %u problem%s; the %s", source_name(source),
 			report_kind_name(report_.kind), static_cast<unsigned>(report_.total), report_.total == 1 ? "" : "s",
@@ -226,6 +231,7 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	}
 	size_t arena = plan->arena.bytes();
 	size_t arena_used = plan->arena.used();
+	uint64_t t_parse = clock.monotonic_ms();
 	bool ok = apply(*plan, source);
 	if (plan != plan_) {
 		delete plan; // not kept for the providers' reloads
@@ -233,6 +239,7 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	if (!ok) {
 		return false;
 	}
+	uint64_t t_apply = clock.monotonic_ms();
 	// 7c: the MQTT client, from the applied text (its datapoints are resolved by name against the
 	// model just loaded; without an `mqtt` member it is cleared). The loader checked the member, so
 	// a refusal here is a resource problem: logged, and MQTT stands down rather than keep the old image's.
@@ -245,7 +252,9 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		}
 	}
 	report_.clear();
+	uint64_t t_mqtt = clock.monotonic_ms();
 	view_.build(text, length, model_);
+	uint64_t t_view = clock.monotonic_ms();
 	if (store) {
 		const char* error = nullptr;
 		stored_ok_ = store_.write(text, length, &error);
@@ -257,6 +266,8 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		stored_ok_ = false;
 		std::snprintf(store_error_, sizeof(store_error_), "not stored");
 	}
+	uint64_t t_store = clock.monotonic_ms();
+	MemoryInfo memory = controller_.system().memory();
 	Log::info(kTag, "image '%s' revision %u (%s, schema %s) loaded from %s in %u ms: %u datapoints (%u KNX), %u rules, "
 		"%u schedules, %u functions, %u locations, %u history rings%s; %u bytes, load tables %u of %u bytes used%s, "
 		"UI model %u of %u bytes used",
@@ -269,6 +280,14 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		static_cast<unsigned>(length), static_cast<unsigned>(arena_used), static_cast<unsigned>(arena),
 		plan_ != nullptr ? " (kept for the providers' reloads)" : "", static_cast<unsigned>(view_.used()),
 		static_cast<unsigned>(view_.bytes()));
+	// Its own line: the one above is cut at the log's message length. The lowest figure since boot
+	// covers this load (homecontrol #66: it must stay above 30 KB during a deploy).
+	Log::info(kTag, "  heap after the load %u B free, lowest since boot %u B", static_cast<unsigned>(memory.free_bytes),
+		static_cast<unsigned>(memory.min_free_bytes));
+	Log::info(kTag, "  steps: signature %u ms, parse %u ms, apply %u ms, MQTT %u ms, UI model %u ms, store %u ms",
+		static_cast<unsigned>(t_signature - begin), static_cast<unsigned>(t_parse - t_signature),
+		static_cast<unsigned>(t_apply - t_parse), static_cast<unsigned>(t_mqtt - t_apply),
+		static_cast<unsigned>(t_view - t_mqtt), static_cast<unsigned>(t_store - t_view));
 	if (info_.zigbee_datapoints > 0 || dynamic_count_ > 0) {
 		Log::info(kTag, "  %u Zigbee binding(s); %u datapoint(s) of the providers", static_cast<unsigned>(info_.zigbee_datapoints),
 			static_cast<unsigned>(dynamic_count_));
@@ -578,7 +597,11 @@ bool ImageService::apply(Plan& plan, Source source) {
 		rules_span = JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array};
 	}
 	PlanSchedules schedules(plan);
-	rules::LoadResult result = engine_.load(document.value(rules_span), &schedules, previous);
+	// The set the loader's check compiled; the text is compiled here only for a plan without one
+	// (an image without rules).
+	rules::LoadResult result = plan.rules_compiled ? engine_.adopt(std::move(plan.rule_set), previous)
+		: engine_.load(document.value(rules_span), &schedules, previous);
+	plan.rules_compiled = false;
 	if (!result.ok()) {
 		return fail_applied(source, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
 			result.text);

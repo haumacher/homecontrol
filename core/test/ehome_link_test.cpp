@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "doctest.h"
+#include "fake_image_staging.h"
 #include "fake_blob_store.h"
 #include "fake_fetch.h"
 #include "hc/ehome_link.h"
@@ -730,6 +731,21 @@ TEST_CASE("E-Home: a body longer than the route takes is refused 413 and its fra
 	CHECK(f.link.state() == EhomeState::failed);
 }
 
+TEST_CASE("E-Home: a body whose frames stop is reported once with the bytes received") {
+	EhomeFixture f;
+	f.handshake();
+	f.client.deliver("{\"type\":\"request\",\"id\":1,\"method\":\"PUT\",\"path\":\"/api/image\","
+		"\"length\":3000}");
+	REQUIRE(f.capture.sink.contains("receiving 3000 bytes"));
+	f.client.deliver_binary(std::string(1000, ' '), 1000);
+	f.advance(EhomeLink::kBodyStallMs - 1000);
+	CHECK_FALSE(f.capture.sink.contains("the body stalls"));
+	f.advance(2000);
+	CHECK(f.capture.sink.contains("request 1 /api/image: the body stalls at 1000 of 3000 bytes"));
+	f.advance(2000);
+	CHECK(f.capture.sink.count("the body stalls") == 1);
+}
+
 TEST_CASE("E-Home: a command over the feed is recorded in the monitor as via ehome") {
 	EhomeFixture f;
 	f.service.load(image_fixture("example.json").data(), image_fixture("example.json").size(),
@@ -1307,4 +1323,67 @@ TEST_CASE("E-Home queue probe: a drop mid-snapshot with an answer held; the new 
 	CHECK(chunks.back()["done"].boolean);
 	f.client.deliver("{\"type\":\"request\",\"id\":9,\"method\":\"GET\",\"path\":\"/api/status\"}");
 	CHECK(f.response(9)["status"].number == 200); // the slot is free
+}
+
+TEST_CASE("E-Home image staging: a signed image is received into the staging area, verified and loaded from it") {
+	// homecontrol #66: a deploy needs no heap block of the image's size.
+	EhomeFixture f;
+	hc_test::FakeImageStaging staging;
+	f.service.set_staging(&staging);
+	REQUIRE(f.fake.settings.set_string("ehome.key", kKey) == hc::SettingsStatus::ok);
+	f.handshake();
+	std::string example = image_fixture("example.json");
+	size_t compiled = f.capture.sink.count("I hc.rule: rules loaded:");
+	Json r = socket_put_image(f, 4, example, signature_of(kKeySeed, example));
+	CHECK(r["status"].number == 200);
+	CHECK(f.service.loaded());
+	// The rules were compiled once: the loader's check hands its set to the engine.
+	CHECK(f.capture.sink.count("I hc.rule: rules loaded:") == compiled + 1);
+	CHECK(staging.begins == 1);
+	CHECK(staging.appends >= 3); // a piece per frame, and the NUL
+	CHECK(staging.ends == 1);    // released when the request is answered
+	CHECK_FALSE(staging.busy);
+	CHECK(staging.content.size() == example.size() + 1);
+	CHECK(f.capture.sink.contains("receiving " + std::to_string(example.size()) + " bytes into the staging area"));
+	CHECK(f.capture.sink.contains("I hc.image:   steps: signature "));
+	// The loaded image does not point into the staging area: overwritten after end(), it still serves.
+	for (const char* path : {"/api/image", "/api/rules", "/api/datapoints", "/api/schedules", "/api/pages"}) {
+		auto answer = f.get(path, f.cookie);
+		INFO(path);
+		CHECK(answer.status == 200);
+		CHECK(answer.body.find("XXXX") == std::string::npos);
+	}
+	// A mis-signed image is refused from the staging area as from the heap.
+	r = socket_put_image(f, 5, example, signature_of(kNewSeed, example));
+	CHECK(r["status"].number == 403);
+	CHECK(staging.ends == 2);
+
+	// Another request's body never goes there.
+	int begins = staging.begins;
+	f.client.deliver("{\"type\":\"request\",\"id\":6,\"method\":\"PUT\",\"path\":\"/api/ehome\",\"length\":2}");
+	f.client.deliver_binary("{}", 1024);
+	CHECK(staging.begins == begins);
+}
+
+TEST_CASE("E-Home image staging: when the area declines, the image is received into the heap with the reason logged") {
+	EhomeFixture f;
+	hc_test::FakeImageStaging staging;
+	staging.off = "the updater's image does not verify";
+	f.service.set_staging(&staging);
+	f.handshake();
+	std::string image = image_fixture("minimal.json");
+	CHECK(socket_put_image(f, 3, image, "")["status"].number == 200);
+	CHECK(f.capture.sink.contains("the body goes to the heap: the updater's image does not verify"));
+
+	// An area that fails while the body arrives: the request is refused, the connection stays.
+	staging.off = nullptr;
+	staging.fail_after = 1;
+	std::string example = image_fixture("example.json");
+	Json r = socket_put_image(f, 4, example, "");
+	CHECK(r["status"].number == 507);
+	CHECK(f.capture.sink.contains("the staging area failed while the body arrived"));
+	CHECK_FALSE(staging.busy);
+	staging.fail_after = 0;
+	r = socket_put_image(f, 5, example, "");
+	CHECK(r["status"].number == 200);
 }

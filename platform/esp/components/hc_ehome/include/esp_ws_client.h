@@ -4,6 +4,7 @@
 #ifndef HC_ESP_WS_CLIENT_H
 #define HC_ESP_WS_CLIENT_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -32,7 +33,7 @@ namespace esp {
 ///   the pong.
 /// - Ending: close() hands the session to its sender task, which drops what is still queued, sends
 ///   the close frame, stops the client task and frees everything, so the loop never waits for the
-///   network. A session the server or the network ended is reported once through
+///   network. A new connection is refused until that teardown has ended (the core retries). A session the server or the network ended is reported once through
 ///   ws_client_closed() and torn down the same way.
 class EspWebSocketClient : public WebSocketClient {
 public:
@@ -55,7 +56,13 @@ public:
 	static constexpr uint32_t kSenderStack = 3072;
 	/// Below the loop (5) and the network tasks (4): the TLS write costs CPU time.
 	static constexpr int kSenderPriority = 3;
-	static constexpr int kSendTimeoutMs = 2000;
+	/// How long one message may wait for room in the socket: longer than TCP needs to recover a
+	/// lost segment (lwIP's retransmission timeout is a second or more), so a single loss on WiFi
+	/// does not end the session (homecontrol #66: 2000 ms ended it while a 32 KB image streamed
+	/// to E-Home). A dead peer is still found by the core's ping (EhomeLink::kPongTimeoutMs).
+	static constexpr int kSendTimeoutMs = 10000;
+	/// How long the teardown waits for the server's answer to the close frame.
+	static constexpr int kCloseTimeoutMs = 2000;
 	static constexpr int kNetworkTimeoutMs = 10000;
 
 	explicit EspWebSocketClient(LoopQueue& queue);
@@ -91,6 +98,11 @@ private:
 	WebSocketClientListener* listener_ = nullptr;
 	Session* session_ = nullptr;
 	uint32_t generation_ = 0;
+	/// Sessions whose resources still exist (the current one and those their sender tasks are
+	/// still tearing down). connect() waits for 0: two TLS sessions at once cost about 30 KB and
+	/// fragment the heap (#66: after an overlap the largest free block was 17.9 KB and a 32 KB
+	/// image could not be received).
+	std::atomic<uint32_t> alive_{0};
 };
 
 } // namespace esp

@@ -1225,6 +1225,13 @@ void WebApi::image_changed() {
 	}
 }
 
+ImageStaging* WebApi::body_staging(HttpMethod method, const char* path) const {
+	if (image_ != nullptr && method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
+		return image_->staging();
+	}
+	return nullptr;
+}
+
 size_t WebApi::body_limit(HttpMethod method, const char* path) {
 	if (method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
 		return image::kMaxImageBytes;

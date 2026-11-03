@@ -13,6 +13,7 @@
 #include "hc/json.h"
 #include "hc/log_ring.h"
 #include "hc/platform/blob_store.h"
+#include "hc/platform/image_staging.h"
 #include "hc/platform/web_host.h"
 #include "hc/zigbee/adapter.h"
 
@@ -181,6 +182,10 @@ public:
 	/// The largest body a request may carry: kMaxBody, the image size limit for PUT /api/image.
 	/// The platforms refuse longer bodies with 413 before they read them.
 	static size_t body_limit(HttpMethod method, const char* path);
+
+	/// Where a receiver puts the body of `method` `path`: the image service's staging area for
+	/// PUT /api/image (homecontrol #66), nullptr (a heap buffer) for everything else.
+	ImageStaging* body_staging(HttpMethod method, const char* path) const;
 
 	/// A piece of the stored image for a streamed response (WebResponse::stream), on the loop. False
 	/// when the stored image changed since the response began (the platform aborts the transfer).

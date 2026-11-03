@@ -2699,7 +2699,7 @@ struct PlanSchedules : rules::ScheduleDirectory {
 	const Plan& plan;
 };
 
-void parse_rules(Ctx& c, const JsonSpan& root, const Clock& clock) {
+void parse_rules(Ctx& c, const JsonSpan& root, const Clock& clock, const char* language) {
 	Plan& plan = c.plan;
 	JsonSpan rules_member;
 	if (!c.member(root, "rules", rules_member)) {
@@ -2732,14 +2732,16 @@ void parse_rules(Ctx& c, const JsonSpan& root, const Clock& clock) {
 	}
 	JsonSpanDocument document;
 	PlanSchedules schedules(plan);
-	rules::RuleSet set;
-	rules::LoadResult result = set.load(document.value(rules_member), scratch, &schedules);
+	// Compiled once: the set goes to the engine at the swap (Plan::rule_set).
+	rules::LoadResult result = plan.rule_set.load(document.value(rules_member), scratch, &schedules, language);
 	if (!result.ok()) {
 		Report::Kind kind =
 			result.error == rules::LoadError::out_of_memory ? Report::Kind::no_memory : Report::Kind::invalid;
 		c.report.add(kind, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
 			result.text);
+		return;
 	}
+	plan.rules_compiled = true;
 }
 
 } // namespace
@@ -2817,7 +2819,7 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 		}
 	}
 	if (!c.stopped()) {
-		parse_rules(c, root, clock_);
+		parse_rules(c, root, clock_, language_);
 	}
 	if (!report.ok()) {
 		Log::warn(kTag, "image refused: %u problem%s, first at %s: %s", static_cast<unsigned>(report.total),

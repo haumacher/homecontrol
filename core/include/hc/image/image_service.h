@@ -23,6 +23,7 @@
 #include "hc/knx/time_master.h"
 #include "hc/knx/tunnel.h"
 #include "hc/platform/blob_store.h"
+#include "hc/platform/image_staging.h"
 #include "hc/rules/engine.h"
 #include "hc/scheduler.h"
 #include "hc/value_store.h"
@@ -145,6 +146,11 @@ public:
 	/// unload; nullptr: the member is validated and otherwise ignored.
 	void set_mqtt(Mqtt* mqtt) { mqtt_ = mqtt; }
 
+	/// The platform's staging area for received images (homecontrol #66; none: heap buffers). The
+	/// receivers of PUT /api/image put the body there (ImageBody), see WebApi::body_staging().
+	void set_staging(ImageStaging* staging) { staging_ = staging; }
+	ImageStaging* staging() const { return staging_; }
+
 	void set_ntp_changed(Callback callback) { ntp_changed_ = callback; }
 	/// Called after every change of the loaded image (load, swap, restore, unload): the model's ids
 	/// may have changed (the web API resyncs its live feed).
@@ -242,6 +248,7 @@ private:
 	uint64_t loaded_ms_ = 0;
 	ExternalValues* external_ = nullptr;
 	Mqtt* mqtt_ = nullptr;
+	ImageStaging* staging_ = nullptr;
 	ModelView view_;
 	DynamicSpecProvider* providers_[kMaxProviders] = {};
 	size_t provider_count_ = 0;

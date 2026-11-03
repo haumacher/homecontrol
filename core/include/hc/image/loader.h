@@ -16,6 +16,7 @@
 #include "hc/knx/time_master.h"
 #include "hc/platform/clock.h"
 #include "hc/platform/settings.h"
+#include "hc/rules/rule_set.h"
 #include "hc/scheduler.h"
 #include "hc/zigbee/cluster_mapping.h"
 
@@ -113,6 +114,12 @@ struct Plan {
 
 	bool has_rules = false;
 	JsonSpan rules;
+	/// The rules as the loader's check compiled them (against a scratch model with the image's
+	/// datapoints, which have the same ids in the device's model): the image service hands this set
+	/// to the engine instead of compiling the rules a second time (homecontrol #66). Empty once
+	/// handed over; `rules_compiled` says whether it holds the image's rules.
+	rules::RuleSet rule_set;
+	bool rules_compiled = false;
 
 	/// The `external` member (spec/external-values.md), handed to ExternalValues after the model swap.
 	bool has_external = false;
@@ -138,12 +145,15 @@ struct Plan {
 /// Parses and validates a runtime image (spec/runtime-image.md) into a Plan, without changing
 /// anything on the device: every member is checked (the rules against a scratch datapoint model
 /// with the image's datapoints), every refusal recorded with its JSON path and reason. Allocates
-/// the plan's tables in its arena and, while checking the rules, a scratch model and rule set
-/// that are freed before it returns.
+/// the plan's tables in its arena and, while checking the rules, a scratch model that is freed
+/// before it returns; the compiled rule set stays in the plan (Plan::rule_set).
 class Loader {
 public:
-	/// `history_cap` is the device's history cap in bytes (HistoryLimits::cap_bytes).
-	Loader(const Clock& clock, size_t history_cap) : clock_(clock), history_cap_(history_cap) {}
+	/// `history_cap` is the device's history cap in bytes (HistoryLimits::cap_bytes); `language`
+	/// the language the rules' labels are resolved in (the device's `ui.lang`, as the engine reads
+	/// it), so that the compiled set is the one the engine would build.
+	Loader(const Clock& clock, size_t history_cap, const char* language = "en")
+		: clock_(clock), history_cap_(history_cap), language_(language) {}
 
 	/// True when the image is valid; `plan` then holds it. Otherwise `report` names the refusals.
 	bool parse(const char* text, size_t length, Plan& plan, Report& report) const;
@@ -151,6 +161,7 @@ public:
 private:
 	const Clock& clock_;
 	size_t history_cap_;
+	const char* language_;
 };
 
 /// The value type named in the image ("boolean", "unsigned", "signed", "real", "string",

@@ -28,11 +28,17 @@ counted (issue #44).
 ## Mechanisms
 
 **Body.** `WebApi::body_limit()` gives each route its limit: 1 KB for every API body, 256 KB for
-`PUT /api/image`. The ESP server copies small bodies into its static job slot; a larger body goes
-to a heap buffer of exactly its length, allocated in the httpd task before it is read and freed
-after the response (507 `api.no_memory` when the heap has no block that large: the image is not
-touched). If the loop does not take the job in time, the httpd task waits until the job has run
-before it frees the buffer. The POSIX server lets cpp-httplib collect the body.
+`PUT /api/image`. The ESP server copies small bodies into its static job slot; a larger body and
+every body the E-Home connection announces with `length` go to an `image::ImageBody`: for
+`PUT /api/image` into the platform's `ImageStaging` (`WebApi::body_staging()`; on the ESP the flash
+behind the updater's image, doc/ota.md "The staging area", read back through the flash cache as one
+text), otherwise, or when the staging declines (off, too small, in use; the reason is logged), into
+a heap buffer of exactly its length (507 `api.no_memory` when the heap has no block that large: the
+image is not touched). Before #66 the image went to the heap: E-Home's 32 KB test-system image then
+needed one 32 KB block and, held through the whole load, took the heap from 64 KB to 3.9 KB, and on
+a fragmented heap (largest block 17.9 KB) the deploy failed outright. If the loop does not take the
+job in time, the httpd task waits until the job has run before it releases the body. The POSIX
+server lets cpp-httplib collect the body; the POSIX build has no staging area.
 `GET /api/image` is streamed: the API answers with `WebResponse::stream` (length and a token of
 the stored generation) and the server fetches 8 KB pieces through `WebApi::read_stream()`, one
 loop job each, sending them chunked; a deployment in between changes the token and cuts the
@@ -41,11 +47,22 @@ response.
 **Atomic apply.** The loader checks everything a component could refuse later: unique ids, DPTs
 against types, addresses, the time master's addresses against the datapoints', schedule outputs,
 history budget, and the rules through a scratch `DatapointModel` and `RuleSet::load` with the
-image's schedules. Only a valid plan reaches `apply()`. The datapoint model is the first thing
+image's schedules and the device's `ui.lang`. The compiled set stays in the plan and the swap hands
+it to the engine (`Engine::adopt`): the image's datapoints have the same ids in the scratch and in
+the device's model (they come first, the providers' after them), so the rules are compiled once per
+load (#66; before, a second time at the swap, about 170 ms on the C6 and a second set beside the
+old one). Only a valid plan reaches `apply()`. The datapoint model is the first thing
 replaced; if it refuses (memory), the old image is untouched. Later failures cannot be undone in
 place, so the service tears the new configuration down and loads the stored image again
 (`restore`). The text is stored only after the apply succeeded; a store failure leaves the image
 running and is reported (`stored: false`).
+
+**The loop during a load.** The load runs on the loop in one handler; a line after the `loaded`
+line gives the steps (`steps: signature … ms, parse …, apply …, MQTT …, UI model …, store …`).
+On the C6 the test system's 23 KB image (revision 7) held the loop about 800 ms, and the 20 ms and
+50 ms timers missed their periods meanwhile. A deploy is a rare operator action, so the load stays
+one handler: running it off the loop would need a second, concurrent copy of the parsed state (the
+heap #66 had to win back) and a model that the loop's readers do not see half built (#66).
 
 **What survives a swap.** `DatapointModel::load(specs, count, keep_values)` copies value, quality
 and update time of datapoints whose name and type are unchanged; `ValueStore::restore` then leaves

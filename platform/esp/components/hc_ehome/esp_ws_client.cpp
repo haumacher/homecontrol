@@ -309,14 +309,16 @@ void EspWebSocketClient::sender(void* context) {
 	if (esp_websocket_client_is_connected(s->client)) {
 		// Sends the close frame and waits (bounded) for the server's answer and the task's end.
 		esp_websocket_client_close_with_code(s->client, s->close_code, s->close_reason,
-			static_cast<int>(std::strlen(s->close_reason)), pdMS_TO_TICKS(kSendTimeoutMs));
+			static_cast<int>(std::strlen(s->close_reason)), pdMS_TO_TICKS(kCloseTimeoutMs));
 	}
 	esp_websocket_client_destroy(s->client); // stops the client task first if it still runs
 	ESP_LOGI(kTag, "WebSocket session ended: sender task stack %u of %u B unused",
 		static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)),
 		static_cast<unsigned>(kSenderStack));
+	EspWebSocketClient* owner = s->owner;
 	delete[] s->queue;
 	delete s;
+	owner->alive_.fetch_sub(1);
 	vTaskDelete(nullptr);
 }
 
@@ -341,6 +343,10 @@ bool EspWebSocketClient::connect(const char* url, WebSocketClientListener& liste
 		return false;
 	}
 #endif
+	if (alive_.load() > 0) {
+		*error = "the previous connection is still closing";
+		return false;
+	}
 	Session* s = new (std::nothrow) Session();
 	uint8_t* queue = new (std::nothrow) uint8_t[kSendQueueBytes];
 	if (s == nullptr || queue == nullptr) {
@@ -378,8 +384,10 @@ bool EspWebSocketClient::connect(const char* url, WebSocketClientListener& liste
 		return false;
 	}
 	esp_websocket_register_events(s->client, WEBSOCKET_EVENT_ANY, &Session::handler, s);
+	alive_.fetch_add(1); // the sender frees the session and counts it down
 	if (xTaskCreate(&EspWebSocketClient::sender, "hc_ehome_tx", kSenderStack, s, kSenderPriority, &s->sender) !=
 		pdPASS) {
+		alive_.fetch_sub(1);
 		esp_websocket_client_destroy(s->client); // not started: no task to stop
 		delete[] s->queue;
 		delete s;

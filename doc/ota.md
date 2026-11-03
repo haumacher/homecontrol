@@ -59,6 +59,25 @@ check their binary against their own partition (factory resp. ota_0) and fail wh
 the IDF's generic check additionally prints a warning that the application does not fit the
 updater partition, which is expected.
 
+**The staging area behind the updater (homecontrol #66).** The flash of the `updater` partition
+behind the updater's image is the device's staging area for received runtime images
+(`hc::esp::EspImageStaging`, `platform/esp/components/hc_image`): with the 825,792 B updater of
+5.5.6 on the C6 148 KB (from the image's end rounded up to a 4 KB sector, plus one guard sector, to the
+partition's end). The application never writes the factory partition otherwise, so the space is
+free, and it is not the running partition, which the IDF's write protection
+(`CHECK_WRITE_ADDRESS`, `CONFIG_SPI_FLASH_DANGEROUS_WRITE_ABORTS`) guards as a whole. At boot the
+application verifies the updater's image (`esp_image_verify`, which also gives its length; logged
+as `image staging: N KB in partition 'updater' at 0x…, behind the updater's image (… B, verified in
+… ms) and a guard sector; … KB of the address space free for mapping`); if it does not verify, the
+staging stays off for that boot (logged with the reason) and images are received into the heap. A
+staging erases only the 4 KB sectors the body reaches, as it arrives, never below the guard
+sector, and reads the body back through `esp_partition_mmap` (one or two of the MMU's 64 KB pages;
+the 2.5 MB application leaves most of the 16 MB address space free). The content is transient:
+nothing reads it after a restart, a new staging starts over, and a USB flash of a larger updater
+only shortens the area (it is measured again at the next boot). While the updater runs (an OTA
+update or upload) the application does not, so the two never use the partition at once. An image
+larger than the area goes to the heap as before.
+
 **Choosing the flash size.** `HC_FLASH_SIZE` (4MB default, 8MB, 16MB) is a CMake cache variable of
 each build directory, read at its first configure: `idf.py -B build-n8 -D HC_FLASH_SIZE=8MB
 set-target esp32c6`. It sets the flash size and the table through a generated sdkconfig fragment;
@@ -228,7 +247,8 @@ or written by an older flash procedure), the bootloader starts the updater, whic
 instruction and a valid ota_0 and boots it within a second or two.
 
 **The updater's own update is by USB only.** It is small and rarely changes; it cannot replace
-itself while it runs, and the application does not write the factory partition. Flash it with the
+itself while it runs, and the application does not write the factory partition (except the
+staging area behind the updater's image, above). Flash it with the
 full procedure below (`write_flash @flash_args` includes it) or alone:
 `esptool.py ... write_flash 0x10000 platform/esp/updater/build-esp32c6/hc_updater.bin`.
 

@@ -350,6 +350,13 @@ LoadResult Engine::load(const JsonValue& rules, const ScheduleDirectory* schedul
 	return result;
 }
 
+LoadResult Engine::adopt(RuleSet&& set, const uint16_t* previous_ids) {
+	flush();
+	LoadResult result;
+	install(std::move(set), result, previous_ids);
+	return result;
+}
+
 namespace {
 
 /// Keeps the stored overrides of the parameters that have one in the new runtime.
