@@ -179,6 +179,10 @@ public:
 	static constexpr uint64_t kAnnounceBeforeJoinMs = 5000;
 	static constexpr uint32_t kCheckPeriodMs = 10000;
 	static constexpr uint32_t kStaleFactor = 3;
+	/// A device's `last_seen` is written at the latest this long after it moved past the stored one
+	/// (by the check every kCheckPeriodMs; one write covers every device): after a restart it is at
+	/// most an hour behind the last frame, and the flash sees at most about one write an hour.
+	static constexpr int64_t kSeenSaveS = 3600;
 	static constexpr uint32_t kRefreshSpacingMs = 500;
 	/// Transition of the level and colour temperature commands, in tenths of a second.
 	static constexpr uint16_t kTransitionDs = 5;

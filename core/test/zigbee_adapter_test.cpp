@@ -325,6 +325,59 @@ TEST_CASE("ZigbeeAdapter: the database survives a restart and the devices are re
 	CHECK(f.adapter.devices().find(kBulb)->stale);
 }
 
+TEST_CASE("ZigbeeAdapter: last_seen is written at the latest an hour after it moved on, once for all devices") {
+	hc_test::FakeBlobStore store;
+	const std::string blob = hc::zigbee::DeviceDatabase::kBlobName;
+	int64_t heard = 0;
+	{
+		ZigbeeFixture f;
+		f.clock.synchronized = true;
+		f.clock.wall_seconds = 1800000000;
+		f.start_network();
+		f.join_bulb();
+		f.join_sensor();
+		int writes = f.store.writes_of[blob];
+		// Frames within the hour: in memory only.
+		for (int i = 1; i <= 30; ++i) {
+			f.clock.wall_seconds += 100;
+			f.report(kBulbShort, 11, cluster::kOnOff, attribute::kOnOff, zcl_type::kBool, i % 2);
+			f.report(kSensorShort, 1, cluster::kTemperatureMeasurement, attribute::kMeasuredValue, zcl_type::kInt16,
+				2000 + i);
+			f.run_for(ZigbeeAdapter::kCheckPeriodMs);
+		}
+		CHECK(f.store.writes_of[blob] == writes);
+		// An hour past the stored time: one write, for both devices.
+		f.clock.wall_seconds += 700;
+		f.report(kBulbShort, 11, cluster::kOnOff, attribute::kOnOff, zcl_type::kBool, 1);
+		f.report(kSensorShort, 1, cluster::kTemperatureMeasurement, attribute::kMeasuredValue, zcl_type::kInt16, 2100);
+		f.run_for(ZigbeeAdapter::kCheckPeriodMs);
+		CHECK(f.store.writes_of[blob] == writes + 1);
+		f.run_for(5 * ZigbeeAdapter::kCheckPeriodMs);
+		CHECK(f.store.writes_of[blob] == writes + 1);
+		heard = f.clock.wall_seconds;
+		store = f.store;
+	}
+	ZigbeeFixture f;
+	f.store = store;
+	REQUIRE(f.adapter.start());
+	CHECK(f.adapter.devices().find(kBulb)->last_seen_s == heard);
+	CHECK(f.adapter.devices().find(kSensor)->last_seen_s == heard);
+}
+
+TEST_CASE("ZigbeeAdapter: a failed write of last_seen is tried again an hour later, not at every check") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.clock.synchronized = true;
+	f.clock.wall_seconds = 1800000000;
+	f.start_network();
+	f.join_bulb();
+	f.store.fail_writes = true;
+	f.clock.wall_seconds += ZigbeeAdapter::kSeenSaveS;
+	f.report(kBulbShort, 11, cluster::kOnOff, attribute::kOnOff, zcl_type::kBool, 1);
+	f.run_for(10 * ZigbeeAdapter::kCheckPeriodMs);
+	CHECK(capture.sink.count("device database not written") == 1);
+}
+
 TEST_CASE("ZigbeeAdapter: an unreadable database starts empty and devices are learnt again") {
 	hc_test::ScopedCapture capture;
 	ZigbeeFixture f;

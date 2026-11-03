@@ -72,10 +72,14 @@ struct ZigbeeDevice {
 	uint8_t missing_count = 0;
 	bool missing_names = false;
 	/// Wall-clock seconds of the last frame heard while the clock was synchronized (0: never);
-	/// persisted with the next write of the database, not on every frame.
+	/// persisted with the next write of the database, not on every frame, and at the latest
+	/// ZigbeeAdapter::kSeenSaveS after it moved on (so it is at most that old after a restart).
 	int64_t last_seen_s = 0;
 
 	// The adapter's state of this boot, not persisted.
+
+	/// `last_seen_s` as the database holds it (loaded or last written).
+	int64_t saved_seen_s = 0;
 
 	/// Monotonic time of the last frame heard since boot (0: none yet).
 	uint64_t seen_ms = 0;

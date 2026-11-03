@@ -176,7 +176,7 @@ The controller keeps the joined devices in the blob `zigbee-devices.json` (at mo
 | `label` | The user's name for the device (`zigbee label`, at most 32 bytes). |
 | `interviewed` | Whether the interview finished (endpoints, clusters and names known). |
 | `missing` | Only for an incomplete interview (`interviewed` false, `endpoints` not empty): `{"endpoints": [2], "names": false}`, the endpoints whose simple descriptor did not answer (ids 1..240, at most 8) and whether the Basic cluster's manufacturer and model did not (doc/zigbee.md "Incomplete interviews"). The endpoints present are used; the device is interviewed again when it is heard. Absent otherwise; a reader drops it for an interviewed device or one without endpoints. Added for issue #47; older blobs without it load as before. |
-| `last_seen` | Wall-clock seconds (Unix time) of the last frame, absent before the clock is set. |
+| `last_seen` | Wall-clock seconds (Unix time) of the last frame, absent before the clock is set. Written with the next change of the database and at the latest an hour after it moved on, so after a restart it is at most an hour behind the last frame heard before it. |
 | `endpoints` | At most 4: `id`, `profile` and `device` from the simple descriptor, `in`/`out` the server/client clusters (at most 12 each, the known clusters first), `zone_type` of an IAS zone (absent otherwise). |
 
 Unknown members are ignored; a malformed database is refused as a whole and nothing of it is used.

@@ -182,6 +182,7 @@ bool ZigbeeAdapter::start(const char** error) {
 	}
 	for (size_t i = 0; i < database_.size(); ++i) {
 		database_.at(i).refresh = database_.at(i).has_result();
+		database_.at(i).saved_seen_s = database_.at(i).last_seen_s;
 	}
 	check_timer_ = loop_.schedule_periodic(start_ms_ + kCheckPeriodMs, kCheckPeriodMs,
 		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::check_stale>(this));
@@ -642,6 +643,9 @@ bool ZigbeeAdapter::save_database() {
 		Log::error(kTag, "device database not written (%s): the previous one stays", why != nullptr ? why : "?");
 		return false;
 	}
+	for (size_t i = 0; i < database_.size(); ++i) {
+		database_.at(i).saved_seen_s = database_.at(i).last_seen_s;
+	}
 	return true;
 }
 
@@ -882,6 +886,17 @@ uint16_t ZigbeeAdapter::report_point(const ZigbeeDevice& device, uint8_t endpoin
 
 void ZigbeeAdapter::check_stale() {
 	uint64_t now = clock_.monotonic_ms();
+	bool seen_due = false;
+	for (size_t i = 0; i < database_.size(); ++i) {
+		const ZigbeeDevice& device = database_.at(i);
+		seen_due = seen_due || device.last_seen_s - device.saved_seen_s >= kSeenSaveS;
+	}
+	if (seen_due && persistent_ && !save_database()) {
+		// Logged; tried again in kSeenSaveS, not at every check.
+		for (size_t i = 0; i < database_.size(); ++i) {
+			database_.at(i).saved_seen_s = database_.at(i).last_seen_s;
+		}
+	}
 	for (size_t i = 0; i < database_.size(); ++i) {
 		ZigbeeDevice& device = database_.at(i);
 		uint32_t timeout_s = stale_timeout_s(device.ieee);
