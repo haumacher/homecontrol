@@ -1,0 +1,6 @@
+{"comment": "The archives' segments (4096 bytes each) must fit the image's archive budget (homecontrol#56): two archives of one segment need 8192 bytes of flash.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [{"path": "history", "reason": "the image's archive budget is 4096"}]},
+ "image": {"schemaVersion": "1.2", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "t", "type": "real", "history": {"retention": 86400, "spacing": 300,
+   "archives": [{"resolution": 3600, "retention": 172800}, {"resolution": 86400, "retention": 2592000}]}}],
+ "history": {"archiveBudget": 4096}}

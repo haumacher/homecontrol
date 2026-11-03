@@ -1,0 +1,23 @@
+{"comment": "Archive refusals (homecontrol#56), each with its path.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "datapoints[0].history.archives", "reason": "archives must be an array"},
+   {"path": "datapoints[1].history.archives", "reason": "more than 4 archives"},
+   {"path": "datapoints[2].history.archives[0]", "reason": "an archive needs resolution and retention"},
+   {"path": "datapoints[2].history.archives[1].resolution", "reason": "resolution (seconds) must be 60..2678400"},
+   {"path": "datapoints[2].history.archives[2].resolution", "reason": "larger than the raw spacing (300 s)"},
+   {"path": "datapoints[3].history.archives[0].retention", "reason": "at most 10 years"},
+   {"path": "datapoints[3].history.archives[1]", "reason": "more than 2048 slots"},
+   {"path": "datapoints[3].history.archives[3].resolution", "reason": "two archives of the resolution 3600 s"},
+   {"path": "datapoints[4].history.archives[0]", "reason": "an archive must be an object"}]},
+ "image": {"schemaVersion": "1.2", "projectId": "case", "revision": 1},
+ "datapoints": [
+   {"id": "a", "type": "real", "history": {"retention": 3600, "spacing": 60, "archives": {}}},
+   {"id": "b", "type": "real", "history": {"retention": 3600, "spacing": 60, "archives": [
+     {"resolution": 600, "retention": 7200}, {"resolution": 900, "retention": 7200}, {"resolution": 1800, "retention": 7200},
+     {"resolution": 3600, "retention": 7200}, {"resolution": 7200, "retention": 7200}]}},
+   {"id": "c", "type": "real", "history": {"retention": 86400, "spacing": 300, "archives": [
+     {"resolution": 3600}, {"resolution": 30, "retention": 3600}, {"resolution": 300, "retention": 3600}]}},
+   {"id": "d", "type": "real", "history": {"retention": 86400, "spacing": 300, "archives": [
+     {"resolution": 3600, "retention": 400000000}, {"resolution": 3600, "retention": 31536000},
+     {"resolution": 3600, "retention": 86400}, {"resolution": 3600, "retention": 172800}]}},
+   {"id": "e", "type": "real", "history": {"retention": 3600, "spacing": 60, "archives": [7]}}]}

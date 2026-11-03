@@ -353,7 +353,7 @@ rebuilds the navigation and draws the page shown again. A page is its sections, 
   The history comes from `GET /api/history`: 48 buckets per line series, several series per request
   within the 160 points; refreshed every 5 minutes while the window ends now. When a series'
   `retention_s` is shorter than the range, the line "Only the last 24 h are stored." says so (the
-  raw ring is the only store until the archives of homecontrol#56).
+  answering store is the raw ring or one of the archives of homecontrol#56, `spec/api.md`).
 
 `chart.js` grew from 6.3 KB to 16.5 KB (the overview's sparkline and the detail sheet's chart are
 unchanged); with `elements.js` (18.7 KB), `pages.js` (7.8 KB), the styles and the texts the UI grows

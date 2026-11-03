@@ -489,7 +489,7 @@ TEST_CASE("Pages.ElementDatapointsAreCommandedLikeAnyOther") {
 }
 
 TEST_CASE("Pages.ConsumptionAndOnShareFromTheRawRing") {
-	// The chart queries the raw ring (the archives of issue #56 come later): a bucket's last value
+	// Without archives the chart queries the raw ring: a bucket's last value
 	// gives a consumption bar, a boolean's mean the on-share; the response names the store and its
 	// reach, from which the UI says "only the last ... stored".
 	PagesFixture f;
@@ -525,7 +525,9 @@ TEST_CASE("Pages.ConsumptionAndOnShareFromTheRawRing") {
 	CHECK(h["retention_s"].number == 86400);
 	REQUIRE(!h["points"].items.empty());
 	auto& bucket = h["points"].items.back();
-	REQUIRE(bucket.items.size() == 6);
+	// A boolean's bucket carries on_s, its seconds on, beside the on-share (issue #56).
+	REQUIRE(bucket.items.size() == 7);
 	CHECK(bucket.items[5].number > 0);
 	CHECK(bucket.items[5].number < 0.5); // on for about one sample in four
+	CHECK(bucket.items[6].number > 0);
 }

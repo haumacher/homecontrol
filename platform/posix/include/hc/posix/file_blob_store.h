@@ -41,6 +41,8 @@ public:
 	BlobStatus remove(const char* name) override;
 	void visit(BlobVisitor& visitor) const override;
 	BlobWriter* open_writer(const char* name, size_t expected, BlobStatus& status) override;
+	/// A copy of the file with the chunks in place, renamed over it as write() does.
+	BlobStatus patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) override;
 	/// The file system's space available to this process (statvfs).
 	bool free_space(size_t& bytes) const override;
 

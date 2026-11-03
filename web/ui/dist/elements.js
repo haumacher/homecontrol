@@ -333,7 +333,7 @@ export function chartTile(el, env) {
 	function convert(s, points, width, to) {
 		if (s.kind === "bars") {
 			// The delta between the last values of adjacent buckets (the first is the bucket before
-			// the span); a negative delta is a counter reset: a gap.
+			// the span); a negative delta is a counter reset: a gap (spec/api.md "history").
 			const out = [];
 			for (let i = 1; i < points.length; i++) {
 				const [t0, last0] = points[i - 1];
@@ -424,7 +424,7 @@ export function chartTile(el, env) {
 				return;
 			}
 			loaded = true;
-			// The raw ring reaches back only so far (the archives of issue #56 come later): say so.
+			// The answering store (the raw ring or an archive, issue #56) reaches back only so far: say so.
 			const shortest = reach.length ? Math.min(...reach) : Infinity;
 			const covered = now - span.from;
 			hint.hidden = !(shortest < covered);

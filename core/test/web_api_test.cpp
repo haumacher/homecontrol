@@ -456,6 +456,87 @@ TEST_CASE("WebApi.Model of the example house: rooms, functions with roles, label
 	CHECK_FALSE(r.json["loaded"].boolean);
 }
 
+/// Archives (issue #56): an hourly one for the temperature, a daily one for the boolean.
+const char* kArchiveImage = R"({
+	"image": {"schemaVersion": "1.2", "projectId": "archives", "revision": 1},
+	"datapoints": [
+		{"id": "temp", "type": "real", "writable": true, "virtual": {},
+		 "history": {"retention": 7200, "spacing": 60, "archives": [{"resolution": 3600, "retention": 604800}]}},
+		{"id": "heat", "type": "boolean", "writable": true, "virtual": {},
+		 "history": {"retention": 7200, "spacing": 60, "archives": [{"resolution": 3600, "retention": 604800}]}}
+	]
+})";
+
+TEST_CASE("WebApi.History: an archive answers with its resolution; a boolean has on_s; a full page is truncated") {
+	DashboardFixture f;
+	f.load(kArchiveImage);
+	f.controller.run_once();
+	int64_t begin = f.fake.clock.wall_seconds;
+	// Six hours: the temperature alternates 20 / 22 every 10 minutes, the heating is on half of it.
+	for (int i = 0; i < 36; ++i) {
+		auto t = f.post("/api/datapoints/0/command", i % 2 == 0 ? "{\"value\":20}" : "{\"value\":22}", f.cookie);
+		REQUIRE_MESSAGE(t.status == 200, t.body);
+		auto h = f.post("/api/datapoints/1/command", i % 2 == 0 ? "{\"value\":true}" : "{\"value\":false}", f.cookie);
+		REQUIRE_MESSAGE(h.status == 200, h.body);
+		for (int s = 0; s < 600; s += 10) {
+			f.fake.clock.wall_seconds += 10;
+			f.fake.clock.advance(10000);
+			f.controller.run_once();
+		}
+	}
+	int64_t now = f.fake.clock.wall_seconds;
+	// Six hourly buckets over the six hours: wider than the raw spacing and beyond the raw ring.
+	auto r = f.get("/api/history?ids=0,1&from=" + std::to_string(begin) + "&to=" + std::to_string(now) + "&points=6",
+		f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	auto& series = r.json["series"].items;
+	REQUIRE(series.size() == 2);
+	CHECK(series[0]["store"].number == 3600);
+	CHECK(series[0]["retention_s"].number == 604800);
+	auto& temp = series[0]["points"].items;
+	REQUIRE(temp.size() >= 5);
+	auto& middle = temp[2].items;
+	REQUIRE(middle.size() == 6); // [t, last, min, max, count, mean]
+	CHECK(middle[2].number == 20.0);
+	CHECK(middle[3].number == 22.0);
+	CHECK(middle[5].number == doctest::Approx(21.0).epsilon(0.01)); // time-weighted
+	auto& heat = series[1]["points"].items;
+	REQUIRE(heat.size() >= 5);
+	REQUIRE(heat[2].items.size() == 7); // and on_s
+	CHECK(heat[2].items[6].number == doctest::Approx(1800).epsilon(0.02));
+	CHECK(heat[2].items[5].number == doctest::Approx(0.5).epsilon(0.02));
+	CHECK_FALSE(series[0]["truncated"].boolean);
+
+	// Finer buckets than the archive: the raw ring answers what it still has.
+	r = f.get("/api/history?ids=0&from=" + std::to_string(now - 3600) + "&to=" + std::to_string(now) + "&points=12",
+		f.cookie);
+	REQUIRE(r.status == 200);
+	CHECK(r.json["series"].items[0]["store"].text == "raw");
+
+	// Two hours of a value of the longest notation every minute: 160 full points of the raw ring exceed
+	// the response buffer of 8 KB, the series ends early, still JSON. (Two hours of values like 20.33333
+	// take about 7 KB: 44 bytes a point.)
+	for (int i = 0; i < 120; ++i) {
+		const char* body = i % 2 == 0 ? "{\"value\":-1.2345678e25}" : "{\"value\":-1.2345679e25}";
+		auto t = f.post("/api/datapoints/0/command", body, f.cookie);
+		REQUIRE_MESSAGE(t.status == 200, t.body);
+		for (int s = 0; s < 60; s += 10) {
+			f.fake.clock.wall_seconds += 10;
+			f.fake.clock.advance(10000);
+			f.controller.run_once();
+		}
+	}
+	now = f.fake.clock.wall_seconds;
+	r = f.get("/api/history?ids=0,0&from=" + std::to_string(now - 7200) + "&to=" + std::to_string(now) + "&points=80",
+		f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	bool truncated = false;
+	for (auto& s : r.json["series"].items) {
+		truncated = truncated || s["truncated"].boolean;
+	}
+	CHECK(truncated);
+}
+
 TEST_CASE("WebApi.History: buckets, refusals, a datapoint without history") {
 	DashboardFixture f;
 	f.load(kSmallImage);

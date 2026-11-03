@@ -110,7 +110,10 @@ struct Plan {
 
 	HistorySpec* history = nullptr;
 	size_t history_count = 0;
+	/// `history.budget`: the RAM of the rings and the archives' open and pending slots.
 	size_t history_budget = 0;
+	/// `history.archiveBudget`: the flash of the archives' segments.
+	size_t archive_budget = 0;
 
 	bool has_rules = false;
 	JsonSpan rules;
@@ -155,12 +158,16 @@ public:
 	Loader(const Clock& clock, size_t history_cap, const char* language = "en")
 		: clock_(clock), history_cap_(history_cap), language_(language) {}
 
+	/// The device's cap of `history.archiveBudget` (HistoryLimits::archive_cap_bytes; default the C6's).
+	void set_archive_cap(size_t bytes) { archive_cap_ = bytes; }
+
 	/// True when the image is valid; `plan` then holds it. Otherwise `report` names the refusals.
 	bool parse(const char* text, size_t length, Plan& plan, Report& report) const;
 
 private:
 	const Clock& clock_;
 	size_t history_cap_;
+	size_t archive_cap_ = HistoryLimits().archive_cap_bytes;
 	const char* language_;
 };
 

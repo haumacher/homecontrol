@@ -140,6 +140,21 @@ public:
 		return nullptr;
 	}
 
+	/// Overwrites bytes of the existing blob `name` from `offset` with the concatenation of `count`
+	/// chunks, in place (issue #56: the history's archive segments, patched slot by slot). The blob
+	/// keeps its size: `offset` plus the chunks must end within it (too_large otherwise, nothing
+	/// changed). Atomic like write(): after a power cut the blob holds the complete old or the
+	/// complete new content (LittleFS: the file is copied on write and committed when it is closed;
+	/// POSIX: a temporary copy renamed over the blob). not_found without the blob; unsupported (the
+	/// default) for a store that cannot patch.
+	virtual BlobStatus patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) {
+		(void)name;
+		(void)offset;
+		(void)chunks;
+		(void)count;
+		return BlobStatus::unsupported;
+	}
+
 	/// The bytes a new blob can take now; false if the store cannot tell (the default).
 	virtual bool free_space(size_t& bytes) const {
 		(void)bytes;

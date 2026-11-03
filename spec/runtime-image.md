@@ -131,10 +131,26 @@ An array of datapoint objects (at most 1024). The array order is the model order
 | `transmit` | boolean | no, false | A commanded value is sent to the technology. |
 | `readOnStart` | boolean | no, false | The technology reads the value after a start or reconnect. |
 | `persist` | boolean | no, false | The last value is kept across restarts (`doc/persistence.md`). |
-| `history` | `{"retention": s, "spacing": s}` | no | A short-term history ring: `spacing` 10..86400 s, `retention` from the spacing up to 31 days, at most 2048 samples; only `boolean`, `unsigned`, `signed`, `real`. |
+| `history` | `{"retention": s, "spacing": s, "archives": [...]}` | no | A short-term history ring: `spacing` 10..86400 s, `retention` from the spacing up to 31 days, at most 2048 samples; only `boolean`, `unsigned`, `signed`, `real`. `archives` (1.2, optional): the consolidated archives of the datapoint, below. |
 | `knx` | object | no | The KNX binding, below. |
 | `zigbee` | object | no | The Zigbee binding, below. Excludes `knx` and `virtual`. |
 | `virtual` | object (members reserved) | no | A value of the application: no technology; rules and the UI command it. Excludes `knx` and `zigbee`. |
+
+The archives of a history (issue #56): up to 4 objects `{"resolution": s, "retention": s}`, each a
+store of consolidated slots of `resolution` seconds kept for `retention` seconds, besides the raw
+ring. `resolution` is 60 s .. 31 days and larger than the ring's `spacing`; no two archives of a
+datapoint have the same resolution; `retention` is at least the resolution and at most 10 years
+(3650 days), and `ceil(retention / resolution) + 1` (the slots of the archive) at most 2048. A
+resolution of whole days is aligned to the local days of `settings.tz` (midnight to midnight, a DST
+day has 23 or 25 hours), any other to multiples of the resolution in UTC. A slot consolidates the
+samples of its interval: `last`, `min`, `max`, the number of samples, and the time-weighted mean
+(each value counts for the time it was held, up to the ring's spacing plus 10 s after its sample; a
+keep-alive sample counts like a new one); a boolean's slot also has its seconds on. Nothing is fed
+while the value is not good or the wall clock is not synchronized: a slot without samples is empty,
+not zero. Refusals at `datapoints[i].history.archives`: not an array, more than 4 (before an item is
+read); at `...archives[k]`: not an object, a missing member, a resolution or retention out of its
+range, a resolution not above the spacing, two archives of the same resolution, more than 2048
+slots. Where they live and what they cost: 3.7 and `doc/persistence.md` "Archives".
 
 The KNX binding:
 
@@ -240,9 +256,26 @@ addresses (after the image's own). The addresses must not be the sending address
 
 ### 3.7 `history`
 
-`{"budget": bytes}`: the sample memory the image may use for its rings. Default: what the rings
-need. Refused when the rings need more than the budget, or the budget exceeds the device's cap
-(64 KB on the ESP32-C6, `HistoryLimits::cap_bytes`).
+`{"budget": bytes, "archiveBudget": bytes}`, both optional.
+
+- `budget`: the RAM the history may use: the rings and the archives' open slots. Default: what they
+  need, `Σ rings 8 × ring samples + Σ archives (ceil(3600 / resolution) + 2) × 32`, where ring
+  samples is `ceil(retention / spacing) + 1` and an archive keeps its open slot and up to an hour of
+  closed slots not yet written (32 bytes each; 96 bytes for a resolution of an hour or more). Cap: 64
+  KB on the ESP32-C6 (`HistoryLimits::cap_bytes`, 65 536).
+- `archiveBudget` (1.2): the flash the archives may use: `Σ archives ceil(slots / 127) × 4096`, with
+  slots `ceil(retention / resolution) + 1`: an archive is stored in segments of 127 slots of 32
+  bytes and a header, one 4 KB flash block each. Default: what the archives need. Cap: 64 KB on the
+  ESP32-C6 (`HistoryLimits::archive_cap_bytes`, 65 536: 16 blocks of the 40 free with a typical
+  image, `doc/persistence.md` "Archives").
+
+Refused at `history` when the rings and archives need more than `budget`, or the archives more than
+`archiveBudget`; at `history.budget` or `history.archiveBudget` when it exceeds the device's cap.
+Example: a temperature with a ring of 2 days at 300 s (577 samples), an hourly archive of 31 days
+(745 slots, 6 segments) and a daily one of 2 years (731 slots, 6 segments), and a boolean with a
+ring of a day at 900 s (97 samples) and a daily archive of a year (366 slots, 3 segments): `budget`
+577 × 8 + 96 + 96 + 97 × 8 + 96 = 5680, `archiveBudget` 15 × 4096 = 61 440
+(`spec/fixtures/images/cases/accept-history-archives.json`).
 
 ### 3.8 `external`
 
@@ -340,11 +373,13 @@ A **reference line**: exactly one of `value` (a number: a constant such as 21 °
 whole chart and following the live value), plus `label` (label) and `axis` (default `"left"`).
 
 **Which history answers.** A chart queries the history of its series (spec/api.md "history") over its
-range. In this firmware that is the raw ring of each datapoint (its `retention`, at most 31 days):
-a range longer than the ring shows what the ring has, with the hint "only the last ... stored", never
-an error. The consolidated archives that serve long ranges (homecontrol#56) and the history settings
-E-Home derives from the charts' ranges (ehome#73) come later; the response's `store` names the store
-that answered.
+range in buckets of `range / 48` (bars: their width). Of the datapoint's stores (the raw ring and
+its archives, 3.3) whose resolution is at most the bucket width (the ring's is its spacing), the
+finest that reaches back to the range's start answers; if none does, the one that reaches furthest;
+if no archive is fine enough, the raw ring. A range longer than what the answering store keeps shows
+what it has, with the hint "only the last ... stored", never an error; the response's `store` names
+the store (`"raw"` or the archive's resolution in seconds). E-Home derives the archives from the
+charts' ranges (ehome#73).
 
 Refusals, each with its path (`ui.pages[0].sections[1].elements[0].chart.series[2].consolidation`):
 `ui` or `pages` of the wrong type; more than the limits of section 5 (at `ui.pages`, before anything
@@ -401,11 +436,13 @@ reason codes of `spec/rules.md` 10.1 (`malformed:`, `outputConflict:`, `unknownR
 | Control pages (`ui.pages`, over all pages) | 16 pages, 128 sections, 512 elements, 256 chart series, 128 reference lines |
 | Schedule entries | 128 (`spec/schedules.md`) |
 | Listening addresses per datapoint | 8 |
+| History | per datapoint a ring of up to 2048 samples and 4 archives of up to 2048 slots; RAM `history.budget` and flash `history.archiveBudget` at most 64 KB each (3.7) |
 | Reported refusals | 12 with path and reason; up to 100 counted |
 
 RAM while loading: the text, the `Plan` (about 0.8 KB) and its load tables (one or more 4 KB
 blocks), plus the scratch model the rule validation builds. RAM kept: the model's tables, the
-rule set and its runtime, the schedules, the KNX tables and the history rings (the budget).
+rule set and its runtime, the schedules, the KNX tables and the history rings with the archives'
+open slots (the budget; the archives' closed slots are on flash, `archiveBudget`).
 Measured on the host (64-bit, so pointers count double): the example keeps about 9 KB besides its
 stored copy, of which 2.3 KB are history; the test-system template 3 KB plus 11.5 KB of history.
 
@@ -458,7 +495,10 @@ persisted values and history rings: the device returns to setup.
   unchanged; a 1.0 firmware loads an image of 1.1 and ignores its pages (I4, I5).
 - 1.2 (issues #58 and #56): the schedule members `adjustable` and `bounds` (`spec/schedules.md` 2.1)
   and the implied datapoints `schedule/<id>/time` (3.3), the prefix `schedule/` reserved; and
-  `history.archives`, the consolidated archives of homecontrol#56 (3.7). E-Home writes 1.2. An image
+  `datapoints[].history.archives` with `history.archiveBudget`, the consolidated archives of
+  homecontrol#56 (3.3, 3.7; corpus cases `accept-history-archives`, `refuse-history-archives`,
+  `refuse-history-archive-budget`); `history.budget` now also counts the archives' open slots in
+  RAM. E-Home writes 1.2. An image
   of 1.0 or 1.1 loads unchanged. A 1.1 firmware ignores `history.archives` (I5), but refuses
   `adjustable` and `bounds` (schedule members are strict, I5): an image that uses them needs a 1.2
   firmware, one without them loads on 1.1 too. From 1.2 on such a strict refusal of a newer minor

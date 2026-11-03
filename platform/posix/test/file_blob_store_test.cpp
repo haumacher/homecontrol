@@ -169,6 +169,24 @@ TEST_CASE("FileBlobStore: replace and remove") {
 	CHECK(store.size("h.00000001", size) == BlobStatus::not_found);
 }
 
+TEST_CASE("FileBlobStore: patch overwrites in place, keeps the size, refuses past the end and without the blob") {
+	TempDir dir;
+	FileBlobStore store(dir.state);
+	REQUIRE(put(store, "a.00000001.e10.0", std::string(4096, '.')) == BlobStatus::ok);
+	BlobChunk chunks[] = {{"AB", 2}, {"CD", 2}};
+	REQUIRE(store.patch("a.00000001.e10.0", 32, chunks, 2) == BlobStatus::ok);
+	std::string content = get(store, "a.00000001.e10.0");
+	REQUIRE(content.size() == 4096);
+	CHECK(content.substr(30, 8) == "..ABCD..");
+	CHECK(dir.files() == std::vector<std::string>{"a.00000001.e10.0"}); // no temporary left
+	// The last bytes may be patched, one past them not; the content stays.
+	CHECK(store.patch("a.00000001.e10.0", 4092, chunks, 2) == BlobStatus::ok);
+	CHECK(store.patch("a.00000001.e10.0", 4093, chunks, 2) == BlobStatus::too_large);
+	CHECK(get(store, "a.00000001.e10.0").substr(4092) == "ABCD");
+	CHECK(store.patch("a.00000002.e10.0", 0, chunks, 2) == BlobStatus::not_found);
+	CHECK(store.patch(".hidden", 0, chunks, 2) == BlobStatus::invalid_name);
+}
+
 TEST_CASE("FileBlobStore: visit lists the blobs with their sizes, not temporaries or foreign files") {
 	TempDir dir;
 	FileBlobStore store(dir.state);

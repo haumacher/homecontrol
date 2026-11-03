@@ -147,6 +147,7 @@ target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/schedule_output_probe_
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/value_store_test.cpp"
 	"${HC_REPO_DIR}/core/test/history_test.cpp"
+	"${HC_REPO_DIR}/core/test/history_archive_test.cpp" # consolidated archives (#56)
 	"${HC_REPO_DIR}/core/test/restore_probe_test.cpp"
 )
 # The rule interpreter's tests (the corpus spec/fixtures/rules is read at run time).

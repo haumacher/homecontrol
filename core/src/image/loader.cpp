@@ -1137,11 +1137,103 @@ void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, 
 				c.refuse("history needs a boolean, unsigned, signed or real datapoint");
 				ok = false;
 			}
+			// The consolidated archives (spec/runtime-image.md 3.3, issue #56).
+			ArchiveSpec archives[History::kMaxArchives];
+			uint8_t archive_count = 0;
+			JsonSpan list;
+			if (c.member(value, "archives", list)) {
+				Path q(c, ".archives");
+				size_t items = 0;
+				if (c.array(list, "archives")) {
+					size_t position = 0;
+					JsonSpan item;
+					while (json_next_item(list, position, item)) {
+						++items;
+					}
+				}
+				if (list.kind != JsonSpan::Kind::array) {
+					ok = false;
+				} else if (items > History::kMaxArchives) {
+					c.refuse("more than %u archives", static_cast<unsigned>(History::kMaxArchives));
+					ok = false;
+				} else {
+					size_t position = 0;
+					JsonSpan item;
+					size_t n = 0;
+					while (json_next_item(list, position, item)) {
+						Path r(c, "[%u]", static_cast<unsigned>(n));
+						++n;
+						if (!c.object(item, "an archive")) {
+							ok = false;
+							continue;
+						}
+						JsonSpan resolution;
+						JsonSpan kept;
+						if (!c.member(item, "resolution", resolution) || !c.member(item, "retention", kept)) {
+							c.refuse("an archive needs resolution and retention (seconds)");
+							ok = false;
+							continue;
+						}
+						int64_t resolution_s = 0;
+						int64_t kept_s = 0;
+						{
+							Path t(c, ".resolution");
+							if (!c.integer(resolution, History::kMinResolutionS, History::kMaxResolutionS, resolution_s,
+									"resolution (seconds)")) {
+								ok = false;
+								continue;
+							}
+							if (spacing_s > 0 && resolution_s <= spacing_s) {
+								c.refuse("the resolution must be larger than the raw spacing (%u s)",
+									static_cast<unsigned>(spacing_s));
+								ok = false;
+								continue;
+							}
+							bool twice = false;
+							for (uint8_t k = 0; k < archive_count; ++k) {
+								twice = twice || archives[k].resolution_s == static_cast<uint32_t>(resolution_s);
+							}
+							if (twice) {
+								c.refuse("two archives of the resolution %u s", static_cast<unsigned>(resolution_s));
+								ok = false;
+								continue;
+							}
+						}
+						{
+							Path t(c, ".retention");
+							if (!c.integer(kept, static_cast<double>(resolution_s), History::kMaxArchiveRetentionS, kept_s,
+									"retention (seconds, at least the resolution, at most 10 years)")) {
+								ok = false;
+								continue;
+							}
+						}
+						if (History::ring_samples(static_cast<uint32_t>(kept_s), static_cast<uint32_t>(resolution_s)) >
+							History::kMaxSlots) {
+							c.refuse("retention / resolution gives more than %u slots",
+								static_cast<unsigned>(History::kMaxSlots));
+							ok = false;
+							continue;
+						}
+						archives[archive_count++] =
+							ArchiveSpec{static_cast<uint32_t>(resolution_s), static_cast<uint32_t>(kept_s)};
+					}
+				}
+			}
+			if (ok && archive_count > 0) {
+				ArchiveSpec* copy = plan.arena.array<ArchiveSpec>(archive_count);
+				if (copy == nullptr) {
+					c.no_memory("the archives of the history");
+					return;
+				}
+				std::memcpy(copy, archives, archive_count * sizeof(ArchiveSpec));
+				history[history_count].archives = copy;
+			}
 			if (ok) {
 				HistorySpec& h = history[history_count++];
 				h.datapoint = static_cast<uint16_t>(i);
 				h.retention_s = static_cast<uint32_t>(retention_s);
 				h.spacing_s = static_cast<uint32_t>(spacing_s);
+				h.archive_count = archive_count;
 				spec.flags = static_cast<uint8_t>(spec.flags | DatapointFlags::kHistory);
 			}
 		}
@@ -1345,7 +1437,8 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 	// image is loaded.
 	Arena scratch;
 	ZigbeeDraft* zigbee_drafts = scratch.array<ZigbeeDraft>(declared);
-	HistorySpec* history = plan.arena.array<HistorySpec>(declared);
+	// The specs of every declared datapoint while parsing (scratch), only those with a history in the plan.
+	HistorySpec* history = scratch.array<HistorySpec>(declared);
 	if (total > 0 && (plan.datapoints == nullptr || plan.bindings == nullptr || (declared > 0 && (drafts == nullptr ||
 		zigbee_drafts == nullptr || history == nullptr)))) {
 		c.no_memory("the datapoint table");
@@ -1526,7 +1619,14 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 			}
 		}
 	}
-	plan.history = history;
+	plan.history = history_count > 0 ? plan.arena.array<HistorySpec>(history_count) : nullptr;
+	if (history_count > 0 && plan.history == nullptr) {
+		c.no_memory("the history table");
+		return;
+	}
+	if (history_count > 0) {
+		std::memcpy(plan.history, history, history_count * sizeof(HistorySpec));
+	}
 	plan.history_count = history_count;
 	plan.info.history_rings = history_count;
 	plan.info.time_master = plan.has_time_master;
@@ -2512,19 +2612,26 @@ void parse_schedules(Ctx& c, const JsonSpan& root, const Index& index) {
 
 // ---- History budget -----------------------------------------------------------------------------
 
-void parse_history(Ctx& c, const JsonSpan& root, size_t cap) {
+void parse_history(Ctx& c, const JsonSpan& root, size_t cap, size_t archive_cap) {
 	Plan& plan = c.plan;
 	size_t needed = 0;
+	size_t flash = 0;
 	for (size_t i = 0; i < plan.history_count; ++i) {
-		needed += History::ring_bytes(plan.history[i].retention_s, plan.history[i].spacing_s);
+		needed += History::ram_bytes(plan.history[i]);
+		flash += History::flash_bytes(plan.history[i]);
 	}
+	plan.history_budget = needed;
+	plan.archive_budget = flash;
 	JsonSpan history;
 	if (!c.member(root, "history", history)) {
-		plan.history_budget = needed;
+		Path p(c, "history");
 		if (needed > cap) {
-			Path p(c, "history");
-			c.refuse("the rings need %u bytes, the device allows at most %u", static_cast<unsigned>(needed),
+			c.refuse("the histories need %u bytes of RAM, the device allows at most %u", static_cast<unsigned>(needed),
 				static_cast<unsigned>(cap));
+		}
+		if (flash > archive_cap) {
+			c.refuse("the archives need %u bytes of flash, the device allows at most %u", static_cast<unsigned>(flash),
+				static_cast<unsigned>(archive_cap));
 		}
 		return;
 	}
@@ -2533,24 +2640,43 @@ void parse_history(Ctx& c, const JsonSpan& root, size_t cap) {
 		return;
 	}
 	JsonSpan budget;
-	if (!c.member(history, "budget", budget)) {
-		plan.history_budget = needed;
-	} else {
+	if (c.member(history, "budget", budget)) {
 		Path q(c, ".budget");
 		int64_t bytes = 0;
 		if (!c.integer(budget, 0, 16777216.0, bytes, "budget (bytes)")) {
 			return;
 		}
 		if (static_cast<size_t>(bytes) > cap) {
-			c.refuse("the image asks for %u bytes of history, the device allows at most %u",
+			c.refuse("the image asks for %u bytes of history RAM, the device allows at most %u",
 				static_cast<unsigned>(bytes), static_cast<unsigned>(cap));
 			return;
 		}
 		plan.history_budget = static_cast<size_t>(bytes);
 	}
+	JsonSpan archive_budget;
+	if (c.member(history, "archiveBudget", archive_budget)) {
+		Path q(c, ".archiveBudget");
+		int64_t bytes = 0;
+		if (!c.integer(archive_budget, 0, 16777216.0, bytes, "archiveBudget (bytes)")) {
+			return;
+		}
+		if (static_cast<size_t>(bytes) > archive_cap) {
+			c.refuse("the image asks for %u bytes of archive flash, the device allows at most %u",
+				static_cast<unsigned>(bytes), static_cast<unsigned>(archive_cap));
+			return;
+		}
+		plan.archive_budget = static_cast<size_t>(bytes);
+	} else if (flash > archive_cap) {
+		c.refuse("the archives need %u bytes of flash, the device allows at most %u", static_cast<unsigned>(flash),
+			static_cast<unsigned>(archive_cap));
+	}
 	if (needed > plan.history_budget) {
-		c.refuse("the rings need %u bytes, the image's budget is %u", static_cast<unsigned>(needed),
+		c.refuse("the rings and archives need %u bytes of RAM, the image's budget is %u", static_cast<unsigned>(needed),
 			static_cast<unsigned>(plan.history_budget));
+	}
+	if (flash > plan.archive_budget) {
+		c.refuse("the archives need %u bytes of flash, the image's archive budget is %u", static_cast<unsigned>(flash),
+			static_cast<unsigned>(plan.archive_budget));
 	}
 }
 
@@ -3093,7 +3219,7 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 	Ids functions;
 	parse_functions(c, root, locations, index, functions);
 	parse_schedules(c, root, index);
-	parse_history(c, root, history_cap_);
+	parse_history(c, root, history_cap_, archive_cap_);
 	parse_ui(c, root, functions, index);
 	JsonSpan external;
 	if (c.member(root, "external", external)) {

@@ -86,6 +86,30 @@ BlobStatus MemoryBlobStore::room(const char* name, size_t total) const {
 	return BlobStatus::ok;
 }
 
+BlobStatus MemoryBlobStore::patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) {
+	BlobStatus status = check_name(name);
+	if (status != BlobStatus::ok) {
+		return status;
+	}
+	Blob* blob = const_cast<Blob*>(find(name));
+	if (blob == nullptr) {
+		return BlobStatus::not_found;
+	}
+	size_t total = 0;
+	for (size_t i = 0; i < count; ++i) {
+		total += chunks[i].size;
+	}
+	if (offset > blob->size || total > blob->size - offset) {
+		return BlobStatus::too_large;
+	}
+	// In place: nothing can fail half-way in RAM.
+	for (size_t i = 0; i < count; ++i) {
+		std::memcpy(blob->data + offset, chunks[i].data, chunks[i].size);
+		offset += chunks[i].size;
+	}
+	return BlobStatus::ok;
+}
+
 bool MemoryBlobStore::free_space(size_t& bytes) const {
 	bytes = capacity_ - used_;
 	return true;

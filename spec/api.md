@@ -694,17 +694,34 @@ the number of ids at most 160):
             {"id": 0, "code": "history.none", "error": "this datapoint has no history"}]}
 ```
 
-A point is `[t, value]` for a bucket with one sample (`t` its time) or `[t, last, min, max, count,
-mean]` for a bucket of several (`t` the bucket's start; `mean` since issue #54, the mean of the
-bucket's samples: for a boolean the share of samples that are on). `store` names the store that
-answered and `retention_s` how far back it reaches: today always `"raw"`, the datapoint's ring with
-its retention. A client asking for more than that gets what the ring has and says "only the last ...
-stored". The consolidated archives of homecontrol#56 will answer here as further stores (the one
-whose resolution fits `width_s` and whose reach covers `from`), named in `store`; a client that
-ignores `store` keeps working. Empty buckets are left out; values have float
-precision. Refusals: 400 `history.bad_query` (ids missing, malformed or more than 8; `from >= to`;
-`points` 0 or too many), 409 `history.no_time` (the wall clock is not synchronized and `from` or
-`to` is missing).
+A point is `[t, value]` for a raw bucket of one sample with nothing held into it from before (`t`
+its time), otherwise `[t, last, min, max, count, mean]` (`t` the bucket's start). `mean` is
+time-weighted (issue #56; since issue #54 it was the plain mean of the samples): each value counts for
+the time it was held in the bucket, up to the spacing plus 10 s after its sample, the value held into
+the bucket from the sample before it included (it counts in `min` and `max` too). A boolean's point
+is always the long form plus its seconds on, `[t, last, min, max, count, mean, on_s]`, where `mean`
+is the on-share of the held time. A bucket without samples and without held time is left out (a gap,
+never a zero); values have float precision.
+
+`store` names the store that answered, `retention_s` how far back it reaches. The stores are the
+datapoint's raw ring (`"raw"`) and its consolidated archives (spec/runtime-image.md 3.3), named by
+their resolution in seconds (`"store": 3600`). Of the stores whose resolution is at most `width_s`
+(the ring's resolution is its spacing), the finest that reaches back to `from` answers; if none does,
+the one that reaches furthest; if no archive is fine enough, the ring. An archive slot belongs to
+the bucket of its middle, a slot that reaches into the range with its middle outside it (the open
+slot of a range up to now) to the nearest bucket. A client asking for more than the store keeps gets
+what it has and says "only the last ... stored"; a client that ignores `store` keeps working.
+
+A consumption chart (spec/runtime-image.md 3.9) draws the delta between consecutive buckets' `last`
+values; a negative delta is a counter reset and is drawn as a gap (`web/ui/dist/elements.js`).
+
+Size: a point takes about 30 to 50 bytes (a 10-digit time, values like `21.33333`, a count); 160
+points of 44 bytes are about 7 KB of the 8 KB response buffer. Values of the longest notation
+(`-1.234568e+25`) take up to about 90 bytes a point; a series that does not fit ends early with
+`"truncated": true` (the points it has, in order), the following series come without points and
+with `"truncated": true` too, and the document stays valid JSON. Refusals: 400 `history.bad_query` (ids missing, malformed or more than
+8; `from >= to`; `points` 0 or too many), 409 `history.no_time` (the wall clock is not synchronized
+and `from` or `to` is missing).
 
 ### `GET /api/rules[?from=<n>]`
 

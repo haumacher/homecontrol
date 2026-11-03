@@ -1874,48 +1874,81 @@ void WebApi::history(const WebRequest& request, WebResponse& response) {
 	History& hist = image_->history();
 	int64_t width = (to - from + points - 1) / points;
 	JsonWriter json(response.body, response.capacity);
+	// Held back for closing what is open when the points do not fit (spec/api.md "history": a
+	// series ends early with "truncated"): the array, the series and the document, and the
+	// members of each series still to come.
+	constexpr size_t kClosing = 32;
+	constexpr size_t kSeriesHead = 96;
+	json.reserve(kClosing + count * kSeriesHead);
 	json.begin_object()
 		.member("from", from)
 		.member("to", to)
 		.member("width_s", width);
 	json.key("series").begin_array();
+	bool full = false;
 	for (size_t i = 0; i < count; ++i) {
+		json.release();
+		json.reserve(kClosing + (count - i - 1) * kSeriesHead);
 		json.begin_object().member("id", static_cast<uint32_t>(ids[i]));
-		HistoryPoint point;
-		size_t n = 0;
-		HistoryStatus status = hist.range(ids[i], from, to, &point, 1, n);
-		if (status != HistoryStatus::ok) {
+		// Writes the buckets as points: [t, value] for a single sample, [t, last, min, max, count,
+		// mean] for a consolidated bucket, and on_s for a boolean.
+		class Points : public HistorySink {
+		public:
+			Points(JsonWriter& json, bool boolean) : json_(json), boolean_(boolean) {}
+			bool bucket(const HistoryBucket& b) override {
+				JsonWriter::Mark mark = json_.mark();
+				json_.begin_array().number(b.t);
+				write_sample(json_, b.last);
+				if (!b.single) {
+					write_sample(json_, b.min);
+					write_sample(json_, b.max);
+					json_.number(b.count);
+					write_sample(json_, b.mean);
+					if (boolean_) {
+						json_.number(static_cast<int64_t>(std::llround(b.on_s)));
+					}
+				}
+				json_.end_array();
+				if (json_.overflowed()) {
+					json_.reset(mark);
+					truncated = true;
+					return false;
+				}
+				return true;
+			}
+			bool truncated = false;
+
+		private:
+			JsonWriter& json_;
+			bool boolean_;
+		};
+		if (!hist.has_history(ids[i])) {
 			json.member("code", "history.none").member("error", "this datapoint has no history").end_object();
 			continue;
 		}
-		// The store that answers (spec/api.md "history"): today always the raw ring, which reaches back
-		// `retention_s`. The consolidated archives of issue #56 plug in here: the store whose
-		// resolution fits `width` and whose reach covers `from`, named in `store`.
-		json.member("store", "raw").member("retention_s", hist.retention_s(ids[i]));
-		// One bucket at a time (no point buffer): [t, last] for a single sample, [t, last, min, max,
-		// count, mean] for a decimated bucket.
-		json.key("points").begin_array();
-		for (uint32_t b = 0; b < points; ++b) {
-			int64_t begin = from + b * width;
-			if (begin >= to) {
-				break;
-			}
-			int64_t end = begin + width < to ? begin + width : to;
-			if (hist.range(ids[i], begin, end, &point, 1, n) != HistoryStatus::ok || n == 0) {
-				continue;
-			}
-			json.begin_array().number(point.count == 1 ? point.last_t : point.t);
-			write_sample(json, point.last);
-			if (point.count > 1) {
-				write_sample(json, point.min);
-				write_sample(json, point.max);
-				json.number(point.count);
-				write_sample(json, point.mean);
-			}
-			json.end_array();
+		HistoryAnswer answer;
+		// The store that answers is known before the points (it follows from the range and the specs).
+		hist.store_for(ids[i], from, to, static_cast<uint32_t>(points), answer);
+		json.key("store");
+		if (answer.resolution_s == 0) {
+			json.string("raw");
+		} else {
+			json.number(answer.resolution_s);
 		}
-		json.end_array().end_object();
+		json.member("retention_s", answer.retention_s);
+		json.key("points").begin_array();
+		Points sink(json, answer.boolean);
+		if (!full) {
+			hist.query(ids[i], from, to, static_cast<uint32_t>(points), sink, answer);
+		}
+		json.end_array();
+		if (full || sink.truncated) {
+			json.member("truncated", true);
+			full = true;
+		}
+		json.end_object();
 	}
+	json.release();
 	json.end_array().end_object();
 	finish(response, json);
 }

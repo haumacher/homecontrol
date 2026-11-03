@@ -49,6 +49,7 @@ budget in bytes. Not specified in this package.
 | `remove(name)` | Deletes; `not_found` if there is none. |
 | `visit(visitor)` | Every blob with its size; the visitor must not modify the store. |
 | `open_writer(name, expected, status)` | A streaming write (issue #43): a `BlobWriter` with `append(data, size)`, `commit()` (the same atomic replace as `write()`) and `discard()` (the old content stays), for content that arrives piece by piece and is never held as a whole (the language packs). Bounded by the free space, not by `kMaxBlobSize`: `expected` above the free space is refused (`no_space`) before anything is written, an `append()` that finds the store full returns `no_space` and the caller discards. One writer per store at a time (`busy`); the writer belongs to the store and lives until `commit()` or `discard()`. A store without streaming refuses (`unsupported`, the default: the Zigbee NVS store). |
+| `patch(name, offset, chunks, count)` | Overwrites bytes of an existing blob in place (issue #56: the history's archive segments, slot by slot). The blob keeps its size (`too_large` if the chunks would end past it, nothing changed); `not_found` without the blob. Atomic like `write()`: after a power cut the blob holds the complete old or the complete new content. A store that cannot patch refuses (`unsupported`, the default); the history then keeps its archives' slots pending and logs the failure. |
 | `free_space(bytes)` | The bytes a new blob can take now; false if the store cannot tell. |
 
 Names are 1..31 characters of `[A-Za-z0-9._-]`, not starting with a dot (`check_name()`), in a flat
@@ -87,6 +88,7 @@ names and oversize writes are refused (logged) before the store is touched.
 | Where | `platform/esp/components/hc_storage` | `platform/posix/src/file_blob_store.cpp` |
 | Directory | `/storage/state` on the LittleFS partition `storage` | given at construction; `FileBlobStore::directory_for_settings()` gives `homecontrol.state` beside `homecontrol.settings` (created with mode 0700; the parent must exist) |
 | Durability | `fsync` + `close` commit the file; LittleFS's `rename` is atomic and commits the directory | `fsync` of the file, `rename`, `fsync` of the directory (also after `remove()`) |
+| Patch | `open(O_WRONLY)`, `lseek`, write, `fsync`, `close`: LittleFS copies the changed block on write and commits the file at `close` (or `fsync`), so a power cut leaves the old or the new content | the blob is read, patched in memory, written to the temporary file and renamed over the blob, as `write()` |
 | Status | the `storage status` console command; the mount and the blob count with the free space in the log | the blob count in the log |
 
 ### The storage partition
@@ -207,19 +209,22 @@ The image declares per `kHistory` datapoint a `HistorySpec`: `retention_s` (how 
 | spacing | 10 s .. 86400 s |
 | retention | spacing .. 31 days |
 | samples per ring | at most 2048 (a ring fits one blob) |
-| history budget | stated by the image; at most `HistoryLimits::cap_bytes` (64 KB default, the C6) |
+| history budget (RAM) | stated by the image; at most `HistoryLimits::cap_bytes` (64 KB default, the C6) |
+| archive budget (flash) | stated by the image; at most `HistoryLimits::archive_cap_bytes` (64 KB default, the C6) |
 
-The budget counts the sample memory, 8 bytes per sample, which E-Home computes the same way on its
-side. `load()` refuses with the reason in the log, keeping the previous rings, when:
+The budget counts the RAM, 8 bytes per sample and the archives' open and pending slots ("Archives"
+below), which E-Home computes the same way on its side. `load()` refuses with the reason in the
+log, keeping the previous rings, when:
 
-- the image's budget exceeds the cap ("the image asks for 70000 bytes, the device allows at most
-  65536"), or the rings exceed the budget ("the rings need 1456 bytes, the image's budget is 976")
-  — `budget_exceeded`;
+- the image's budget exceeds the cap ("the image asks for 70000 bytes of RAM, the device allows at
+  most 65536", "... bytes of flash for archives ..."), or the rings and archives exceed the budget
+  ("the rings and archives need 1456 bytes of RAM, the image's budget is 976", "the archives need
+  49152 bytes of flash, the image's archive budget is 45056") — `budget_exceeded`;
 - a spec names a datapoint without `kHistory`, or a `kHistory` datapoint has no spec —
   `flag_mismatch`;
 - the datapoint is not boolean, unsigned, signed or real — `type_error`;
-- spacing, retention or the sample count is out of range, or a datapoint has two specs —
-  `malformed`;
+- spacing, retention or the sample count is out of range, or a datapoint has two specs, or an
+  archive is out of its limits ("Archives") — `malformed`;
 - a datapoint id does not exist — `unknown_datapoint`.
 
 ### Sampling
@@ -256,6 +261,14 @@ as a band and `last` as the line shows peaks that a plain subsample would miss. 
 says "on at some time in the bucket". The call is O(log n + samples in range), allocates nothing,
 and is refused with `unknown_datapoint` (no history for the id) or `malformed` (`to <= from`,
 `max_points` 0).
+
+`query(id, from, to, points, sink, answer)` (issue #56) is what the API's history answers with: it
+chooses the store (`store_for()`: of the raw ring and the archives whose resolution is at most the
+bucket width, the finest that reaches back to `from`, else the one that reaches furthest, else the
+ring) and gives each non-empty bucket to the sink: last, min, max, count and the time-weighted mean
+(a raw bucket also counts the value held into it from the sample before), a boolean's seconds on.
+An archive slot belongs to the bucket of its middle; one that reaches into the range with its
+middle outside (the open slot of a range up to now) to the nearest bucket.
 
 ### Saving and restoring
 
@@ -311,6 +324,130 @@ Allocated at load in three blocks (samples, ring table, names), nothing in stead
 A save writes from the ring in place (header, the two halves of the ring, the checksum as four
 chunks); a restore reads straight into the ring. The stack use is a 256-byte header buffer.
 
+## Consolidated archives (issue #56)
+
+Besides its raw ring, a datapoint's history has up to 4 archives (`spec/runtime-image.md` 3.3): slots
+of `resolution` seconds kept for `retention` seconds, `ceil(retention / resolution) + 1` slots (at
+most 2048), the resolution 60 s .. 31 days and above the ring's spacing, the retention up to 10
+years. They serve the long ranges of the charts (`spec/api.md` "history").
+
+### The slot
+
+32 bytes, no padding (`hc::ArchiveSlot`):
+
+| Bytes | Field | |
+|---|---|---|
+| 0..7 | `double sum` | Σ value × seconds held; the mean is `sum / held_s`, a boolean's seconds on are `sum` |
+| 8..11 | `uint32 start` | the slot's start, UTC seconds: the slot describes itself |
+| 12..15 | `float min` | |
+| 16..19 | `float max` | |
+| 20..23 | `float last` | |
+| 24..27 | `uint32 count` | samples fed, keep-alives included |
+| 28..31 | `uint32 held_s` | seconds of held value in the slot |
+
+A slot with `count` and `held_s` 0 is empty (no sample, not zero) and is never returned.
+
+**Feeding.** Every sample the ring takes (a change or a keep-alive) feeds the open slot of each
+archive: min, max, last, count; the previous sample's value counts as held from its time up to the
+new sample, at most its spacing plus 10 s (`kHoldSlackS`), split at slot boundaries. The tick (5 s)
+credits the held value up to now and closes the slots that ended. A value that is no longer good
+ends the hold at once (the time after it is a gap); while the wall clock is not synchronized nothing
+is sampled, so nothing is fed or held. When the clock goes back, the archives ignore samples before
+the time they already hold (the ring drops its "future" samples as before); a jump forward closes
+the open slot and opens the next one, the time between stays empty. A resolution of whole days is
+aligned to the local days of `settings.tz` (local midnight found through the time zone, so a DST day
+has 23 or 25 hours); any other resolution to multiples of it in UTC. Integers are kept as floats in
+min, max and last: exact up to 2^24.
+
+### The storage decision: open slots in RAM, closed slots on flash
+
+The archives' slots would not fit in RAM (a year of hourly slots is 280 KB), so only each archive's
+**open slot** and a queue of slots closed since the last save (**pending**, up to an hour of them,
+`kPendingS`) are in RAM. The closed slots live on flash in **segments**: blobs of a 32-byte header
+and 127 slots, exactly 4096 bytes, one LittleFS block. Slot number n (counted from the epoch in
+resolutions, or in local days) is at position `n % (segments × 127)`, which keeps at least the
+retention; a stale slot of a position (from a previous round) is recognized because its start is
+not the start of the slot asked for. A slot is written in place with `BlobStore::patch()`, so a
+save writes one block per archive, not the whole archive. A segment is created on its first use
+(the header and empty slots), not at load: an archive of a year occupies its blocks only as the
+year fills them.
+
+| | RAM (`history.budget`) | Flash (`history.archiveBudget`) |
+|---|---|---|
+| per archive | `(ceil(3600 / resolution) + 2) × 32`: the open slot, an hour of pending slots and the one closing meanwhile; 96 bytes from a resolution of an hour on, 2 KB at 60 s | `ceil(slots / 127) × 4096` |
+| cap on the C6 | 64 KB with the rings (`HistoryLimits::cap_bytes`) | 64 KB (`archive_cap_bytes`): 16 blocks |
+| hourly for 31 days (745 slots) | 96 | 6 segments, 24 KB |
+| daily for 2 years (731 slots) | 96 | 6 segments, 24 KB |
+| hourly for a year (8761 slots) | refused: more than 2048 slots | |
+| daily for 10 years (3651 slots) | refused: more than 2048 slots | |
+| a temperature as E-Home derives it for charts up to a year (ehome#73) | 968 | 9 segments, 36 KB |
+
+Measured free flash on the C6 (4 MB board, `storage` 208 896 bytes = 51 blocks): 45 056 bytes used
+and **163 840 free (40 blocks)** with a 23 KB image, its chunks, the value records and the rings of
+the test system. The flash cap of 16 blocks leaves 24 for the image's second generation (an update
+writes the new chunks before it drops the old), the language packs and the rings. A load whose
+segments still to be created exceed the free space logs a warning ("history: the archives need N
+more bytes of flash as they fill, M are free") and goes on: a segment that cannot be created later
+keeps its slots pending until the queue is full, then drops the oldest, logged.
+
+### Segment format (frozen)
+
+Blob `a.<hash>.<resolution>.<segment>`: the FNV-1a hash of the datapoint name in 8 hex digits, the
+resolution in seconds and the segment index in hex (`a.1c2d3e4f.e10.0` is the first segment of an
+hourly archive). Little-endian:
+
+| Bytes | Content |
+|---|---|
+| 0..1 | Magic `H` `A` |
+| 2 | Format generation, 1 (a reader drops an archive of a higher one) |
+| 3 | Slot size, 32 |
+| 4..7 | Resolution, u32 seconds |
+| 8..11 | Retention, u32 seconds (informative) |
+| 12..15 | FNV-1a hash of the datapoint name |
+| 16 | `ValueType` number |
+| 17 | Flags: bit 0 local days |
+| 18..19 | Segment index, u16 |
+| 20..21 | Segments of the archive, u16 |
+| 22..23 | Slots per segment, u16 (127) |
+| 24..27 | Reserved, 0 |
+| 28..31 | CRC-32 of bytes 0..27 |
+| 32.. | 127 slots |
+
+The slots have no checksum (they are patched one by one); a slot is used only if it is plausible:
+its start is the start of its number, its numbers are finite, min <= max, and `held_s` at most the
+resolution plus two hours. A fixture test builds a segment by hand and reads it back
+(`HistoryArchive probe: a segment written by hand is read`).
+
+### Load, swap and restart
+
+`load()` checks the segments of every archive of the image: an archive whose segments have the same
+layout (resolution, type, slots per segment, number of segments, local days) is kept, a changed
+retention of the same layout too ("the 3600 s archive keeps its slots (retention ..., same
+segments)"; its headers are rewritten); otherwise the archive is
+dropped with the reason in the log ("the 3600 s archive is dropped: its segments are damaged",
+"... the datapoint's type changed", "... its layout changed", "... the image no longer has it") and
+its segments deleted. When a slot opens it is taken up from pending or from flash if a slot of the
+same start is there: after a restart (the slot was saved) or a swap with the same spec the open slot
+goes on. A swap flushes the old history first; when the last sample is still fresh, the new
+archives hold its value on from the swap.
+
+### Saving
+
+At every save (`save_interval_s()`) and `flush()`, each archive writes its pending slots and its
+open slot if it changed, as patches of up to 32 chunks into the segments they belong to (the gaps
+between them written as empty slots). A full pending queue (a save interval longer than an hour, a
+store that failed) writes that archive at once; if that fails too, the oldest pending slot is
+dropped (logged once, `slots_dropped()`). A failed save is logged ("cannot save the 3600 s archive
+of '...' (...): ...; retrying at the next save", for a store without `patch()` "the blob store cannot
+patch") and retried; "saving the archives works again" when it does. The tests' `FakeBlobStore`
+counts the patches and can refuse them (`patchable`).
+
+### Memory
+
+Allocated at load beside the rings, nothing in steady state: the archive table (80 bytes per
+archive on the C6) and the pending blocks (the budget above). The query reads slots through a
+window of 16 slots (512 bytes on the stack); a save writes from the slots in place.
+
 ## The flash wear budget
 
 The limits are chosen so that the flash outlives the device even when they are used to the full,
@@ -328,6 +465,11 @@ all the time. Assumptions:
   it is compacted (one erase). Assumed with a margin of two: **one erase per 8 writes**.
 - **A ring save** rewrites the ring's data blocks (copy on write): one erase per 4 KB of samples
   plus a metadata commit; assumed: **bytes / 4096 + 1 erases per ring**.
+- **An archive patch** copies the segment's one block and commits the file: assumed as the value
+  record's commit, **1 + 1/8 erases per patch** (1 + 1 with the rings' margin).
+- **The save interval** is `max(min_save_interval, (ring bytes + 4096 × archives) × 3600 /
+  save_bytes_per_hour)`; beyond an hour the archives write hourly anyway (their pending queue), so
+  the rings are paced on what the archives leave of the 64 KB an hour, at least a quarter of it.
 
 At the limits:
 
@@ -339,7 +481,22 @@ At the limits:
 
 28.5 erases per hour × 87,600 hours = 2.5 million erases over 35 blocks = about **71,000 cycles
 per block, 71 % of the endurance** (52,000 over the 48 blocks before the core dump partition) after
-ten years of continuous worst case. A real house writes far
+ten years of continuous worst case.
+
+With archives at both caps (64 KB of rings, 16 archives of one segment each, so 128 KB to write):
+the rings are saved every 4 hours, the archives hourly.
+
+| Writer | Per hour | Erases per hour |
+|---|---|---|
+| Value records: 60 writes | 60 × 1/8 | 7.5 |
+| History rings: 64 KB every 4 hours | (16 + 5) / 4 | 5.25 |
+| Archives: 16 patches | 16 × 1.125 | 18 |
+| **Total** | | **30.75** |
+
+2.7 million erases over 35 blocks: about **77,000 cycles, 77 %** (with the rings' margin of a whole
+erase per commit 44.75 an hour, 112 % over 35 blocks and 98 % over the 40 measured free). An image as
+E-Home derives it for a few charts writes a small fraction: an hourly archive patches its block
+once per save while its slot changes. A real house writes far
 less: setpoints and states change a few times a day, and the history budget of a typical image is
 a fraction of the cap.
 
@@ -365,13 +522,24 @@ decimation (min, max, last per bucket, never more than `max_points`), the save i
 restore across a reboot and an image swap, a blob with unknown header fields and larger samples, a
 damaged blob, a clock going back.
 
+`core/test/history_archive_test.cpp` (issue #56) runs the archives the same way: the budget
+arithmetic as E-Home computes it, three days at 1 min into an hourly archive (min, max, last, the
+time-weighted mean), a boolean's on-time in daily slots across a DST change, the choice of the
+store, the budget, cap and limit refusals, a restart and a swap keeping the archives with the open
+slot going on, a changed resolution, type or layout dropping them (logged) and a changed retention
+keeping them, gaps for a stale value and an unsynchronized clock, the save interval, a store
+without `patch()` and the pending queue, a hand-built segment of the frozen format and a damaged
+one, the clock going back and jumping forward. `core/test/web_api_test.cpp` checks the API's
+`store`, the long form with `on_s` and the truncation.
+
 `platform/posix/test/file_blob_store_test.cpp` runs the POSIX store against a temporary directory:
 the round trip with chunks and reads at offsets, replace and remove, `visit()` skipping foreign
 files, a crash's temporary files ignored and deleted while the old blob is still served, a blob
 named `x.tmp`, the name and size refusals before anything is touched, an unusable directory refusing
 every call (logged once), the default directory, the streaming write (a 50 KB blob in 1 KB pieces:
 the temporary file is not listed and the old content is served until the commit, `busy`, `discard()`
-keeps the old blob, the free-space refusal). `core/test/blob_writer_test.cpp` runs the same for
+keeps the old blob, the free-space refusal), and `patch()` (in place, the size kept, refused past
+the end and without the blob). `core/test/blob_writer_test.cpp` runs the same for
 `MemoryBlobStore` and the fake. `no_space` from the file system is not tested (it needs a full file
 system). The ESP store shares the algorithm; it is verified on the board (`storage status`, a
 reboot keeps the values).

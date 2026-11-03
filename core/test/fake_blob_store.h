@@ -32,6 +32,10 @@ public:
 			writes = other.writes;
 			fail_writes = other.fail_writes;
 			free_bytes = other.free_bytes;
+			patches = other.patches;
+			patches_of = other.patches_of;
+			patched_bytes = other.patched_bytes;
+			patchable = other.patchable;
 		}
 		return *this;
 	}
@@ -123,6 +127,38 @@ public:
 		return &writer_;
 	}
 
+	hc::BlobStatus patch(const char* name, size_t offset, const hc::BlobChunk* chunks, size_t count) override {
+		hc::BlobStatus status = check_name(name);
+		if (status != hc::BlobStatus::ok) {
+			return status;
+		}
+		auto it = blobs.find(name);
+		if (it == blobs.end()) {
+			return hc::BlobStatus::not_found;
+		}
+		size_t total = 0;
+		for (size_t i = 0; i < count; ++i) {
+			total += chunks[i].size;
+		}
+		if (offset > it->second.size() || total > it->second.size() - offset) {
+			return hc::BlobStatus::too_large;
+		}
+		if (fail_writes) {
+			return hc::BlobStatus::storage_error;
+		}
+		if (!patchable) {
+			return hc::BlobStatus::unsupported;
+		}
+		for (size_t i = 0; i < count; ++i) {
+			std::memcpy(it->second.data() + offset, chunks[i].data, chunks[i].size);
+			offset += chunks[i].size;
+		}
+		++patches;
+		++patches_of[name];
+		patched_bytes += total;
+		return hc::BlobStatus::ok;
+	}
+
 	bool free_space(size_t& bytes) const override {
 		bytes = free_bytes;
 		return true;
@@ -145,6 +181,12 @@ public:
 	std::map<std::string, int> writes_of;
 	int writes = 0;
 	bool fail_writes = false;
+	/// patch() calls that changed a blob, by name, and the bytes they wrote.
+	int patches = 0;
+	std::map<std::string, int> patches_of;
+	size_t patched_bytes = 0;
+	/// False: patch() refuses with unsupported (a store that cannot patch).
+	bool patchable = true;
 
 private:
 	class Writer : public hc::BlobWriter {

@@ -40,6 +40,9 @@ public:
 	BlobStatus remove(const char* name) override;
 	void visit(BlobVisitor& visitor) const override;
 	BlobWriter* open_writer(const char* name, size_t expected, BlobStatus& status) override;
+	/// In place: LittleFS copies the touched block on write and commits the file when it is closed,
+	/// so a power cut before the close leaves the old content.
+	BlobStatus patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) override;
 	/// The partition's free bytes (esp_littlefs_info).
 	bool free_space(size_t& bytes) const override;
 

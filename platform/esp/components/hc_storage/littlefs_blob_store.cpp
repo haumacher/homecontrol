@@ -253,6 +253,48 @@ BlobStatus LittleFsBlobStore::read(const char* name, size_t offset, void* buffer
 	return BlobStatus::ok;
 }
 
+BlobStatus LittleFsBlobStore::patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) {
+	BlobStatus status = check_name(name);
+	if (status != BlobStatus::ok) {
+		Log::warn(kTag, "patch refused: blob name invalid");
+		return status;
+	}
+	if (!ready()) {
+		return BlobStatus::storage_error;
+	}
+	char path[kMaxPath];
+	blob_path(path, sizeof(path), name);
+	struct stat info;
+	if (::stat(path, &info) != 0) {
+		return errno == ENOENT ? BlobStatus::not_found : failure(errno, "cannot stat", path);
+	}
+	size_t current = static_cast<size_t>(info.st_size);
+	size_t total = 0;
+	for (size_t i = 0; i < count; ++i) {
+		total += chunks[i].size;
+	}
+	if (offset > current || total > current - offset) {
+		Log::warn(kTag, "patch of %s refused: %u bytes at %u, the blob has %u", name, static_cast<unsigned>(total),
+			static_cast<unsigned>(offset), static_cast<unsigned>(current));
+		return BlobStatus::too_large;
+	}
+	int fd = ::open(path, O_WRONLY);
+	if (fd < 0) {
+		return failure(errno, "cannot open", path);
+	}
+	bool ok = ::lseek(fd, static_cast<off_t>(offset), SEEK_SET) == static_cast<off_t>(offset);
+	for (size_t i = 0; ok && i < count; ++i) {
+		ok = write_all(fd, chunks[i].data, chunks[i].size);
+	}
+	ok = ok && ::fsync(fd) == 0;
+	int error = errno;
+	if (::close(fd) != 0 && ok) {
+		ok = false;
+		error = errno;
+	}
+	return ok ? BlobStatus::ok : failure(error, "cannot patch", path);
+}
+
 BlobStatus LittleFsBlobStore::size(const char* name, size_t& size) const {
 	BlobStatus status = check_name(name);
 	if (status != BlobStatus::ok) {

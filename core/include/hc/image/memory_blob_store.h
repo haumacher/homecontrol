@@ -38,6 +38,7 @@ public:
 	BlobStatus remove(const char* name) override;
 	void visit(BlobVisitor& visitor) const override;
 	BlobWriter* open_writer(const char* name, size_t expected, BlobStatus& status) override;
+	BlobStatus patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) override;
 	bool free_space(size_t& bytes) const override;
 
 	/// Content bytes held.

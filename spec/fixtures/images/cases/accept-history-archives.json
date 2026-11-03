@@ -1,0 +1,8 @@
+{"comment": "A history with consolidated archives (homecontrol#56): the raw ring and up to four archives. history.budget covers the RAM: 8 bytes per raw sample and per archive its open slot and an hour of pending slots, (ceil(3600 / resolution) + 2) * 32 bytes (96 from an hour on): 577 * 8 + 96 + 96 = 4808. history.archiveBudget covers the flash: 4096 bytes per segment of 127 slots, 745 and 731 slots are 6 segments each: 49152.",
+ "expect": {"valid": true},
+ "image": {"schemaVersion": "1.2", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "t", "type": "real", "history": {"retention": 172800, "spacing": 300,
+   "archives": [{"resolution": 3600, "retention": 2678400}, {"resolution": 86400, "retention": 63072000}]}},
+  {"id": "heating", "type": "boolean", "history": {"retention": 86400, "spacing": 900,
+   "archives": [{"resolution": 86400, "retention": 31536000}]}}],
+ "history": {"budget": 5680, "archiveBudget": 61440}}

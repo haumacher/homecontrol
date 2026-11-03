@@ -78,7 +78,7 @@ ImageService::ImageService(Controller& controller, DatapointModel& model, BlobSt
 	  scheduler_(controller.loop(), controller.time(), controller.settings(), &model),
 	  engine_(controller.loop(), model, controller.clock(), controller.settings(), rules_clock_),
 	  value_store_(controller.loop(), controller.clock(), model, blobs, value_limits),
-	  history_(controller.loop(), controller.clock(), model, blobs, history_limits),
+	  history_(controller.loop(), controller.clock(), model, blobs, history_limits, &controller.time_zone_platform()),
 	  time_master_(controller.loop(), controller.time(), model, adapter),
 	  store_(blobs) {
 	scheduler_.defer_time_reports(true); // published quietly after each load (bind_technologies)
@@ -220,6 +220,7 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	char language[setting::kMaxUiLangLength + 1];
 	read_ui_lang(controller_.settings(), language, kTag); // as the engine reads it: the rules compile once
 	Loader loader(controller_.clock(), history_limits_.cap_bytes, language);
+	loader.set_archive_cap(history_limits_.archive_cap_bytes);
 	if (!loader.parse(text, length, *plan, report_)) {
 		Log::warn(kTag, "image from %s refused (%s): %u problem%s; the %s", source_name(source),
 			report_kind_name(report_.kind), static_cast<unsigned>(report_.total), report_.total == 1 ? "" : "s",
@@ -476,7 +477,7 @@ bool ImageService::bind_persistence(const Plan& plan, Source source) {
 	if (status != DatapointStatus::ok) {
 		return fail_applied(source, "datapoints", "the value store refused: %s", datapoint_status_name(status));
 	}
-	HistoryStatus history_status = history_.load(plan.history, plan.history_count, plan.history_budget);
+	HistoryStatus history_status = history_.load(plan.history, plan.history_count, plan.history_budget, plan.archive_budget);
 	if (history_status != HistoryStatus::ok) {
 		return fail_applied(source, "history", "the history refused: %s", history_status_name(history_status));
 	}

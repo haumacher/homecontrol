@@ -4,24 +4,25 @@
 #include "hc/history.h"
 
 #include <algorithm>
-#include <cfloat>
 #include <cstdio>
 #include <cstring>
 #include <new>
 
+#include "history_internal.h"
 #include "hc/log.h"
 #include "hc/value_store.h"
 
-// The samples go to flash as they are in RAM: two little-endian 32-bit words.
-#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
-static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the history blob format assumes a little-endian CPU");
-#endif
-
 namespace hc {
+
+using history_detail::get_u32;
+using history_detail::kTag;
+using history_detail::put_u32;
+using history_detail::sampled_type;
+using history_detail::to_bits;
+using history_detail::to_double;
 
 namespace {
 
-constexpr const char* kTag = "hc.history";
 constexpr const char* kPrefix = "h.";
 constexpr uint8_t kMagic0 = 'H';
 constexpr uint8_t kMagic1 = 'H';
@@ -38,52 +39,6 @@ constexpr uint8_t kFieldCount = 6;
 constexpr size_t kPrefixSize = 5;
 /// The largest header this firmware reads (a newer one may carry more fields).
 constexpr size_t kMaxHeaderRead = 256;
-
-void put_u32(uint8_t* p, uint32_t v) {
-	for (int i = 0; i < 4; ++i) {
-		p[i] = static_cast<uint8_t>(v >> (8 * i));
-	}
-}
-
-uint32_t get_u32(const uint8_t* p) {
-	return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
-		(static_cast<uint32_t>(p[3]) << 24);
-}
-
-bool sampled_type(ValueType type) {
-	return type == ValueType::boolean || type == ValueType::unsigned_int || type == ValueType::signed_int ||
-		type == ValueType::real;
-}
-
-uint32_t to_bits(const Value& value) {
-	switch (value.type()) {
-		case ValueType::boolean: return value.as_bool() ? 1 : 0;
-		case ValueType::unsigned_int: return value.as_unsigned();
-		case ValueType::signed_int: return static_cast<uint32_t>(value.as_signed());
-		case ValueType::real: {
-			double d = value.as_real();
-			float f = d > FLT_MAX ? FLT_MAX : d < -FLT_MAX ? -FLT_MAX : static_cast<float>(d);
-			uint32_t bits = 0;
-			std::memcpy(&bits, &f, sizeof(bits));
-			return bits;
-		}
-		default: return 0;
-	}
-}
-
-double to_double(ValueType type, uint32_t bits) {
-	switch (type) {
-		case ValueType::boolean: return bits != 0 ? 1.0 : 0.0;
-		case ValueType::unsigned_int: return bits;
-		case ValueType::signed_int: return static_cast<int32_t>(bits);
-		case ValueType::real: {
-			float f = 0;
-			std::memcpy(&f, &bits, sizeof(f));
-			return f;
-		}
-		default: return 0;
-	}
-}
 
 } // namespace
 
@@ -102,26 +57,9 @@ const char* history_status_name(HistoryStatus status) {
 	return "?";
 }
 
-struct History::Ring {
-	HistorySample* samples = nullptr;
-	const char* name = ""; ///< Own copy of the datapoint's name.
-	uint32_t capacity = 0;
-	uint32_t head = 0;     ///< Index of the oldest sample.
-	uint32_t count = 0;
-	uint32_t spacing_s = 0;
-	uint32_t retention_s = 0;
-	uint16_t id = 0;
-	ValueType type = ValueType::none;
-	bool dirty = false;       ///< Samples added since the last save.
-	bool persistable = true;  ///< False for the second of two names with the same hash.
-
-	HistorySample& at(uint32_t i) const { return samples[(head + i) % capacity]; }
-	const HistorySample& back() const { return at(count - 1); }
-};
-
 History::History(EventLoop& loop, const Clock& clock, DatapointModel& model, BlobStore& store,
-	const HistoryLimits& limits)
-	: loop_(loop), clock_(clock), model_(model), store_(store), limits_(limits) {}
+	const HistoryLimits& limits, const TimeZone* zone)
+	: loop_(loop), clock_(clock), model_(model), store_(store), limits_(limits), zone_(zone) {}
 
 History::~History() {
 	if (tick_.valid()) {
@@ -140,11 +78,17 @@ void History::free_rings() {
 	delete[] rings_;
 	delete[] samples_;
 	delete[] names_;
+	delete[] archives_;
+	delete[] pending_;
 	rings_ = nullptr;
 	samples_ = nullptr;
 	names_ = nullptr;
+	archives_ = nullptr;
+	pending_ = nullptr;
 	count_ = 0;
 	sample_bytes_ = 0;
+	ram_bytes_ = 0;
+	flash_bytes_ = 0;
 }
 
 uint32_t History::ring_samples(uint32_t retention_s, uint32_t spacing_s) {
@@ -155,17 +99,55 @@ uint32_t History::ring_samples(uint32_t retention_s, uint32_t spacing_s) {
 	return samples > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(samples);
 }
 
-HistoryStatus History::validate(const HistorySpec* specs, size_t count, size_t budget_bytes, size_t& bytes) const {
+size_t History::archive_ram_bytes(uint32_t resolution_s) {
+	if (resolution_s == 0) {
+		return 0;
+	}
+	// The open slot, and the pending queue of one kPendingS plus the slot closing meanwhile.
+	return (static_cast<size_t>((kPendingS + resolution_s - 1) / resolution_s) + 2) * sizeof(ArchiveSlot);
+}
+
+uint32_t History::archive_segments(uint32_t retention_s, uint32_t resolution_s) {
+	uint32_t slots = ring_samples(retention_s, resolution_s);
+	return static_cast<uint32_t>((static_cast<uint64_t>(slots) + kSlotsPerSegment - 1) / kSlotsPerSegment);
+}
+
+size_t History::ram_bytes(const HistorySpec& spec) {
+	size_t bytes = ring_bytes(spec.retention_s, spec.spacing_s);
+	for (uint8_t i = 0; spec.archives != nullptr && i < spec.archive_count; ++i) {
+		bytes += archive_ram_bytes(spec.archives[i].resolution_s);
+	}
+	return bytes;
+}
+
+size_t History::flash_bytes(const HistorySpec& spec) {
+	size_t bytes = 0;
+	for (uint8_t i = 0; spec.archives != nullptr && i < spec.archive_count; ++i) {
+		bytes += archive_flash_bytes(spec.archives[i].retention_s, spec.archives[i].resolution_s);
+	}
+	return bytes;
+}
+
+HistoryStatus History::validate(const HistorySpec* specs, size_t count, size_t budget_bytes,
+	size_t archive_budget_bytes, size_t& ram, size_t& flash, size_t& archives, size_t& pending) const {
 	if (budget_bytes > limits_.cap_bytes) {
-		Log::error(kTag, "history refused: the image asks for %u bytes, the device allows at most %u",
+		Log::error(kTag, "history refused: the image asks for %u bytes of RAM, the device allows at most %u",
 			static_cast<unsigned>(budget_bytes), static_cast<unsigned>(limits_.cap_bytes));
+		return HistoryStatus::budget_exceeded;
+	}
+	if (archive_budget_bytes > limits_.archive_cap_bytes) {
+		Log::error(kTag, "history refused: the image asks for %u bytes of flash for archives, the device allows at most %u",
+			static_cast<unsigned>(archive_budget_bytes), static_cast<unsigned>(limits_.archive_cap_bytes));
 		return HistoryStatus::budget_exceeded;
 	}
 	if (specs == nullptr && count > 0) {
 		Log::error(kTag, "history refused: %u specs missing", static_cast<unsigned>(count));
 		return HistoryStatus::malformed;
 	}
-	bytes = 0;
+	ram = 0;
+	flash = 0;
+	archives = 0;
+	pending = 0;
 	for (size_t i = 0; i < count; ++i) {
 		const HistorySpec& spec = specs[i];
 		const Datapoint* dp = model_.get(spec.datapoint);
@@ -209,7 +191,45 @@ HistoryStatus History::validate(const HistorySpec* specs, size_t count, size_t b
 				return HistoryStatus::malformed;
 			}
 		}
-		bytes += static_cast<size_t>(samples) * sizeof(HistorySample);
+		if (spec.archive_count > kMaxArchives || (spec.archive_count > 0 && spec.archives == nullptr)) {
+			Log::error(kTag, "history refused: '%s' has %u archives, at most %u", dp->name(),
+				static_cast<unsigned>(spec.archive_count), static_cast<unsigned>(kMaxArchives));
+			return HistoryStatus::malformed;
+		}
+		for (uint8_t k = 0; k < spec.archive_count; ++k) {
+			const ArchiveSpec& a = spec.archives[k];
+			if (a.resolution_s < kMinResolutionS || a.resolution_s > kMaxResolutionS || a.resolution_s <= spec.spacing_s) {
+				Log::error(kTag, "history refused: '%s' archive %u: resolution %u s outside %u..%u s or not above the spacing (%u s)",
+					dp->name(), static_cast<unsigned>(k), static_cast<unsigned>(a.resolution_s),
+					static_cast<unsigned>(kMinResolutionS), static_cast<unsigned>(kMaxResolutionS),
+					static_cast<unsigned>(spec.spacing_s));
+				return HistoryStatus::malformed;
+			}
+			if (a.retention_s < a.resolution_s || a.retention_s > kMaxArchiveRetentionS) {
+				Log::error(kTag, "history refused: '%s' archive %u: retention %u s outside %u..%u s", dp->name(),
+					static_cast<unsigned>(k), static_cast<unsigned>(a.retention_s), static_cast<unsigned>(a.resolution_s),
+					static_cast<unsigned>(kMaxArchiveRetentionS));
+				return HistoryStatus::malformed;
+			}
+			uint32_t slots = ring_samples(a.retention_s, a.resolution_s);
+			if (slots > kMaxSlots) {
+				Log::error(kTag, "history refused: '%s' archive %u needs %u slots (%u s every %u s), at most %u", dp->name(),
+					static_cast<unsigned>(k), static_cast<unsigned>(slots), static_cast<unsigned>(a.retention_s),
+					static_cast<unsigned>(a.resolution_s), static_cast<unsigned>(kMaxSlots));
+				return HistoryStatus::malformed;
+			}
+			for (uint8_t m = 0; m < k; ++m) {
+				if (spec.archives[m].resolution_s == a.resolution_s) {
+					Log::error(kTag, "history refused: '%s' has two archives of %u s", dp->name(),
+						static_cast<unsigned>(a.resolution_s));
+					return HistoryStatus::malformed;
+				}
+			}
+			pending += (archive_ram_bytes(a.resolution_s) / sizeof(ArchiveSlot)) - 1;
+		}
+		archives += spec.archive_count;
+		ram += ram_bytes(spec);
+		flash += flash_bytes(spec);
 	}
 	// Every flagged datapoint has a spec (the specs are unique and all flagged, so count them).
 	size_t flagged = 0;
@@ -231,9 +251,14 @@ HistoryStatus History::validate(const HistorySpec* specs, size_t count, size_t b
 		}
 		return HistoryStatus::flag_mismatch;
 	}
-	if (bytes > budget_bytes) {
-		Log::error(kTag, "history refused: the rings need %u bytes, the image's budget is %u",
-			static_cast<unsigned>(bytes), static_cast<unsigned>(budget_bytes));
+	if (ram > budget_bytes) {
+		Log::error(kTag, "history refused: the rings and archives need %u bytes of RAM, the image's budget is %u",
+			static_cast<unsigned>(ram), static_cast<unsigned>(budget_bytes));
+		return HistoryStatus::budget_exceeded;
+	}
+	if (flash > archive_budget_bytes) {
+		Log::error(kTag, "history refused: the archives need %u bytes of flash, the image's archive budget is %u",
+			static_cast<unsigned>(flash), static_cast<unsigned>(archive_budget_bytes));
 		return HistoryStatus::budget_exceeded;
 	}
 	return HistoryStatus::ok;
@@ -272,20 +297,36 @@ HistoryStatus History::start(uint32_t save_interval_s) {
 	return HistoryStatus::ok;
 }
 
-HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budget_bytes) {
+HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budget_bytes, size_t archive_budget_bytes) {
 	if (model_.notifying()) {
 		Log::error(kTag, "refusing to load the history from a datapoint listener (post it)");
 		return HistoryStatus::busy;
 	}
-	size_t bytes = 0;
-	HistoryStatus status = validate(specs, count, budget_bytes, bytes);
+	size_t ram = 0;
+	size_t flash = 0;
+	size_t archive_count = 0;
+	size_t pending_slots = 0;
+	HistoryStatus status =
+		validate(specs, count, budget_bytes, archive_budget_bytes, ram, flash, archive_count, pending_slots);
 	if (status != HistoryStatus::ok) {
 		return status;
 	}
-	// The save interval keeps the bytes written per hour within the limit.
-	uint64_t paced = limits_.save_bytes_per_hour > 0
-		? (static_cast<uint64_t>(bytes) * 3600 + limits_.save_bytes_per_hour - 1) / limits_.save_bytes_per_hour
-		: kMaxSpacingS;
+	size_t bytes = 0;
+	for (size_t i = 0; i < count; ++i) {
+		bytes += ring_bytes(specs[i].retention_s, specs[i].spacing_s);
+	}
+	// The save interval keeps the bytes written per hour within the limit: the rings' samples and
+	// one segment block per archive and save. Beyond an hour the archives write once an hour anyway
+	// (their pending queue holds an hour of slots), so the rings get the rest of the budget, at
+	// least a quarter of it (doc/persistence.md "The flash wear budget").
+	uint64_t budget = limits_.save_bytes_per_hour;
+	uint64_t archive_bytes = static_cast<uint64_t>(archive_count) * kSegmentBytes;
+	uint64_t written = static_cast<uint64_t>(bytes) + archive_bytes;
+	uint64_t paced = budget > 0 ? (written * 3600 + budget - 1) / budget : kMaxSpacingS;
+	if (budget > 0 && archive_count > 0 && paced > kPendingS) {
+		uint64_t share = std::max<uint64_t>(budget > archive_bytes ? budget - archive_bytes : 0, (budget + 3) / 4);
+		paced = std::max<uint64_t>(kPendingS, (static_cast<uint64_t>(bytes) * 3600 + share - 1) / share);
+	}
 	uint32_t interval = static_cast<uint32_t>(std::min<uint64_t>(std::max<uint64_t>(paced,
 		std::max<uint32_t>(limits_.min_save_interval_s, 1)), kMaxSpacingS));
 	status = start(interval);
@@ -293,7 +334,7 @@ HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budge
 		return status;
 	}
 
-	// The previous rings' new samples are saved from the rings' own copies of the names.
+	// The previous rings' new samples and archives' slots are saved from their own copies.
 	flush();
 	free_rings();
 
@@ -305,15 +346,23 @@ HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budge
 		rings_ = new (std::nothrow) Ring[count];
 		samples_ = new (std::nothrow) HistorySample[bytes / sizeof(HistorySample)];
 		names_ = new (std::nothrow) char[names_bytes];
-		if (rings_ == nullptr || samples_ == nullptr || names_ == nullptr) {
+		if (archive_count > 0) {
+			archives_ = new (std::nothrow) Archive[archive_count];
+			pending_ = new (std::nothrow) ArchiveSlot[pending_slots];
+		}
+		if (rings_ == nullptr || samples_ == nullptr || names_ == nullptr ||
+			(archive_count > 0 && (archives_ == nullptr || pending_ == nullptr))) {
 			free_rings();
-			Log::error(kTag, "history off: no memory for %u rings (%u bytes)", static_cast<unsigned>(count),
-				static_cast<unsigned>(bytes + count * sizeof(Ring) + names_bytes));
+			Log::error(kTag, "history off: no memory for %u rings and %u archives (%u bytes)",
+				static_cast<unsigned>(count), static_cast<unsigned>(archive_count),
+				static_cast<unsigned>(ram + count * sizeof(Ring) + names_bytes + archive_count * sizeof(Archive)));
 			return HistoryStatus::out_of_memory;
 		}
 	}
 	HistorySample* cursor = samples_;
 	char* name = names_;
+	Archive* archive = archives_;
+	ArchiveSlot* queue = pending_;
 	for (size_t i = 0; i < count; ++i) {
 		const Datapoint* dp = model_.get(specs[i].datapoint);
 		Ring& r = rings_[i];
@@ -328,14 +377,32 @@ HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budge
 		r.retention_s = specs[i].retention_s;
 		r.id = dp->id();
 		r.type = dp->type();
+		r.hash = persist::fnv1a(r.name);
+		r.archives = specs[i].archive_count > 0 ? archive : nullptr;
+		r.archive_count = specs[i].archive_count;
+		for (uint8_t k = 0; k < specs[i].archive_count; ++k) {
+			Archive& a = *archive++;
+			a.resolution_s = specs[i].archives[k].resolution_s;
+			a.retention_s = specs[i].archives[k].retention_s;
+			a.slots = ring_samples(a.retention_s, a.resolution_s);
+			a.segments = static_cast<uint16_t>(archive_segments(a.retention_s, a.resolution_s));
+			a.positions = a.segments * kSlotsPerSegment;
+			a.days = a.resolution_s % 86400 == 0 ? a.resolution_s / 86400 : 0;
+			a.pending = queue;
+			a.pending_capacity = static_cast<uint16_t>(archive_ram_bytes(a.resolution_s) / sizeof(ArchiveSlot) - 1);
+			queue += a.pending_capacity;
+		}
+		std::sort(r.archives, r.archives + r.archive_count,
+			[](const Archive& x, const Archive& y) { return x.resolution_s < y.resolution_s; });
 	}
 	count_ = count;
 	sample_bytes_ = bytes;
+	ram_bytes_ = ram;
+	flash_bytes_ = flash;
 	// Two names with the same hash would share a blob: the second is not persisted.
 	for (size_t i = 0; i < count_; ++i) {
-		uint32_t hash = persist::fnv1a(rings_[i].name);
 		for (size_t j = 0; j < i; ++j) {
-			if (rings_[j].persistable && persist::fnv1a(rings_[j].name) == hash) {
+			if (rings_[j].persistable && rings_[j].hash == rings_[i].hash) {
 				rings_[i].persistable = false;
 				Log::error(kTag, "history of '%s' is not saved: its blob name collides with '%s'", rings_[i].name,
 					rings_[j].name);
@@ -346,10 +413,19 @@ HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budge
 	std::sort(rings_, rings_ + count_, [](const Ring& a, const Ring& b) { return a.id < b.id; });
 
 	size_t restored = 0;
+	WallTime wall = clock_.wall_time();
 	for (size_t i = 0; i < count_; ++i) {
-		if (rings_[i].persistable) {
-			restore(rings_[i]);
-			restored += rings_[i].count;
+		Ring& r = rings_[i];
+		if (r.persistable) {
+			restore(r);
+			restored += r.count;
+		}
+		// A swap without a restart: the last sample's value goes on holding from now (the hold up
+		// to the swap was written by the flush above). After a restart the last sample is too old.
+		if (r.archive_count > 0 && r.count > 0 && wall.synchronized && wall.seconds >= r.back().t &&
+			wall.seconds < static_cast<int64_t>(r.back().t) + r.spacing_s + kHoldSlackS &&
+			wall.seconds <= static_cast<int64_t>(UINT32_MAX)) {
+			r.credit_t = static_cast<uint32_t>(wall.seconds);
 		}
 	}
 
@@ -373,9 +449,18 @@ HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budge
 		size_t count_;
 	};
 	persist::delete_orphans(store_, kPrefix, RingKeeper(rings_, count_), kTag);
-	Log::info(kTag, "history: %u rings, %u of %u sample bytes, %u samples restored, saved every %u s",
-		static_cast<unsigned>(count_), static_cast<unsigned>(bytes), static_cast<unsigned>(budget_bytes),
-		static_cast<unsigned>(restored), static_cast<unsigned>(save_interval_s_));
+	check_archives();
+	if (archive_count > 0) {
+		Log::info(kTag,
+			"history: %u rings, %u archives, %u of %u bytes of RAM, %u of %u bytes of flash, %u samples restored, saved every %u s",
+			static_cast<unsigned>(count_), static_cast<unsigned>(archive_count), static_cast<unsigned>(ram),
+			static_cast<unsigned>(budget_bytes), static_cast<unsigned>(flash), static_cast<unsigned>(archive_budget_bytes),
+			static_cast<unsigned>(restored), static_cast<unsigned>(save_interval_s_));
+	} else {
+		Log::info(kTag, "history: %u rings, %u of %u sample bytes, %u samples restored, saved every %u s",
+			static_cast<unsigned>(count_), static_cast<unsigned>(bytes), static_cast<unsigned>(budget_bytes),
+			static_cast<unsigned>(restored), static_cast<unsigned>(save_interval_s_));
+	}
 	return HistoryStatus::ok;
 }
 
@@ -392,6 +477,7 @@ History::Ring* History::ring_of(const Datapoint& datapoint) const {
 }
 
 void History::append(Ring& r, uint32_t t, uint32_t bits) {
+	feed(r, t, bits); // before the ring changes: the archives hold the previous sample's value up to t
 	// The wall clock went back: samples from the "future" are dropped.
 	uint32_t dropped = 0;
 	while (r.count > 0 && r.back().t > t) {
@@ -440,12 +526,18 @@ bool sample_time(const Clock& clock, uint32_t& t) {
 
 void History::datapoint_updated(const DatapointUpdate& update) {
 	const Datapoint& dp = update.datapoint;
-	if (!dp.has_history() || dp.quality() != Quality::good) {
+	if (!dp.has_history()) {
 		return;
 	}
 	Ring* r = ring_of(dp);
 	uint32_t now = 0;
 	if (r == nullptr || !sample_time(clock_, now)) {
+		return;
+	}
+	if (dp.quality() != Quality::good) {
+		// The value is no longer good: the archives hold the last one up to now and no further (a gap).
+		settle(*r, now);
+		r->credit_t = 0;
 		return;
 	}
 	uint32_t bits = to_bits(dp.value());
@@ -465,12 +557,12 @@ void History::on_tick() {
 	for (size_t i = 0; i < count_; ++i) {
 		Ring& r = rings_[i];
 		const Datapoint* dp = model_.get(r.id);
-		if (dp == nullptr || dp->quality() != Quality::good || std::strcmp(dp->name(), r.name) != 0) {
-			continue;
-		}
-		if (due_at(r.count, r.count > 0 ? r.back().t : 0, r.spacing_s, now)) {
+		if (dp != nullptr && dp->quality() == Quality::good && std::strcmp(dp->name(), r.name) == 0 &&
+			due_at(r.count, r.count > 0 ? r.back().t : 0, r.spacing_s, now)) {
 			append(r, now, to_bits(dp->value()));
 		}
+		// The archives hold the last value on and close the slots that ended, good value or not.
+		settle(r, now);
 	}
 }
 
@@ -560,8 +652,15 @@ uint32_t History::retention_s(uint16_t id) const {
 
 void History::flush() {
 	for (size_t i = 0; i < count_; ++i) {
-		if (rings_[i].dirty && rings_[i].persistable) {
-			save(rings_[i]);
+		Ring& r = rings_[i];
+		if (r.dirty && r.persistable) {
+			save(r);
+		}
+		for (uint8_t k = 0; k < r.archive_count; ++k) {
+			Archive& a = r.archives[k];
+			if (a.pending_count > 0 || (a.has_open && a.open_dirty)) {
+				save_archive(r, a);
+			}
 		}
 	}
 }

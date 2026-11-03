@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <utility>
+#include <vector>
 
 #include "hc/log.h"
 
@@ -197,6 +198,63 @@ BlobStatus FileBlobStore::write(const char* name, const BlobChunk* chunks, size_
 		return BlobStatus::storage_error;
 	}
 	return BlobStatus::ok;
+}
+
+BlobStatus FileBlobStore::patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) {
+	BlobStatus status = check_name(name);
+	if (status != BlobStatus::ok) {
+		Log::warn(kTag, "patch refused: blob name invalid");
+		return status;
+	}
+	size_t current = 0;
+	status = size(name, current);
+	if (status != BlobStatus::ok) {
+		return status;
+	}
+	size_t total = 0;
+	for (size_t i = 0; i < count; ++i) {
+		total += chunks[i].size;
+	}
+	if (offset > current || total > current - offset) {
+		Log::warn(kTag, "patch of %s refused: %zu bytes at %zu, the blob has %zu", name, total, offset, current);
+		return BlobStatus::too_large;
+	}
+	std::vector<uint8_t> content(current);
+	size_t length = 0;
+	status = read(name, 0, content.data(), current, length);
+	if (status != BlobStatus::ok) {
+		return status;
+	}
+	if (length != current) {
+		Log::error(kTag, "patch of %s: read %zu of %zu bytes", name, length, current);
+		return BlobStatus::storage_error;
+	}
+	for (size_t i = 0; i < count; ++i) {
+		std::memcpy(content.data() + offset, chunks[i].data, chunks[i].size);
+		offset += chunks[i].size;
+	}
+	std::string temporary = temporary_path(name);
+	int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0) {
+		return failure(errno, "cannot create", temporary);
+	}
+	bool ok = write_all(fd, content.data(), content.size()) && ::fsync(fd) == 0;
+	int error = errno;
+	if (::close(fd) != 0 && ok) {
+		ok = false;
+		error = errno;
+	}
+	if (!ok) {
+		::unlink(temporary.c_str());
+		return failure(error, "cannot write", temporary);
+	}
+	std::string target = path(name);
+	if (std::rename(temporary.c_str(), target.c_str()) != 0) {
+		error = errno;
+		::unlink(temporary.c_str());
+		return failure(error, "cannot replace", target);
+	}
+	return sync_directory() ? BlobStatus::ok : BlobStatus::storage_error;
 }
 
 BlobStatus FileBlobStore::read(const char* name, size_t offset, void* buffer, size_t size, size_t& length) const {

@@ -165,9 +165,9 @@ TEST_CASE("History: a load whose rings exceed the budget is refused with the rea
 	// (7200 / 60 + 1) + (3600 / 60 + 1) = 182 samples of 8 bytes.
 	const HistorySpec bigger[] = {{0, 7200, 60}, {1, 3600, 60}};
 	CHECK(boot.history.load(bigger, 2, 976) == HistoryStatus::budget_exceeded);
-	CHECK(capture.sink.contains("the rings need 1456 bytes, the image's budget is 976"));
+	CHECK(capture.sink.contains("the rings and archives need 1456 bytes of RAM, the image's budget is 976"));
 	CHECK(boot.history.load(bigger, 2, 70000) == HistoryStatus::budget_exceeded);
-	CHECK(capture.sink.contains("the image asks for 70000 bytes, the device allows at most 65536"));
+	CHECK(capture.sink.contains("the image asks for 70000 bytes of RAM, the device allows at most 65536"));
 	CHECK(boot.history.size() == 2);
 	CHECK(boot.history.samples(0) == 1);
 
