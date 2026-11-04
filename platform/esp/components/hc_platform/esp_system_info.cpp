@@ -136,6 +136,16 @@ bool EspSystemInfo::visit_tasks(TaskVisitor& visitor, const char** reason) const
 #endif
 }
 
+void EspSystemInfo::start_temperature_sensor() {
+	Temperature reading;
+	const char* reason = "";
+	if (temperature(reading, &reason)) {
+		ESP_LOGI(kTag, "die temperature %.1f C", static_cast<double>(reading.celsius));
+	} else {
+		ESP_LOGW(kTag, "temperature sensor not started (%s): WiFi may hear nothing until a software restart", reason);
+	}
+}
+
 bool EspSystemInfo::temperature(Temperature& out, const char** reason) const {
 #if SOC_TEMP_SENSOR_SUPPORTED
 	if (sensor_ == nullptr) {

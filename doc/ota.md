@@ -255,6 +255,19 @@ port resets the board) cannot roll a USB-flashed image back. If the otadata is b
 or written by an older flash procedure), the bootloader starts the updater, which finds no
 instruction and a valid ota_0 and boots it within a second or two.
 
+**The radio after a power-on (#69).** Before WiFi starts, the updater (and the application, through
+`EspSystemInfo::start_temperature_sensor()`) installs the die temperature sensor and logs `die
+temperature <n> C`. The PHY's calibration uses the sensor, but after every reset other than a
+software restart (power-on, the USB reset of esptool, a brownout) the IDF startup code gates the
+sensor's bus clock (`esp_system/port/soc/esp32c6/clk.c`), and the WiFi stack does not turn it on
+again: the receiver then hears no access point at all, every scan comes back empty and every connect
+fails with reason 201 (NO_AP_FOUND), until the next software restart. The application installed the
+sensor for its System page, and the clock survives a software restart, so the handover from the
+application to the updater always worked; the updater after a power-on or a USB reset never
+connected (measured 2026-11-04: 0 access points in every scan, against 3 to 4 after the fix, and the
+network up 10 s after the reset). The application was deaf in the same way until its first
+temperature reading or its own recovery (43 s to the network after a USB reset, 14 s with the fix).
+
 **The updater's own update is by USB only.** It is small and rarely changes; it cannot replace
 itself while it runs, and the application does not write the factory partition (except the
 staging area behind the updater's image, above). Flash it with the
@@ -406,6 +419,41 @@ scripts/update-server.py              # serves platform/esp/build-esp32c6 on por
 The firmware on the board must trust the server's signing key: build it with
 `-DHC_RELEASE_KEY=$PWD/scripts/dev-release-key.pub` (the server prints the line; "Manifest
 signature" above), or the check reports `manifest refused: ...`.
+
+**Before anything is erased: the backup.** `erase_flash`, `erase_region`, `write_flash --erase-all`
+and a `write_flash` at a wrong offset destroy what no build can bring back: the WiFi credentials, the
+device password, the tokens, the E-Home enrollment and the installation key (NVS), the image, the
+saved values and the history (storage), the Zigbee network (`zb_storage`, `zb_db`). On 2026-11-04 a
+`write_flash ... --erase-all` meant for the updater alone erased all of it on the desk board; the
+recovery took WPS, a new password, a new enrollment and a new Zigbee network. So:
+
+1. Read the whole flash first and check it: `esptool.py --chip esp32c6 --port <port> read_flash 0
+   0x400000 full.bin` (14 s on the 4 MB board), then `verify_flash 0x10000 <the same bytes>` over
+   the partitions that do not change while the board runs (updater and application). NVS and
+   storage change by themselves between two reads (a few bytes of a running board), so a full
+   `verify_flash` reports a mismatch there; that is expected.
+2. Write only the partition the change needs, by its offset (`0x10000` the updater, `0x100000` the
+   application, `0x3b0000` otadata on the 4 MB layout); never `--erase-all`, never `erase_flash`.
+3. Read the command line in full before running it, wrappers and flags included.
+4. If something was lost after all: `write_flash 0x9000 nvs.bin` (and the other data partitions)
+   from the backup, cut out of `full.bin` with `dd`, restores the board as it was.
+
+**Testing the recovery path without erasing the application.** The updater's menuconfig option
+*HomeControl updater testing → TEST ONLY: take the idle path* (`HC_UPDATER_TEST_BUTTON_WINDOW`, with
+`HC_UPDATER_TEST_BUTTON_WINDOW_AFTER_S`) builds an updater that treats ota_0 as empty, opens the
+button window by itself that many seconds after boot, accepts a token-less upload over a valid
+application, and logs what a scan sees after each failed connect (`test scan: ...`). Build it in its
+own directory (`idf.py -B build-esp32c6-test menuconfig`), then:
+
+```bash
+esptool.py --chip esp32c6 --port <port> --after no_reset write_flash 0x10000 updater/build-esp32c6-test/hc_updater.bin
+esptool.py --chip esp32c6 --port <port> --after hard_reset erase_region 0x3b0000 0x2000   # otadata: boot the updater
+curl -T build-esp32c6/homecontrol.bin http://<IP>/firmware   # no token while the window is open
+```
+
+The upload selects ota_0 again (which rewrites otadata) and restarts into the application. Flash the
+normal updater back to 0x10000 afterwards: the test build lets anyone on the network flash the
+device without the token while its window is open.
 
 **Upload from the browser instead of USB.** With an updater that serves uploads on the board (flashed
 once over USB with the procedure above), a new application build is installed from the browser:

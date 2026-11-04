@@ -177,6 +177,7 @@ hc::esp::ImageConsole& image_console() {
 void loop_task(void*) {
 	hc::Controller& ctl = controller();
 	g_queue.set_loop(&ctl.loop()); // the messages' run time counts as loop turns (the System page)
+	g_system.start_temperature_sensor(); // before the radio starts (#69)
 	g_wifi.init(ctl.connectivity());
 	g_services.init(ctl.connectivity(), g_wifi.hostname());
 	g_ota.set_fetcher(&fetches().update());

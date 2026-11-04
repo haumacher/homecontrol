@@ -27,3 +27,25 @@ menu "HomeControl network"
 			for 5 minutes without the one-time token (doc/ota.md "Recovery with the button").
 
 endmenu
+
+menu "HomeControl updater testing"
+
+	config HC_UPDATER_TEST_BUTTON_WINDOW
+		bool "TEST ONLY: take the idle path and open the button window without the button"
+		default n
+		help
+			For tests of the recovery path (#69) without erasing the application: the decision
+			treats ota_0 as holding no application (so the updater waits idle, as after a broken
+			update), and the idle wait acts as if the button had been held for 3 s once the updater
+			has run HC_UPDATER_TEST_BUTTON_WINDOW_AFTER_S seconds. An upload then needs no token
+			(anyone on the network can flash): never enable it in a build that leaves the desk. The
+			updater logs a warning at every boot while it is on. Reach the updater by erasing
+			otadata (doc/ota.md, "Testing the recovery path").
+
+	config HC_UPDATER_TEST_BUTTON_WINDOW_AFTER_S
+		int "Seconds since boot before the test window opens"
+		depends on HC_UPDATER_TEST_BUTTON_WINDOW
+		range 0 3600
+		default 0
+
+endmenu

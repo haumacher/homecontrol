@@ -33,6 +33,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "driver/temperature_sensor.h"
 #if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
 #include "esp_crt_bundle.h"
 #endif
@@ -124,6 +125,32 @@ void delay_ms(uint32_t ms) {
 
 // ---- WiFi: plain station, the application's credentials ---------------------------------------
 
+/// Switches the die temperature sensor on before the radio starts (#69). The PHY's calibration
+/// reads it, but after any reset other than a software restart the startup code gates the sensor's
+/// bus clock (ESP-IDF esp_system/port/soc/esp32c6/clk.c), and a WiFi-only program turns it on again
+/// nowhere: the receiver then hears no access point at all (every scan empty, WiFi reason 201) until
+/// the next software restart. The application installs the sensor for its System page, which is why
+/// the handover from it (a software restart) always worked and the updater after a power-on or a
+/// USB reset never did. The sensor stays enabled.
+void temperature_sensor_on() {
+	temperature_sensor_config_t config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+	temperature_sensor_handle_t sensor = nullptr;
+	esp_err_t err = temperature_sensor_install(&config, &sensor);
+	if (err == ESP_OK) {
+		err = temperature_sensor_enable(sensor);
+	}
+	float celsius = 0;
+	if (err == ESP_OK) {
+		err = temperature_sensor_get_celsius(sensor, &celsius);
+	}
+	if (err != ESP_OK) {
+		ESP_LOGW(kTag, "temperature sensor not started (%s): WiFi may hear nothing until a restart",
+			esp_err_to_name(err));
+	} else {
+		ESP_LOGI(kTag, "die temperature %.1f C", static_cast<double>(celsius));
+	}
+}
+
 void on_wifi_event(void*, esp_event_base_t base, int32_t id, void* data) {
 	if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
 		esp_wifi_connect();
@@ -164,6 +191,7 @@ bool wifi_start(const char*& why) {
 	if (!stack_tried) {
 		stack_tried = true;
 		g_events = xEventGroupCreate();
+		temperature_sensor_on();
 		esp_err_t err = esp_netif_init();
 		if (err == ESP_OK) {
 			err = esp_event_loop_create_default();
@@ -520,6 +548,13 @@ char g_upload_token[hc::kUploadTokenLength + 1] = {};
 /// until g_button_until_us. Someone at the device could flash it over USB as well; a device with a
 /// working application is never opened this way (the application issues the token).
 constexpr int64_t kButtonHoldUs = 3 * 1000000;
+/// The test variant (Kconfig HC_UPDATER_TEST_BUTTON_WINDOW, never in a release): the decision treats
+/// ota_0 as empty and the idle wait opens the window by itself.
+#if CONFIG_HC_UPDATER_TEST_BUTTON_WINDOW
+constexpr bool kTestButtonWindow = true;
+#else
+constexpr bool kTestButtonWindow = false;
+#endif
 constexpr int64_t kButtonWindowUs = 5 * 60 * 1000000LL;
 std::atomic<int64_t> g_button_until_us{0};
 bool g_button_ready = false;
@@ -783,7 +818,7 @@ esp_err_t handle_firmware(httpd_req_t* request) {
 	bool by_token = header != 0 && header < sizeof(authorization) &&
 		httpd_req_get_hdr_value_str(request, "Authorization", authorization, sizeof(authorization)) == ESP_OK &&
 		g_upload_token[0] != '\0' && hc::upload_authorized(g_upload_token, authorization);
-	bool by_button = !by_token && button_window_open() && inspect(g_upload_app) != hc::AppImageState::valid;
+	bool by_button = !by_token && button_window_open() && (kTestButtonWindow || inspect(g_upload_app) != hc::AppImageState::valid);
 	if (!by_token && !by_button) {
 		std::memset(authorization, 0, sizeof(authorization));
 		return refuse(request, "401 Unauthorized", "updater.unauthorized",
@@ -918,6 +953,33 @@ bool start_upload_server(const char*& why) {
 	return true;
 }
 
+#if CONFIG_HC_UPDATER_TEST_BUTTON_WINDOW
+/// The test variant: what a scan sees (#69 diagnosis).
+void test_scan_dump() {
+	esp_err_t err = esp_wifi_scan_start(nullptr, true);
+	if (err != ESP_OK) {
+		ESP_LOGW(kTag, "test scan: %s", esp_err_to_name(err));
+		return;
+	}
+	uint16_t count = 0;
+	esp_wifi_scan_get_ap_num(&count);
+	ESP_LOGW(kTag, "test scan: %u access point(s)", static_cast<unsigned>(count));
+	wifi_ap_record_t record;
+	int shown = 0;
+	while (esp_wifi_scan_get_ap_record(&record) == ESP_OK) {
+		if (shown++ < 6) {
+			ESP_LOGW(kTag, "test scan:   ch %d rssi %d %s", record.primary, record.rssi, reinterpret_cast<const char*>(record.ssid));
+		}
+	}
+	int8_t power = 0;
+	esp_wifi_get_max_tx_power(&power);
+	wifi_country_t country = {};
+	esp_wifi_get_country(&country);
+	ESP_LOGW(kTag, "test scan: tx power %d/4 dBm, country %.2s channels %d..%d", power, country.cc, country.schan,
+		country.schan + country.nchan - 1);
+}
+#endif
+
 /// Serves the upload until an image is installed (restart into it), the browser cancels, or the
 /// timeout runs out and hc::decide_upload_expired() says to boot ota_0 (restart into it). Does not
 /// return: when booting ota_0 fails it serves on without a limit.
@@ -948,6 +1010,9 @@ void serve_upload(const esp_partition_t* app, const hc::UpdateInstruction& instr
 				ESP_LOGW(kTag, "WiFi disconnected (reason %d); reconnecting", g_last_reason);
 				announced = false;
 				delay_ms(1000);
+#if CONFIG_HC_UPDATER_TEST_BUTTON_WINDOW
+				test_scan_dump();
+#endif
 				esp_wifi_connect();
 			} else if ((bits & kGotIp) && !announced) {
 				if (!server_started) {
@@ -1007,7 +1072,13 @@ void wait_watching_button(const esp_partition_t* app, uint32_t ms) {
 	int64_t end = esp_timer_get_time() + static_cast<int64_t>(ms) * 1000;
 	while (esp_timer_get_time() < end) {
 		int64_t now = esp_timer_get_time();
-		if (button_held(now)) {
+#if CONFIG_HC_UPDATER_TEST_BUTTON_WINDOW
+		// The test variant (Kconfig): as if the button had been held.
+		bool held = now >= static_cast<int64_t>(CONFIG_HC_UPDATER_TEST_BUTTON_WINDOW_AFTER_S) * 1000000 || button_held(now);
+#else
+		bool held = button_held(now);
+#endif
+		if (held) {
 			g_button_until_us.store(now + kButtonWindowUs);
 			ESP_LOGW(kTag, "button held: serving an upload without the token for 5 minutes");
 			hc::UpdateInstruction none;
@@ -1025,6 +1096,10 @@ extern "C" void app_main(void) {
 	ESP_LOGI(kTag, "HomeControl updater %s (%s)", hc::kVersion, hc::build_id());
 	init_nvs();
 	button_init();
+#if CONFIG_HC_UPDATER_TEST_BUTTON_WINDOW
+	ESP_LOGW(kTag, "TEST BUILD: ota_0 counts as empty, the button window opens by itself %d s after boot (never ship this)",
+		CONFIG_HC_UPDATER_TEST_BUTTON_WINDOW_AFTER_S);
+#endif
 
 	const esp_partition_t* app = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
 	if (app == nullptr) {
@@ -1042,7 +1117,7 @@ extern "C" void app_main(void) {
 			ESP_LOGE(kTag, "update instruction unusable (%s): discarded", error);
 			hc::clear_update_instruction(g_settings);
 		}
-		hc::AppImageState image = inspect(app);
+		hc::AppImageState image = kTestButtonWindow ? hc::AppImageState::missing : inspect(app);
 		hc::UpdaterStep step = hc::decide_updater_step(status, instruction.attempts, image);
 		ESP_LOGI(kTag, "instruction %s%s%s, attempts %ld, ota_0 %s: %s (%s)", hc::instruction_status_name(status),
 			status == hc::InstructionStatus::pending ? " for " : "",
@@ -1050,7 +1125,7 @@ extern "C" void app_main(void) {
 			hc::app_image_state_name(image), hc::updater_action_name(step.action), step.reason);
 		if (step.delay_ms > 0) {
 			ESP_LOGI(kTag, "next step in %u s", static_cast<unsigned>(step.delay_ms / 1000));
-			if (step.action == hc::UpdaterAction::wait && g_button_ready) {
+			if (step.action == hc::UpdaterAction::wait && (g_button_ready || kTestButtonWindow)) {
 				ESP_LOGI(kTag, "or hold the button for 3 s to upload an image from the browser");
 				wait_watching_button(app, step.delay_ms);
 			} else {

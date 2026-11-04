@@ -38,7 +38,8 @@ public:
 /// The device's facts (esp_system_info.cpp): free heap, the minimum ever free heap, the largest
 /// block and the heap's size from the IDF heap statistics; the FreeRTOS tasks with their stack
 /// high-water marks and, with CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS, their CPU share; the die
-/// temperature (driver temperature_sensor, installed at the first reading, enabled per reading);
+/// temperature (driver temperature_sensor, installed by start_temperature_sensor() before WiFi starts,
+/// enabled per reading);
 /// chip, flash, IDF and OTA facts; the NVS statistics of the `nvs` partition; the console output
 /// queue's figures (console_output.h).
 class EspSystemInfo : public SystemInfo {
@@ -49,6 +50,13 @@ public:
 	void visit_chip(DiagnosticsVisitor& visitor) const override;
 	bool visit_settings_store(DiagnosticsVisitor& visitor, const char** reason) const override;
 	bool console_output(ConsoleOutputInfo& out, const char** reason) const override;
+
+	/// Installs the temperature sensor and takes one reading; called before WiFi starts (#69). The
+	/// PHY's calibration uses the sensor, but after any reset other than a software restart the
+	/// startup code gates its bus clock (ESP-IDF esp_system/port/soc/esp32c6/clk.c) and the WiFi
+	/// stack does not turn it on again: the receiver then hears no access point (WiFi reason 201)
+	/// until something installs the sensor. Logs the temperature, or why the sensor is missing.
+	void start_temperature_sensor();
 
 private:
 	/// The temperature sensor's handle once installed (temperature_sensor_handle_t).
