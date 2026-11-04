@@ -1339,3 +1339,92 @@ TEST_CASE("Blocks review probe: house mode drives a room controller; vacation en
 	CHECK(f.model.find("block/hm/mode")->value().as_enum() == 0);
 	CHECK(f.model.find("block/wz/activeSetpoint")->value().as_real() == 21);
 }
+
+TEST_CASE("Blocks review probe: a PV surplus chain through the controller; the second instance takes only what the "
+		  "first leaves; a lost meter releases both") {
+	DashboardFixture f;
+	f.load(R"({"image": {"schemaVersion": "1.3", "projectId": "pv", "revision": 1},
+		"datapoints": [{"id": "grid", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "hp", "type": "boolean", "writable": true, "virtual": {}},
+		               {"id": "rod", "type": "real", "writable": true, "virtual": {}}],
+		"blocks": [{"id": "pv1", "type": "org.homecontrol.pv-surplus", "version": "1.0", "label": "PV 1",
+		            "inputs": {"gridPower": "grid", "lowerPower": "block/pv2/loadPower"},
+		            "outputs": {"switch1": "hp"},
+		            "parameters": {"surplusFilter": 0, "meterTimeout": 60000, "power1": 1000, "minOn1": 0}},
+		           {"id": "pv2", "type": "org.homecontrol.pv-surplus", "version": "1.0", "label": "PV 2",
+		            "inputs": {"gridPower": "block/pv1/surplus"}, "outputs": {"setpoint1": "rod"},
+		            "parameters": {"gridSign": "exportPositive", "surplusFilter": 0, "meterTimeout": 60000, "power1": 3000,
+		                           "minPower1": 1000, "step1": 1000, "minOn1": 0}}]})");
+	auto meter = [&](double grid) {
+		REQUIRE(f.model.command(f.model.find("grid")->id(), hc::Value::of_real(grid)) == hc::DatapointStatus::ok);
+		f.controller.run_once();
+	};
+	auto period = [&]() {
+		f.fake.clock.advance(30000);
+		for (int i = 0; i < 6; ++i) {
+			f.controller.run_once();
+		}
+	};
+	meter(-2600); // 2600 W export: the blocks start on it and allocate at once
+	CHECK(f.model.find("hp")->value().as_bool());
+	CHECK(f.model.find("block/pv1/surplus")->value().as_real() == 1600);
+	CHECK(f.model.find("rod")->value().as_real() == 1000); // 1600 left, a step of the rod: not 2000
+	meter(-600); // the meter shows both loads
+	period();
+	CHECK(f.model.find("hp")->value().as_bool());
+	CHECK(f.model.find("rod")->value().as_real() == 1000);
+	CHECK(f.model.find("block/pv1/loadPower")->value().as_real() == 2000);
+	// The meter falls silent: both instances release their loads within meterTimeout and a period.
+	for (int i = 0; i < 3; ++i) {
+		period();
+	}
+	CHECK(!f.model.find("hp")->value().as_bool());
+	period(); // the second loses its meter, the first one's surplus, a period later
+	CHECK(f.model.find("rod")->value().as_real() == 0);
+}
+
+TEST_CASE("Blocks review probe: a PV chain whose meter falls silent releases both instances' loads") {
+	DashboardFixture f;
+	f.load(R"({"image": {"schemaVersion": "1.3", "projectId": "pv", "revision": 1},
+		"datapoints": [{"id": "grid", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "boiler", "type": "boolean", "writable": true, "virtual": {}},
+		               {"id": "car", "type": "boolean", "writable": true, "virtual": {}}],
+		"blocks": [{"id": "a", "type": "org.homecontrol.pv-surplus", "version": "1.0", "label": "A",
+		            "inputs": {"gridPower": "grid", "lowerPower": "block/b/loadPower"}, "outputs": {"switch1": "boiler"},
+		            "parameters": {"gridSign": "exportPositive", "surplusFilter": 0, "meterTimeout": 60000,
+		                           "power1": 1000, "minOn1": 0, "minOff1": 0}},
+		           {"id": "b", "type": "org.homecontrol.pv-surplus", "version": "1.0", "label": "B",
+		            "inputs": {"gridPower": "block/a/surplus"}, "outputs": {"switch1": "car"},
+		            "parameters": {"gridSign": "exportPositive", "surplusFilter": 0, "meterTimeout": 60000,
+		                           "power1": 500, "minOn1": 0, "minOff1": 0}}]})");
+	auto run = [&](int seconds, bool report) {
+		for (int s = 0; s < seconds; s += 5) {
+			if (report) {
+				// A physical meter: the export is the generation's 3000 W minus what the loads draw.
+				const hc::Datapoint* boiler = f.model.find("boiler");
+				const hc::Datapoint* car = f.model.find("car");
+				double drawn = (boiler->quality() == hc::Quality::good && boiler->value().as_bool() ? 1000.0 : 0.0) +
+					(car->quality() == hc::Quality::good && car->value().as_bool() ? 500.0 : 0.0);
+				REQUIRE(f.model.command(f.model.find("grid")->id(), hc::Value::of_real(3000.0 - drawn)) == hc::DatapointStatus::ok);
+			}
+			f.fake.clock.advance(5000);
+			f.controller.run_once();
+			f.controller.run_once();
+		}
+	};
+	run(180, true);
+	CHECK(f.model.find("boiler")->value().as_bool() == true);
+	CHECK(f.model.find("car")->value().as_bool() == true);
+	// The meter falls silent: after meterTimeout A has no measurement and releases its load; B, fed by
+	// A's surplus, must not keep running or switch on from what A no longer measures.
+	bool car_on_after_loss = false;
+	for (int s = 0; s < 240; s += 5) {
+		run(5, false);
+		if (s > 150 && f.model.find("car")->value().as_bool()) {
+			car_on_after_loss = true;
+		}
+	}
+	CHECK(f.model.find("boiler")->value().as_bool() == false);
+	CHECK(f.model.find("car")->value().as_bool() == false);
+	CHECK_FALSE(car_on_after_loss);
+}

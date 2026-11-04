@@ -1,0 +1,452 @@
+{
+	"title": "PV surplus: a stale meter within meterTimeout holds (the filter kept, no load on, running loads kept); a meter older than meterTimeout is lost (released as minOn allows, the filter starts again); a forced run goes on without the meter; without a meter only forced loads run (D8, D10).",
+	"note": "UTC, 2026-06-21 20:00 at 0. pv: meterTimeout 60 s, surplusFilter 30 s (weight 1/2 per period); load 2 (300 W) forced from the start (20:00 + 1 h = 21:00), load 1 (1000 W, minOn 120 s) on at 60 s on the filtered 1450 W. The meter stale at 80 s (last update 75 s): held at 90 and 120 s; lost at 150 s (75 s old): released but held on by minOn until 180 s; good again at 200 s: the filter starts at 2000, load 1 on at 210 s. pvn: only pvPower bound (no housePower): no meter, the surplus always lost; load 1 forced, load 2 never on, no surplus written.",
+	"clock": {
+		"start": "2026-06-21T20:00:00"
+	},
+	"datapoints": [
+		{
+			"name": "grid",
+			"type": "real"
+		},
+		{
+			"name": "s1",
+			"type": "boolean"
+		},
+		{
+			"name": "sp1",
+			"type": "real"
+		},
+		{
+			"name": "s2",
+			"type": "boolean"
+		},
+		{
+			"name": "sp2",
+			"type": "real"
+		},
+		{
+			"name": "pvn",
+			"type": "real"
+		},
+		{
+			"name": "n1",
+			"type": "boolean"
+		},
+		{
+			"name": "n2",
+			"type": "boolean"
+		}
+	],
+	"blocks": [
+		{
+			"id": "pv",
+			"type": "org.homecontrol.pv-surplus",
+			"version": "1.0",
+			"label": "PV surplus",
+			"inputs": {
+				"gridPower": "grid"
+			},
+			"outputs": {
+				"switch1": "s1",
+				"setpoint1": "sp1",
+				"switch2": "s2",
+				"setpoint2": "sp2"
+			},
+			"parameters": {
+				"surplusFilter": 30000,
+				"meterTimeout": 60000,
+				"power1": 1000,
+				"minOn1": 120000,
+				"minOff1": 0,
+				"power2": 300,
+				"mustRunBy2": {
+					"hour": 21,
+					"minute": 0,
+					"second": 0
+				},
+				"mustRunFor2": 3600000
+			}
+		},
+		{
+			"id": "pvn",
+			"type": "org.homecontrol.pv-surplus",
+			"version": "1.0",
+			"label": "PV surplus",
+			"inputs": {
+				"pvPower": "pvn"
+			},
+			"outputs": {
+				"switch1": "n1",
+				"switch2": "n2"
+			},
+			"parameters": {
+				"power1": 300,
+				"mustRunBy1": {
+					"hour": 20,
+					"minute": 30,
+					"second": 0
+				},
+				"mustRunFor1": 3600000,
+				"power2": 1000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 15000,
+			"report": {
+				"datapoint": "grid",
+				"value": -600
+			}
+		},
+		{
+			"at": 15000,
+			"report": {
+				"datapoint": "pvn",
+				"value": 5000
+			}
+		},
+		{
+			"at": 31000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"s2": true,
+					"block/pv/state1": 1,
+					"block/pv/state2": 3,
+					"block/pv/surplus": 600.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0,
+							"level2": 300.0,
+							"filtered": 900.0,
+							"hasFiltered": 1.0
+						}
+					},
+					"pvn": {
+						"state": {
+							"level1": 300.0,
+							"level2": 0.0,
+							"hasFiltered": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 45000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1700
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"s2": true,
+					"block/pv/state1": 2,
+					"block/pv/state2": 3,
+					"block/pv/surplus": 150.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 1000.0,
+							"level2": 300.0,
+							"filtered": 1450.0,
+							"hasFiltered": 1.0
+						}
+					},
+					"pvn": {
+						"state": {
+							"level1": 300.0,
+							"level2": 0.0,
+							"hasFiltered": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 75000,
+			"report": {
+				"datapoint": "grid",
+				"value": -700
+			}
+		},
+		{
+			"at": 80000,
+			"stale": "grid"
+		},
+		{
+			"at": 91000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"s2": true,
+					"block/pv/state1": 2,
+					"block/pv/state2": 3,
+					"block/pv/surplus": 150.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 1000.0,
+							"level2": 300.0,
+							"filtered": 1450.0,
+							"hasFiltered": 1.0
+						}
+					},
+					"pvn": {
+						"state": {
+							"level1": 300.0,
+							"level2": 0.0,
+							"hasFiltered": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"s2": true,
+					"block/pv/state1": 2,
+					"block/pv/state2": 3,
+					"block/pv/surplus": 150.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 1000.0,
+							"level2": 300.0,
+							"filtered": 1450.0,
+							"hasFiltered": 1.0
+						}
+					},
+					"pvn": {
+						"state": {
+							"level1": 300.0,
+							"level2": 0.0,
+							"hasFiltered": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 151000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"s2": true,
+					"block/pv/state1": 2,
+					"block/pv/state2": 3,
+					"block/pv/surplus": 150.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 1000.0,
+							"level2": 300.0,
+							"filtered": 1450.0,
+							"hasFiltered": 0.0
+						}
+					},
+					"pvn": {
+						"state": {
+							"level1": 300.0,
+							"level2": 0.0,
+							"hasFiltered": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 181000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"s2": true,
+					"block/pv/state1": 1,
+					"block/pv/state2": 3,
+					"block/pv/surplus": 150.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0,
+							"level2": 300.0,
+							"filtered": 1450.0,
+							"hasFiltered": 0.0
+						}
+					},
+					"pvn": {
+						"state": {
+							"level1": 300.0,
+							"level2": 0.0,
+							"hasFiltered": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 200000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1700
+			}
+		},
+		{
+			"at": 211000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"s2": true,
+					"block/pv/state1": 2,
+					"block/pv/state2": 3,
+					"block/pv/surplus": 700.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 1000.0,
+							"level2": 300.0,
+							"filtered": 2000.0,
+							"hasFiltered": 1.0
+						}
+					},
+					"pvn": {
+						"state": {
+							"level1": 300.0,
+							"level2": 0.0,
+							"hasFiltered": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 225000,
+			"report": {
+				"datapoint": "grid",
+				"value": -700
+			}
+		}
+	],
+	"end": 240000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 0.0
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": true
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 300.0
+			},
+			{
+				"at": 0,
+				"block": "pvn",
+				"datapoint": "n1",
+				"value": true
+			},
+			{
+				"at": 0,
+				"block": "pvn",
+				"datapoint": "n2",
+				"value": false
+			},
+			{
+				"at": 60000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": true
+			},
+			{
+				"at": 60000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 1000.0
+			},
+			{
+				"at": 180000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": false
+			},
+			{
+				"at": 180000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 0.0
+			},
+			{
+				"at": 210000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": true
+			},
+			{
+				"at": 210000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 1000.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"s1": true,
+				"s2": true,
+				"n1": true,
+				"n2": false,
+				"block/pv/surplus": 700.0,
+				"block/pvn/surplus": null,
+				"block/pvn/state1": 3,
+				"block/pvn/state2": 1
+			},
+			"blocks": {
+				"pv": {
+					"state": {
+						"level1": 1000.0,
+						"level2": 300.0,
+						"run2": 240000.0,
+						"filtered": 2000.0
+					}
+				},
+				"pvn": {
+					"state": {
+						"level1": 300.0,
+						"hasFiltered": 0.0
+					}
+				}
+			}
+		}
+	}
+}

@@ -567,7 +567,7 @@ parameters reach the control pages as datapoints (`spec/runtime-image.md` 3.9).
 
 The corpus pins the exact values. To give the same results, an implementation:
 
-- evaluates the formulas of sections 13.1, 13.2 and 14 to 19 in IEEE 754 binary64 with
+- evaluates the formulas of sections 13.1, 13.2 and 14 to 20 in IEEE 754 binary64 with
   round-to-nearest-even, in the order written (left to right, the parentheses as given), without
   fused multiply-add and without extended precision;
 - uses `floor(x)`, `|x|`, `sqrt(x)`, `min`, `max` and comparisons only (no `exp`, `pow`, `log`, no
@@ -1849,7 +1849,396 @@ persisted mode, a restored mode of a later minor version, and the record's pacin
 without a wall clock; the chain to a room controller's setpoint; the cost; and no allocation in
 steady state. The corpus has the contract cases (`spec/fixtures/blocks/README.md`).
 
-## 20. Changes
+## 20. The PV surplus control `org.homecontrol.pv-surplus` 1.0
+
+Uses the power the photovoltaic system would export for up to two loads in the order of their
+priority (issue #65): a heat pump's boost (SG Ready), a heating rod, a wallbox, a washing machine, a
+pool pump. A load is *switched* (on at its power) or *modulated* (from a lowest to a highest power
+in steps); it runs while the surplus pays for it, with a hysteresis, minimum on and off times and a
+daily maximum, and by a deadline it is forced to have run for a time, from the grid if the sun did
+not deliver. A home battery takes the surplus first up to a state of charge. The outputs fit KNX: a
+switching actuator per load (DPT 1.001) and a setpoint in W (DPT 14.056) or % (DPT 5.001). More than
+two loads take a chain of instances (20.3).
+
+### 20.1 Manifest
+
+Period 30 000 ms, `persistEvery` 600 000 ms, no timers. Every input has the trigger `none`: the block
+reads them at its period (D4).
+
+| Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
+|---|---|---|---|---|---|---|
+| `gridPower` | real | W | | 1 | none | The grid meter: the power at the connection point, signed by `gridSign`; in a chain the previous instance's `surplus` (20.3). |
+| `pvPower` | real | W | | 1 | none | Without `gridPower`: the generation of the PV system ... |
+| `housePower` | real | W | | 1 | none | ... and the house's consumption, with the loads and without the battery (D3). |
+| `batteryPower` | real | W | | 1 | none | The home battery's power, signed by `batterySign`. |
+| `batterySoc` | real | % | | 1 | none | The battery's state of charge. |
+| `lowerPower` | real | W | | 1 | none | The next instance's `loadPower` in a chain (20.3). |
+| `enable` | boolean | | | 1 | none | False: no load runs, also no forced run. |
+| `ready1`, `ready2` | boolean | | | 1 | none | False: load k may not run (a washing machine not loaded); unbound: it may. |
+
+| Output | Type | Unit | Failsafe | Meaning |
+|---|---|---|---|---|
+| `switch1` | boolean | | false | Load 1 on (DPT 1.001). |
+| `setpoint1` | real, `min` 0 | W or % | 0 | Load 1's power: in W, or in % of `power1` (`setpointUnit`; the manifest's unit is the string `W or %`). |
+| `state1` | enumeration, `min` 0, `max` 4 | | diagnostic | 0 off (it may not run), 1 waiting, 2 running, 3 forced, 4 blocked (`maxPerDay1` reached). |
+| `energy1` | real | Wh | diagnostic | Load 1's energy today, at its allocated power. |
+| `switch2` .. `energy2` | | | | The same for load 2. |
+| `loadPower` | real | W | 0 | The power allocated to this instance's loads and to `lowerPower`'s (20.3). |
+| `surplus` | real | W | diagnostic | The surplus the loads leave: the filtered surplus minus `loadPower` (D2); the next instance's meter in a chain. |
+
+The outputs are written in the manifest in the order `switch1`, `setpoint1`, `state1`, `energy1`,
+`switch2`, `setpoint2`, `state2`, `energy2`, `loadPower`, `surplus` (19 ports); the inputs in the order
+of the table.
+
+| Parameter | Type | Default | Range | Adjustable | Meaning |
+|---|---|---|---|---|---|
+| `gridSign` | enumeration | `importPositive` (0) | `importPositive` 0, `exportPositive` 1 | | The grid meter's sign: import positive (export negative), or export positive. |
+| `batterySign` | enumeration | `chargePositive` (0) | `chargePositive` 0, `dischargePositive` 1 | | The battery's sign. |
+| `surplusFilter` | duration | 120 000 | 0..1 800 000 | | The time constant of the surplus's filter (against clouds); 0: none. |
+| `onMargin` | real, W | 100 | 0..10 000 | | A load goes on, or a step up, when the surplus leaves at least this after it. |
+| `allowedImport` | real, W | 100 | 0..10 000 | | A running load stays while the grid would supply at most this to it. |
+| `batteryPriority` | real, % | 100 | 0..100 | yes | The battery takes the surplus first below this state of charge (D9). |
+| `meterTimeout` | duration | 300 000 | 10 000..3 600 000 | | A meter without an update for this long is lost (D8). |
+| `setpointUnit` | enumeration | `watt` (0) | `watt` 0, `percent` 1 | | The unit of every `setpoint<k>`: W, or % of the load's `power<k>`. |
+| `power<k>` | integer, W | 0 | 0..100 000 | | Load k's power (switched) or highest power (modulated); 0: load k is not used. |
+| `minPower<k>` | integer, W | 0 | 0..100 000 | | The lowest power of a modulated load; with `step<k>` and `power<k>` above 0, 0 < `minPower<k>` <= `power<k>` (B17). |
+| `step<k>` | integer, W | 0 | 0..100 000 | | The step of a modulated load; 0: switched. |
+| `minOn<k>` | duration | 300 000 | 0..86 400 000 | | The shortest time load k stays on. |
+| `minOff<k>` | duration | 300 000 | 0..86 400 000 | | The shortest time it stays off. |
+| `maxPerDay<k>` | duration | 0 | 0..86 400 000 | | Its longest runtime per day; 0: none. |
+| `mustRunBy<k>` | timeOfDay | 18:00:00 | | yes | The deadline of the must-run ... |
+| `mustRunFor<k>` | duration | 0 | 0..86 400 000 | yes | ... and the runtime it must have reached today by then; 0: none. With `maxPerDay<k>` > 0, `mustRunFor<k>` <= `maxPerDay<k>` (B17). |
+
+The parameters of the loads are written in the manifest after `setpointUnit`, load by load in the
+order of the table (`power1`, `minPower1`, ..., `mustRunFor1`, `power2`, ..., `mustRunFor2`): 8 + 2 × 8
+= 24. Cross-parameter checks (B17), load by load in this order: with `step<k>` > 0 and `power<k>` > 0,
+`minPower<k>` > 0 and `minPower<k>` <= `power<k>` (blamed: `minPower<k>`); with `maxPerDay<k>` > 0,
+`mustRunFor<k>` <= `maxPerDay<k>` (blamed: `mustRunFor<k>`). The checks are those of the image's values
+(B17 at the load); an override of the adjustable `mustRunFor<k>` is checked against its range only
+(8.2), and one above `maxPerDay<k>` ends the forced run at `maxPerDay<k>` (the load is blocked).
+
+State: `day` (initial -1), `run1`, `energy1`, `run2`, `energy2` persisted, and not persisted
+`lastStep`, `filtered`, `hasFiltered`, `dayStart`, `hasSent`, `sentLoadPower`, and per load `level<k>`,
+`switchedAt<k>` (initial -1); the others initial 0. In the manifest the fields come in the order
+`lastStep`, `filtered`, `hasFiltered`, `day`, `dayStart`, `hasSent`, `sentLoadPower`, then per load
+`level<k>`, `switchedAt<k>`, `run<k>`, `energy<k>` (15 fields). `run<k>` is milliseconds, `energy<k>`
+Wh, `level<k>` the allocated power in W (0: off).
+
+### 20.2 Decisions
+
+- **D1. Two loads per instance, a chain for more.** A load takes 5 ports (`ready`, `switch`,
+  `setpoint`, `state`, `energy`) and 8 parameters beside the 9 ports and 8 parameters of the meters
+  and the common settings. The limits of 11 would allow three (24 ports, 32 parameters), but not the
+  heap: an instance must cost no more than a room controller (3.3 KB on the host, doc/blocks.md
+  "Memory"), and each output and adjustable parameter is a mirror datapoint of about 93 bytes. Three
+  loads come to 4.1 KB, still 3.5 KB without any adjustable parameter; they would fit only without
+  the outputs `state<k>` and `energy<k>` and with one adjustable parameter. Two loads keep every
+  output and the adjustable must-run at 3.2 KB (20.6). More loads are instances in a chain (20.3):
+  the issue's eight loads are four instances. *Alternatives:* three loads without the per-load
+  diagnostics (the state "forced" and the day's energy are what a control page shows); eight loads
+  with shared minimum times and deadlines (a heat pump and a wallbox want different ones).
+- **D2. The surplus is what the loads may use.** The *sample* is the export, plus the power allocated
+  to the loads (this instance's and `lowerPower`), plus the battery's term (D9). In steady state it
+  does not depend on what the block switches: a running load lowers the export by its power and its
+  allocation adds it back. So the loads are allocated from the filtered surplus as a function of it:
+  each load in priority order gets the *budget* the higher ones leave and runs at the highest level
+  that fits (D5). A higher load that fits takes the budget of the lower ones, which are then shed
+  (priority, not first come); a falling surplus sheds the lowest load first, whose budget is the
+  export. The output `surplus` is what the loads leave (the filtered surplus minus `loadPower`), in
+  steady state the filtered export: what a control page shows as the surplus, and the next instance's
+  meter (20.3). The loads count at their allocated power, not a measured one: a load that draws less
+  (a heat pump at part load, a washing machine between its heating phases) makes the surplus look
+  larger by the difference. Measured load powers are left for a later minor version (3: a minor
+  version may add ports). *Alternative:* incremental switching on the export alone (on at an export
+  above the load's power, off at an import): the same for the lowest load, but a higher load would
+  wait behind a lower one forever.
+- **D3. The meters and their signs are explicit.** `gridPower` is the meter at the connection
+  point; `gridSign` says whether it counts import positive (export negative, most meters and the
+  default) or export positive. Without `gridPower`, `pvPower` and `housePower` give the export as
+  generation minus consumption; `housePower` is the house's consumption *with* the loads and
+  *without* the battery's charging (as inverters report it), so with `batteryPower` bound the export is
+  `pvPower - housePower - Bc` (`Bc` the battery's charging power, D9). `batterySign` says whether the
+  battery counts charging positive (the default) or discharging positive. A meter of another form (two
+  unsigned values for import and export, several inverters) is combined into a virtual datapoint by a
+  rule. `gridPower` bound decides over `pvPower` and `housePower`. *Alternative:* one sign for all
+  meters (meters of one installation differ: a Fronius inverter counts the battery discharging
+  positive, an SMA one charging positive).
+- **D4. The block works at its period.** At every period (30 s) and at the start, the block reads the
+  meters as they are, feeds the sample to the filter (the room controller's filter, 14.4: backward
+  Euler over the monotonic dt) and allocates the loads; it is called for nothing else (every input has
+  the trigger `none`, a parameter change takes effect at the next period, B8 notwithstanding). Each
+  sample takes all meters at one instant, so a set of meters reported one after the other never mixes
+  old and new values, and a sample is taken a period after a switching, by when the meter shows the
+  load: a sample between, which would count the load twice (in its allocation and not yet in the
+  export), is never taken, also with `surplusFilter` 0. A meter that reports faster is sampled, not
+  averaged: fluctuations faster than the period are left to the meter's own mean (KNX meters send a
+  mean power) and to the filter. The period of 30 s is that of evcc. *Alternatives:* the filter fed at
+  every meter update (three meters reported in turn give samples that never existed, and a sample
+  between a switching and the meter's next report counts the load twice); the evaluation period as a
+  parameter (a timer instead of the period, and a parameter more).
+- **D5. The hysteresis: `onMargin` and `allowedImport`.** A load goes on, or a modulated one a step
+  up, when its budget leaves at least `onMargin` after it; a running load stays (at its level or a lower
+  one) while its level is within its budget plus `allowedImport`; the band between is the hysteresis.
+  The issue's `offMargin` is `allowedImport`: both would say how far the budget may fall below a
+  running load's power before it is shed, and only their sum would count. A modulated load moves
+  between its levels at every period without minimum times (a wallbox changes its current at once);
+  only going on and off counts for them (D7). *Alternative:* `offMargin` and `allowedImport` both
+  (two parameters for one number).
+- **D6. Levels in whole watts.** A switched load (`step<k>` 0) has the one level `power<k>`; a modulated
+  one the levels `minPower<k>`, `minPower<k> + step<k>`, ..., up to the highest at or below `power<k>`. A
+  heating rod in stages of 1 kW: `minPower` 1000, `step` 1000, `power` 3000; a wallbox on one phase from
+  6 to 16 A: 1380, 230, 3680. The three are integers: the quotient `(power - minPower) / step` of
+  integers is exact in binary64 where it is whole, so the highest level is never missed by a rounding
+  (`0.3 / 0.1` is 2.9999999999999996).
+- **D7. Minimum times on every switching of the block**, as for the heating demand (16.2 D4): `minOn<k>`
+  holds a load on that should go off, whatever asks for it (no surplus, `enable`, `ready`,
+  `maxPerDay<k>`, a lost meter), at its lowest level; `minOff<k>` holds it off, also against a forced
+  run. The failsafe of section 7 does not wait (B10). The block switches only at its periods, so a held
+  switching happens at the first period after its expiry, up to 30 s later. After a boot, an enabling
+  or a restart the first switching is not held (16.2 D9): the levels start at 0 and `switchedAt<k>` at
+  -1. An image swap keeps them (8.1): a deploy neither switches a load nor cuts short a minimum time.
+- **D8. Missing meter values are safe.** The *meters* are `gridPower` when bound, else `pvPower` and
+  `housePower` when both are bound, and `batteryPower` when bound beside them. They are *measured* when
+  every one is good and updated within `meterTimeout`: only then is the filter fed, and only then may a
+  load go on or a step up. A stale value updated within `meterTimeout` (a KNX tunnel reconnecting)
+  *holds*: the filter keeps its value, no load goes on or up, and the rules of D5 still shed on the held
+  value. A meter unknown or not updated for `meterTimeout` (a stale one keeps its update time, so a
+  stale meter after `meterTimeout`) makes the surplus *lost*: every load that is not forced is released
+  (off as `minOn<k>` allows) and the filter starts again from the next measured sample. A lost battery
+  meter beside a measured grid meter loses the surplus too: its term may be as large as the battery's
+  power. Without any meter bound the surplus is always lost: the block runs only forced loads. A meter
+  must therefore report more often than `meterTimeout` (a KNX meter's cyclic transmission, a Modbus
+  poll). While the surplus is lost, `surplus` is not written: its mirror keeps the last value and its
+  update time, and the next instance of a chain loses its meter after its own `meterTimeout`. An
+  unknown `lowerPower` counts as 0 (it is no meter: the mirror of a block not yet started).
+  *Alternatives:* a stale meter at once like a lost one (every tunnel reconnect would release every
+  load); a running load kept while the meter is missing (a failed meter would leave a heating rod on
+  from the grid).
+- **D9. The battery first, up to `batteryPriority`.** With `Bc` the charging power (`batteryPower` by
+  `batterySign`, negative while discharging), the battery's term is `min(Bc, 0)` while the battery
+  comes first, else `Bc`. The battery comes first while `batterySoc` is good and below
+  `batteryPriority`, and while it is not good or unbound when `batteryPriority` is above 0: its
+  charging power stays with it, no load goes on from it. A discharging battery is never a source: its
+  power lowers the surplus. From `batteryPriority` on, its charging power is surplus: the loads take it
+  and the battery's own controller charges less. A load that runs keeps its power when the battery
+  comes first again (the block does not know how much more the battery would take; it counts only
+  what it charges, and the battery gets what the loads leave). Without `batteryPower` the block does
+  not see the battery: one that charges from the surplus by itself takes it before any export (right),
+  but one that discharges to cover the loads makes them look paid for, so bind `batteryPower` with a
+  battery; `batterySoc` alone does nothing. No hysteresis on the state of charge: while the loads take
+  the charging power the charge stays where it is. *Alternative:* the state of charge as a gate for
+  switching on (it cannot see the battery feeding the loads).
+- **D10. The must-run deadline.** A load with `mustRunFor<k>` > 0 must have run that long today (`run<k>`,
+  surplus runs included) by `mustRunBy<k>`. From its latest start, when the time of day plus what is
+  missing reaches `mustRunBy<k>`, it is *forced*: on at its highest level, from the grid if need be,
+  while it may run (`enable`, `ready<k>`) and `maxPerDay<k>` is not reached. It stays forced until
+  nothing is missing, also past the deadline when it started late (not ready, `minOff<k>`, a reboot)
+  until the day ends. The block decides at its periods, so a forced run begins up to 30 s after its
+  latest start and ends up to 30 s past the deadline (more with `minOff<k>`; a forced load held off by
+  it shows `waiting`). Forced loads take the surplus first, whatever their priority: they run anyway,
+  and the surplus they use saves grid power. The deadline is a local time of day: `mustRunBy<k>`
+  00:00:00 is the day's start, so the load is forced from midnight (the end of the day is 23:59:59), and
+  on the days of the change of summer time the local time jumps (an hour more or less until the
+  deadline). The deadline needs neither the meter nor the filter; it needs the wall clock: while it is
+  not synchronized no load is forced (a time of day has no meaning), and the loads run on the surplus
+  alone. *Alternatives:* a forced run stopped at the deadline (the load would miss its runtime);
+  forced loads in their priority (a lower forced load would draw the grid while a higher one took the
+  surplus).
+- **D11. The day.** `run<k>` and `energy<k>` start again at local midnight, at the first period on a new
+  wall date; the interval just ended counts to the day it began in (it is added before the date is
+  compared). While the wall clock is not synchronized a day ends 24 h of monotonic time after it began
+  (`dayStart`), so `maxPerDay<k>` does not block a load forever on a device without time; the date of
+  such a day is not known (`day` -1), and the first period with a wall clock takes its date without a
+  new start. The counters and `day` are persisted: a reboot neither restarts `maxPerDay<k>` nor loses
+  what a must-run has done (an unorderly reset loses at most the pacing of B13; an orderly one the
+  last period's interval). The monotonic times are not: a boot or a restart without a wall clock starts
+  the 24 h again, with the counters as they were. An image swap and an enabling keep `lastStep` and
+  `dayStart` (the record in RAM): after a swap the first period counts the interval since the last one
+  before it, so a deploy does not shorten a must-run.
+- **D12. Failsafe: every load off.** A fault or a disabled instance writes `switch<k>` false,
+  `setpoint<k>` 0 and `loadPower` 0. The surplus control is comfort: a heat pump heats on its own
+  controller without the boost, a pool pump has its own timer. A forced run is lost while the instance
+  is stopped. The diagnostic outputs keep their last values (B10): a stopped instance may show a load
+  `running`. *Alternative:* the loads on (a heating rod from the grid while nobody controls it).
+- **D13. `enable` and `ready<k>` count only when good** (as in 18.2 D16): a stale `enable` false runs the
+  loads again, a `ready<k>` that is not good is not ready (no load runs on missing information).
+  `enable` false and `ready<k>` false release the loads as `minOn<k>` allows. A washing machine on a
+  switched socket gets a `minOn<k>` as long as its program.
+- **D14. Writes on change.** `switch<k>` and `setpoint<k>` are written together at the start and when the
+  load's level changes, `loadPower` at the start and when it changes, the diagnostic outputs at every
+  period (`surplus` while the surplus is known). `setpoint<k>` in % is `level / power × 100`, not rounded
+  (bound to DPT 5.001 it gets the rounding of 5.4).
+- **D15. A load is used when `power<k>` is above 0** (default 0): an unused load stays off with the state
+  off, and its other parameters are not checked. An image that sets a running load's power to 0
+  switches it off at once (its lowest level is 0).
+- **D16. The filter starts again at every start.** A start (a boot, a swap, an enabling) samples the
+  meters as they are: the new image may bind other meters or change their signs, and after a stop the
+  old filtered value is old. A deploy during a cloud allocates on the momentary surplus; the minimum
+  times keep the loads from following it.
+
+### 20.3 A chain of instances
+
+```json
+{"id": "pv1", "type": "org.homecontrol.pv-surplus", "version": "1.0", "label": "PV surplus 1-2",
+ "inputs": {"gridPower": "meter.grid", "batteryPower": "battery.power", "batterySoc": "battery.soc",
+            "lowerPower": "block/pv2/loadPower"},
+ "outputs": {"switch1": "hp.sgReady", "switch2": "pool.pump"},
+ "parameters": {"power1": 2500, "minOn1": 1200000, "minOff1": 1200000,
+                "power2": 600, "mustRunBy2": {"hour": 18, "minute": 0, "second": 0}, "mustRunFor2": 10800000}},
+{"id": "pv2", "type": "org.homecontrol.pv-surplus", "version": "1.0", "label": "PV surplus 3-4",
+ "inputs": {"gridPower": "block/pv1/surplus"},
+ "outputs": {"setpoint1": "rod.power", "setpoint2": "wallbox.power"},
+ "parameters": {"gridSign": "exportPositive", "surplusFilter": 0, "meterTimeout": 60000,
+                "power1": 3000, "minPower1": 1000, "step1": 1000,
+                "power2": 11040, "minPower2": 4140, "step2": 690}}
+```
+
+The first instance binds the meters and the battery; each next one binds the previous one's `surplus`
+as its `gridPower` with `gridSign` `exportPositive`, no battery (the first one's surplus accounts for
+it), `surplusFilter` 0 (the first one filters) and a `meterTimeout` of a few periods (the previous one
+writes `surplus` at every period while its own meters are measured); each instance but the last binds the next one's
+`loadPower` as its `lowerPower`. Then the first instance's sample does not depend on the next ones'
+loads (their allocation adds back what they draw), and the next one's sample is the first one's
+filtered surplus minus what the first one has allocated: `surplus` = filtered − (own levels +
+`lowerPower`), and its own levels and `lowerPower` add the next ones' part back. So every instance
+allocates on what the instances before it leave, at the same period: the loads of the first instance
+come first, the lowest load of the last one is shed first, and no instance takes power that one
+before it has just allocated. The instances must come in the block order of their priority: all of
+them start in the same cascade order and get the same period grid, and at each deadline the first
+one's period writes its `surplus` before the next one's period reads it (5.1). A chain is as long as
+the blocks of an image allow (16 instances, 32 loads). Forced loads come first within their instance
+only: a load with a must-run belongs in the first instance.
+
+A stopped link writes `loadPower` 0 (D12) and no more `surplus`: the instances after it lose their
+meter after their `meterTimeout` and release their loads; until then the instances before it miss
+their allocation and see that much less surplus, which may shed one of their loads for that time.
+
+### 20.4 The calls
+
+| Call | What it does |
+|---|---|
+| `start(reason, restored)` | Without `restored`, every field at its initial value. Unless the record is the one in RAM (`restored` with the reason `image` or `enable`): `lastStep = now`, `dayStart = now`. Then `hasSent = 0`, `hasFiltered = 0` (D16); with the reason `enable`, `level<k> = 0` and `switchedAt<k> = -1` for every load (the failsafe switched them off, D7). Then the step. |
+| `period()` | The step. |
+| every `input`, `parameter` | Nothing (D4). |
+
+### 20.5 The step
+
+With `t` = now (ms), `Q.known` meaning `Q.quality != unknown` and `fresh(Q)` meaning
+`t - Q.updated <= meterTimeout`:
+
+```
+dt = (t - lastStep) / 1000.0                                        // seconds, >= 0
+for k in 1 .. 2:                                                    // the interval just ended (D11)
+    if level<k> > 0:  run<k> = run<k> + (t - lastStep);  energy<k> = energy<k> + level<k> * (dt / 3600.0)
+lastStep = t
+w = wall()
+if w is known:
+    if day < 0:               day = day(w)
+    else if day(w) != day:    run<k> = 0 and energy<k> = 0 for k in 1 .. 2;  day = day(w);  dayStart = t
+else if t - dayStart >= 86400000:
+                              run<k> = 0 and energy<k> = 0 for k in 1 .. 2;  day = -1;  dayStart = t
+
+G = read(gridPower);  P = read(pvPower);  H = read(housePower);  B = read(batteryPower)    // D3, D8
+meters = G.bound ? [G] : (P.bound and H.bound) ? [P, H] : []
+if meters is not empty and B.bound:  append B to meters
+measured = meters is not empty and every M of meters is good and fresh(M)
+lost     = meters is empty or some M of meters is not known or not fresh(M)
+L = read(lowerPower);  low = L.known ? L.value : 0
+if lost:  hasFiltered = 0
+if measured:
+    export = G.bound ? (gridSign == importPositive ? -G.value : G.value) : P.value - H.value
+    b = 0
+    if B.bound:                                                     // D9
+        Bc = batterySign == chargePositive ? B.value : -B.value
+        if not G.bound:  export = export - Bc
+        C = read(batterySoc)
+        first = C.good ? C.value < batteryPriority : batteryPriority > 0
+        b = first ? min(Bc, 0.0) : Bc
+    x  = export + b + level1 + level2 + low                         // D2: the sample, left to right
+    Tf = surplusFilter / 1000.0
+    if hasFiltered == 0 or Tf == 0:  filtered = x;  hasFiltered = 1
+    else:                            filtered = filtered + (x - filtered) * (dt / (Tf + dt))
+```
+
+`day(w)` is that of 14.4. Then the allocation (D5, D6, D7, D10, D13, D15):
+
+```
+E = read(enable);  enabled = not (E.good and E.value == 0)
+known = hasFiltered == 1                                            // a lost surplus has cleared it
+for k in 1 .. 2:
+    lo<k>  = step<k> == 0 ? power<k> : minPower<k>
+    top<k> = step<k> == 0 ? power<k> : minPower<k> + step<k> * floor((power<k> - minPower<k>) / step<k>)
+    R = read(ready<k>)
+    allowed<k> = power<k> > 0 and enabled and (not R.bound or (R.good and R.value != 0))
+    blocked<k> = maxPerDay<k> > 0 and run<k> >= maxPerDay<k>
+    need = mustRunFor<k> - run<k>                                   // ms
+    forced<k>  = allowed<k> and not blocked<k> and mustRunFor<k> > 0 and need > 0 and w is known
+                 and w.hour * 3600 + w.minute * 60 + w.second + need / 1000.0 >= mustRunBy<k>
+budget = filtered
+for k in 1 .. 2 with forced<k>:                                     // forced loads first (D10)
+    new<k> = held(k, top<k>);  budget = budget - new<k>
+for k in 1 .. 2 without forced<k>:                                  // then by priority (D2)
+    if not allowed<k> or blocked<k> or not known:  want = 0
+    else:
+        up   = measured ? fit(k, budget - onMargin) : 0
+        down = level<k> > 0 ? fit(k, min(level<k>, budget + allowedImport)) : 0
+        want = max(up, down)
+    new<k> = held(k, want);  budget = budget - new<k>
+for k in 1 .. 2:
+    changed<k> = new<k> != level<k>
+    if (level<k> > 0) != (new<k> > 0):  switchedAt<k> = t
+    level<k> = new<k>
+    state<k> = level<k> > 0 ? (forced<k> ? 3 : 2) : not allowed<k> ? 0 : blocked<k> ? 4 : 1
+```
+
+`fit(k, y)`, the highest level at or below `y`, 0 when there is none: with `step<k>` 0, `power<k>`
+when `y >= power<k>`, else 0; otherwise 0 when `y < minPower<k>`, else
+`min(minPower<k> + step<k> * floor((y - minPower<k>) / step<k>), top<k>)`.
+
+`held(k, want)`, the minimum times (D7), with `c = level<k>`: when `c == 0`, `want > 0`,
+`switchedAt<k> >= 0` and `t - switchedAt<k> < minOff<k>`: 0; when `c > 0`, `want == 0`,
+`switchedAt<k> >= 0` and `t - switchedAt<k> < minOn<k>`: `min(c, lo<k>)`; otherwise `want`.
+
+Then the outputs, in this order, with `first = (hasSent == 0)` (D14):
+
+1. For k in 1 .. 2: when `first` or `changed<k>`: `switch<k>` = `level<k> > 0`, then `setpoint<k>` =
+   `level<k>` with `setpointUnit` `watt`, else `(level<k> / power<k>) * 100.0` when `power<k> > 0`,
+   else 0. Then `state<k>`, `energy<k>` = `energy<k>`.
+2. `lp = level1 + level2 + low`; `loadPower` = `lp` when `first` or `lp != sentLoadPower`;
+   `sentLoadPower = lp` when written.
+3. `surplus` = `filtered - lp`, when `hasFiltered == 1`.
+4. `hasSent = 1`.
+
+The allocation without a wall clock or a meter still runs: forced loads need the clock, the others a
+known surplus.
+
+### 20.6 Cost
+
+One instance with every input bound and both loads' switch and setpoint bound: about 3.2 KB of heap
+on the host (64-bit; 3201 B), against 3.3 KB (3271 B) of a room controller measured the same way: 15
+state fields, 24 parameters, 16 mirror datapoints (enabled, `batteryPriority`, `mustRunBy<k>` and
+`mustRunFor<k>` of both loads, 10 outputs). An image swap stays within the swap's budget, its largest
+allocation 2.3 KB (`core/test/swap_memory_test.cpp`). The record (five fields) is written at most every
+`persistEvery` while a load runs. A period reads eight inputs and computes a few dozen operations; the
+type takes 10.5 KB of the C6's flash (10 736 B: 0x25540 B of ota_0 are left).
+
+### 20.7 Tests
+
+The host tests (`core/test/pv_surplus_test.cpp`) drive the block with a simulated installation (a grid
+meter that reports the PV generation minus the house's base load and the loads that are on, 5 s after
+each period) and check the switch-on order by priority as the surplus grows and the shedding in
+reverse order, a higher load that takes the place of a lower one, the hysteresis of `onMargin` and
+`allowedImport`, the minimum times under a cloud flicker and the filter, a modulated load that follows
+the surplus in steps (in W and in %), `mustRunBy` forcing the run in time from the grid and a late
+start that runs past the deadline, surplus runs counted and forced loads first, `maxPerDay`, the day's
+counters at midnight, across a reboot and without a wall clock, no forced run without a wall clock,
+the battery's priority by its state of charge and both signs, the pv and house meters, a stale meter
+that holds and a lost one that releases the loads after `meterTimeout` while a forced run goes on, a
+chain of two instances, the failsafe, `enable` and `ready`, a load that draws less than its power, the
+cost, and no allocation in steady state. The corpus has the contract cases
+(`spec/fixtures/blocks/README.md`).
+
+## 21. Changes
 
 - 1.0 (schema 1.3, issue #60): first version; the room controller 1.0.
 - 1.1 (schema 1.3, issues #61, #62): the heating demand 1.0 (section 16) and the heating curve 1.0
@@ -1858,3 +2247,4 @@ steady state. The corpus has the contract cases (`spec/fixtures/blocks/README.md
   exact trigonometry and the sun's position of 13.1 and 13.2, `sqrt` among the operations of B19; a
   block does not read its own outputs (B22).
 - 1.3 (schema 1.3, issue #64): the house mode 1.0 (section 19).
+- 1.4 (schema 1.3, issue #65): the PV surplus control 1.0 (section 20).

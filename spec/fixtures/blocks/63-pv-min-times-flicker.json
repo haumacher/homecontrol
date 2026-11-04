@@ -1,0 +1,338 @@
+{
+	"title": "PV surplus: minOn holds a load on through a cloud flicker, minOff holds it off after it; a load with power 0 is not used and its step is not checked (D7, D15).",
+	"note": "No filter; load 1 of 2000 W with minOn 120 s and minOff 90 s; load 2 unused (power 0) with a step of 500 W, accepted (B17 only with power above 0). Export 3000 W, clouds of 30 s leave 500 W: held on at 60 and 120 s, off at 180 s (minOn over), held off at 210 and 240 s, on at 270 s.",
+	"datapoints": [
+		{
+			"name": "grid",
+			"type": "real"
+		},
+		{
+			"name": "s1",
+			"type": "boolean"
+		},
+		{
+			"name": "sp1",
+			"type": "real"
+		},
+		{
+			"name": "s2",
+			"type": "boolean"
+		},
+		{
+			"name": "sp2",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "pv",
+			"type": "org.homecontrol.pv-surplus",
+			"version": "1.0",
+			"label": "PV surplus",
+			"inputs": {
+				"gridPower": "grid"
+			},
+			"outputs": {
+				"switch1": "s1",
+				"setpoint1": "sp1",
+				"switch2": "s2",
+				"setpoint2": "sp2"
+			},
+			"parameters": {
+				"surplusFilter": 0,
+				"power1": 2000,
+				"minOn1": 120000,
+				"minOff1": 90000,
+				"step2": 500
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 15000,
+			"report": {
+				"datapoint": "grid",
+				"value": -3000
+			}
+		},
+		{
+			"at": 45000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1000
+			}
+		},
+		{
+			"at": 55000,
+			"report": {
+				"datapoint": "grid",
+				"value": 1500
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"block/pv/state1": 2,
+					"block/pv/state2": 0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 2000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 85000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1000
+			}
+		},
+		{
+			"at": 115000,
+			"report": {
+				"datapoint": "grid",
+				"value": 1500
+			}
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"block/pv/state1": 2,
+					"block/pv/state2": 0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 2000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 145000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1000
+			}
+		},
+		{
+			"at": 151000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"block/pv/state1": 2,
+					"block/pv/state2": 0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 2000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 160000,
+			"report": {
+				"datapoint": "grid",
+				"value": 1500
+			}
+		},
+		{
+			"at": 181000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"block/pv/state1": 1,
+					"block/pv/state2": 0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 195000,
+			"report": {
+				"datapoint": "grid",
+				"value": -500
+			}
+		},
+		{
+			"at": 205000,
+			"report": {
+				"datapoint": "grid",
+				"value": -3000
+			}
+		},
+		{
+			"at": 211000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"block/pv/state1": 1,
+					"block/pv/state2": 0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 225000,
+			"report": {
+				"datapoint": "grid",
+				"value": -3000
+			}
+		},
+		{
+			"at": 241000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"block/pv/state1": 1,
+					"block/pv/state2": 0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 255000,
+			"report": {
+				"datapoint": "grid",
+				"value": -3000
+			}
+		},
+		{
+			"at": 271000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"block/pv/state1": 2,
+					"block/pv/state2": 0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 2000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 285000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1000
+			}
+		}
+	],
+	"end": 300000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 0.0
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 0.0
+			},
+			{
+				"at": 30000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": true
+			},
+			{
+				"at": 30000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 2000.0
+			},
+			{
+				"at": 180000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": false
+			},
+			{
+				"at": 180000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 0.0
+			},
+			{
+				"at": 270000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": true
+			},
+			{
+				"at": 270000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 2000.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"s1": true,
+				"block/pv/state1": 2,
+				"block/pv/state2": 0
+			},
+			"blocks": {
+				"pv": {
+					"status": "running",
+					"state": {
+						"level1": 2000.0,
+						"level2": 0.0,
+						"run1": 180000.0
+					}
+				}
+			}
+		}
+	}
+}

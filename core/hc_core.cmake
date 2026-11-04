@@ -103,6 +103,7 @@ set(HC_CORE_BLOCK_SOURCES
 	"${HC_CORE_DIR}/src/blocks/heating_curve.cpp"
 	"${HC_CORE_DIR}/src/blocks/sun_shading.cpp"
 	"${HC_CORE_DIR}/src/blocks/house_mode.cpp"
+	"${HC_CORE_DIR}/src/blocks/pv_surplus.cpp"
 	"${HC_CORE_DIR}/src/exact_math.cpp"
 	"${HC_CORE_DIR}/src/sun_position.cpp"
 )

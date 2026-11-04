@@ -2,7 +2,7 @@
 
 The cases in this directory pin the semantics of `spec/blocks.md`: the block contract (calls,
 cascades, faults, failsafe values, the enable switch, persistence, image swaps, overrides, the quiet
-load, load refusals) and the built-in types (`spec/blocks.md` 14, 16, 17, 18, 19: the room controller, the heating demand, the heating curve, the sun shading, the house mode). Every implementation
+load, load refusals) and the built-in types (`spec/blocks.md` 14, 16, 17, 18, 19, 20: the room controller, the heating demand, the heating curve, the sun shading, the house mode, the PV surplus control). Every implementation
 runs every case and must produce exactly the expected outputs: the C++ core (one table-driven test,
 `core/test/rules_corpus_test.cpp`, which runs the rules corpus too) and E-Home's simulation
 (haumacher/ehome#75). A change of block semantics lands with new or changed cases.
@@ -55,7 +55,7 @@ As in the rules corpus, with these additions:
 Reals compare with a relative tolerance of 1e-9 (and an absolute one of 1e-9 around 0); everything
 else compares exactly. State fields that hold monotonic times (the room controller's `lastStep`,
 `cycleStart`, `boostUntil` while set, `protectionUntil`, `sentAt`; the heating demand's `lastStep` and
-`switchedAt`; the heating curve's `lastStep`; the sun shading's `windCalmAt`, `rainDryAt`, `frostClearAt`, `brightAt`, `manualAt`, `manualSeen` and `movedAt` while not -1; the house mode's `changedAt`, `absentSince`, `awaySeen`, `nightSeen` and `homeSeen` while not -1) depend on the origin a runner
+`switchedAt`; the heating curve's `lastStep`; the sun shading's `windCalmAt`, `rainDryAt`, `frostClearAt`, `brightAt`, `manualAt`, `manualSeen` and `movedAt` while not -1; the house mode's `changedAt`, `absentSince`, `awaySeen`, `nightSeen` and `homeSeen` while not -1; the PV surplus control's `lastStep`, `dayStart` and `switchedAt<k>` while not -1) depend on the origin a runner
 gives the monotonic clock and are not compared; differences of them are. Several `parameterReset`
 entries of one block for parameters that are gone come in an unspecified order; no case has two.
 
@@ -124,6 +124,19 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `59-house-reboot-since` | House mode: a persisted away and night kept across reboots with presence unknown; home's away delay counts from the boot; `since` in local minutes, dated once the clock synchronizes; the records. |
 | `60-house-hvac-mapping-failsafe` | House mode: the HVAC mapping by id and by value, all mode outputs written together; the failsafe home with HVAC auto; enabled again from the record in RAM; a restored mode of a later minor version starts as home; the mapping is not adjustable. |
 | `61-house-room-chain` | The house mode's `hvacMode` mirror as a room controller's `mode`: comfort, standby, night and frost setpoints in the cascade of the change. |
+| `62-pv-priority-shedding` | PV surplus: the loads go on by priority as the surplus grows; a higher load takes a lower one's place; the lowest is shed first and fills in again; allowedImport keeps a running load; `surplus` is what the loads leave. |
+| `63-pv-min-times-flicker` | PV surplus: minOn holds a load on through a cloud flicker, minOff holds it off after it; an unused load (power 0) with a step is accepted. |
+| `64-pv-filter` | PV surplus: the filter sampled at the periods rides out a short cloud and sheds the load in a long one; it rises again over its time constant. |
+| `65-pv-modulated-percent` | PV surplus: two modulated loads follow the surplus in steps by priority, their setpoints in % of their power; a step up needs onMargin, a step down only allowedImport. |
+| `66-pv-must-run-forced-first` | PV surplus: a must-run counts the surplus runs, forces the load at its latest start from the grid, takes the surplus before a higher load, and ends when the runtime is reached. |
+| `67-pv-late-max-midnight` | PV surplus: a must-run that could not start in time runs past its deadline; maxPerDay blocks a load; local midnight starts the counters again; the first wall clock takes the date without a new start. |
+| `68-pv-battery-priority` | PV surplus: the battery first below batteryPriority, its charging power counted from it on, a running load keeps its power, a discharging battery is never a source, a stale state of charge; the pv and house meters with the battery discharging positive. |
+| `69-pv-stale-lost` | PV surplus: a stale meter holds, one older than meterTimeout is lost (released as minOn allows, the filter starts again); a forced run goes on without the meter; without a meter only forced loads run. |
+| `70-pv-chain` | PV surplus: a chain of two instances (20.3): the second reads the first one's `surplus` as its meter, the first counts the second one's `loadPower` back; the priorities hold across both and the second never takes what the first has just allocated. |
+| `71-pv-failsafe-swap-reboot` | PV surplus: the failsafe switches every load off, enabling does not hold the first switching; an image swap keeps the loads and counts the interval before it; the counters survive an orderly reboot, the levels do not; the grid meter export positive. |
+| `72-pv-enable-ready-no-clock` | PV surplus: no forced run without a wall clock; enable false releases every load as minOn allows, a stale enable counts as unbound; a stale ready is not ready. |
+| `73-load-refused-pv-min-power` | The PV surplus control's check (B17): a modulated load needs 0 < minPower <= power; minPower2 is blamed; an unused load is not checked. |
+| `74-load-refused-pv-must-run` | The PV surplus control's check (B17): mustRunFor above maxPerDay refuses the image; mustRunFor1 is blamed. |
 
 ## How the expected values were computed
 
@@ -200,3 +213,30 @@ hand while the cases were designed and compared with the model's: the switching 
 the model (61 without periodic temperature reports ran into the room controller's
 `sensorTimeout`); it was corrected and filled again. The C++ runner passes every case unchanged.
 `since` is an integer output and compares exactly.
+
+Cases 62 to 74 (the PV surplus control, `spec/blocks.md` 20) were made the same way. Their inputs
+were written by a small script from a list of steps per case (the meter reports, every 30 s and 15 s
+after the block's periods, carry what the loads drew since the period before, as the designed
+allocation has them), with the load refusals of 73 and 74. The same model was extended by a separate
+agent from the specification texts alone, without access to the C++ or Java sources (the manifest of
+two loads, the check, the calls and the step of 20.4 and 20.5 literally in binary64), with two
+self-test cases whose values it derived by hand (the priority with a higher load taking a lower one's
+place, the levels in %, the minimum times, the battery's term, a forced run, a stale and a lost
+meter). Its 26 questions (the double count of a load between a switching and the meter's next report
+with and without the filter, samples mixed from meters reported in turn, the run time lost at every
+deploy, the day's monotonic start at every start, the block order of a chain and its over-allocation
+at a start, an unused modulated load refused, `floor` of non-integral levels, the unit of a setpoint in
+W or %, among others) were answered in the specification before the cases were filled; seven changed
+the type (the block works only at its period, the filter starts again at every start, a swap keeps
+`lastStep`, the loads' powers are whole watts, the check skips an unused load, `known` is
+`hasFiltered`, and `surplus` is what the loads leave, which made the chain of 20.3 read the previous
+instance's surplus). The model filled the cases with `--write`. Independently, the numbers were derived
+by hand while the cases were designed and compared with the model's: the switching times of 62 (load
+2 at 30 s, load 1 for load 2 at 90 s, both at 150 s, load 2 shed at 270 s, load 1 shed and load 2 on at
+330 s), 63 (held on at 60 and 120 s, off at 180 s, held off at 210 and 240 s, on at 270 s), 65 (33.3 %,
+62.5 %, 100 %, 93.75 %), 66 (the surplus run 300-600 s, forced from 1500 s, load 1 back at 1800 s), 67
+(forced 330-930 s, blocked at 330 s, the counters again at 1200 s) and 70; the filter of 64 (2500,
+1766.67, 2011.11, 1440.74, 1060.49, 807, 1258.66, 1672.44); the battery's terms of 68; the hold and the
+loss of 69 (held at 90 and 120 s, lost at 150 s, released at 180 s, the filter at 2000 W at 210 s); the
+counters of 71 (run1 90 s after the swap, 120 s in the record of the reboot, 150 s at the end). The
+C++ runner passes every case unchanged.

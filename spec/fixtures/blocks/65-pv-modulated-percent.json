@@ -1,0 +1,396 @@
+{
+	"title": "PV surplus: two modulated loads follow the surplus in steps by priority, their setpoints in % of their power (D5, D6, D14).",
+	"note": "setpointUnit percent; load 1 a wallbox 1380..3680 W in steps of 230, load 2 a heating rod 1000..3000 W in steps of 1000; no filter. Surplus 1450: load 2 at 1000 (33.3 %); 2600: load 1 at 2300 (62.5 %), load 2 off; 4100: load 1 at 3680 (100 %); 5000: load 2 at 1000 again; 4500: load 2 off; 3400: load 1 down to 3450 (93.75 %): a step down needs only allowedImport, a step up onMargin.",
+	"datapoints": [
+		{
+			"name": "grid",
+			"type": "real"
+		},
+		{
+			"name": "s1",
+			"type": "boolean"
+		},
+		{
+			"name": "sp1",
+			"type": "real"
+		},
+		{
+			"name": "s2",
+			"type": "boolean"
+		},
+		{
+			"name": "sp2",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "pv",
+			"type": "org.homecontrol.pv-surplus",
+			"version": "1.0",
+			"label": "PV surplus",
+			"inputs": {
+				"gridPower": "grid"
+			},
+			"outputs": {
+				"switch1": "s1",
+				"setpoint1": "sp1",
+				"switch2": "s2",
+				"setpoint2": "sp2"
+			},
+			"parameters": {
+				"surplusFilter": 0,
+				"setpointUnit": "percent",
+				"power1": 3680,
+				"minPower1": 1380,
+				"step1": 230,
+				"minOn1": 0,
+				"minOff1": 0,
+				"power2": 3000,
+				"minPower2": 1000,
+				"step2": 1000,
+				"minOn2": 0,
+				"minOff2": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 15000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1450
+			}
+		},
+		{
+			"at": 31000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"sp1": 0.0,
+					"s2": true,
+					"sp2": 33.33333333333333,
+					"block/pv/loadPower": 1000.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0,
+							"level2": 1000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 45000,
+			"report": {
+				"datapoint": "grid",
+				"value": -450
+			}
+		},
+		{
+			"at": 75000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 91000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"sp1": 62.5,
+					"s2": false,
+					"sp2": 0.0,
+					"block/pv/loadPower": 2300.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 2300.0,
+							"level2": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 105000,
+			"report": {
+				"datapoint": "grid",
+				"value": -300
+			}
+		},
+		{
+			"at": 135000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1800
+			}
+		},
+		{
+			"at": 151000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"sp1": 100.0,
+					"s2": false,
+					"sp2": 0.0,
+					"block/pv/loadPower": 3680.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 3680.0,
+							"level2": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 165000,
+			"report": {
+				"datapoint": "grid",
+				"value": -420
+			}
+		},
+		{
+			"at": 195000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1320
+			}
+		},
+		{
+			"at": 211000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"sp1": 100.0,
+					"s2": true,
+					"sp2": 33.33333333333333,
+					"block/pv/loadPower": 4680.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 3680.0,
+							"level2": 1000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 225000,
+			"report": {
+				"datapoint": "grid",
+				"value": -320
+			}
+		},
+		{
+			"at": 255000,
+			"report": {
+				"datapoint": "grid",
+				"value": 180
+			}
+		},
+		{
+			"at": 271000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"sp1": 100.0,
+					"s2": false,
+					"sp2": 0.0,
+					"block/pv/loadPower": 3680.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 3680.0,
+							"level2": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 285000,
+			"report": {
+				"datapoint": "grid",
+				"value": -820
+			}
+		},
+		{
+			"at": 315000,
+			"report": {
+				"datapoint": "grid",
+				"value": 280
+			}
+		},
+		{
+			"at": 331000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"sp1": 93.75,
+					"s2": false,
+					"sp2": 0.0,
+					"block/pv/loadPower": 3450.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 3450.0,
+							"level2": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 345000,
+			"report": {
+				"datapoint": "grid",
+				"value": 50
+			}
+		}
+	],
+	"end": 360000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 0.0
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 0.0
+			},
+			{
+				"at": 30000,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": true
+			},
+			{
+				"at": 30000,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 33.33333333333333
+			},
+			{
+				"at": 90000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": true
+			},
+			{
+				"at": 90000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 62.5
+			},
+			{
+				"at": 90000,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": false
+			},
+			{
+				"at": 90000,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 0.0
+			},
+			{
+				"at": 150000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": true
+			},
+			{
+				"at": 150000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 100.0
+			},
+			{
+				"at": 210000,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": true
+			},
+			{
+				"at": 210000,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 33.33333333333333
+			},
+			{
+				"at": 270000,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": false
+			},
+			{
+				"at": 270000,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 0.0
+			},
+			{
+				"at": 330000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": true
+			},
+			{
+				"at": 330000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 93.75
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"sp1": 93.75,
+				"sp2": 0.0,
+				"block/pv/loadPower": 3450.0,
+				"block/pv/surplus": -50.0
+			},
+			"blocks": {
+				"pv": {
+					"status": "running",
+					"state": {
+						"level1": 3450.0,
+						"level2": 0.0,
+						"energy1": 251.08333333333331,
+						"energy2": 33.333333333333336
+					}
+				}
+			}
+		}
+	}
+}

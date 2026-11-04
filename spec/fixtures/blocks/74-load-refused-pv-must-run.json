@@ -1,0 +1,49 @@
+{
+	"title": "The PV surplus control's check (B17): mustRunFor above maxPerDay is refused; mustRunFor1 is blamed.",
+	"note": "Load 1 may run at most 1 h a day but must run 2 h.",
+	"datapoints": [
+		{
+			"name": "grid",
+			"type": "real"
+		},
+		{
+			"name": "s1",
+			"type": "boolean"
+		},
+		{
+			"name": "sp1",
+			"type": "real"
+		},
+		{
+			"name": "s2",
+			"type": "boolean"
+		},
+		{
+			"name": "sp2",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "pv",
+			"type": "org.homecontrol.pv-surplus",
+			"version": "1.0",
+			"label": "PV surplus",
+			"inputs": {
+				"gridPower": "grid"
+			},
+			"outputs": {},
+			"parameters": {
+				"power1": 1000,
+				"maxPerDay1": 3600000,
+				"mustRunFor1": 7200000
+			}
+		}
+	],
+	"timeline": [],
+	"end": 0,
+	"expected": {
+		"loadRefused": "invalidParameter",
+		"path": "blocks[0].parameters.mustRunFor1"
+	}
+}

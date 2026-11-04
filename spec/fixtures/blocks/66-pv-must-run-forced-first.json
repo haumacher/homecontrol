@@ -1,0 +1,751 @@
+{
+	"title": "PV surplus: a must-run counts the surplus runs, forces the load at its latest start from the grid, takes the surplus before a higher load, and ends when the runtime is reached (D10).",
+	"note": "UTC, 2026-06-21 14:00 at 0. Load 2 (600 W) must have run 10 min by 14:30. It runs 5 min on the surplus (14:05 to 14:10); the latest start for the other 5 min is 14:25 (1500 s): forced, it takes the 2200 W surplus first and load 1 (2000 W, on since 1410 s) is shed; time of day plus what is missing stays exactly 52 200 s while it runs. At 14:30 nothing is missing: load 1 comes first again and load 2 is shed.",
+	"clock": {
+		"start": "2026-06-21T14:00:00"
+	},
+	"datapoints": [
+		{
+			"name": "grid",
+			"type": "real"
+		},
+		{
+			"name": "s1",
+			"type": "boolean"
+		},
+		{
+			"name": "sp1",
+			"type": "real"
+		},
+		{
+			"name": "s2",
+			"type": "boolean"
+		},
+		{
+			"name": "sp2",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "pv",
+			"type": "org.homecontrol.pv-surplus",
+			"version": "1.0",
+			"label": "PV surplus",
+			"inputs": {
+				"gridPower": "grid"
+			},
+			"outputs": {
+				"switch1": "s1",
+				"setpoint1": "sp1",
+				"switch2": "s2",
+				"setpoint2": "sp2"
+			},
+			"parameters": {
+				"surplusFilter": 0,
+				"power1": 2000,
+				"minOn1": 0,
+				"minOff1": 0,
+				"power2": 600,
+				"minOn2": 0,
+				"minOff2": 0,
+				"mustRunBy2": {
+					"hour": 14,
+					"minute": 30,
+					"second": 0
+				},
+				"mustRunFor2": 600000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 15000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 45000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 75000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 105000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 135000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 165000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 195000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 225000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 255000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 285000,
+			"report": {
+				"datapoint": "grid",
+				"value": -800
+			}
+		},
+		{
+			"at": 301000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"s2": true,
+					"block/pv/state1": 1,
+					"block/pv/state2": 2,
+					"block/pv/energy2": 0.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0,
+							"level2": 600.0,
+							"run2": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 315000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 345000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 375000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 405000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 435000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 465000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 495000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 525000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 555000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 585000,
+			"report": {
+				"datapoint": "grid",
+				"value": 600
+			}
+		},
+		{
+			"at": 601000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"s2": false,
+					"block/pv/state1": 1,
+					"block/pv/state2": 1,
+					"block/pv/energy2": 50.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0,
+							"level2": 0.0,
+							"run2": 300000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 615000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 645000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 675000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 705000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 735000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 765000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 795000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 825000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 855000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 885000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 915000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 945000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 975000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1005000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1035000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1065000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1095000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1125000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1155000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1185000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1215000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1245000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1275000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1305000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1335000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1365000,
+			"report": {
+				"datapoint": "grid",
+				"value": 0
+			}
+		},
+		{
+			"at": 1395000,
+			"report": {
+				"datapoint": "grid",
+				"value": -2200
+			}
+		},
+		{
+			"at": 1411000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"s2": false,
+					"block/pv/state1": 2,
+					"block/pv/state2": 1,
+					"block/pv/energy2": 50.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 2000.0,
+							"level2": 0.0,
+							"run2": 300000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1425000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 1455000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 1485000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		},
+		{
+			"at": 1501000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"s2": true,
+					"block/pv/state1": 1,
+					"block/pv/state2": 3,
+					"block/pv/energy2": 50.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0,
+							"level2": 600.0,
+							"run2": 300000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1515000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1531000,
+			"check": {
+				"datapoints": {
+					"s1": false,
+					"s2": true,
+					"block/pv/state1": 1,
+					"block/pv/state2": 3,
+					"block/pv/energy2": 55.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 0.0,
+							"level2": 600.0,
+							"run2": 330000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1545000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1575000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1605000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1635000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1665000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1695000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1725000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1755000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1785000,
+			"report": {
+				"datapoint": "grid",
+				"value": -1600
+			}
+		},
+		{
+			"at": 1801000,
+			"check": {
+				"datapoints": {
+					"s1": true,
+					"s2": false,
+					"block/pv/state1": 2,
+					"block/pv/state2": 1,
+					"block/pv/energy2": 100.0
+				},
+				"blocks": {
+					"pv": {
+						"state": {
+							"level1": 2000.0,
+							"level2": 0.0,
+							"run2": 600000.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1815000,
+			"report": {
+				"datapoint": "grid",
+				"value": -200
+			}
+		}
+	],
+	"end": 1830000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 0.0
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 0.0
+			},
+			{
+				"at": 300000,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": true
+			},
+			{
+				"at": 300000,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 600.0
+			},
+			{
+				"at": 600000,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": false
+			},
+			{
+				"at": 600000,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 0.0
+			},
+			{
+				"at": 1410000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": true
+			},
+			{
+				"at": 1410000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 2000.0
+			},
+			{
+				"at": 1500000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": false
+			},
+			{
+				"at": 1500000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 0.0
+			},
+			{
+				"at": 1500000,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": true
+			},
+			{
+				"at": 1500000,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 600.0
+			},
+			{
+				"at": 1800000,
+				"block": "pv",
+				"datapoint": "s1",
+				"value": true
+			},
+			{
+				"at": 1800000,
+				"block": "pv",
+				"datapoint": "sp1",
+				"value": 2000.0
+			},
+			{
+				"at": 1800000,
+				"block": "pv",
+				"datapoint": "s2",
+				"value": false
+			},
+			{
+				"at": 1800000,
+				"block": "pv",
+				"datapoint": "sp2",
+				"value": 0.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"s1": true,
+				"s2": false,
+				"block/pv/state2": 1,
+				"block/pv/energy2": 100.0
+			},
+			"blocks": {
+				"pv": {
+					"status": "running",
+					"state": {
+						"level1": 2000.0,
+						"level2": 0.0,
+						"run1": 120000.0,
+						"run2": 600000.0,
+						"energy2": 100.0,
+						"day": 20625.0
+					}
+				}
+			}
+		}
+	}
+}

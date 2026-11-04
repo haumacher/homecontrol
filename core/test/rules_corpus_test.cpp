@@ -1324,8 +1324,21 @@ HC_BLOCK_CASE("58", "house-vacation")
 HC_BLOCK_CASE("59", "house-reboot-since")
 HC_BLOCK_CASE("60", "house-hvac-mapping-failsafe")
 HC_BLOCK_CASE("61", "house-room-chain")
+HC_BLOCK_CASE("62", "pv-priority-shedding")
+HC_BLOCK_CASE("63", "pv-min-times-flicker")
+HC_BLOCK_CASE("64", "pv-filter")
+HC_BLOCK_CASE("65", "pv-modulated-percent")
+HC_BLOCK_CASE("66", "pv-must-run-forced-first")
+HC_BLOCK_CASE("67", "pv-late-max-midnight")
+HC_BLOCK_CASE("68", "pv-battery-priority")
+HC_BLOCK_CASE("69", "pv-stale-lost")
+HC_BLOCK_CASE("70", "pv-chain")
+HC_BLOCK_CASE("71", "pv-failsafe-swap-reboot")
+HC_BLOCK_CASE("72", "pv-enable-ready-no-clock")
+HC_BLOCK_CASE("73", "load-refused-pv-min-power")
+HC_BLOCK_CASE("74", "load-refused-pv-must-run")
 
 TEST_CASE("BlocksCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::corpus_files("blocks");
-	CHECK(files.size() == 61);
+	CHECK(files.size() == 74);
 }
