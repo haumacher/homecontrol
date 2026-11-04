@@ -47,6 +47,11 @@ public:
 	BlobStatus patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) override;
 	/// The partition's free bytes (esp_littlefs_info).
 	bool free_space(size_t& bytes) const override;
+	/// The blocks the file takes (littlefs_footprint() with the partition's 4 KB blocks).
+	size_t footprint(size_t bytes) const override { return littlefs_footprint(bytes, kBlockBytes); }
+
+	/// The block of the storage partition's LittleFS (esp_littlefs: the flash sector).
+	static constexpr size_t kBlockBytes = 4096;
 
 	/// The `storage` console command (ConsoleContext::extensions): `storage status`.
 	const ConsoleCommand* console_commands() const { return &console_command_; }

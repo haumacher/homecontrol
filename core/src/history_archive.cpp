@@ -480,6 +480,9 @@ bool History::save_archive(const Ring& r, Archive& a) {
 			status = store_.write(name, fresh, m);
 			if (status == BlobStatus::ok) {
 				++archive_writes_;
+				if (state == SegmentState::absent && segments_to_come_ > 0) {
+					--segments_to_come_;
+				}
 			}
 		}
 		if (status == BlobStatus::ok) {
@@ -668,6 +671,7 @@ void History::check_archives() {
 	persist::delete_orphans(store_, kArchivePrefix, ArchiveKeeper(rings_, count_), kTag);
 
 	size_t free = 0;
+	segments_to_come_ = missing;
 	if (missing > 0 && store_.free_space(free) && missing * kSegmentBytes > free) {
 		Log::warn(kTag, "history: the archives need %u more bytes of flash as they fill, %u are free",
 			static_cast<unsigned>(missing * kSegmentBytes), static_cast<unsigned>(free));

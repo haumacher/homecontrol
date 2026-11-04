@@ -910,8 +910,8 @@ struct ApiFixture : hc_test::WebFixture {
 TEST_CASE("Image.ApiPutGetDeleteStatus") {
 	ApiFixture f;
 	std::string cookie = f.onboard();
-	CHECK(hc::WebApi::body_limit(hc::HttpMethod::put, "/api/image") == hc::image::kMaxImageBytes);
-	CHECK(hc::WebApi::body_limit(hc::HttpMethod::put, "/api/settings/tz") < hc::image::kMaxImageBytes);
+	CHECK(f.api.body_limit(hc::HttpMethod::put, "/api/image") == hc::image::kMaxImageBytes);
+	CHECK(f.api.body_limit(hc::HttpMethod::put, "/api/settings/tz") < hc::image::kMaxImageBytes);
 
 	int status = 0;
 	f.get_image(cookie, status);

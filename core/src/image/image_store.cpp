@@ -264,6 +264,35 @@ bool ImageStore::write(const char* text, size_t length, const char** error) {
 	return true;
 }
 
+size_t ImageStore::storable(size_t free) const {
+	size_t manifest = store_.footprint(kManifestBytes);
+	if (free < manifest) {
+		return 0;
+	}
+	size_t left = free - manifest;
+	size_t bytes = 0;
+	size_t whole = store_.footprint(kChunkSize);
+	while (bytes + kChunkSize <= kMaxImageBytes && whole <= left) {
+		bytes += kChunkSize;
+		left -= whole;
+	}
+	if (bytes == kMaxImageBytes) {
+		return bytes;
+	}
+	// The last chunk: the longest that fits what is left (footprint() grows with the size).
+	size_t low = 0;
+	size_t high = kChunkSize - 1 < kMaxImageBytes - bytes ? kChunkSize - 1 : kMaxImageBytes - bytes;
+	while (low < high) {
+		size_t mid = low + (high - low + 1) / 2;
+		if (store_.footprint(mid) <= left) {
+			low = mid;
+		} else {
+			high = mid - 1;
+		}
+	}
+	return bytes + low;
+}
+
 bool ImageStore::remove(const char** error) {
 	BlobStatus status = store_.remove(kManifest);
 	if (status != BlobStatus::ok && status != BlobStatus::not_found) {

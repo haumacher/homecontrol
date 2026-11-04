@@ -213,6 +213,24 @@ TEST_CASE("HistoryArchive: three days at 1 min feed an hourly archive with min, 
 	CHECK(buckets[1].mean == doctest::Approx(kStepMean).epsilon(1e-12));
 }
 
+TEST_CASE("HistoryArchive: the flash the archives still take shrinks as their segments are created (#52)") {
+	FakeBlobStore blobs;
+	Boot boot(blobs);
+	ArchiveSpec hourly[] = {archive(3600, 7 * 86400)}; // 169 slots: two segments
+	REQUIRE(boot.load({{0, 7200, 60, hourly, 1}}) == HistoryStatus::ok);
+	CHECK(boot.history.flash_to_come() == 2 * History::kSegmentBytes);
+	boot.run(86400, [&](int64_t t) {
+		if (t % 60 == 0) {
+			boot.report(0, Value::of_real(step((t - kMonday) / 60)));
+		}
+	});
+	CHECK(boot.history.flash_to_come() == History::kSegmentBytes); // the first segment is on flash
+	// A restart finds it: the second is still to come.
+	Boot again(blobs);
+	REQUIRE(again.load({{0, 7200, 60, hourly, 1}}) == HistoryStatus::ok);
+	CHECK(again.history.flash_to_come() == History::kSegmentBytes);
+}
+
 TEST_CASE("HistoryArchive: a boolean's daily slot holds its on-time, the day from local midnight across a DST change") {
 	hc_test::PosixRuleZone zone;
 	REQUIRE(zone.parse("CET-1CEST,M3.5.0,M10.5.0/3"));

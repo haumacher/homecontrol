@@ -46,6 +46,8 @@ public:
 
 		// ImageStaging
 		size_t capacity() const override { return area_.capacity_; }
+		/// Half of the area's whole sectors (the other slot reserves as many beside it).
+		size_t shared_capacity() const override { return area_.capacity_ / kSectorBytes / 2 * kSectorBytes; }
 		bool begin(size_t size, const char** reason) override;
 		bool append(const void* data, size_t length) override;
 		const char* finish() override;

@@ -62,6 +62,17 @@ public:
 	/// written; the old image stays).
 	bool write(const char* text, size_t length, const char** error);
 
+	/// The largest image write() can store into `free` bytes of the store's free_space() (homecontrol
+	/// #52): the new generation is written beside the current one, which goes only after the manifest
+	/// switched, so every chunk of the new one and a second manifest must fit `free`, each at the store's
+	/// footprint(). At most kMaxImageBytes.
+	size_t storable(size_t free) const;
+	/// The store's free_space().
+	bool free_space(size_t& bytes) const { return store_.free_space(bytes); }
+
+	/// The longest manifest text (a generation of kMaxImageBytes, the CRC in 8 digits).
+	static constexpr size_t kManifestBytes = 32;
+
 	/// Removes the stored image (the manifest first, so a cut leaves none).
 	bool remove(const char** error);
 

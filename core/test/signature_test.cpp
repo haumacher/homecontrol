@@ -313,7 +313,7 @@ TEST_CASE("Signed images probe: the loader's refusal of a signed image wins; an 
 	CHECK_FALSE(f.service.load(big.data(), big.size(), hc::image::Source::api, true, nullptr));
 	CHECK(f.service.report().kind == hc::image::Report::Kind::too_large);
 	// The transport's limit refuses it before WebApi ever sees it (413, both servers and the socket).
-	CHECK(hc::WebApi::body_limit(hc::HttpMethod::put, "/api/image") == hc::image::kMaxImageBytes);
+	CHECK(f.api.body_limit(hc::HttpMethod::put, "/api/image") == hc::image::kMaxImageBytes);
 	// The other sources pass the same gate: a file, the console.
 	std::string minimal = spec_file("images/minimal.json");
 	CHECK_FALSE(f.service.load(minimal.data(), minimal.size(), hc::image::Source::file, true, nullptr));

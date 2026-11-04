@@ -9,7 +9,8 @@ that breaks a client needs a new path or field, not a changed meaning.
 ## Conventions
 
 - Bodies are UTF-8 JSON objects (`Content-Type: application/json`), at most 1024 bytes in a
-  request (413 `api.body_too_large` otherwise), except `PUT /api/image` (256 KB). Responses carry `Cache-Control: no-store`.
+  request (413 `api.body_too_large` otherwise), except `PUT /api/image` (256 KB; on a device with a
+  staging area its capacity less one byte, below). Responses carry `Cache-Control: no-store`.
 - Every refusal is a 4xx/5xx status with the body `{"error": "<English reason>", "code": "<key>"}`.
   The `code` is stable and is the key a UI translates (doc/web.md, "Texts"); the `error` text is
   for logs and humans and may change. Some refusals add fields (listed below).
@@ -113,6 +114,15 @@ degraded). The WebSocket's `status` message carries the same member.
 Members only `GET /api/status` carries (not the WebSocket's `status` message, which must fit one
 1400-byte frame):
 
+- `image.storable` (homecontrol #52; firmware from 2026-11): the largest image in bytes the device
+  can store and load again (`spec/runtime-image.md` 7): the least of what the blob store takes
+  beside the stored image, keeping the flash free the history's archives still take as they fill,
+  and what the staging slot of the stored image holds beside a failed received image of the same
+  size (a restore reads the stored image while the image that failed is still staged). A deploy
+  that is larger is accepted and runs; it may not be stored (`stored: false`, the `storeError` names
+  the store's limit) or, stored, may not load again beside a failed later image (the device logs a
+  warning naming the limit). E-Home warns before such a deploy. A controller without the member
+  gives no figure (older firmware).
 - `storage`: `{"total", "used", "free"}` (bytes of the storage partition; ESP only) and `{"files",
   "bytes"}` (the blob store's files and their size).
 - `knx`: `{"state": "down|connecting|up", "reason", "gateway": "<host:port or \"\">", "nat",
@@ -541,6 +551,11 @@ Authenticated like every endpoint: a bearer token, or the session cookie with th
 ### `PUT /api/image`
 
 The body is the image (JSON, at most 256 KB; larger: 413 `api.body_too_large` before it is read).
+On a device with a staging area for received images (the ESP: the flash behind the updater, 124 KB
+on the C6, doc/ota.md) the limit is the area's capacity less one byte (the NUL after the text): a
+larger image would need a heap block of its size, which the C6 never has, so it is refused before
+it is read, with the reason naming both sizes (`the image has 130000 bytes; the device receives at
+most 126975 (its staging area)`).
 The header `X-Image-Signature: <128 hex digits>` carries the image's detached Ed25519 signature
 (E-Home connection: the request's `signature` member; section "Signed runtime images" below). While
 the device holds the installation key it checks the signature over the body's exact bytes before
@@ -559,7 +574,9 @@ about 0.4 s for 23 KB on the C6): 200:
 ```
 
 `stored: false` with `storeError` when the image runs but could not be written (after a restart
-the previous one loads, complete: a restart during the store also leaves the previous image). While
+the previous one loads, complete: a restart during the store also leaves the previous image). An
+image larger than the store takes names the limit: `the storage is full (it stores at most 122876
+bytes)` (`image.storable` in `GET /api/status` gives it before the deploy). While
 the previous deploy is still being stored, a deploy is refused 503 `image.busy` with `Retry-After: 1`
 before its body is read (nothing changes; deploy again). Should an answer be fetched only after a
 later deploy's store began (a deploy within the HTTP server's 100 ms poll of the answer), it is 409

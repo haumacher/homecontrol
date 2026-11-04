@@ -180,8 +180,27 @@ public:
 		return store_.read_part(token, offset, buffer, size, length);
 	}
 
-	/// The members of the "image" object of /api/status.
-	void write_status(JsonWriter& json) const;
+	/// The largest image the device can store and load again (homecontrol #52, spec/runtime-image.md
+	/// 7): the least of what the blob store takes beside the stored image, keeping free the flash the
+	/// history's archives still take as they fill (`storage`), and what the stored staging holds beside
+	/// a failed image of the same size (`staging`, ImageStaging::shared_capacity() less the byte of the
+	/// NUL a body adds, ImageBody::begin()). A part the device
+	/// cannot tell (no free_space(), no staging or one that is off: the heap) is kMaxImageBytes.
+	struct Storable {
+		size_t bytes = 0;
+		size_t storage = 0;
+		size_t staging = 0;
+	};
+	Storable storable() const;
+
+	/// The largest image the device can receive (homecontrol #52): with a staging area for received
+	/// images its capacity less the byte of the NUL (a larger body would need a heap block of its size,
+	/// which the C6 never has), otherwise kMaxImageBytes.
+	size_t receivable() const;
+
+	/// The members of the "image" object of /api/status; `full` adds those only GET /api/status carries
+	/// (`storable`: it asks the file system for its free space, not for every WebSocket status).
+	void write_status(JsonWriter& json, bool full = false) const;
 	/// The answer to a successful PUT: the metadata and the counts.
 	void write_info(JsonWriter& json) const;
 	/// The answer to a refused PUT: {"error", "code", "refusals": [{"path", "reason"}], "total"}.
@@ -278,6 +297,11 @@ private:
 	/// The worker's job (on its thread) and its end (on the loop).
 	static void store_job(void* self);
 	void store_done();
+	/// Appends the store's limit to `error` (of `size` bytes) when an image of `length` exceeds it.
+	void stored_beyond(size_t length, char* error, size_t size) const;
+	/// Logs a warning when a stored image of `length` exceeds what the stored staging holds beside a
+	/// failed image (Storable::staging).
+	void warn_storable(size_t length) const;
 	static void write_info_of(JsonWriter& json, const ImageInfo& info, Source source, bool stored,
 		const char* store_error);
 	/// The signature gate of load(): true when the image may be parsed.
@@ -327,7 +351,7 @@ private:
 	bool started_ = false;
 	bool restoring_ = false;
 	bool stored_ok_ = false;
-	char store_error_[64] = {};
+	char store_error_[96] = {};
 	uint64_t loaded_ms_ = 0;
 	ExternalValues* external_ = nullptr;
 	Mqtt* mqtt_ = nullptr;
@@ -354,7 +378,7 @@ private:
 		ImageInfo info;
 		Source source = Source::api;
 		bool stored = false;
-		char error[64] = {};
+		char error[96] = {};
 	} answer_;
 	ModelView view_;
 	DynamicSpecProvider* providers_[kMaxProviders] = {};

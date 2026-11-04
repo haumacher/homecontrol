@@ -565,6 +565,37 @@ The device keeps the last image that loaded and loads it at boot. Blobs are limi
 moment leaves either the old or the new image, and the CRC-32 detects a damaged chunk. Chunks
 without a manifest are removed at start.
 
+**The largest image the device can store and load again** (homecontrol #52) is reported as
+`image.storable` in `GET /api/status` (`spec/api.md`). It is the least of:
+
+1. *What the blob store takes:* the new generation is written beside the old one, which is removed
+   only after the manifest switched, so the free space now (the old generation is in use) must hold
+   every chunk of the new one and a second manifest. On the ESP's LittleFS in whole 4 KB blocks
+   along each file's skip list: a 16 KB chunk takes 5 blocks, the last chunk of r bytes as many as
+   r needs, the manifest one. From the free space the flash the history's archives still take as
+   they fill is kept (their segments not yet created, 4 KB each, `doc/persistence.md`).
+2. *What the staging holds:* the stored image is loaded through its own staging slot (doc/image.md
+   "Loading the stored image"); a restore after a failed apply reads it while the received image
+   that failed is still in the other slot of the same area. So an image is sure to load again when
+   it takes at most half of the area's whole sectors, less the byte of the NUL after the text. A
+   device without a staging (POSIX), or with the staging off, loads into the heap: no figure here.
+
+At most the 256 KB of section 5. The board at boot, with the test system's image stored (38 free
+blocks, 124 KB of staging): the store takes 122,876 bytes (a manifest's block, seven chunks of
+five blocks, 8,188 bytes in the two left) less 4 KB per archive segment to come; the staging 15 of
+its 31 sectors, 61,439 bytes, so `storable` is 61,439. The figure shrinks with every stored image
+larger than the one before (both generations share the free space during a write) and grows again
+when a smaller one replaces it.
+
+A deploy above `storable` is accepted and runs, as any other. When the store cannot take it the
+answer has `stored: false` and the `storeError` names the limit (`the storage is full (it stores at
+most N bytes)`): after a restart the previous image loads. When the store takes it but the staging
+could not restore it beside a failed image, it is stored and the device logs `the image (N bytes) is
+stored, but larger than the M bytes the device is sure to load again beside a failed image`: a later
+deploy that fails while applied may leave no image until a restart (the boot load uses the stored
+slot alone, the whole area). The receive limit (`spec/api.md` `PUT /api/image`) is the staging area's
+capacity less one byte: a larger image could not be received, nor parsed, on the C6.
+
 `DELETE /api/image` (and the console's `image clear`) unloads the image and removes it, with the
 persisted values and history rings: the device returns to setup.
 

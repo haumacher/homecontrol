@@ -89,6 +89,7 @@ void History::free_rings() {
 	sample_bytes_ = 0;
 	ram_bytes_ = 0;
 	flash_bytes_ = 0;
+	segments_to_come_ = 0;
 }
 
 uint32_t History::ring_samples(uint32_t retention_s, uint32_t spacing_s) {

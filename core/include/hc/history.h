@@ -290,6 +290,10 @@ public:
 	/// Flash of the loaded archives against the archive budget (flash_bytes()).
 	size_t flash_used() const { return flash_bytes_; }
 
+	/// Flash the loaded archives still take as they fill (homecontrol #52): their segments not yet on
+	/// the store, at its footprint(). The image store keeps it free (ImageService::storable()).
+	size_t flash_to_come() const { return segments_to_come_ * store_.footprint(kSegmentBytes); }
+
 	/// Ring blobs written since construction (successful writes).
 	uint32_t writes() const { return writes_; }
 
@@ -357,6 +361,8 @@ private:
 	size_t sample_bytes_ = 0;
 	size_t ram_bytes_ = 0;
 	size_t flash_bytes_ = 0;
+	/// Segments of the loaded archives not yet created (flash_to_come()).
+	size_t segments_to_come_ = 0;
 	TimerHandle tick_;
 	TimerHandle save_timer_;
 	bool listening_ = false;

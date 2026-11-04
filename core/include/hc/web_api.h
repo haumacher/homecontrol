@@ -193,9 +193,15 @@ public:
 	void set_image(image::ImageService* image);
 	image::ImageService* image() const { return image_; }
 
-	/// The largest body a request may carry: kMaxBody, the image size limit for PUT /api/image.
-	/// The platforms refuse longer bodies with 413 before they read them.
-	static size_t body_limit(HttpMethod method, const char* path);
+	/// The largest body a request may carry: kMaxBody; for PUT /api/image what the image service
+	/// receives (ImageService::receivable(): the staging area's capacity, homecontrol #52, else
+	/// kMaxImageBytes). The platforms refuse longer bodies with 413 `api.body_too_large` before they
+	/// read them, with the reason of body_too_long(). Any thread (the limit is fixed after start).
+	size_t body_limit(HttpMethod method, const char* path) const;
+
+	/// The reason of the 413 for a body of `bytes` above body_limit() into `text` (of `size` bytes, 128
+	/// suffice): for an image its size, the limit and why.
+	void body_too_long(HttpMethod method, const char* path, size_t bytes, char* text, size_t size) const;
 
 	/// Where a receiver puts the body of `method` `path`: the image service's staging area for
 	/// PUT /api/image (homecontrol #66), nullptr (a heap buffer) for everything else.
@@ -214,8 +220,9 @@ public:
 
 	void handle(const WebRequest& request, WebResponse& response);
 
-	/// The members of the status object (also the WebSocket's status message).
-	void write_status(JsonWriter& json);
+	/// The members of the status object (also the WebSocket's status message); `full` (GET /api/status)
+	/// adds the members of the image only GET /api/status carries (ImageService::write_status()).
+	void write_status(JsonWriter& json, bool full = false);
 	/// The members GET /api/status adds to write_status() (the WebSocket's status message has no
 	/// room for them): zigbee, storage, knx, external, lang, mqtt.
 	void write_status_details(JsonWriter& json);

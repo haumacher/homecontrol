@@ -776,10 +776,10 @@ void EhomeLink::request(const JsonSpan& message) {
 	}
 	if (has_length && length > 0) {
 		size_t bytes = static_cast<size_t>(length);
-		size_t limit = WebApi::body_limit(method_, path_);
+		size_t limit = api_.body_limit(method_, path_);
 		if (bytes > limit) {
-			char text[64];
-			std::snprintf(text, sizeof(text), "the request body is longer than %u bytes", static_cast<unsigned>(limit));
+			char text[128];
+			api_.body_too_long(method_, path_, bytes, text, sizeof(text));
 			Log::warn(kTag, "request %s %s refused: %s", method, path_, text);
 			answer(id, 413, "api.body_too_large", text);
 			discard_ = bytes;

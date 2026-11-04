@@ -15,6 +15,7 @@ namespace hc_test {
 class FakeImageStaging : public hc::ImageStaging {
 public:
 	size_t capacity() const override { return capacity_bytes; }
+	size_t shared_capacity() const override { return shared_bytes > 0 ? shared_bytes : capacity_bytes; }
 
 	bool begin(size_t size, const char** reason) override {
 		++begins;
@@ -64,6 +65,7 @@ public:
 	}
 
 	size_t capacity_bytes = 262144;
+	size_t shared_bytes = 0; ///< > 0: what shared_capacity() reports (homecontrol #52), else the capacity.
 	const char* off = nullptr; ///< Set: begin() declines with this reason.
 	size_t fail_after = 0;     ///< > 0: append() fails after this many calls of a staging.
 	bool refuse_read = false;

@@ -753,7 +753,7 @@ void WebApi::auth_logout(const WebRequest& request, WebResponse& response) {
 
 // ---- Status -----------------------------------------------------------------------------------
 
-void WebApi::write_status(JsonWriter& json) {
+void WebApi::write_status(JsonWriter& json, bool full) {
 	Controller& ctl = controller_;
 	const Connectivity& net = ctl.connectivity();
 	json.key("device").begin_object()
@@ -810,7 +810,7 @@ void WebApi::write_status(JsonWriter& json) {
 	json.member("datapoints", static_cast<uint32_t>(model_.size()));
 	if (image_ != nullptr) {
 		json.key("image").begin_object();
-		image_->write_status(json);
+		image_->write_status(json, full);
 		json.end_object();
 	}
 	if (ehome_ != nullptr) {
@@ -822,7 +822,7 @@ void WebApi::write_status(JsonWriter& json) {
 void WebApi::status(WebResponse& response) {
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object();
-	write_status(json);
+	write_status(json, true);
 	write_status_details(json);
 	json.end_object();
 	finish(response, json);
@@ -1319,11 +1319,26 @@ ImageStaging* WebApi::body_staging(HttpMethod method, const char* path) const {
 	return nullptr;
 }
 
-size_t WebApi::body_limit(HttpMethod method, const char* path) {
+size_t WebApi::body_limit(HttpMethod method, const char* path) const {
 	if (method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
-		return image::kMaxImageBytes;
+		return image_ != nullptr ? image_->receivable() : image::kMaxImageBytes;
 	}
 	return kMaxBody;
+}
+
+void WebApi::body_too_long(HttpMethod method, const char* path, size_t bytes, char* text, size_t size) const {
+	size_t limit = body_limit(method, path);
+	if (method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
+		if (limit < image::kMaxImageBytes) {
+			std::snprintf(text, size, "the image has %u bytes; the device receives at most %u (its staging area)",
+				static_cast<unsigned>(bytes), static_cast<unsigned>(limit));
+		} else {
+			std::snprintf(text, size, "the image has %u bytes; the device receives at most %u",
+				static_cast<unsigned>(bytes), static_cast<unsigned>(limit));
+		}
+		return;
+	}
+	std::snprintf(text, size, "the request body is longer than %u bytes", static_cast<unsigned>(limit));
 }
 
 namespace {

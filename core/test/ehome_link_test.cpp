@@ -734,6 +734,28 @@ TEST_CASE("E-Home: a body longer than the route takes is refused 413 and its fra
 	CHECK(f.link.state() == EhomeState::failed);
 }
 
+TEST_CASE("E-Home: an image larger than the staging area is refused 413 naming the limit, its frames dropped (#52)") {
+	EhomeFixture f;
+	hc_test::FakeImageStaging staging;
+	staging.capacity_bytes = 126976;
+	f.service.set_staging(&staging);
+	f.handshake();
+	f.client.deliver("{\"type\":\"request\",\"id\":1,\"method\":\"PUT\",\"path\":\"/api/image\","
+		"\"length\":130000}");
+	CHECK(f.response(1)["status"].number == 413);
+	CHECK(f.response(1)["body"]["code"].text == "api.body_too_large");
+	CHECK(f.response(1)["body"]["error"].text ==
+		"the image has 130000 bytes; the device receives at most 126975 (its staging area)");
+	CHECK(f.capture.sink.contains("the image has 130000 bytes; the device receives at most 126975 (its staging area)"));
+	CHECK(staging.begins == 0); // nothing was staged
+	f.client.deliver_binary(std::string(130000, 'x'), 4096);
+	CHECK(f.link.state() == EhomeState::connected);
+	f.client.deliver("{\"type\":\"request\",\"id\":2,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	CHECK(f.response(2)["status"].number == 200);
+	CHECK(f.response(2)["body"]["image"]["storable"].number > 0);
+	f.service.set_staging(nullptr);
+}
+
 TEST_CASE("E-Home: a body whose frames stop is reported once with the bytes received") {
 	EhomeFixture f;
 	f.handshake();

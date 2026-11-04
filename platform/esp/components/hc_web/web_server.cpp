@@ -653,10 +653,11 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 	if (query != nullptr) {
 		*query++ = '\0';
 	}
-	size_t limit = WebApi::body_limit(method_of(req->method), job.path);
+	size_t limit = api_.body_limit(method_of(req->method), job.path);
 	if (req->content_len > limit) {
-		static char text[64];
-		std::snprintf(text, sizeof(text), "the request body is longer than %u bytes", static_cast<unsigned>(limit));
+		static char text[128];
+		api_.body_too_long(method_of(req->method), job.path, req->content_len, text, sizeof(text));
+		Log::warn(kTag, "refusing %s: %s", job.path, text);
 		return send_refusal(req, 413, "api.body_too_large", text);
 	}
 	HttpMethod method = method_of(req->method);

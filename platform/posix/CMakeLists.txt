@@ -168,6 +168,8 @@ target_sources(hc_tests PRIVATE
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_test.cpp")
 # The image's store off the loop (issue #68).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_store_async_test.cpp")
+# The largest image the device stores and loads again (issue #52).
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_storable_test.cpp")
 # The control pages of the image (issue #54, schema 1.1).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/pages_test.cpp")
 # The BlobStore on files (issue #21, doc/persistence.md).

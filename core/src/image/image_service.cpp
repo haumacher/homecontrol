@@ -329,7 +329,10 @@ bool ImageService::load_steps(const char* text, size_t length, Source source, bo
 		stored_ok_ = store_.write(text, length, &error);
 		std::snprintf(store_error_, sizeof(store_error_), "%s", stored_ok_ ? "" : error);
 		if (!stored_ok_) {
-			Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", error);
+			stored_beyond(length, store_error_, sizeof(store_error_));
+			Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", store_error_);
+		} else {
+			warn_storable(length);
 		}
 	} else if (background) {
 		// stored_ok_/store_error_ say "being stored" (store_off_loop) until store_done().
@@ -424,12 +427,16 @@ void ImageService::store_done() {
 	stored_ok_ = job_ok_;
 	std::snprintf(store_error_, sizeof(store_error_), "%s",
 		job_ok_ ? "" : job_error_ != nullptr ? job_error_ : "the storage refused a write");
+	if (!job_ok_) {
+		stored_beyond(pending_length_, store_error_, sizeof(store_error_));
+	}
 	answer_.stored = stored_ok_;
 	std::snprintf(answer_.error, sizeof(answer_.error), "%s", store_error_);
 	if (stored_ok_) {
 		Log::info(kTag, "image '%s' revision %u stored (%u bytes in %u ms, off the loop)", answer_.info.project_id,
 			static_cast<unsigned>(answer_.info.revision), static_cast<unsigned>(pending_length_),
 			static_cast<unsigned>(job_ms_));
+		warn_storable(pending_length_);
 	} else {
 		Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", store_error_);
 	}
@@ -1123,7 +1130,52 @@ void ImageService::quietly(void (*report)(void* ctx), void* ctx) {
 	engine_.quietly([report, ctx] { report(ctx); });
 }
 
-void ImageService::write_status(JsonWriter& json) const {
+ImageService::Storable ImageService::storable() const {
+	Storable out;
+	out.storage = kMaxImageBytes;
+	size_t free = 0;
+	if (store_.free_space(free)) {
+		size_t reserve = history_.flash_to_come();
+		out.storage = store_.storable(free > reserve ? free - reserve : 0);
+	}
+	// A body takes one byte more in the staging: the NUL after the text (ImageBody::begin()).
+	out.staging = kMaxImageBytes;
+	if (stored_staging_ != nullptr && stored_staging_->capacity() > 0 && stored_staging_->shared_capacity() <= kMaxImageBytes) {
+		size_t shared = stored_staging_->shared_capacity();
+		out.staging = shared > 0 ? shared - 1 : 0;
+	}
+	out.bytes = out.storage < out.staging ? out.storage : out.staging;
+	return out;
+}
+
+size_t ImageService::receivable() const {
+	if (staging_ != nullptr && staging_->capacity() > 0 && staging_->capacity() <= kMaxImageBytes) {
+		return staging_->capacity() - 1; // and the NUL after the text
+	}
+	return kMaxImageBytes;
+}
+
+void ImageService::stored_beyond(size_t length, char* error, size_t size) const {
+	Storable limit = storable();
+	if (length > limit.storage) {
+		size_t used = std::strlen(error);
+		std::snprintf(error + used, size - used, " (it stores at most %u bytes)", static_cast<unsigned>(limit.storage));
+	}
+}
+
+void ImageService::warn_storable(size_t length) const {
+	Storable limit = storable();
+	if (length > limit.staging) {
+		Log::warn(kTag, "the image (%u bytes) is stored, but larger than the %u bytes the device is sure to load again "
+			"beside a failed image: should a later deploy fail while applied, no image may run until a restart",
+			static_cast<unsigned>(length), static_cast<unsigned>(limit.staging));
+	}
+}
+
+void ImageService::write_status(JsonWriter& json, bool full) const {
+	if (full) {
+		json.member("storable", static_cast<uint32_t>(storable().bytes));
+	}
 	json.member("loaded", loaded_);
 	if (loaded_) {
 		json.member("project", info_.project_id)

@@ -28,6 +28,12 @@ public:
 	/// Bytes the area holds at most (0: none, e.g. it was not verified at start).
 	virtual size_t capacity() const = 0;
 
+	/// Bytes this staging holds at most while the other staging of its area holds as many (homecontrol
+	/// #52): a restore reads the stored image in one while the received image that failed is still in
+	/// the other (ImageService::set_stored_staging()), so an image up to this size is sure to load again
+	/// beside a failed one of up to its size. The default: capacity() (an area of its own).
+	virtual size_t shared_capacity() const { return capacity(); }
+
 	/// Starts a staging of `size` bytes. False when it is in use, smaller than `size` or failed;
 	/// `reason` (if given) then says why.
 	virtual bool begin(size_t size, const char** reason) = 0;

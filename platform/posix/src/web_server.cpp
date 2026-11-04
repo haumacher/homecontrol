@@ -299,10 +299,11 @@ bool WebServer::start() {
 	http.set_payload_max_length(image::kMaxImageBytes);
 
 	auto api_handler = [this](const httplib::Request& req, httplib::Response& res) {
-		size_t limit = WebApi::body_limit(method_of(req.method), req.path.c_str());
+		size_t limit = api_.body_limit(method_of(req.method), req.path.c_str());
 		if (req.body.size() > limit) {
-			std::string text = "the request body is longer than " + std::to_string(limit) + " bytes";
-			json_error(res, 413, "api.body_too_large", text.c_str());
+			char text[128];
+			api_.body_too_long(method_of(req.method), req.path.c_str(), req.body.size(), text, sizeof(text));
+			json_error(res, 413, "api.body_too_large", text);
 			return;
 		}
 		if (const char* busy = api_.body_refusal(method_of(req.method), req.path.c_str())) {

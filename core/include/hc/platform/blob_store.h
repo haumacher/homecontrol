@@ -164,6 +164,29 @@ public:
 		return false;
 	}
 
+	/// The bytes of free_space() a new blob of `bytes` takes (homecontrol #52: the largest image the
+	/// store can take, ImageStore::storable()). The default: its bytes; a store in blocks counts the
+	/// blocks the blob occupies (the LittleFS store: littlefs_footprint()).
+	virtual size_t footprint(size_t bytes) const { return bytes; }
+
+	/// The bytes of whole blocks of `block` bytes a LittleFS file of `bytes` occupies: the first block
+	/// holds `block` bytes, block i of the file's skip list (CTZ) loses ctz(i) + 1 pointers of 4 bytes
+	/// (a 16 KB file takes five 4 KB blocks, a 4 KB one one). At least one block: a small file is inlined
+	/// in its directory's metadata, which a new file may make grow by a block.
+	static size_t littlefs_footprint(size_t bytes, size_t block) {
+		size_t blocks = 1;
+		size_t held = block;
+		while (held < bytes) {
+			size_t pointers = 1;
+			for (size_t i = blocks; (i & 1) == 0; i >>= 1) {
+				++pointers;
+			}
+			held += block - 4 * pointers;
+			++blocks;
+		}
+		return blocks * block;
+	}
+
 	/// The name rule every implementation applies before it touches its store.
 	static BlobStatus check_name(const char* name) {
 		if (name == nullptr || name[0] == '\0' || name[0] == '.') {
