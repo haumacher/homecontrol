@@ -131,7 +131,9 @@ public:
 	bool load(const char* text, size_t length, Source source, bool store, const uint8_t* signature = nullptr,
 		ImageBody* holder = nullptr, Callback stored = Callback());
 
-	/// Loads the stored image (the boot load). False without one or when it fails (logged).
+	/// Loads the stored image (the boot load, and the restore after a failed apply). Its text is put
+	/// together in the stored staging (set_stored_staging()), otherwise in a heap buffer. False without
+	/// one or when it fails (logged).
 	bool load_stored(Source source);
 
 	/// Removes the image: no datapoints, no rules, no schedules; the persisted values, rings,
@@ -198,6 +200,14 @@ public:
 	/// receivers of PUT /api/image put the body there (ImageBody), see WebApi::body_staging().
 	void set_staging(ImageStaging* staging) { staging_ = staging; }
 	ImageStaging* staging() const { return staging_; }
+
+	/// The platform's staging area the stored image is read into to be loaded (homecontrol #71): at
+	/// boot and when a failed apply returns to it. Not the one of set_staging(): a restore runs while
+	/// the received image that failed is still in that one. The text is put together there through a
+	/// piece of ImageStore::kReadPiece and parsed in place, so the load needs no heap block of the
+	/// image's size; none, or when it declines (the reason is logged): a heap buffer.
+	void set_stored_staging(ImageStaging* staging) { stored_staging_ = staging; }
+	ImageStaging* stored_staging() const { return stored_staging_; }
 
 	/// Told the phases of every load (homecontrol #70, doc/image.md "Memory of a swap"); nullptr: none.
 	/// It outlives the service or is removed first.
@@ -322,6 +332,7 @@ private:
 	ExternalValues* external_ = nullptr;
 	Mqtt* mqtt_ = nullptr;
 	ImageStaging* staging_ = nullptr;
+	ImageStaging* stored_staging_ = nullptr;
 	Worker* worker_ = nullptr;
 	LoadProbe* probe_ = nullptr;
 	unsigned load_depth_ = 0; ///< load() within load() (a failed apply restores the stored image).

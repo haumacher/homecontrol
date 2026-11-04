@@ -146,29 +146,37 @@ bool ImageService::load_stored(Source source) {
 	if (!store_.stored(bytes)) {
 		return false;
 	}
-	char* text = new (std::nothrow) char[bytes > 0 ? bytes : 1];
-	if (text == nullptr) {
+	// In the stored staging when it takes it, parsed in place there (homecontrol #71): no heap block
+	// of the image's size, which a fragmented heap during a restore may not have.
+	ImageBody body;
+	const char* refusal = nullptr;
+	if (!body.begin(bytes, stored_staging_, &refusal)) {
 		report_.clear();
-		report_.add(Report::Kind::no_memory, "", "no memory to read the stored image (%u bytes)",
-			static_cast<unsigned>(bytes));
-		Log::error(kTag, "stored image not loaded: no memory for its %u bytes", static_cast<unsigned>(bytes));
+		report_.add(Report::Kind::no_memory, "", "no memory to read the stored image (%u bytes)%s%s",
+			static_cast<unsigned>(bytes), refusal != nullptr ? "; the staging area declined: " : "",
+			refusal != nullptr ? refusal : "");
+		Log::error(kTag, "stored image not loaded: no memory for its %u bytes%s%s", static_cast<unsigned>(bytes),
+			refusal != nullptr ? "; the staging area declined: " : "", refusal != nullptr ? refusal : "");
 		return false;
 	}
-	size_t length = 0;
+	if (refusal != nullptr) {
+		Log::warn(kTag, "the stored image (%u bytes) is read into the heap: the staging area declined: %s",
+			static_cast<unsigned>(bytes), refusal);
+	}
 	bool missing = false;
 	const char* error = nullptr;
-	bool ok = store_.read(text, bytes, length, missing, &error);
+	bool ok = store_.read(body, missing, &error);
 	if (!ok) {
 		report_.clear();
 		report_.add(Report::Kind::invalid, "", "the stored image cannot be read: %s", error);
 		Log::error(kTag, "stored image not loaded: %s", error);
 	} else {
-		ok = load(text, length, source, false);
+		ok = load(body.text(), body.size(), source, false);
 		if (ok) {
 			stored_ok_ = true;
 		}
 	}
-	delete[] text;
+	body.release();
 	return ok;
 }
 

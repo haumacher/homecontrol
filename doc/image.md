@@ -57,6 +57,35 @@ place, so the service tears the new configuration down and loads the stored imag
 (`restore`). The text is stored only after the apply succeeded; a store failure leaves the image
 running and is reported (`stored: false`).
 
+**Loading the stored image (#71).** The boot load and the restore read the stored image the way a
+received one is read: into an `ImageBody` in the platform's staging, there parsed in place. The
+service has a staging of its own for it (`ImageService::set_stored_staging()`), not the one of the
+received images: a restore runs while the image that failed is still staged there. `ImageStore::read`
+copies the chunks from the blob store through one heap piece of `ImageStore::kReadPiece` (2 KB),
+appends them to the body and checks the CRC over the pieces, so no allocation of the load is larger
+than the swap's own (before #71 the stored text, 24 KB for the test system, took one heap block, and
+the restore failed on a heap whose largest block during a swap was 18–26 KB, leaving no image). On the
+ESP the two stagings are the two slots of one area behind the updater (`EspImageStaging::received()`,
+`stored()`, doc/ota.md "The staging area"). The stored format is unchanged. Without a stored
+staging (the POSIX build), or when it declines (off, in use, no room beside the received image: the
+reason is logged), the text goes to a heap buffer of its size as before; when the heap has no such
+block either the load is refused as `no_memory` and logged (`stored image not loaded: no memory for
+its N bytes`). The tests: `Swap memory: a failed apply on a fragmented heap returns to the stored
+image, read in place (#71)` (every allocation above 3.5 KB refused; the old image ends loaded and
+running, no allocation of the restore above 3 KB), `… the boot load of the stored image on a
+fragmented heap …`, the probe that without a stored staging the same restore ends without an
+image, and `… an image whose external member the device refuses returns to the stored image`.
+
+*Provoking a restore on the board.* The loader checks only that `external` is an object; the
+external values check its sources in the step `technologies`, after the model, the rules and the
+blocks were replaced. The stored image with a source the device refuses added, e.g.
+`"external": {"sources": [{"id": "restore-probe", "url": "ftp://192.0.2.1/x", "interval": 600,
+"bindings": [{"datapoint": "<a datapoint of the image>", "path": "a"}]}]}`, deployed with
+`PUT /api/image` (or the console's `image load <url>`; signed when the device holds the installation
+key) fails at `external` and returns to the stored image: the log shows `image from api failed while
+it was applied at external: …`, `loading the stored image again` and the stored image `loaded from
+restore`, and no `read into the heap`.
+
 **Storing off the loop (#68).** Writing the text to LittleFS was the largest step of a deploy on the
 C6 (393 of about 790 ms for the test system's 23 KB image) and needs no parsed state: the verified
 bytes stay in the staging area (or the heap buffer) anyway. So `ImageService::load()` takes the

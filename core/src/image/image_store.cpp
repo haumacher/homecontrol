@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 #include "hc/image/image.h"
 #include "hc/log.h"
@@ -118,6 +119,68 @@ bool ImageStore::read(char* buffer, size_t size, size_t& length, bool& missing, 
 		return false;
 	}
 	length = manifest.bytes;
+	return true;
+}
+
+bool ImageStore::read(ImageBody& body, bool& missing, const char** error) const {
+	Manifest manifest;
+	if (!read_manifest(manifest, missing)) {
+		*error = missing ? "no image stored" : "the stored image's manifest is damaged";
+		return false;
+	}
+	if (!body.active() || body.size() != manifest.bytes || body.have() != 0) {
+		*error = "the stored image changed while it was read";
+		return false;
+	}
+	char* piece = new (std::nothrow) char[kReadPiece];
+	if (piece == nullptr) {
+		*error = "no memory to read the stored image";
+		return false;
+	}
+	uint32_t crc = 0;
+	size_t at = 0;
+	bool ok = true;
+	for (size_t i = 0; ok && i < manifest.chunks; ++i) {
+		char name[BlobStore::kMaxNameLength + 1];
+		chunk_name(manifest.generation, i, name, sizeof(name));
+		size_t chunk_bytes = manifest.bytes - at < kChunkSize ? manifest.bytes - at : kChunkSize;
+		for (size_t within = 0; within < chunk_bytes;) {
+			size_t want = chunk_bytes - within < kReadPiece ? chunk_bytes - within : kReadPiece;
+			size_t got = 0;
+			BlobStatus status = store_.read(name, within, piece, want, got);
+			if (status != BlobStatus::ok || got != want) {
+				Log::error(kTag, "stored image: chunk %s %s", name,
+					status != BlobStatus::ok ? blob_status_name(status) : "is short");
+				*error = "a chunk of the stored image is missing or short";
+				ok = false;
+				break;
+			}
+			if (!body.append(piece, got)) {
+				Log::error(kTag, "stored image: the buffer refused %u bytes at %u", static_cast<unsigned>(got),
+					static_cast<unsigned>(at + within));
+				*error = "the stored image could not be put together (the staging area failed)";
+				ok = false;
+				break;
+			}
+			crc = persist::crc32(crc, piece, got);
+			within += got;
+		}
+		at += chunk_bytes;
+	}
+	delete[] piece;
+	if (!ok) {
+		return false;
+	}
+	if (crc != manifest.crc) {
+		Log::error(kTag, "stored image: checksum %08x, the manifest says %08x", static_cast<unsigned>(crc),
+			static_cast<unsigned>(manifest.crc));
+		*error = "the stored image is damaged (checksum)";
+		return false;
+	}
+	if (body.finish() == nullptr) {
+		*error = "the stored image cannot be read back from the staging area";
+		return false;
+	}
 	return true;
 }
 

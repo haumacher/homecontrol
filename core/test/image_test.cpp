@@ -19,8 +19,10 @@
 #include "allocation_counter.h"
 #include "doctest.h"
 #include "fake_blob_store.h"
+#include "fake_image_staging.h"
 #include "hc/controller.h"
 #include "hc/datapoint.h"
+#include "hc/image/image_body.h"
 #include "hc/image/image_service.h"
 #include "hc/image/image_store.h"
 #include "hc/image/loader.h"
@@ -29,6 +31,7 @@
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
 #include "hc/live_feed.h"
+#include "hc/value_store.h"
 #include "hc/web_api.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
@@ -469,6 +472,91 @@ TEST_CASE("Image.JsonDepthLimits") {
 }
 
 // ---- Store --------------------------------------------------------------------------------------
+
+TEST_CASE("Image.StoreReadsIntoABodyInPieces") {
+	// homecontrol #71: the stored image is read into an ImageBody (the stored staging, or the heap) in
+	// pieces of kReadPiece, the CRC over the pieces; the stored format is the one every firmware wrote.
+	hc_test::FakeBlobStore blobs;
+	ImageStore store(blobs);
+	std::string text(40001, 'x');
+	for (size_t i = 0; i < text.size(); ++i) {
+		text[i] = static_cast<char>('a' + i % 26);
+	}
+	const char* error = nullptr;
+	REQUIRE(store.write(text.data(), text.size(), &error));
+	size_t bytes = 0;
+	REQUIRE(store.stored(bytes));
+
+	hc_test::FakeImageStaging staging;
+	staging.content.reserve(bytes + 1); // the fake's buffer is flash on the device: no growth in the scope
+	hc::image::ImageBody body;
+	REQUIRE(body.begin(bytes, &staging));
+	REQUIRE(body.staged());
+	bool missing = false;
+	{
+		hc_test::AllocationScope scope;
+		REQUIRE(store.read(body, missing, &error));
+		CHECK(scope.largest() == ImageStore::kReadPiece); // the piece, no block of the image's size
+	}
+	CHECK(std::string(body.text(), body.size()) == text);
+	CHECK(body.text()[body.size()] == '\0');
+	// Two chunks of 16384 in 8 pieces each, the last 7233 bytes in 4, and the NUL of finish().
+	CHECK(staging.appends == 8 + 8 + 4 + 1);
+	body.release();
+
+	// Into the heap (no staging, the POSIX build).
+	REQUIRE(body.begin(bytes, nullptr));
+	REQUIRE(store.read(body, missing, &error));
+	CHECK(std::string(body.text(), body.size()) == text);
+	body.release();
+
+	// A body of another size (the image changed after stored()) is refused.
+	REQUIRE(body.begin(bytes - 1, nullptr));
+	CHECK_FALSE(store.read(body, missing, &error));
+	CHECK(std::string(error).find("changed") != std::string::npos);
+	body.release();
+
+	// A staging that fails on the way is refused with the reason.
+	staging.fail_after = 3;
+	REQUIRE(body.begin(bytes, &staging));
+	CHECK_FALSE(store.read(body, missing, &error));
+	CHECK(std::string(error).find("staging") != std::string::npos);
+	body.release();
+	staging.fail_after = 0;
+
+	// A damaged chunk fails the CRC; nothing is finished.
+	blobs.blobs["image.a.1"][100] ^= 1;
+	REQUIRE(body.begin(bytes, &staging));
+	CHECK_FALSE(store.read(body, missing, &error));
+	CHECK(std::string(error).find("checksum") != std::string::npos);
+	CHECK_FALSE(staging.finished);
+	body.release();
+
+	// The format as an earlier firmware stored it, written by hand: manifest "HCIMG 1 <gen> <bytes>
+	// <chunks> <crc32>" and chunks of 16384 bytes.
+	hc_test::FakeBlobStore old;
+	std::string image = "{\"image\": {\"schemaVersion\": \"1.0\"}}" + std::string(20000, ' ');
+	old.blobs["image.b.0"] = std::vector<uint8_t>(image.begin(), image.begin() + 16384);
+	old.blobs["image.b.1"] = std::vector<uint8_t>(image.begin() + 16384, image.end());
+	char manifest[80];
+	std::snprintf(manifest, sizeof(manifest), "HCIMG 1 b %u 2 %08x\n", static_cast<unsigned>(image.size()),
+		static_cast<unsigned>(hc::persist::crc32(0, image.data(), image.size())));
+	old.blobs["image.idx"] = std::vector<uint8_t>(manifest, manifest + std::strlen(manifest));
+	ImageStore earlier(old);
+	REQUIRE(earlier.stored(bytes));
+	REQUIRE(body.begin(bytes, &staging));
+	REQUIRE(earlier.read(body, missing, &error));
+	CHECK(std::string(body.text(), body.size()) == image);
+	body.release();
+
+	// None stored.
+	hc_test::FakeBlobStore empty;
+	ImageStore none(empty);
+	REQUIRE(body.begin(10, nullptr));
+	CHECK_FALSE(none.read(body, missing, &error));
+	CHECK(missing);
+}
+
 
 TEST_CASE("Image.StoreChunksGenerationsAndCrc") {
 	hc_test::FakeBlobStore blobs;

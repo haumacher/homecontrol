@@ -68,11 +68,19 @@ free, and it is not the running partition, which the IDF's write protection
 (`CHECK_WRITE_ADDRESS`, `CONFIG_SPI_FLASH_DANGEROUS_WRITE_ABORTS`) guards as a whole. At boot the
 application verifies the updater's image (`esp_image_verify`, which also gives its length; logged
 as `image staging: N KB in partition 'updater' at 0x…, behind the updater's image (… B, verified in
-… ms) and a guard sector; … KB of the address space free for mapping`); if it does not verify, the
-staging stays off for that boot (logged with the reason) and images are received into the heap. A
+… ms) and a guard sector, mapped at 0x… for the received and the stored image; … KB of the address
+space free for mapping`); if it does not verify or cannot be mapped, the staging stays off for that
+boot (logged with the reason) and images are read into the heap. A
 staging erases only the 4 KB sectors the body reaches, as it arrives, never below the guard
-sector, and reads the body back through `esp_partition_mmap` (one or two of the MMU's 64 KB pages;
-the 2.5 MB application leaves most of the 16 MB address space free). The content is transient:
+sector, and reads the body back through the area's mapping (`esp_partition_mmap` of the whole area
+once at boot, three of the MMU's 64 KB pages; the 2.5 MB application leaves most of the 16 MB address
+space free; the flash writes invalidate the cache of the pages they reach). Two slots share the area
+(homecontrol #71): the received images (`received()`) and the stored image the image service loads at
+boot and returns to after a failed apply (`stored()`, doc/image.md "Loading the stored image"); a
+slot reserves the sectors it needs at the area's start or, while the other holds that, behind the
+other's reservation, and is refused (the image goes to the heap) when the area has no room beside
+it. The area is mapped once rather than per staging because two mappings of one MMU page share one
+entry: unmapping the first would take the second's text along. The content is transient:
 nothing reads it after a restart, a new staging starts over, and a USB flash of a larger updater
 only shortens the area (it is measured again at the next boot). While the updater runs (an OTA
 update or upload) the application does not, so the two never use the partition at once. An image

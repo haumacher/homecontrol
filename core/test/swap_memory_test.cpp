@@ -13,9 +13,13 @@
 #include "allocation_counter.h"
 #include "doctest.h"
 #include "fake_blob_store.h"
+#include "fake_image_staging.h"
 #include "hc/controller.h"
 #include "hc/datapoint.h"
+#include "hc/external_values.h"
+#include "hc/image/image_body.h"
 #include "hc/image/image_service.h"
+#include "hc/image/image_store.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
 #include "knx_test_support.h"
@@ -34,7 +38,10 @@ std::string fixture_text(const std::string& name) {
 }
 
 /// A provider of dynamic datapoints, as the Zigbee adapter is on the C6: with one registered the
-/// service keeps the applied plan for the providers' reloads.
+/// service keeps the applied plan for the providers' reloads. Armed (fail_next()), it makes the next
+/// apply fail after the model was replaced (homecontrol #71): when the model is loaded it binds the
+/// image's datapoint `victim` to a technology of its own, so the KNX adapter refuses its mapping in
+/// the step `technologies` and the service returns to the stored image.
 class NoDevices : public hc::image::DynamicSpecProvider {
 public:
 	const char* provider_name() const override { return "zigbee"; }
@@ -44,8 +51,53 @@ public:
 		count = 0;
 		return true;
 	}
-	void model_loaded(const hc::image::ImageBindings&) override {}
+	void model_loaded(const hc::image::ImageBindings&) override {
+		if (model_ == nullptr) {
+			return;
+		}
+		const hc::Datapoint* dp = model_->find(victim_);
+		if (dp != nullptr && model_->bind(dp->id(), hijack_) == hc::DatapointStatus::ok) {
+			++failures_caused;
+		}
+		model_ = nullptr; // once
+	}
 	void model_cleared() override {}
+
+	void fail_next(hc::DatapointModel& model, const char* victim) {
+		model_ = &model;
+		victim_ = victim;
+	}
+
+	int failures_caused = 0;
+
+private:
+	hc::DatapointModel* model_ = nullptr;
+	const char* victim_ = nullptr;
+	hc_test::TestTechnology hijack_;
+};
+
+/// The ImageStaging of the device is flash behind the updater: the fake's buffer is not heap.
+class FlashStaging : public hc::ImageStaging {
+public:
+	size_t capacity() const override { return fake.capacity(); }
+	bool begin(size_t size, const char** reason) override {
+		hc_test::HeapExclusion flash;
+		return fake.begin(size, reason);
+	}
+	bool append(const void* data, size_t length) override {
+		hc_test::HeapExclusion flash;
+		return fake.append(data, length);
+	}
+	const char* finish() override {
+		hc_test::HeapExclusion flash;
+		return fake.finish();
+	}
+	void end() override {
+		hc_test::HeapExclusion flash;
+		fake.end();
+	}
+
+	hc_test::FakeImageStaging fake;
 };
 
 /// Records the peak of the whole heap in each phase, relative to what was held when the load began
@@ -219,11 +271,18 @@ struct SwapRig {
 	size_t empty = 0;         ///< The heap held before the first image.
 	size_t empty_charged = 0; ///< The same as the C6 charges it.
 
-	SwapRig() {
+	/// `start` false: the service is started by start_service() (after the test stored an image).
+	explicit SwapRig(bool start = true) {
 		controller.start();
 		controller.connectivity().link_up("192.0.2.10");
 		adapter.start();
 		REQUIRE(service.add_provider(zigbee));
+		if (start) {
+			start_service();
+		}
+	}
+
+	void start_service() {
 		service.start();
 		settle();
 		empty = hc_test::heap_live();
@@ -455,4 +514,230 @@ TEST_CASE("Swap memory: a large image swaps while no block above 3.5 KB can be h
 	MESSAGE("a swap of " << rig.model.size() << " datapoints and " << rig.service.info().rules
 		<< " rules: largest block " << rig.probe.largest() << " B, peak " << rig.probe.peak()
 		<< " B above the old image");
+}
+
+namespace {
+
+/// The largest single allocation of the probe's phases from the `nth` (0-based) phase named `name` on.
+long largest_from(const PeakProbe& probe, const char* name, int nth, bool& found) {
+	found = false;
+	long top = 0;
+	int seen = 0;
+	for (size_t i = 0; i < probe.count; ++i) {
+		if (!found && std::strcmp(probe.phases[i].name, name) == 0 && seen++ == nth) {
+			found = true;
+		}
+		if (found) {
+			top = probe.phases[i].largest > top ? probe.phases[i].largest : top;
+		}
+	}
+	return top;
+}
+
+int phases_named(const PeakProbe& probe, const char* name) {
+	int n = 0;
+	for (size_t i = 0; i < probe.count; ++i) {
+		n += std::strcmp(probe.phases[i].name, name) == 0 ? 1 : 0;
+	}
+	return n;
+}
+
+/// The heap of the C6 during a swap has no block above 3.5 KB to count on (homecontrol #70, #71).
+constexpr size_t kFragmentedLimit = 3584;
+/// No allocation of a load of the stored image is larger (homecontrol #71).
+constexpr long kStoredLoadLargest = 3 * 1024;
+
+} // namespace
+
+TEST_CASE("Swap memory: a failed apply on a fragmented heap returns to the stored image, read in place (#71)") {
+	// The new image arrives in the received staging (as PUT /api/image puts it) and fails after the
+	// model was replaced (the KNX adapter refuses its mapping in `technologies`); the service tears it
+	// down and loads the stored image again. Every allocation above 3.5 KB fails meanwhile: the stored
+	// image (7 KB of text and more) is put together in the stored staging through a piece of
+	// ImageStore::kReadPiece and parsed in place, not read into one heap block of its size.
+	std::string base = fixture_text("example.json");
+	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
+	std::string old_image = with_blocks(base, 1, 2, "living.temperature", outputs);
+	std::string next = with_blocks(base, 2, 2, "living.temperature", outputs);
+	REQUIRE(old_image.size() > kFragmentedLimit);
+	SwapRig rig;
+	FlashStaging received;
+	FlashStaging stored;
+	rig.service.set_staging(&received);
+	rig.service.set_stored_staging(&stored);
+	REQUIRE(rig.service.load(old_image.data(), old_image.size(), Source::api, true));
+	REQUIRE(rig.service.stored_ok());
+	rig.settle();
+	size_t datapoints = rig.model.size();
+	size_t mappings = rig.adapter.size();
+
+	hc::image::ImageBody body;
+	REQUIRE(body.begin(next.size(), &received));
+	REQUIRE(body.staged());
+	REQUIRE(body.append(next.data(), next.size()));
+	const char* text = body.finish();
+	REQUIRE(text != nullptr);
+	rig.zigbee.fail_next(rig.model, "hall.light");
+	bool ok = true;
+	size_t refused = 0;
+	{
+		// No doctest call in here: a failed check allocates its message.
+		hc_test::BlockLimit limit(kFragmentedLimit);
+		rig.service.set_load_probe(&rig.probe);
+		ok = rig.service.load(text, next.size(), Source::api, true, nullptr, &body);
+		rig.service.set_load_probe(nullptr);
+		refused = limit.refused();
+	}
+	CHECK(received.fake.busy); // the failed image stayed in the received staging during the restore
+	body.release();
+	CHECK_FALSE(ok);
+	CHECK(rig.zigbee.failures_caused == 1);
+	CHECK(rig.service.report().kind == hc::image::Report::Kind::apply);
+	CHECK(refused == 0);
+	if (refused > 0) {
+		MESSAGE("refused: " << rig.service.report().refusals[0].reason);
+	}
+	// The old image is loaded and running.
+	CHECK(rig.service.loaded());
+	CHECK(rig.service.info().revision == 1);
+	CHECK(rig.service.source() == Source::restore);
+	CHECK(rig.service.engine().loaded());
+	CHECK(rig.service.blocks().size() == 2);
+	CHECK(rig.model.size() == datapoints);
+	CHECK(rig.adapter.size() == mappings);
+	CHECK(stored.fake.begins == 1);
+	CHECK(stored.fake.ends == 1);
+	CHECK_FALSE(stored.fake.busy);
+	// The restore's allocations: from the tear-down of the failed image (its phase `signature`) to its
+	// end, none above 3 KB.
+	CHECK(phases_named(rig.probe, "signature") == 2);
+	bool found = false;
+	long largest = largest_from(rig.probe, "signature", 1, found);
+	CHECK(found);
+	CHECK(largest <= kStoredLoadLargest);
+	MESSAGE("the restore of " << old_image.size() << " bytes on a heap without blocks above " << kFragmentedLimit
+		<< " B: largest allocation " << largest << " B");
+	// The device goes on: the next deploy (not failing) runs.
+	rig.settle();
+	REQUIRE(rig.service.load(next.data(), next.size(), Source::api, false));
+	CHECK(rig.service.info().revision == 2);
+}
+
+TEST_CASE("Swap memory: without a staging area for the stored image a restore on a fragmented heap has no image "
+	"(the mechanism #71 replaces)") {
+	// The probe that the test above bites: the heap buffer of the stored image's size is refused, the
+	// device is left without an image, and the refusal says why.
+	std::string base = fixture_text("example.json");
+	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
+	std::string old_image = with_blocks(base, 1, 2, "living.temperature", outputs);
+	std::string next = with_blocks(base, 2, 2, "living.temperature", outputs);
+	SwapRig rig;
+	REQUIRE(rig.service.load(old_image.data(), old_image.size(), Source::api, true));
+	rig.settle();
+	rig.zigbee.fail_next(rig.model, "hall.light");
+	bool ok = true;
+	size_t refused = 0;
+	{
+		hc_test::BlockLimit limit(kFragmentedLimit);
+		ok = rig.service.load(next.data(), next.size(), Source::api, false);
+		refused = limit.refused();
+	}
+	CHECK_FALSE(ok);
+	CHECK(refused >= 1);
+	CHECK_FALSE(rig.service.loaded());
+	bool logged = false;
+	for (const std::string& line : rig.sink.sink.lines) {
+		logged = logged || line.find("stored image not loaded: no memory") != std::string::npos;
+	}
+	CHECK(logged);
+}
+
+TEST_CASE("Swap memory: the boot load of the stored image on a fragmented heap reads it in place (#71)") {
+	std::string base = fixture_text("example.json");
+	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
+	std::string image = with_blocks(base, 5, 2, "living.temperature", outputs);
+	SwapRig rig(false);
+	FlashStaging stored;
+	rig.service.set_stored_staging(&stored);
+	{
+		hc::image::ImageStore store(rig.blobs);
+		const char* error = nullptr;
+		REQUIRE(store.write(image.data(), image.size(), &error));
+	}
+	size_t refused = 0;
+	{
+		hc_test::BlockLimit limit(kFragmentedLimit);
+		rig.service.set_load_probe(&rig.probe);
+		rig.start_service();
+		rig.service.set_load_probe(nullptr);
+		refused = limit.refused();
+	}
+	CHECK(refused == 0);
+	CHECK(rig.service.loaded());
+	CHECK(rig.service.source() == Source::boot);
+	CHECK(rig.service.info().revision == 5);
+	CHECK(rig.service.engine().loaded());
+	CHECK(rig.service.blocks().size() == 2);
+	CHECK(rig.service.stored_ok());
+	CHECK(stored.fake.begins == 1);
+	CHECK(stored.fake.ends == 1);
+	CHECK(rig.probe.largest() <= kStoredLoadLargest);
+	MESSAGE("the boot load of " << image.size() << " bytes: largest allocation " << rig.probe.largest() << " B");
+}
+
+namespace {
+
+class NoFetches : public hc::HttpFetcher {
+public:
+	bool fetch(const char*, hc::FetchReceiver&, const char** error) override {
+		*error = "no network in the test";
+		return false;
+	}
+	bool busy() const override { return false; }
+};
+
+} // namespace
+
+TEST_CASE("Swap memory: an image whose external member the device refuses returns to the stored image (how to "
+	"provoke a restore on the board, #71)") {
+	// The loader checks only that `external` is an object; ExternalValues checks its sources in the
+	// step `technologies`, after the model, the rules and the blocks were replaced. A source with a URL
+	// other than http(s) therefore passes the validation and fails the apply: the service returns to
+	// the stored image. On the board the same image (the stored one with this member added, signed if
+	// the device holds the installation key) provokes a restore.
+	std::string base = fixture_text("example.json");
+	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
+	std::string old_image = with_blocks(base, 1, 2, "living.temperature", outputs);
+	std::string next = with_blocks(base, 2, 2, "living.temperature", outputs);
+	REQUIRE(next.back() == '}');
+	next.pop_back();
+	next += R"(, "external": {"sources": [{"id": "restore-probe", "url": "ftp://192.0.2.1/x", "interval": 600, )"
+		R"("bindings": [{"datapoint": "living.temperature", "path": "a"}]}]}})";
+	SwapRig rig;
+	NoFetches fetcher;
+	hc::ExternalValues external(rig.controller.loop(), rig.controller.time(), rig.controller.settings(),
+		rig.controller.connectivity(), rig.model, fetcher);
+	rig.service.set_external(&external);
+	FlashStaging stored;
+	rig.service.set_stored_staging(&stored);
+	REQUIRE(rig.service.load(old_image.data(), old_image.size(), Source::api, true));
+	rig.settle();
+	bool ok = true;
+	size_t refused = 0;
+	{
+		hc_test::BlockLimit limit(kFragmentedLimit);
+		ok = rig.service.load(next.data(), next.size(), Source::api, true);
+		refused = limit.refused();
+	}
+	CHECK_FALSE(ok);
+	CHECK(refused == 0);
+	CHECK(rig.service.report().kind == hc::image::Report::Kind::apply);
+	REQUIRE(rig.service.report().count > 0);
+	CHECK(std::string(rig.service.report().refusals[0].path) == "external");
+	CHECK(rig.service.loaded());
+	CHECK(rig.service.info().revision == 1);
+	CHECK(rig.service.source() == Source::restore);
+	CHECK(stored.fake.begins == 1);
+	CHECK(rig.sink.sink.count("loading the stored image again") == 1);
+	rig.service.set_external(nullptr);
 }

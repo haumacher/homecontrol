@@ -148,7 +148,8 @@ hc::esp::MqttService& mqtt() {
 }
 // ---- end MQTT ----
 
-// The staging area for received images (#66): behind the updater's image in its partition.
+// The staging area for received images (#66) and for the loads of the stored image (#71): behind the
+// updater's image in its partition.
 hc::esp::EspImageStaging g_staging;
 // The image's store off the loop (#68): a task of its own per store.
 hc::esp::EspWorker g_worker(g_queue);
@@ -182,7 +183,8 @@ void loop_task(void*) {
 	image().set_external(&external().values());
 	image().set_mqtt(&mqtt().mqtt());
 	g_staging.start();
-	image().set_staging(&g_staging);
+	image().set_staging(&g_staging.received());
+	image().set_stored_staging(&g_staging.stored());
 	image().set_worker(&g_worker);
 	image().set_load_probe(&g_load_probe);
 	image().start();

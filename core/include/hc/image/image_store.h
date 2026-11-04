@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "hc/image/image_body.h"
 #include "hc/platform/blob_store.h"
 
 namespace hc {
@@ -38,6 +39,17 @@ public:
 	/// Reads the whole stored image into `buffer` (at least its size); checks size and CRC.
 	/// False with `error` when there is none (`missing` set), it is damaged or unreadable.
 	bool read(char* buffer, size_t size, size_t& length, bool& missing, const char** error) const;
+
+	/// Reads the whole stored image into `body` (homecontrol #71), begun by the caller with the size
+	/// stored() gave: in pieces of kReadPiece through one heap block of that size, so the text needs no
+	/// block of its own size when the body is in the platform's ImageStaging. Checks size and CRC;
+	/// `body` is then finished (its text() is the image). False with `error` when there is none
+	/// (`missing` set), its size is not the body's (the image changed meanwhile), it is damaged or
+	/// unreadable, or the body refused a piece; the body is left to the caller to release.
+	bool read(ImageBody& body, bool& missing, const char** error) const;
+
+	/// The piece read() copies from the blob store to the body at a time.
+	static constexpr size_t kReadPiece = 2048;
 
 	/// Reads `size` bytes from `offset` of the stored image (for GET /api/image). `token` is the
 	/// value of token() when the reader started: a changed image refuses the read.
