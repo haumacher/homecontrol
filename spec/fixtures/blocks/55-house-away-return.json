@@ -1,0 +1,345 @@
+{
+	"title": "House mode: away by absence after awayDelay (19.2 D2), cancelled by presence and by stale presence; presence over two datapoints (any of the good ones); return detection (D5); awayDelay and returnDetection changed through the API.",
+	"note": "awayDelay 10 min. p2 is unknown until 300 s, so p1's false alone is absence; p2's presence at 300 s cancels the away due at 660 s. Stale on both is no evidence. Shortening awayDelay to 2 min at 2700 s, 4 min into an absence, goes away at the parameter call. returnDetection false holds away against presence; true again returns at once.",
+	"datapoints": [
+		{
+			"name": "p1",
+			"type": "boolean"
+		},
+		{
+			"name": "p2",
+			"type": "boolean"
+		},
+		{
+			"name": "hvac",
+			"type": "enumeration"
+		},
+		{
+			"name": "occ",
+			"type": "boolean"
+		}
+	],
+	"blocks": [
+		{
+			"id": "hm",
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"label": "House mode",
+			"inputs": {
+				"presence": [
+					"p1",
+					"p2"
+				]
+			},
+			"outputs": {
+				"hvacMode": "hvac",
+				"occupied": "occ"
+			},
+			"parameters": {
+				"awayDelay": 600000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1,
+					"hvac": 1,
+					"occ": true,
+					"block/hm/presence": null
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"mode": 0.0,
+							"armed": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "p1",
+				"value": false
+			}
+		},
+		{
+			"at": 299000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		},
+		{
+			"at": 300000,
+			"report": {
+				"datapoint": "p2",
+				"value": true
+			}
+		},
+		{
+			"at": 360000,
+			"report": {
+				"datapoint": "p2",
+				"value": false
+			}
+		},
+		{
+			"at": 659000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		},
+		{
+			"at": 900000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1,
+					"block/hm/presence": false
+				}
+			}
+		},
+		{
+			"at": 900000,
+			"stale": "p1"
+		},
+		{
+			"at": 900000,
+			"stale": "p2"
+		},
+		{
+			"at": 1100000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1,
+					"block/hm/presence": false
+				}
+			}
+		},
+		{
+			"at": 1200000,
+			"report": {
+				"datapoint": "p1",
+				"value": false
+			}
+		},
+		{
+			"at": 1799000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		},
+		{
+			"at": 1801000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2,
+					"hvac": 2,
+					"occ": false,
+					"block/hm/away": true,
+					"block/hm/home": false
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"mode": 1.0,
+							"armed": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 2400000,
+			"report": {
+				"datapoint": "p2",
+				"value": true
+			}
+		},
+		{
+			"at": 2401000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1,
+					"occ": true
+				}
+			}
+		},
+		{
+			"at": 2460000,
+			"report": {
+				"datapoint": "p2",
+				"value": false
+			}
+		},
+		{
+			"at": 2700000,
+			"setBlock": {
+				"block": "hm",
+				"parameters": {
+					"awayDelay": 120000
+				}
+			}
+		},
+		{
+			"at": 2701000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2,
+					"block/hm/awayDelay": 120000
+				}
+			}
+		},
+		{
+			"at": 3000000,
+			"setBlock": {
+				"block": "hm",
+				"parameters": {
+					"returnDetection": false
+				}
+			}
+		},
+		{
+			"at": 3060000,
+			"report": {
+				"datapoint": "p1",
+				"value": true
+			}
+		},
+		{
+			"at": 3061000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2
+				}
+			}
+		},
+		{
+			"at": 3120000,
+			"setBlock": {
+				"block": "hm",
+				"parameters": {
+					"returnDetection": true
+				}
+			}
+		},
+		{
+			"at": 3121000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		}
+	],
+	"end": 3200000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "occ",
+				"value": true
+			},
+			{
+				"at": 1800000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 2
+			},
+			{
+				"at": 1800000,
+				"block": "hm",
+				"datapoint": "occ",
+				"value": false
+			},
+			{
+				"at": 2400000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 2400000,
+				"block": "hm",
+				"datapoint": "occ",
+				"value": true
+			},
+			{
+				"at": 2700000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 2
+			},
+			{
+				"at": 2700000,
+				"block": "hm",
+				"datapoint": "occ",
+				"value": false
+			},
+			{
+				"at": 3120000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 3120000,
+				"block": "hm",
+				"datapoint": "occ",
+				"value": true
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/hm/mode": 0,
+				"block/hm/hvacMode": 1,
+				"hvac": 1,
+				"occ": true
+			},
+			"blocks": {
+				"hm": {
+					"status": "running",
+					"state": {
+						"mode": 0.0,
+						"armed": 1.0
+					},
+					"parameters": {
+						"awayDelay": 120000,
+						"returnDetection": true
+					}
+				}
+			},
+			"persisted": {
+				"@hm/awayDelay": 120000
+			}
+		}
+	}
+}

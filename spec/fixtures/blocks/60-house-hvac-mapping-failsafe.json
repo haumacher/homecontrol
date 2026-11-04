@@ -1,0 +1,542 @@
+{
+	"title": "House mode: the HVAC mapping by parameters, a choice by id or value (19.1); every mode output written together on a change (D13); the failsafe home with hvacMode auto (D12); enabled again it starts from the record in RAM and re-evaluates; a restored mode of a later minor version starts as home; the mapping is not adjustable.",
+	"note": "The stored record holds mode 4 (a later minor's mode): the boot starts home. While disabled the vacation switch goes off, so the enable's start leaves vacation.",
+	"datapoints": [
+		{
+			"name": "aw",
+			"type": "boolean"
+		},
+		{
+			"name": "ni",
+			"type": "boolean"
+		},
+		{
+			"name": "va",
+			"type": "boolean"
+		},
+		{
+			"name": "m",
+			"type": "enumeration"
+		},
+		{
+			"name": "hvac",
+			"type": "enumeration"
+		},
+		{
+			"name": "h",
+			"type": "boolean"
+		},
+		{
+			"name": "a",
+			"type": "boolean"
+		},
+		{
+			"name": "n",
+			"type": "boolean"
+		},
+		{
+			"name": "v",
+			"type": "boolean"
+		},
+		{
+			"name": "o",
+			"type": "boolean"
+		}
+	],
+	"persisted": {
+		"block/hm": {
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"fields": {
+				"mode": 4,
+				"since": -1
+			}
+		}
+	},
+	"blocks": [
+		{
+			"id": "hm",
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"label": "House mode",
+			"inputs": {
+				"awayButton": "aw",
+				"nightButton": "ni",
+				"vacation": "va"
+			},
+			"outputs": {
+				"mode": "m",
+				"hvacMode": "hvac",
+				"home": "h",
+				"away": "a",
+				"night": "n",
+				"onVacation": "v",
+				"occupied": "o"
+			},
+			"parameters": {
+				"hvacHome": "auto",
+				"hvacAway": "comfort",
+				"hvacNight": 2,
+				"hvacVacation": "night"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 0,
+					"m": 0,
+					"hvac": 0,
+					"h": true,
+					"a": false,
+					"n": false,
+					"v": false,
+					"o": true
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"mode": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "aw",
+				"value": true
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 1,
+					"m": 1,
+					"hvac": 1,
+					"h": false,
+					"a": true,
+					"n": false,
+					"v": false,
+					"o": false
+				}
+			}
+		},
+		{
+			"at": 120000,
+			"report": {
+				"datapoint": "ni",
+				"value": true
+			}
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 2,
+					"block/hm/hvacMode": 2,
+					"m": 2,
+					"hvac": 2,
+					"h": false,
+					"a": false,
+					"n": true,
+					"v": false,
+					"o": true
+				}
+			}
+		},
+		{
+			"at": 180000,
+			"report": {
+				"datapoint": "va",
+				"value": true
+			}
+		},
+		{
+			"at": 181000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 3,
+					"block/hm/hvacMode": 3,
+					"m": 3,
+					"hvac": 3,
+					"h": false,
+					"a": false,
+					"n": false,
+					"v": true,
+					"o": false
+				}
+			}
+		},
+		{
+			"at": 240000,
+			"setBlock": {
+				"block": "hm",
+				"enabled": false
+			}
+		},
+		{
+			"at": 241000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 0,
+					"m": 0,
+					"hvac": 0,
+					"h": true,
+					"a": false,
+					"n": false,
+					"v": false,
+					"o": true
+				},
+				"blocks": {
+					"hm": {
+						"status": "disabled",
+						"state": {
+							"mode": 3.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 300000,
+			"report": {
+				"datapoint": "va",
+				"value": false
+			}
+		},
+		{
+			"at": 360000,
+			"setBlock": {
+				"block": "hm",
+				"enabled": true
+			}
+		},
+		{
+			"at": 361000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 0,
+					"m": 0,
+					"hvac": 0,
+					"h": true,
+					"a": false,
+					"n": false,
+					"v": false,
+					"o": true
+				},
+				"blocks": {
+					"hm": {
+						"status": "running",
+						"state": {
+							"mode": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 420000,
+			"setBlock": {
+				"block": "hm",
+				"parameters": {
+					"hvacHome": "comfort"
+				},
+				"refused": "not_adjustable"
+			}
+		}
+	],
+	"end": 480000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "m",
+				"value": 0
+			},
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 0
+			},
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "h",
+				"value": true
+			},
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "a",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "n",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "v",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "o",
+				"value": true
+			},
+			{
+				"at": 60000,
+				"block": "hm",
+				"datapoint": "m",
+				"value": 1
+			},
+			{
+				"at": 60000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 60000,
+				"block": "hm",
+				"datapoint": "h",
+				"value": false
+			},
+			{
+				"at": 60000,
+				"block": "hm",
+				"datapoint": "a",
+				"value": true
+			},
+			{
+				"at": 60000,
+				"block": "hm",
+				"datapoint": "n",
+				"value": false
+			},
+			{
+				"at": 60000,
+				"block": "hm",
+				"datapoint": "v",
+				"value": false
+			},
+			{
+				"at": 60000,
+				"block": "hm",
+				"datapoint": "o",
+				"value": false
+			},
+			{
+				"at": 120000,
+				"block": "hm",
+				"datapoint": "m",
+				"value": 2
+			},
+			{
+				"at": 120000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 2
+			},
+			{
+				"at": 120000,
+				"block": "hm",
+				"datapoint": "h",
+				"value": false
+			},
+			{
+				"at": 120000,
+				"block": "hm",
+				"datapoint": "a",
+				"value": false
+			},
+			{
+				"at": 120000,
+				"block": "hm",
+				"datapoint": "n",
+				"value": true
+			},
+			{
+				"at": 120000,
+				"block": "hm",
+				"datapoint": "v",
+				"value": false
+			},
+			{
+				"at": 120000,
+				"block": "hm",
+				"datapoint": "o",
+				"value": true
+			},
+			{
+				"at": 180000,
+				"block": "hm",
+				"datapoint": "m",
+				"value": 3
+			},
+			{
+				"at": 180000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 3
+			},
+			{
+				"at": 180000,
+				"block": "hm",
+				"datapoint": "h",
+				"value": false
+			},
+			{
+				"at": 180000,
+				"block": "hm",
+				"datapoint": "a",
+				"value": false
+			},
+			{
+				"at": 180000,
+				"block": "hm",
+				"datapoint": "n",
+				"value": false
+			},
+			{
+				"at": 180000,
+				"block": "hm",
+				"datapoint": "v",
+				"value": true
+			},
+			{
+				"at": 180000,
+				"block": "hm",
+				"datapoint": "o",
+				"value": false
+			},
+			{
+				"at": 240000,
+				"block": "hm",
+				"datapoint": "m",
+				"value": 0
+			},
+			{
+				"at": 240000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 0
+			},
+			{
+				"at": 240000,
+				"block": "hm",
+				"datapoint": "h",
+				"value": true
+			},
+			{
+				"at": 240000,
+				"block": "hm",
+				"datapoint": "a",
+				"value": false
+			},
+			{
+				"at": 240000,
+				"block": "hm",
+				"datapoint": "n",
+				"value": false
+			},
+			{
+				"at": 240000,
+				"block": "hm",
+				"datapoint": "v",
+				"value": false
+			},
+			{
+				"at": 240000,
+				"block": "hm",
+				"datapoint": "o",
+				"value": true
+			},
+			{
+				"at": 360000,
+				"block": "hm",
+				"datapoint": "m",
+				"value": 0
+			},
+			{
+				"at": 360000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 0
+			},
+			{
+				"at": 360000,
+				"block": "hm",
+				"datapoint": "h",
+				"value": true
+			},
+			{
+				"at": 360000,
+				"block": "hm",
+				"datapoint": "a",
+				"value": false
+			},
+			{
+				"at": 360000,
+				"block": "hm",
+				"datapoint": "n",
+				"value": false
+			},
+			{
+				"at": 360000,
+				"block": "hm",
+				"datapoint": "v",
+				"value": false
+			},
+			{
+				"at": 360000,
+				"block": "hm",
+				"datapoint": "o",
+				"value": true
+			}
+		],
+		"logs": [
+			{
+				"at": 420000,
+				"block": "hm",
+				"code": "parameterRefused"
+			}
+		],
+		"final": {
+			"datapoints": {
+				"block/hm/mode": 0,
+				"block/hm/hvacMode": 0,
+				"m": 0,
+				"hvac": 0,
+				"h": true,
+				"a": false,
+				"n": false,
+				"v": false,
+				"o": true
+			},
+			"blocks": {
+				"hm": {
+					"status": "running",
+					"state": {
+						"mode": 0.0
+					}
+				}
+			}
+		}
+	}
+}

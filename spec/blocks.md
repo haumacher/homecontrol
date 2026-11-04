@@ -567,7 +567,7 @@ parameters reach the control pages as datapoints (`spec/runtime-image.md` 3.9).
 
 The corpus pins the exact values. To give the same results, an implementation:
 
-- evaluates the formulas of sections 13.1, 13.2 and 14 to 18 in IEEE 754 binary64 with
+- evaluates the formulas of sections 13.1, 13.2 and 14 to 19 in IEEE 754 binary64 with
   round-to-nearest-even, in the order written (left to right, the parentheses as given), without
   fused multiply-add and without extended precision;
 - uses `floor(x)`, `|x|`, `sqrt(x)`, `min`, `max` and comparisons only (no `exp`, `pow`, `log`, no
@@ -1588,7 +1588,268 @@ cost; and no allocation in steady state. `core/test/astro_test.cpp` checks `sun_
 against the reference values, and the exact trigonometry (13.1) against the library's functions.
 The corpus has the contract cases (`spec/fixtures/blocks/README.md`).
 
-## 19. Changes
+## 19. The house mode `org.homecontrol.house-mode` 1.0
+
+The house's state, which the other blocks and the rules read (issue #64): **home**, **away**,
+**night** or **vacation**, from presence, push buttons, the morning and evening times of schedule
+entries and a vacation switch, by one state machine with defined transitions. Its outputs fit what
+the other types consume: `hvacMode` (KNX DPT 20.102) the room controller's `mode`, `occupied` the
+room controller's and the sun shading's `presence` (19.3). The mode survives a reboot; after one it
+is re-evaluated from the inputs, never jumping to away because presence is still unknown.
+
+### 19.1 Manifest
+
+Period 60 000 ms, `persistEvery` 60 000 ms, timer `away`.
+
+| Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
+|---|---|---|---|---|---|---|
+| `presence` | boolean | | | 16: `any` | change | Presence: motion and presence detectors, a door contact with its lock, later phones; true while anybody is present. |
+| `awayButton` | boolean | | | 4: `any` | update | Push buttons "leaving" (a KNX button that sends true, a control page's datapoint). |
+| `nightButton` | boolean | | | 4: `any` | update | Push buttons "good night". |
+| `homeButton` | boolean | | | 4: `any` | update | Push buttons "at home" (also ends the night). |
+| `vacation` | boolean | | | 1 | change | True: vacation (a switch, a virtual datapoint of a control page). |
+| `morning` | boolean | | | 1 | change | A schedule entry's output: its firing ends the night. |
+| `evening` | boolean | | | 1 | change | A schedule entry's output: its firing begins the night while home. |
+
+| Output | Type | Unit | Failsafe | Meaning |
+|---|---|---|---|---|
+| `mode` | enumeration, `min` 0, `max` 3 | | 0 | 0 home, 1 away, 2 night, 3 vacation. |
+| `hvacMode` | enumeration, `min` 0, `max` 4 | | 0 | The mode as a KNX HVAC mode (DPT 20.102: 0 auto, 1 comfort, 2 standby, 3 night, 4 frost/building protection) by the parameters `hvacHome` .. `hvacVacation`. |
+| `home` | boolean | | true | The mode is home. |
+| `away` | boolean | | false | The mode is away. |
+| `night` | boolean | | false | The mode is night. |
+| `onVacation` | boolean | | false | The mode is vacation (not `vacation`, the input's id: ports share one namespace, 3). |
+| `occupied` | boolean | | true | Somebody is at home: the mode is home or night. |
+| `since` | integer | min | diagnostic | The local wall time of the mode's latest change, in minutes since 1970-01-01 00:00 local time (19.2 D14). |
+
+| Parameter | Type | Default | Range | Adjustable | Meaning |
+|---|---|---|---|---|---|
+| `awayDelay` | duration | 1 800 000 | 60 000..86 400 000 | yes | No presence for this long while home: away. |
+| `returnDetection` | boolean | true | | yes | Presence while away returns home (19.2 D5); false: only the home button. |
+| `hvacHome` | enumeration | `comfort` (1) | `auto` 0, `comfort` 1, `standby` 2, `night` 3, `protection` 4 | | `hvacMode` while home. |
+| `hvacAway` | enumeration | `standby` (2) | the same | | ... while away. |
+| `hvacNight` | enumeration | `night` (3) | the same | | ... at night. |
+| `hvacVacation` | enumeration | `protection` (4) | the same | | ... on vacation. |
+
+State: `mode` (initial 0) and `since` (initial -1) persisted; not persisted `changedAt` (-1),
+`absentSince` (-1), `armed` (1), `awaySeen` (-1), `nightSeen` (-1), `homeSeen` (-1), `lastMorning`
+(-1), `lastEvening` (-1), `sentMode` (-1), `sentSince` (-1). A time field at -1 is none.
+
+### 19.2 Decisions
+
+- **D1. Four modes.** Home, away, night and vacation are what the room controllers' HVAC modes and
+  the shading's presence distinguish. `party` and `guest` are not in 1.0: a guest is home, and a
+  party is home with the night postponed (do not press the night button, or disable the evening's
+  schedule entry). A later minor version may add modes as new values of `mode` (3: choices and
+  bounds only widen). *Alternative:* six modes now (two more states whose transitions nobody has
+  asked for yet).
+- **D2. Away needs evidence.** The house goes away by the away button, or when presence has been
+  good and false for `awayDelay` while home. Presence that is unknown or stale (a sensor that lost
+  contact, a KNX tunnel down) is no evidence: it cancels a running delay and never leads to away;
+  only a good value counts, present or absent (`presence`'s aggregation `any` combines the good
+  datapoints first, 5.3). At a start the delay counts from the start, never from before it: a
+  reboot keeps the persisted mode until the inputs tell otherwise. So does every other start (an
+  image swap, enabling): a deployment while the house is empty postpones away by up to `awayDelay`.
+  *Alternative:* stale counts as
+  absent (a lost tunnel would send the house away and turn the heating down).
+- **D3. Night is left only by the morning, the home button and the away button.** Sleepers do not
+  move: absence at night is no reason for away, and a motion at night (somebody up) no reason for
+  home. *Alternative:* away by absence in every mode (the house would go away every night).
+- **D4. Every entry into home restarts the away delay**, by the morning, the home button, the end of
+  vacation, return detection or a fresh start: absence counts only while home. So the morning ends
+  the night, and if nobody moves within `awayDelay` after it, the house goes away; the night's
+  absence of the sleepers is not counted. A press of the home button while home restarts it too ("I
+  am here", for presence detectors that do not see a quiet room). *Alternative:* count absence
+  since it began (the house would go away at the morning time after every quiet night).
+- **D5. Return detection is armed by absence.** After the away button, presence returns the house
+  home only once presence was absent since the press: whoever leaves still passes the hall's
+  motion detector, and a detector's own run-on keeps it true for minutes. Away by absence is armed
+  at once, and so is a start (`armed` is not persisted and starts at 1; an image swap keeps it). A
+  presence that never turns absent after the press (somebody stayed) keeps the house away until the
+  home button. Every press disarms, also a second one while away (another leave); a press while
+  presence is already absent is armed again in the same step. With `returnDetection` false only the
+  home button returns; set true while away, armed and present, it returns at once. *Alternatives:* a fixed
+  grace time after the press (too short for a detector's run-on, too long for a quick return); no
+  guard (the press would be undone at once).
+- **D6. A press is a new true value of a button.** An update (trigger `update`) after which one of
+  the button's datapoints is good and true with an update time later than any the block has seen
+  for that button (`awaySeen`, `nightSeen`, `homeSeen`), as the sun shading's `manual` (18.2 D6): a
+  KNX push button that sends true on every press, the same value again included, or a control
+  page's datapoint written true. A false (a release, the off half of a toggle), a datapoint going
+  stale and the value at the start are no press. Up to 4 datapoints per button (a wall button and
+  a page); their aggregation `any` serves only the mirror. A report is a report: a button's
+  datapoint should not be read at a start (`readOnStart`), or the read's true answer is a press; a
+  KNX push button sends, it is not read. (A stale button becomes good only by a new telegram, which
+  is a press.)
+- **D7. Morning and evening are moments: a change from a known false to a good true.** A schedule
+  entry's output (`spec/schedules.md` 5) turns true at its firing and false at midnight; after a
+  load or a reboot the scheduler restores whether it fired today, an unknown value becoming true,
+  which is no moment. A stale false is known: stale false to good true is a moment. So the times of the entries, adjustable by the inhabitant (#58), are the
+  times of the block. The evening begins the night only while home (returning home after it leaves
+  the house home until the night button); the morning ends only the night (it does nothing while
+  away). A morning entry should have `missed` `catchUp`: a firing missed during a reboot would
+  otherwise leave the night on until the home button. A datapoint that only ever sends true is no
+  morning or evening (it never changes); bind it to a button instead. *Alternative:* the times as
+  `timeOfDay` parameters (a second scheduler in the block, without the scheduler's weekdays, DST
+  rules, missed firings and its adjustable times).
+- **D8. Vacation is a level that overrides everything.** While `vacation` is good and true, the mode
+  is vacation; buttons, presence, morning and evening are ignored (their presses and moments are
+  consumed, not stored). It ends when `vacation` is good and false, or when the input is not bound
+  (an image that no longer binds it ends a persisted vacation), and the house goes home (D4: away
+  follows after `awayDelay` without presence). An unknown or stale `vacation` keeps the mode. A
+  schedule entry's output is true only from its firing until midnight: a vacation of several days
+  needs a switch, a virtual datapoint on a control page or a KNX switch, until the schedules get
+  vacation ranges (`spec/schedules.md` 7). *Alternative:* vacation by its changes (a home button
+  could end it while the switch stays on; two sources of truth).
+- **D9. The inhabitant forces transitions through the inputs.** A control page writes a virtual
+  datapoint bound to a button or to `vacation`; which transitions the inhabitant may force is which
+  of these inputs the image gives such a datapoint, which E-Home's engineering decides. The block
+  has no parameter for it. *Alternatives:* an enumeration input `select` with one permission
+  parameter per mode (a second path to the same transitions, with its own guards); an adjustable
+  parameter as the command (a parameter keeps its value as an override, so choosing the same mode a
+  second time would change nothing, 5.1, and the override would outlive the mode).
+- **D10. What the other blocks read** (19.3): `hvacMode` for the room controller's `mode`, with the
+  mapping a parameter per mode (`auto` among the choices, for a room that should follow its own
+  presence); `occupied` for the room controller's and the sun shading's `presence` (heat protection
+  while nobody is at home); the booleans for simple bindings. Nothing for the heating demand's
+  `enable`: on vacation the rooms regulate to their frost setpoint (`hvacMode` 4) and their valves
+  lower the demand by themselves; switching the heat source off would leave the frost protection to
+  valves without heat. *Alternative:* a `heating` output, false on vacation, for the demand's
+  `enable` (rejected for that reason).
+- **D11. The mode is persisted, soon.** `mode` and `since` are persisted with `persistEvery` 60 s,
+  the shortest of 3, so that the pacing of B13 alone decides: the first change after a boot reaches
+  flash at once, a later one `n × 120 s` after the previous write at the latest (`n` the instances
+  with persistent state, at least this one), and every one at an orderly reboot. Changes are rare (a few a day), so the budget of B13 is not
+  strained. At a start the mode is re-evaluated from the inputs as they are (D2, D8): vacation by a
+  good `vacation`, home by return detection, away only after `awayDelay` of good absence from the
+  start. A restored `mode` outside 0..3 (the record of a later minor version with more modes, D1,
+  after a firmware downgrade) starts as home.
+- **D12. Failsafe: home, the rooms on their own.** A fault or a disabled instance writes home,
+  `hvacMode` 0 (auto: the room controllers decide by their own `presence` and `heatingPeriod`,
+  14.5) and `occupied` true. *Alternative:* `hvacMode` comfort (it would heat empty rooms at night).
+- **D13. Writes on change.** All mode outputs (`mode`, `hvacMode`, the four booleans, `occupied`) are
+  written together at a start and when the mode changes, nothing in between; `since` when it
+  changes. A start writes them so that KNX room thermostats get the mode after a boot.
+- **D14. `since` is the local wall time in minutes** as a number (B6 has no time type), the minutes
+  since 1970-01-01 00:00 of the local calendar, so a page can show the date and time of the change.
+  Minutes, not seconds: an integer output's mirror is a `signed` datapoint (section 6), 32 bit, which
+  seconds would overflow in 2038 (minutes last beyond the year 6000), and a real's comparison in the
+  corpus (1e-9 relative, B19) could not tell two seconds apart; an integer compares exactly. Bound to
+  KNX, DPT 12.001 or 13.001 take it. A change while the wall clock is not synchronized is dated as
+  soon as it is: the first step with a wall time takes that time back by the monotonic time since
+  the change. The change of a fresh start is the start itself. A change not dated before a reboot
+  stays undated until the next change (`changedAt` is not persisted). In the repeated hour at the
+  end of summer time two instants have the same `since`. *Alternative:* `since` as a real of
+  seconds (exact as a double, but not comparable to the second in the corpus).
+
+### 19.3 Connecting the other blocks
+
+```json
+{"id": "haus", "type": "org.homecontrol.house-mode", "version": "1.0", "label": "House",
+ "inputs": {"presence": ["flur.motion", "wz.presence"], "awayButton": "tuer.leaving",
+            "nightButton": ["sz.goodNight", "page.goodNight"], "homeButton": "tuer.home",
+            "vacation": "page.vacation", "morning": "schedule.morning", "evening": "schedule.evening"}},
+{"id": "wz-heating", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Living room",
+ "inputs": {"temperature": "1/3/0", "mode": "block/haus/hvacMode"}, "outputs": {"valve": "1/3/30"}},
+{"id": "sued", "type": "org.homecontrol.sun-shading", "version": "1.0", "label": "South facade",
+ "inputs": {"presence": "block/haus/occupied", "roomTemperature": "1/3/0"}, "outputs": {"position": "2/1/0"}}
+```
+
+- **Room controller:** its `mode` binds `block/<id>/hvacMode` (an enumeration datapoint, 5.3): home
+  comfort, away standby, night night, vacation frost protection (14.5 rules 3 and 5). A room that
+  should keep deciding by its own presence detector gets `auto` for that mode (`hvacHome` 0) and its
+  own `presence`. A KNX room thermostat takes `hvacMode` on a group address of DPT 20.102.
+- **Sun shading:** its `presence` binds `block/<id>/occupied`: heat protection while away and on
+  vacation (18.2 D11).
+- **Heating demand:** not connected (D10).
+- **Rules:** a rule's trigger on `block/<id>/mode` or on one of the booleans (lights off when away,
+  an alarm system armed).
+
+The house mode should come before the blocks that read it in block order: then a change reaches
+them in the cascade of its cause (5.1 calls the blocks in block order for each event, and the
+mirror's update is an event of the same cascade either way).
+
+### 19.4 The calls
+
+| Call | What it does |
+|---|---|
+| `start(reason, restored)` | Without `restored`, every field at its initial value and `changedAt = now`; with it, when `mode` is not 0, 1, 2 or 3 (D11), `mode = home`, `changedAt = now` and `since = -1` (a change, dated as 19.5 dates one). Then `absentSince = -1`, `sentMode = -1`, `sentSince = -1`, `awaySeen = latest(awayButton)`, `nightSeen = latest(nightButton)`, `homeSeen = latest(homeButton)`, `lastMorning = known(morning)`, `lastEvening = known(evening)`, the timer `away` cancelled; then the step with no event. |
+| `input(awayButton)` | `l = latest(awayButton)`; the event is `awayPress` when `l > awaySeen`, else none; `awaySeen = max(awaySeen, l)`; then the step with the event. The same for `nightButton` (`nightPress`, `nightSeen`) and `homeButton` (`homePress`, `homeSeen`). |
+| `input(morning)` | `M = read(morning)`; the event is `morning` when `M` is good, `M.value != 0` and `lastMorning == 0`, else none; `lastMorning = M.value` when `M` is not unknown; then the step with the event. The same for `evening` (`lastEvening`, the event `evening`). |
+| every other `input`, `timer(away)`, `period()`, `parameter` | The step with no event. |
+
+`latest(port)` is the largest update time of the port's datapoints (`readAt`, B20) that are good and
+true, or -1 when there is none. `known(port)` is the input's value (0 or 1) when it is not unknown,
+else -1.
+
+### 19.5 The step
+
+With `t` = now (ms) and the modes `home` 0, `away` 1, `night` 2, `vacation` 3:
+
+```
+change(m):  if m != mode:  mode = m;  changedAt = t;  since = -1;  absentSince = -1
+
+V = read(vacation)                                                      // D8
+if V.good and V.value != 0:                    change(vacation)
+else if mode == vacation and (V.good or not V.bound):  change(home)
+if mode != vacation:
+    if event == awayPress:                     change(away);  armed = 0       // D5
+    else if event == nightPress:               if mode != night:  change(night)
+    else if event == homePress:                change(home);  absentSince = -1   // D4: also while home
+    else if event == evening:                  if mode == home:   change(night)  // D7
+    else if event == morning:                  if mode == night:  change(home)
+    P = read(presence)                                                  // D2, D5
+    present = P.good and P.value != 0;  absent = P.good and P.value == 0
+    if mode == away:
+        if absent:                             armed = 1
+        else if present and armed == 1 and returnDetection:  change(home)
+    if mode == home:
+        if not absent:                         absentSince = -1
+        else:
+            if absentSince < 0:                absentSince = t
+            if t - absentSince >= awayDelay:   change(away);  armed = 1
+
+w = wall()                                                              // D14
+if since < 0 and changedAt >= 0 and w is known:
+    since = floor((day(w) * 86400 + w.hour * 3600 + w.minute * 60 + w.second - (t - changedAt) / 1000.0) / 60.0)
+
+if mode == home and absentSince >= 0:  setTimer(away, absentSince + awayDelay - t)
+else:                                  cancelTimer(away)
+```
+
+`day(w)` is that of 14.4; the sum before `- (t - changedAt) / 1000.0` is an exact integer. The night button acts from home and from away (somebody at home says good
+night); the away button from home and night; neither on vacation. The timer's duration is at least
+1 ms: a delay that has run out has changed the mode. The timer `away` and the output `away` share an
+id in separate namespaces (3). Then the outputs, in this order (D13):
+
+1. When `mode != sentMode`: `mode`; `hvacMode` = `hvacHome`, `hvacAway`, `hvacNight` or
+   `hvacVacation` by the mode; `home`, `away`, `night`, `onVacation` (1 for the mode, 0 for the
+   others); `occupied` = 1 for home and night, else 0. Then `sentMode = mode`.
+2. When `since >= 0` and `since != sentSince`: `since`; `sentSince = since`.
+
+### 19.6 Cost
+
+One instance with every input bound, `presence` and `nightButton` on two datapoints each, and two
+outputs bound: about 2.4 KB of heap on the host (64-bit; 2438 B), against 3.3 KB (3271 B) of a room
+controller measured the same way: 12 state fields, 6
+parameters, 13 mirror datapoints (enabled, `awayDelay`, `returnDetection`, 8 outputs, the two
+aggregated inputs); each further input bound to several datapoints adds its mirror. The record (two
+fields) is written a few times a day. An image swap stays within the swap's budget, its largest
+allocation 2.3 KB (`core/test/swap_memory_test.cpp`).
+
+### 19.7 Tests
+
+The host tests (`core/test/house_mode_test.cpp`) drive the block through every transition and its
+guard: away by absence after `awayDelay`, cancelled by presence and by unknown or stale presence;
+return detection, armed by absence after the away button, and off; the night by the button and by
+the evening only while home, no away by absence at night, the morning ending only the night and
+restarting the delay; vacation over every mode, the buttons ignored on vacation, its end by the
+input and by an image that no longer binds it; a restart with unknown presence keeping each
+persisted mode, a restored mode of a later minor version, and the record's pacing; the HVAC mapping and the failsafe; `since` with and
+without a wall clock; the chain to a room controller's setpoint; the cost; and no allocation in
+steady state. The corpus has the contract cases (`spec/fixtures/blocks/README.md`).
+
+## 20. Changes
 
 - 1.0 (schema 1.3, issue #60): first version; the room controller 1.0.
 - 1.1 (schema 1.3, issues #61, #62): the heating demand 1.0 (section 16) and the heating curve 1.0
@@ -1596,3 +1857,4 @@ The corpus has the contract cases (`spec/fixtures/blocks/README.md`).
 - 1.2 (schema 1.3, issue #63): the sun shading 1.0 (section 18); the service `sun()` (B21) with the
   exact trigonometry and the sun's position of 13.1 and 13.2, `sqrt` among the operations of B19; a
   block does not read its own outputs (B22).
+- 1.3 (schema 1.3, issue #64): the house mode 1.0 (section 19).

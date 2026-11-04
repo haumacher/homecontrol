@@ -1294,3 +1294,48 @@ TEST_CASE("Blocks review probe: sun shading without a wall clock; a wind alarm a
 	}
 	CHECK(f.model.find("block/ss/state")->value().as_enum() != 2);
 }
+
+TEST_CASE("Blocks review probe: house mode drives a room controller; vacation ends when a new image unbinds it") {
+	DashboardFixture f;
+	auto image = [](int revision, bool vacation) {
+		return std::string(R"({"image": {"schemaVersion": "1.3", "projectId": "house", "revision": )") +
+			std::to_string(revision) + R"(},
+		"datapoints": [{"id": "temp", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "pres", "type": "boolean", "writable": true, "virtual": {}},
+		               {"id": "vac", "type": "boolean", "writable": true, "virtual": {}}],
+		"blocks": [{"id": "hm", "type": "org.homecontrol.house-mode", "version": "1.0", "label": "House",
+		            "inputs": {"presence": "pres")" + (vacation ? R"(, "vacation": "vac")" : "") + R"(}},
+		           {"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Living",
+		            "inputs": {"temperature": "temp", "mode": "block/hm/hvacMode"},
+		            "parameters": {"system": "custom", "filter": 0}}]})";
+	};
+	f.load(image(1, true));
+	REQUIRE(f.model.command(f.model.find("temp")->id(), hc::Value::of_real(20.0)) == hc::DatapointStatus::ok);
+	REQUIRE(f.model.command(f.model.find("pres")->id(), hc::Value::of_bool(true)) == hc::DatapointStatus::ok);
+	f.fake.clock.advance(61000);
+	for (int i = 0; i < 4; ++i) {
+		f.controller.run_once();
+	}
+	CHECK(f.model.find("block/hm/mode")->value().as_enum() == 0);
+	CHECK(f.model.find("block/wz/activeSetpoint")->value().as_real() == 21);
+	// Vacation: frost protection in the room, nobody occupied.
+	REQUIRE(f.model.command(f.model.find("vac")->id(), hc::Value::of_bool(true)) == hc::DatapointStatus::ok);
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/hm/mode")->value().as_enum() == 3);
+	CHECK(f.model.find("block/hm/occupied")->value().as_bool() == false);
+	CHECK(f.model.find("block/wz/activeSetpoint")->value().as_real() == 7);
+	// The persisted mode survives a reload from the store (the boot path).
+	REQUIRE(f.service.load_stored(hc::image::Source::boot));
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/hm/mode")->value().as_enum() == 3);
+	// A new image no longer binds vacation: it ends; presence makes it home again.
+	f.load(image(2, false));
+	f.fake.clock.advance(1000);
+	for (int i = 0; i < 4; ++i) {
+		f.controller.run_once();
+	}
+	CHECK(f.model.find("block/hm/mode")->value().as_enum() == 0);
+	CHECK(f.model.find("block/wz/activeSetpoint")->value().as_real() == 21);
+}

@@ -1,0 +1,216 @@
+{
+	"title": "House mode feeding a room controller (19.3): its hvacMode mirror is the room's mode input, so home, away, night and vacation give the comfort, standby, night and frost setpoints, in the cascade of the change (the house mode first in block order).",
+	"note": "Radiator preset, 20 degC in the room, reported every 10 min (the temperature's trigger is none: the room steps at its period and at a change of its mode). The valve follows the setpoint's step at once (P term).",
+	"datapoints": [
+		{
+			"name": "aw",
+			"type": "boolean"
+		},
+		{
+			"name": "ni",
+			"type": "boolean"
+		},
+		{
+			"name": "va",
+			"type": "boolean"
+		},
+		{
+			"name": "t",
+			"type": "real"
+		},
+		{
+			"name": "valve",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "hm",
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"label": "House mode",
+			"inputs": {
+				"awayButton": "aw",
+				"nightButton": "ni",
+				"vacation": "va"
+			}
+		},
+		{
+			"id": "wz",
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"label": "Living room",
+			"inputs": {
+				"temperature": "t",
+				"mode": "block/hm/hvacMode",
+				"presence": "block/hm/occupied"
+			},
+			"outputs": {
+				"valve": "valve"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "t",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/hm/hvacMode": 1,
+					"block/wz/activeSetpoint": 21.0,
+					"block/wz/state": 1,
+					"valve": 34.0
+				}
+			}
+		},
+		{
+			"at": 590000,
+			"report": {
+				"datapoint": "t",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 600000,
+			"report": {
+				"datapoint": "aw",
+				"value": true
+			}
+		},
+		{
+			"at": 600000,
+			"check": {
+				"datapoints": {
+					"block/hm/hvacMode": 2,
+					"block/wz/activeSetpoint": 19.0,
+					"block/wz/state": 1,
+					"valve": 0.0
+				}
+			}
+		},
+		{
+			"at": 1190000,
+			"report": {
+				"datapoint": "t",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 1200000,
+			"report": {
+				"datapoint": "ni",
+				"value": true
+			}
+		},
+		{
+			"at": 1200000,
+			"check": {
+				"datapoints": {
+					"block/hm/hvacMode": 3,
+					"block/wz/activeSetpoint": 17.0,
+					"valve": 0.0
+				}
+			}
+		},
+		{
+			"at": 1790000,
+			"report": {
+				"datapoint": "t",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 1800000,
+			"report": {
+				"datapoint": "va",
+				"value": true
+			}
+		},
+		{
+			"at": 1800000,
+			"check": {
+				"datapoints": {
+					"block/hm/hvacMode": 4,
+					"block/wz/activeSetpoint": 7.0,
+					"block/wz/state": 3,
+					"valve": 0.0
+				}
+			}
+		},
+		{
+			"at": 2390000,
+			"report": {
+				"datapoint": "t",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 2400000,
+			"report": {
+				"datapoint": "va",
+				"value": false
+			}
+		},
+		{
+			"at": 2400000,
+			"check": {
+				"datapoints": {
+					"block/hm/hvacMode": 1,
+					"block/wz/activeSetpoint": 21.0,
+					"block/wz/state": 1,
+					"valve": 37.0
+				}
+			}
+		}
+	],
+	"end": 2460000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 30.0
+			},
+			{
+				"at": 60000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 34.0
+			},
+			{
+				"at": 360000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 36.0
+			},
+			{
+				"at": 600000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 0.0
+			},
+			{
+				"at": 2400000,
+				"block": "wz",
+				"datapoint": "valve",
+				"value": 37.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/hm/mode": 0,
+				"block/hm/hvacMode": 1,
+				"block/wz/activeSetpoint": 21.0,
+				"valve": 37.0
+			}
+		}
+	}
+}

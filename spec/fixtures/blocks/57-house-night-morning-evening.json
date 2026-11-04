@@ -1,0 +1,403 @@
+{
+	"title": "House mode: morning and evening are moments, a known false becoming good and true (19.2 D7): the evening begins the night only while home, the morning ends only the night and restarts the away delay (D4); no away by absence at night (D3); an unknown value becoming true is no moment, a stale false is known.",
+	"note": "awayDelay 10 min. ev's first true (from unknown, as a schedule output restored after a boot) is no moment. Absent from 120 s through the night: the morning at 1200 s goes home and away 10 min later. The evening while away and the morning while away change nothing.",
+	"datapoints": [
+		{
+			"name": "p",
+			"type": "boolean"
+		},
+		{
+			"name": "ni",
+			"type": "boolean"
+		},
+		{
+			"name": "ho",
+			"type": "boolean"
+		},
+		{
+			"name": "mo",
+			"type": "boolean"
+		},
+		{
+			"name": "ev",
+			"type": "boolean"
+		},
+		{
+			"name": "hvac",
+			"type": "enumeration"
+		}
+	],
+	"blocks": [
+		{
+			"id": "hm",
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"label": "House mode",
+			"inputs": {
+				"presence": "p",
+				"nightButton": "ni",
+				"homeButton": "ho",
+				"morning": "mo",
+				"evening": "ev"
+			},
+			"outputs": {
+				"hvacMode": "hvac"
+			},
+			"parameters": {
+				"awayDelay": 600000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 10000,
+			"report": {
+				"datapoint": "ev",
+				"value": true
+			}
+		},
+		{
+			"at": 11000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"mode": 0.0,
+							"lastEvening": 1.0,
+							"lastMorning": -1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 20000,
+			"report": {
+				"datapoint": "ev",
+				"value": false
+			}
+		},
+		{
+			"at": 30000,
+			"report": {
+				"datapoint": "mo",
+				"value": false
+			}
+		},
+		{
+			"at": 40000,
+			"report": {
+				"datapoint": "p",
+				"value": true
+			}
+		},
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "ev",
+				"value": true
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 2,
+					"block/hm/hvacMode": 3,
+					"hvac": 3,
+					"block/hm/night": true,
+					"block/hm/occupied": true
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"lastEvening": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 120000,
+			"report": {
+				"datapoint": "p",
+				"value": false
+			}
+		},
+		{
+			"at": 900000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 2,
+					"block/hm/hvacMode": 3
+				}
+			}
+		},
+		{
+			"at": 960000,
+			"report": {
+				"datapoint": "p",
+				"value": true
+			}
+		},
+		{
+			"at": 970000,
+			"report": {
+				"datapoint": "p",
+				"value": false
+			}
+		},
+		{
+			"at": 971000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 2,
+					"block/hm/hvacMode": 3
+				}
+			}
+		},
+		{
+			"at": 1000000,
+			"report": {
+				"datapoint": "ev",
+				"value": false
+			}
+		},
+		{
+			"at": 1200000,
+			"report": {
+				"datapoint": "mo",
+				"value": true
+			}
+		},
+		{
+			"at": 1201000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		},
+		{
+			"at": 1799000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		},
+		{
+			"at": 1801000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2
+				}
+			}
+		},
+		{
+			"at": 1900000,
+			"report": {
+				"datapoint": "ev",
+				"value": true
+			}
+		},
+		{
+			"at": 1901000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2
+				}
+			}
+		},
+		{
+			"at": 2000000,
+			"report": {
+				"datapoint": "mo",
+				"value": false
+			}
+		},
+		{
+			"at": 2100000,
+			"report": {
+				"datapoint": "mo",
+				"value": true
+			}
+		},
+		{
+			"at": 2101000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2
+				}
+			}
+		},
+		{
+			"at": 2200000,
+			"report": {
+				"datapoint": "ni",
+				"value": true
+			}
+		},
+		{
+			"at": 2201000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 2,
+					"block/hm/hvacMode": 3
+				}
+			}
+		},
+		{
+			"at": 2300000,
+			"report": {
+				"datapoint": "ho",
+				"value": true
+			}
+		},
+		{
+			"at": 2301000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		},
+		{
+			"at": 2400000,
+			"report": {
+				"datapoint": "ev",
+				"value": false
+			}
+		},
+		{
+			"at": 2500000,
+			"report": {
+				"datapoint": "ev",
+				"value": true
+			}
+		},
+		{
+			"at": 2501000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 2,
+					"block/hm/hvacMode": 3
+				}
+			}
+		},
+		{
+			"at": 2600000,
+			"report": {
+				"datapoint": "mo",
+				"value": false
+			}
+		},
+		{
+			"at": 2650000,
+			"stale": "mo"
+		},
+		{
+			"at": 2700000,
+			"report": {
+				"datapoint": "mo",
+				"value": true
+			}
+		},
+		{
+			"at": 2701000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"lastMorning": 1.0
+						}
+					}
+				}
+			}
+		}
+	],
+	"end": 2800000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 60000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 3
+			},
+			{
+				"at": 1200000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 1800000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 2
+			},
+			{
+				"at": 2200000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 3
+			},
+			{
+				"at": 2300000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 2500000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 3
+			},
+			{
+				"at": 2700000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/hm/mode": 0,
+				"block/hm/hvacMode": 1,
+				"hvac": 1
+			},
+			"blocks": {
+				"hm": {
+					"state": {
+						"mode": 0.0,
+						"lastMorning": 1.0,
+						"lastEvening": 1.0
+					}
+				}
+			}
+		}
+	}
+}

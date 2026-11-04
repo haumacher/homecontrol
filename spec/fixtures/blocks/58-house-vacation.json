@@ -1,0 +1,355 @@
+{
+	"title": "House mode: vacation overrides every mode while the input is good and true (19.2 D8); buttons and presence are ignored and not kept; it ends home when the input is good and false; stale keeps it; an image that no longer binds the input ends it.",
+	"note": "The away press at 120 s during vacation is consumed: after the vacation ends at 240 s the house stays home (presence true). The image at 780 s binds no vacation: the start goes home.",
+	"datapoints": [
+		{
+			"name": "p",
+			"type": "boolean"
+		},
+		{
+			"name": "aw",
+			"type": "boolean"
+		},
+		{
+			"name": "ni",
+			"type": "boolean"
+		},
+		{
+			"name": "ho",
+			"type": "boolean"
+		},
+		{
+			"name": "va",
+			"type": "boolean"
+		},
+		{
+			"name": "hvac",
+			"type": "enumeration"
+		}
+	],
+	"blocks": [
+		{
+			"id": "hm",
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"label": "House mode",
+			"inputs": {
+				"presence": "p",
+				"awayButton": "aw",
+				"nightButton": "ni",
+				"homeButton": "ho",
+				"vacation": "va"
+			},
+			"outputs": {
+				"hvacMode": "hvac"
+			},
+			"parameters": {
+				"awayDelay": 600000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "va",
+				"value": true
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 3,
+					"block/hm/hvacMode": 4,
+					"hvac": 4,
+					"block/hm/onVacation": true,
+					"block/hm/occupied": false,
+					"block/hm/home": false
+				}
+			}
+		},
+		{
+			"at": 120000,
+			"report": {
+				"datapoint": "aw",
+				"value": true
+			}
+		},
+		{
+			"at": 180000,
+			"report": {
+				"datapoint": "p",
+				"value": true
+			}
+		},
+		{
+			"at": 181000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 3,
+					"block/hm/hvacMode": 4
+				}
+			}
+		},
+		{
+			"at": 240000,
+			"report": {
+				"datapoint": "va",
+				"value": false
+			}
+		},
+		{
+			"at": 241000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1,
+					"block/hm/onVacation": false
+				}
+			}
+		},
+		{
+			"at": 300000,
+			"report": {
+				"datapoint": "aw",
+				"value": true
+			}
+		},
+		{
+			"at": 301000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2
+				}
+			}
+		},
+		{
+			"at": 360000,
+			"report": {
+				"datapoint": "va",
+				"value": true
+			}
+		},
+		{
+			"at": 361000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 3,
+					"block/hm/hvacMode": 4
+				}
+			}
+		},
+		{
+			"at": 420000,
+			"stale": "va"
+		},
+		{
+			"at": 421000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 3,
+					"block/hm/hvacMode": 4
+				}
+			}
+		},
+		{
+			"at": 480000,
+			"report": {
+				"datapoint": "va",
+				"value": false
+			}
+		},
+		{
+			"at": 481000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		},
+		{
+			"at": 540000,
+			"report": {
+				"datapoint": "ni",
+				"value": true
+			}
+		},
+		{
+			"at": 600000,
+			"report": {
+				"datapoint": "va",
+				"value": true
+			}
+		},
+		{
+			"at": 601000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 3,
+					"block/hm/hvacMode": 4
+				}
+			}
+		},
+		{
+			"at": 660000,
+			"report": {
+				"datapoint": "ho",
+				"value": true
+			}
+		},
+		{
+			"at": 720000,
+			"report": {
+				"datapoint": "va",
+				"value": false
+			}
+		},
+		{
+			"at": 721000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		},
+		{
+			"at": 750000,
+			"report": {
+				"datapoint": "va",
+				"value": true
+			}
+		},
+		{
+			"at": 780000,
+			"image": {
+				"blocks": [
+					{
+						"id": "hm",
+						"type": "org.homecontrol.house-mode",
+						"version": "1.0",
+						"label": "House mode",
+						"inputs": {
+							"presence": "p",
+							"awayButton": "aw",
+							"nightButton": "ni",
+							"homeButton": "ho"
+						},
+						"outputs": {
+							"hvacMode": "hvac"
+						},
+						"parameters": {
+							"awayDelay": 600000
+						}
+					}
+				]
+			}
+		},
+		{
+			"at": 781000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1,
+					"hvac": 1
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"mode": 0.0
+						}
+					}
+				}
+			}
+		}
+	],
+	"end": 840000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 60000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 4
+			},
+			{
+				"at": 240000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 300000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 2
+			},
+			{
+				"at": 360000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 4
+			},
+			{
+				"at": 480000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 540000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 3
+			},
+			{
+				"at": 600000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 4
+			},
+			{
+				"at": 720000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 750000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 4
+			},
+			{
+				"at": 780000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/hm/mode": 0,
+				"block/hm/hvacMode": 1,
+				"hvac": 1
+			},
+			"blocks": {
+				"hm": {
+					"state": {
+						"mode": 0.0
+					}
+				}
+			}
+		}
+	}
+}

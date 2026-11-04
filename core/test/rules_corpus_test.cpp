@@ -1317,8 +1317,15 @@ HC_BLOCK_CASE("51", "load-refused-own-output")
 HC_BLOCK_CASE("52", "load-refused-shading-horizon")
 HC_BLOCK_CASE("53", "shading-failsafe-parameters")
 HC_BLOCK_CASE("54", "shading-sensors-one-by-one")
+HC_BLOCK_CASE("55", "house-away-return")
+HC_BLOCK_CASE("56", "house-buttons-arming")
+HC_BLOCK_CASE("57", "house-night-morning-evening")
+HC_BLOCK_CASE("58", "house-vacation")
+HC_BLOCK_CASE("59", "house-reboot-since")
+HC_BLOCK_CASE("60", "house-hvac-mapping-failsafe")
+HC_BLOCK_CASE("61", "house-room-chain")
 
 TEST_CASE("BlocksCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::corpus_files("blocks");
-	CHECK(files.size() == 54);
+	CHECK(files.size() == 61);
 }

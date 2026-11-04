@@ -8,6 +8,7 @@
 
 #include "hc/blocks/heating_curve.h"
 #include "hc/blocks/heating_demand.h"
+#include "hc/blocks/house_mode.h"
 #include "hc/blocks/room_controller.h"
 #include "hc/blocks/sun_shading.h"
 
@@ -240,6 +241,7 @@ BlockRegistry::BlockRegistry(bool builtins) {
 		add(HeatingDemand::instance());
 		add(HeatingCurve::instance());
 		add(SunShading::instance());
+		add(HouseMode::instance());
 	}
 }
 

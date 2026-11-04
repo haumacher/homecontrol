@@ -10,10 +10,11 @@ WebAssembly spike that the interface is shaped for is `doc/blocks-wasm.md`.
 | The runtime: calls, timers, faults, persistence, mirrors | `block_runtime.h`, `core/src/blocks/block_runtime.cpp` |
 | The room controller 1.0 | `room_controller.h`, `core/src/blocks/room_controller.cpp` |
 | The heating demand 1.0, the heating curve 1.0 (#61, #62) | `heating_demand.h`, `heating_curve.h`, `core/src/blocks/heating_{demand,curve}.cpp` |
+| The sun shading 1.0 (#63), the house mode 1.0 (#64) | `sun_shading.h`, `house_mode.h`, `core/src/blocks/{sun_shading,house_mode}.cpp` |
 | The API | `core/src/web_api_blocks.cpp` |
 | The UI's "Blocks" section | `web/ui/dist/diagnostics.js` (System page) |
 | The conformance type (tests only) | `core/test/conformance_block.{h,cpp}` |
-| Tests | `core/test/room_controller_test.cpp`, `core/test/heating_test.cpp` (both on the rig `core/test/block_rig.h`), the corpus `spec/fixtures/blocks/` in `rules_corpus_test.cpp`, `web_api_test.cpp` ("Image.Blocks", "WebApi.Blocks") |
+| Tests | `core/test/room_controller_test.cpp`, `core/test/heating_test.cpp`, `core/test/sun_shading_test.cpp`, `core/test/house_mode_test.cpp` (on the rig `core/test/block_rig.h`), the corpus `spec/fixtures/blocks/` in `rules_corpus_test.cpp`, `web_api_test.cpp` ("Image.Blocks", "WebApi.Blocks") |
 
 ## The type interface and a later WebAssembly type
 
@@ -98,7 +99,8 @@ instance is not written. The budget is in `doc/persistence.md` "The flash wear b
 
 Measured on the host (64-bit) by `BlockRuntime: no allocation in steady state; the cost of a room
 controller`, `Heating: no allocation in steady state; the cost of an instance is at most a room
-controller's` and `SunShading: no allocation in steady state; the cost of an instance is at most a
+controller's`, `SunShading: no allocation in steady state; the cost of an instance is at most a
+room controller's` and `HouseMode: no allocation in steady state; the cost of an instance is at most a
 room controller's`; the C6's 32-bit pointers make the figures slightly smaller.
 
 | What | Size |
@@ -111,6 +113,7 @@ room controller's`; the C6's 32-bit pointers make the figures slightly smaller.
 | Per heating demand (8 valves, 4 demands): 11 fields, 11 parameters, 9 mirrors | about 2.0 KB on the host (2013 B) |
 | Per heating curve (2 outside sensors): 9 fields, 29 parameters, 8 mirrors | about 2.2 KB on the host (2170 B) |
 | Per sun shading (every input, `manual` on two datapoints): 20 fields, 31 parameters, 10 mirrors, no record | about 2.8 KB on the host (2760 B) |
+| Per house mode (every input, `presence` and `nightButton` on two datapoints): 12 fields, 6 parameters, 13 mirrors, a record of 2 fields | about 2.4 KB on the host (2438 B) |
 | Steady state | no allocation (calls, writes, timers, periods; the record writes allocate nothing in the core) |
 
 Ten rooms cost about 30 KB of heap. On the C6, whose heap minimum at a deploy is about 33 to 37 KB,

@@ -525,6 +525,69 @@ TEST_CASE("Swap memory: sun shadings keep the swap's budget and take no large bl
 	}
 }
 
+namespace {
+
+/// `base` as schema 1.3 at `revision` with `k` house modes (spec/blocks.md 19) on the presence, the
+/// button, the morning schedule and the away switch of example.json.
+std::string with_house_modes(std::string base, unsigned revision, size_t k) {
+	set_member(base, "schemaVersion", "\"1.3\"");
+	set_member(base, "revision", std::to_string(revision));
+	std::string blocks;
+	for (size_t i = 0; i < k; ++i) {
+		blocks += (i > 0 ? ", " : "") + std::string(R"({"id": "haus)") + std::to_string(i + 1) +
+			R"(", "type": "org.homecontrol.house-mode", "version": "1.0", "label": {"en": "House", "de": "Haus"},
+			"inputs": {"presence": ["hall.presence", "hall.button"], "awayButton": "hall.button",
+			"nightButton": ["hall.button", "away"], "vacation": "away", "morning": "schedule.morning"},
+			"parameters": {"awayDelay": )" + std::to_string(600000 * (i + 1)) + "}}";
+	}
+	while (!base.empty() && (base.back() == '\n' || base.back() == ' ' || base.back() == '\t')) {
+		base.pop_back();
+	}
+	REQUIRE(base.back() == '}');
+	base.pop_back();
+	base += ", \"blocks\": [" + blocks + "]}";
+	return base;
+}
+
+} // namespace
+
+TEST_CASE("Swap memory: house modes keep the swap's budget and take no large block") {
+	// The test of the sun shadings for the house mode (homecontrol #64): k = 0 .. 4 instances
+	// deployed over the same image and over the image with one fewer.
+	constexpr long kSwapBudget = 9 * 1024;
+	constexpr long kLargestBlock = 3 * 1024;
+	std::string base = fixture_text("example.json");
+	long held[5] = {};
+	long over_same[5] = {};
+	for (size_t k = 0; k <= 4; ++k) {
+		SwapRig rig;
+		rig.load(with_house_modes(base, 1, k), false);
+		held[k] = rig.held();
+		rig.load(with_house_modes(base, 2, k), true);
+		CHECK(rig.held() == held[k]);
+		over_same[k] = rig.probe.peak();
+		CHECK(rig.probe.largest() <= kLargestBlock);
+		MESSAGE(k << " house mode(s): the image holds " << held[k] << " B, the swap's peak is " << over_same[k]
+			<< " B above it, its largest block " << rig.probe.largest() << " B");
+	}
+	CHECK(over_same[0] <= kSwapBudget);
+	for (size_t k = 1; k <= 4; ++k) {
+		long block = (held[k] - held[0]) / static_cast<long>(k);
+		CHECK(block > 0);
+		CHECK(over_same[k] <= kSwapBudget + static_cast<long>(k) * block);
+		CHECK(over_same[k] - over_same[0] <= static_cast<long>(k) * block);
+		SwapRig rig;
+		rig.load(with_house_modes(base, 1, k - 1), false);
+		long old = rig.held();
+		rig.load(with_house_modes(base, 2, k), true);
+		CHECK(rig.held() == held[k]);
+		CHECK(rig.probe.peak() <= kSwapBudget + static_cast<long>(k) * block + (held[k] - old));
+		CHECK(rig.probe.largest() <= kLargestBlock);
+		MESSAGE(k << " house mode(s) over " << k - 1 << ": " << rig.probe.peak() << " B above the old image, a block holds "
+			<< block << " B");
+	}
+}
+
 TEST_CASE("Swap memory: a large image swaps while no block above 3.5 KB can be had (6 KB on the 64-bit host)") {
 	// The board refused a deploy for one block of 7 104 bytes (the rule set) with 9.7 KB free
 	// (homecontrol #70). An image of 215 datapoints and 52 rules swaps over itself with no allocation

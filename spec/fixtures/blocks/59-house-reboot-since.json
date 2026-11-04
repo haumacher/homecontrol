@@ -1,0 +1,290 @@
+{
+	"title": "House mode: the persisted mode across reboots with presence unknown (19.2 D2, D11): away and night are kept, home's away delay counts from the boot; return detection after a boot; since in minutes of local time (D14), dated once the clock synchronizes; the record.",
+	"note": "Munich time zone, 2026-11-04 07:00 CET at 0, the clock not synchronized until 850 s. The stored record is away since 2026-11-03 18:00 local (29 895 840 - 360 = 29 895 480 min). The return home at 800 s is dated at the period of 900 s: 07:15:00 - 100 s = 07:13:20, minute 07:13.",
+	"clock": {
+		"start": "2026-11-04T07:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3",
+		"synchronized": false
+	},
+	"datapoints": [
+		{
+			"name": "p",
+			"type": "boolean"
+		},
+		{
+			"name": "ni",
+			"type": "boolean"
+		},
+		{
+			"name": "hvac",
+			"type": "enumeration"
+		}
+	],
+	"persisted": {
+		"block/hm": {
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"fields": {
+				"mode": 1,
+				"since": 29895480
+			}
+		}
+	},
+	"blocks": [
+		{
+			"id": "hm",
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"label": "House mode",
+			"inputs": {
+				"presence": "p",
+				"nightButton": "ni"
+			},
+			"outputs": {
+				"hvacMode": "hvac"
+			},
+			"parameters": {
+				"awayDelay": 600000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2,
+					"hvac": 2,
+					"block/hm/since": 29895480
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"mode": 1.0,
+							"since": 29895480.0,
+							"armed": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 600000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2
+				}
+			}
+		},
+		{
+			"at": 700000,
+			"report": {
+				"datapoint": "p",
+				"value": false
+			}
+		},
+		{
+			"at": 800000,
+			"report": {
+				"datapoint": "p",
+				"value": true
+			}
+		},
+		{
+			"at": 801000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1,
+					"block/hm/since": 29895480
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"since": -1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 850000,
+			"clockSync": true
+		},
+		{
+			"at": 901000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1,
+					"block/hm/since": 29896273
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"since": 29896273.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 910000,
+			"report": {
+				"datapoint": "p",
+				"value": false
+			}
+		},
+		{
+			"at": 1000000,
+			"reboot": true
+		},
+		{
+			"at": 1001000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1,
+					"block/hm/since": 29896273
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"mode": 0.0,
+							"since": 29896273.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1100000,
+			"report": {
+				"datapoint": "p",
+				"value": false
+			}
+		},
+		{
+			"at": 1699000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"block/hm/hvacMode": 1
+				}
+			}
+		},
+		{
+			"at": 1701000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2,
+					"block/hm/since": 29896288
+				}
+			}
+		},
+		{
+			"at": 1800000,
+			"report": {
+				"datapoint": "ni",
+				"value": true
+			}
+		},
+		{
+			"at": 1900000,
+			"reboot": true
+		},
+		{
+			"at": 1901000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 2,
+					"block/hm/hvacMode": 3,
+					"hvac": 3
+				}
+			}
+		},
+		{
+			"at": 2000000,
+			"report": {
+				"datapoint": "p",
+				"value": false
+			}
+		},
+		{
+			"at": 2700000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 2,
+					"block/hm/hvacMode": 3
+				}
+			}
+		}
+	],
+	"end": 2760000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 2
+			},
+			{
+				"at": 800000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 1000000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 1700000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 2
+			},
+			{
+				"at": 1800000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 3
+			},
+			{
+				"at": 1900000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 3
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/hm/mode": 2,
+				"block/hm/hvacMode": 3,
+				"hvac": 3,
+				"block/hm/since": 29896290
+			},
+			"blocks": {
+				"hm": {
+					"state": {
+						"mode": 2.0,
+						"since": 29896290.0
+					}
+				}
+			},
+			"records": {
+				"hm": {
+					"mode": 2.0,
+					"since": 29896290.0
+				}
+			}
+		}
+	}
+}

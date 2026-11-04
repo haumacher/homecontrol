@@ -158,6 +158,7 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/room_controller_test.cpp"
 	"${HC_REPO_DIR}/core/test/heating_test.cpp"
 	"${HC_REPO_DIR}/core/test/sun_shading_test.cpp"
+	"${HC_REPO_DIR}/core/test/house_mode_test.cpp"
 	"${HC_REPO_DIR}/core/test/rules_unit_test.cpp"
 	"${HC_REPO_DIR}/core/test/allocation_counter.cpp"
 	"${HC_REPO_DIR}/core/test/rules_probe_test.cpp"
