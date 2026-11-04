@@ -116,8 +116,8 @@ public:
 	void set_knx(knx::KnxTunnel* tunnel, const knx::TelegramLog* telegrams) { api_.set_knx(tunnel, telegrams); }
 	/// The external values behind POST /api/external/<id>/fetch and the "external" status.
 	void set_external(ExternalValues* external) { api_.set_external(external); }
-	/// The blob store the "storage" status counts.
-	void set_blob_store(const BlobStore* blobs) { api_.set_blob_store(blobs); }
+	/// The storage figures of the "storage" status (homecontrol #74).
+	void set_storage_stats(StorageStats* stats) { api_.set_storage_stats(stats); }
 	/// What POST /api/system/restart and /factory-reset do here (main: stop the process, after
 	/// erasing the settings and the blobs for a reset; a supervisor starts it again). Without one,
 	/// both answer 501.

@@ -161,6 +161,10 @@ hc::esp::MqttService& mqtt() {
 hc::esp::EspImageStaging g_staging;
 // The image's store off the loop (#68): a task of its own per store.
 hc::esp::EspWorker g_worker(g_queue);
+// The storage figures of the status and the System page, measured off the loop after each change of
+// the blob store (#74), on a worker of their own (a deploy needs the store's worker when it arrives).
+hc::StorageStats g_storage(g_blobs);
+hc::esp::EspWorker g_storage_worker(g_queue, "hc_stat", hc::esp::EspWorker::kStatsStack, true);
 // The heap at each phase of a load (#70): `log level hc.image debug`, or CONFIG_HC_IMAGE_HEAP_PHASES.
 hc::esp::EspLoadProbe g_load_probe(g_queue);
 
@@ -188,6 +192,9 @@ void loop_task(void*) {
 	zigbee().init(image()); // the adapter becomes a dynamic spec provider of the image service
 	// ---- runtime image ----
 	g_blobs.start(); // mounts /storage (shared with the web server's UI files) and opens /storage/state
+	g_storage.set_worker(&g_storage_worker);
+	g_storage.measure_now(); // once here; after that off the loop when the store changed
+	image().set_storage_stats(&g_storage);
 	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services));
 	image().set_external(&external().values());
 	image().set_mqtt(&mqtt().mqtt());
@@ -216,6 +223,7 @@ void loop_task(void*) {
 	web.set_zigbee(zigbee().adapter(), zigbee().unavailable_reason());
 	web.set_external(&external().values());
 	web.set_blob_store(&g_blobs);
+	web.set_storage_stats(&g_storage);
 	web.set_diagnostics(&g_diag);
 	web.start();
 	knx().set_monitor(&web.feed().monitor()); // `knx log` reads the monitor's ring (issue #45)

@@ -24,7 +24,7 @@ class FakeBlobStore : public hc::BlobStore {
 public:
 	FakeBlobStore() : writer_(*this) {}
 	/// Copies the content (blobs, counters, settings); an open streaming write stays behind.
-	FakeBlobStore(const FakeBlobStore& other) : writer_(*this) { *this = other; }
+	FakeBlobStore(const FakeBlobStore& other) : hc::BlobStore(), writer_(*this) { *this = other; }
 	FakeBlobStore& operator=(const FakeBlobStore& other) {
 		if (this != &other) {
 			blobs = other.blobs;
@@ -36,6 +36,10 @@ public:
 			patches_of = other.patches_of;
 			patched_bytes = other.patched_bytes;
 			patchable = other.patchable;
+			has_usage = other.has_usage;
+			total_bytes = other.total_bytes;
+			used_bytes = other.used_bytes;
+			changed();
 		}
 		return *this;
 	}
@@ -59,6 +63,7 @@ public:
 		blobs[name] = content;
 		++writes;
 		++writes_of[name];
+		changed();
 		return hc::BlobStatus::ok;
 	}
 
@@ -97,10 +102,15 @@ public:
 		if (status != hc::BlobStatus::ok) {
 			return status;
 		}
-		return blobs.erase(name) > 0 ? hc::BlobStatus::ok : hc::BlobStatus::not_found;
+		if (blobs.erase(name) == 0) {
+			return hc::BlobStatus::not_found;
+		}
+		changed();
+		return hc::BlobStatus::ok;
 	}
 
 	void visit(hc::BlobVisitor& visitor) const override {
+		++visits;
 		for (const auto& blob : blobs) {
 			visitor.blob(blob.first.c_str(), blob.second.size());
 		}
@@ -156,13 +166,31 @@ public:
 		++patches;
 		++patches_of[name];
 		patched_bytes += total;
+		changed();
 		return hc::BlobStatus::ok;
 	}
 
 	bool free_space(size_t& bytes) const override {
+		++free_space_calls;
 		bytes = free_bytes;
 		return true;
 	}
+
+	bool usage(uint64_t& total, uint64_t& used) const override {
+		++usage_calls;
+		if (!has_usage) {
+			return false;
+		}
+		total = total_bytes;
+		used = used_bytes;
+		return true;
+	}
+
+	/// A change of the store's state the test made directly (free_bytes, the usage): as a write would.
+	void touch() { changed(); }
+
+	/// The walks a real store makes (homecontrol #74): visit(), free_space() and usage() calls.
+	int walks() const { return visits + free_space_calls + usage_calls; }
 
 	/// Whether a streaming write is open.
 	bool writing() const { return writer_.open; }
@@ -187,6 +215,13 @@ public:
 	size_t patched_bytes = 0;
 	/// False: patch() refuses with unsupported (a store that cannot patch).
 	bool patchable = true;
+	/// What usage() reports (false: it cannot tell, the default; then free_space() is asked).
+	bool has_usage = false;
+	uint64_t total_bytes = 0;
+	uint64_t used_bytes = 0;
+	mutable int visits = 0;
+	mutable int free_space_calls = 0;
+	mutable int usage_calls = 0;
 
 private:
 	class Writer : public hc::BlobWriter {
@@ -215,6 +250,7 @@ private:
 			store_.blobs[name] = std::move(content);
 			++store_.commits;
 			++store_.writes_of[name];
+			store_.changed();
 			return hc::BlobStatus::ok;
 		}
 

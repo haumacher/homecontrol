@@ -390,17 +390,6 @@ bool WebServer::set_platform_log_level(const char* tag, LogLevel level) {
 	return true;
 }
 
-bool WebServer::storage_usage(uint64_t& total, uint64_t& used) const {
-	size_t t = 0;
-	size_t u = 0;
-	if (!storage_mounted() || !hc::esp::storage_usage(t, u)) {
-		return false;
-	}
-	total = t;
-	used = u;
-	return true;
-}
-
 namespace {
 
 /// Removes the directory `path` with everything in it (LittleFS, single task); false if some entry
@@ -581,9 +570,29 @@ bool WebServer::run_on_loop() {
 	return true;
 }
 
+namespace {
+
+/// What a request may hold the event loop (homecontrol #74): above it the request is logged as a
+/// warning with its path, below at debug level (`log level hc.web debug`).
+constexpr int64_t kJobBudgetUs = 20000;
+
+const char* method_text(HttpMethod method) {
+	switch (method) {
+		case HttpMethod::get: return "GET";
+		case HttpMethod::post: return "POST";
+		case HttpMethod::put: return "PUT";
+		case HttpMethod::del: return "DELETE";
+		case HttpMethod::other: break;
+	}
+	return "?";
+}
+
+} // namespace
+
 void WebServer::run_job(void* context, const LoopMessage&) {
 	WebServer& self = *static_cast<WebServer*>(context);
 	Job& job = *self.job_;
+	int64_t start = esp_timer_get_time();
 	switch (job.kind) {
 		case Job::Kind::api:
 			if (job.request.hash != nullptr) {
@@ -606,6 +615,28 @@ void WebServer::run_job(void* context, const LoopMessage&) {
 		case Job::Kind::ws_message:
 			self.feed_.message(job.handle, job.text, job.text_length);
 			break;
+	}
+	// The time the request held the loop, per path (homecontrol #74); the PBKDF2 hash ran before, on
+	// the httpd task.
+	int64_t took = esp_timer_get_time() - start;
+	if (took > kJobBudgetUs || Log::enabled(LogLevel::debug, kTag)) {
+		const char* what = "";
+		const char* path = "";
+		switch (job.kind) {
+			case Job::Kind::api: what = method_text(job.request.method); path = job.request.path; break;
+			case Job::Kind::api_poll: what = "poll"; path = job.request.path; break;
+			case Job::Kind::api_stream: what = "stream"; path = job.request.path; break;
+			case Job::Kind::ws_open: what = "WebSocket open"; break;
+			case Job::Kind::ws_message: what = "WebSocket message"; break;
+		}
+		unsigned ms = static_cast<unsigned>(took / 1000);
+		unsigned fraction = static_cast<unsigned>(took % 1000 / 100);
+		if (took > kJobBudgetUs) {
+			Log::warn(kTag, "%s %s held the event loop %u.%u ms (budget %u ms)", what, path, ms, fraction,
+				static_cast<unsigned>(kJobBudgetUs / 1000));
+		} else {
+			Log::debug(kTag, "%s %s: %u.%u ms on the event loop", what, path, ms, fraction);
+		}
 	}
 	job.done.store(job.sequence);
 	self.job_busy_.store(false);

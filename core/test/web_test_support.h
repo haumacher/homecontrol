@@ -109,14 +109,6 @@ public:
 		return true;
 	}
 	bool has_platform_log() const override { return platform_log; }
-	bool storage_usage(uint64_t& total, uint64_t& used) const override {
-		if (!storage) {
-			return false;
-		}
-		total = 1048576;
-		used = 65536;
-		return true;
-	}
 
 	bool mdns = true;
 	int ntp_changes = 0;
@@ -133,7 +125,6 @@ public:
 	int coredump_clears = 0;
 	bool platform_log = false;
 	std::vector<std::string> platform_levels;
-	bool storage = false;
 };
 
 /// Records what the feed sends; can refuse sends.

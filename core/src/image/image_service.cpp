@@ -335,6 +335,9 @@ bool ImageService::load_steps(const char* text, size_t length, Source source, bo
 		} else {
 			warn_storable(length);
 		}
+		if (stats_ != nullptr) {
+			stats_->refresh();
+		}
 	} else if (background) {
 		// stored_ok_/store_error_ say "being stored" (store_off_loop) until store_done().
 	} else if (source != Source::boot && source != Source::restore) {
@@ -441,6 +444,9 @@ void ImageService::store_done() {
 	} else {
 		Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", store_error_);
 		keep_plan_of(pending_text_, pending_length_);
+	}
+	if (stats_ != nullptr) {
+		stats_->refresh(); // the next poll's free space and storable (homecontrol #74)
 	}
 	pending_text_ = nullptr;
 	pending_length_ = 0;
@@ -1216,7 +1222,11 @@ bool ImageService::unload(const char** error) {
 	if (changed_) {
 		changed_();
 	}
-	if (!store_.remove(error)) {
+	bool removed = store_.remove(error);
+	if (stats_ != nullptr) {
+		stats_->refresh();
+	}
+	if (!removed) {
 		return false;
 	}
 	Log::info(kTag, "image %s: the device has no image (persisted values, rings and overrides removed)",
@@ -1244,20 +1254,37 @@ void ImageService::quietly(void (*report)(void* ctx), void* ctx) {
 }
 
 ImageService::Storable ImageService::storable() const {
+	StorableKey key;
+	if (stats_ != nullptr) {
+		const StorageStats::Figures& figures = stats_->figures();
+		key.known = figures.has_free;
+		key.free = figures.free;
+	} else {
+		key.known = store_.free_space(key.free);
+	}
+	key.reserve = key.known ? history_.flash_to_come() : 0;
+	// A body takes one byte more in the staging: the NUL after the text (ImageBody::begin()).
+	key.shared = kMaxImageBytes + 1;
+	if (stored_staging_ != nullptr && stored_staging_->capacity() > 0 && stored_staging_->shared_capacity() <= kMaxImageBytes) {
+		key.shared = stored_staging_->shared_capacity();
+	}
+	if (storable_valid_ && key == storable_key_) {
+		return storable_;
+	}
 	Storable out;
 	out.storage = kMaxImageBytes;
-	size_t free = 0;
-	if (store_.free_space(free)) {
-		size_t reserve = history_.flash_to_come();
-		out.storage = store_.storable(free > reserve ? free - reserve : 0);
+	if (key.known) {
+		out.storage = store_.storable(key.free > key.reserve ? key.free - key.reserve : 0);
 	}
-	// A body takes one byte more in the staging: the NUL after the text (ImageBody::begin()).
 	out.staging = kMaxImageBytes;
-	if (stored_staging_ != nullptr && stored_staging_->capacity() > 0 && stored_staging_->shared_capacity() <= kMaxImageBytes) {
-		size_t shared = stored_staging_->shared_capacity();
-		out.staging = shared > 0 ? shared - 1 : 0;
+	if (key.shared <= kMaxImageBytes) {
+		out.staging = key.shared > 0 ? key.shared - 1 : 0;
 	}
 	out.bytes = out.storage < out.staging ? out.storage : out.staging;
+	storable_key_ = key;
+	storable_ = out;
+	storable_valid_ = true;
+	++storable_computations_;
 	return out;
 }
 

@@ -67,7 +67,30 @@ never overlap (the image service refuses a second store, an unload and a deploy 
 LittleFS (`LittleFsBlobStore`: paths on the stack, the file system's own lock around each call;
 littlefs fixes up open directories when another call commits, so `visit()` beside a write is safe)
 and POSIX files (`FileBlobStore`) do; the tests' `FakeBlobStore` and `MemoryBlobStore` are not
-thread-safe and are only used with the stepped `ManualWorker`, on one thread.
+thread-safe and are only used with the stepped `ManualWorker`, on one thread. The storage figures'
+measurement (below) reads the store from a second worker (`visit()`, `free_space()`, `usage()`),
+beside both.
+
+**The storage figures (#74).** What the status and the System page show of the store (the
+partition's size, use and free space, the files and their bytes) and the free space of the image's
+`storable` are walks of the file system on LittleFS: `esp_littlefs_info()` follows every file's
+blocks (`lfs_fs_size`), and `visit()` reads the directory and stats each file, which fetches the
+directory's metadata log twice per file (`lfs_stat` and the mtime attribute of
+`CONFIG_LITTLEFS_USE_MTIME`). On the C6 with 8 blobs a `GET /api/status` (two such walks and a visit)
+and a `GET /api/system/diagnostics` (one and a visit) held the loop 49 to 124 ms each, every 5 s while
+the System page was open; the cost grows with the directory's log until LittleFS compacts it (a host
+model of the partition with littlefs 2.11, esp_littlefs's sizes and the board's 8 files: a visit
+reads 70 to 185 KB of flash in 300 to 1000 reads, `lfs_fs_size` 8 to 24 KB, a saw tooth over the
+history's patches). `StorageStats` (`core/include/hc/storage_stats.h`) measures them once at start
+and again after a change: every implementation counts its changes (`BlobStore::changed()` after
+each write, patch, removal and commit; `changes()`, atomic), the first request after a change starts
+a measurement on a worker of its own (`hc_stat` on the ESP, 3 KB stack, priority 2, its job logged
+at debug level of `hc.worker`; a thread on POSIX) and gets the previous figures, the next one the
+new. The image service asks for a measurement right after a store or a removal. A store that
+answers `usage()` gives the free space as `total - used`, so a measurement is one `lfs_fs_size` and
+one visit. What must be exact still asks the store (a streaming write's free-space check, the
+archives' check at a load). The walk holds the file system's lock for one `lfs_fs_size` at most
+(8 to 24 KB of reads), so a write of the loop's beside it waits for that, not for the loop.
 
 ## The two implementations
 

@@ -197,6 +197,7 @@ BlobStatus FileBlobStore::write(const char* name, const BlobChunk* chunks, size_
 	if (!sync_directory()) {
 		return BlobStatus::storage_error;
 	}
+	changed();
 	return BlobStatus::ok;
 }
 
@@ -254,6 +255,7 @@ BlobStatus FileBlobStore::patch(const char* name, size_t offset, const BlobChunk
 		::unlink(temporary.c_str());
 		return failure(error, "cannot replace", target);
 	}
+	changed();
 	return sync_directory() ? BlobStatus::ok : BlobStatus::storage_error;
 }
 
@@ -328,6 +330,7 @@ BlobStatus FileBlobStore::remove(const char* name) {
 	if (::unlink(file.c_str()) != 0) {
 		return errno == ENOENT ? BlobStatus::not_found : failure(errno, "cannot delete", file);
 	}
+	changed();
 	return sync_directory() ? BlobStatus::ok : BlobStatus::storage_error;
 }
 
@@ -441,6 +444,7 @@ BlobStatus FileBlobStore::Writer::commit() {
 		::unlink(temporary.c_str());
 		return failure(error, "cannot replace", target);
 	}
+	store_.changed();
 	return store_.sync_directory() ? BlobStatus::ok : BlobStatus::storage_error;
 }
 

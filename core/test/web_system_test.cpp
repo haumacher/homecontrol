@@ -363,11 +363,14 @@ TEST_CASE("WebSystem: the status carries storage, external, lang and mqtt as the
 	// The newest image schema this firmware reads (spec/api.md), for E-Home's check before a deploy.
 	CHECK(r.json["device"]["schema"].text == hc::image::schema_version_text());
 	hc_test::FakeBlobStore blobs;
+	blobs.has_usage = true;
+	blobs.total_bytes = 1048576;
+	blobs.used_bytes = 65536;
 	const char data[] = "0123456789";
 	hc::BlobChunk chunk{data, 10};
 	REQUIRE(blobs.write("values", &chunk, 1) == hc::BlobStatus::ok);
-	f.api.set_blob_store(&blobs);
-	f.host.storage = true;
+	hc::StorageStats storage(blobs);
+	f.api.set_storage_stats(&storage);
 	r = f.call(HttpMethod::get, "/api/status");
 	CHECK(r.json["storage"]["total"].number == 1048576);
 	CHECK(r.json["storage"]["used"].number == 65536);

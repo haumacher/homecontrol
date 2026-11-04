@@ -454,7 +454,37 @@ When the heap is exhausted the image still runs and `GET /api/model` refuses wit
   prints its free space and its lowest. A send checks that the socket still belongs to the same
   connection (socket number plus a generation); a failed send (a slow client whose socket's send
   timed out) closes that connection, the others of the entry are sent. The loop never blocks on a
-  socket.
+  socket. A claim refused only because the rest before the ring's end is too short pads that rest
+  (homecontrol #74): the drain skips it and posts "writable", and the next claim starts at the front.
+  Before, an empty ring whose head sat 1257 to 1419 bytes before the end refused every bulk claim
+  (padding plus the message left less than the bulk reserve), the drain found nothing and posted
+  "writable", the feed claimed again, and the loop spun without sleeping until the task watchdog
+  reset the board (seen on the C6 at 316d479 ten seconds after a browser's WebSocket connected;
+  `core/test/ws_send_ring_test.cpp`).
+- **Requests on the loop** (homecontrol #74): a request should hold the event loop at most 20 ms.
+  The server logs each one's time with its path, at debug level (`log level hc.web debug`: `GET
+  /api/status: 2.1 ms on the event loop`) and as a warning above the budget (`GET /api/status held
+  the event loop 52.3 ms (budget 20 ms)`). What the UI polls stays below it because nothing it asks
+  walks the file system: the storage figures and the image's storable are the last measurement,
+  made off the loop after each change (doc/persistence.md "The storage figures"). Measured on the C6
+  before (316d479, 8 blobs, the System page open): `GET /api/status` 49 to 124 ms, `GET
+  /api/system/diagnostics` 49 to 120 ms, both higher the longer the storage directory's log had
+  grown since its last compaction; `GET /api/blocks`, `/api/auth/session`, `/api/log`,
+  `/api/settings`, `/api/system/log-level` and `/api/tokens` below the loop's 25 ms report threshold.
+- **The memory budget of a page load** (homecontrol #74). The browser loads the UI's 28 files over 6
+  connections at once. What a page load takes of the heap is the data sent and not yet acknowledged:
+  per connection up to the TCP send buffer, held twice (lwIP's pbuf and the WiFi driver's copy in a
+  dynamic transmit buffer; no PSRAM, so no zero-copy path). With lwIP's default 5760 bytes that is 6
+  × 11.5 KB = 69 KB, and the C6 lost exactly that: with the free heap at 86 KB, three reloads of the
+  System page took the lowest since boot to 17 KB (one took it from 43 to 35 KB; the owner's browser
+  session to 34 KB). `CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880` (two segments, `sdkconfig.defaults.app`)
+  halves it: a page load takes at most 6 × 5.6 KB = 35 KB, all 10 server sockets sending at once 58
+  KB. The budget beside it: about 86 KB free in steady state with E-Home's TLS session, KNX and Zigbee
+  (its dynamic record buffers come and go with each record); E-Home's TLS handshake at boot took the
+  lowest from 125 KB to 62 to 75 KB, before the browsers come. A page load therefore leaves about 50
+  KB of the 86, a reload storm (several pages loading at once) is bounded by the 10 sockets' 58 KB.
+  A connection sends two segments per round trip (about 300 KB/s at 10 ms), so the UI's 94 KB arrive
+  in well under a second.
 - The `web` console command: `web status`, `web token create|list|revoke`, `web session clear` (log
   out everywhere), `web password clear`, `web demo` (the demo datapoints until the next restart).
 - Static RAM of this package on the C6 (`idf.py size`, .bss): +38 KB, of which the web server object

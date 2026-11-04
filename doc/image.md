@@ -82,8 +82,12 @@ store takes beside the stored image (`ImageStore::storable()`, over the store's 
 LittleFS the blocks of each file's skip list, `BlobStore::littlefs_footprint()`), less the flash the
 history's archives still take (`History::flash_to_come()`), and what the stored staging holds beside a
 failed image of its size (`ImageStaging::shared_capacity()`, on the ESP half of the area's sectors),
-less the NUL. The status computes it on every `GET /api/status` (the file system's free space is a
-walk of its blocks), not for the WebSocket's `status`. A deploy above it runs; a store that fails
+less the NUL. `GET /api/status` carries it, the WebSocket's `status` does not. Since #74 the free
+space is the last measurement of `StorageStats` (the file system's free space is a walk of its
+blocks, 49 to 124 ms on the C6, `doc/persistence.md` "The storage figures"), and `storable()` is
+cached: it is computed again only when one of its inputs moved, the measured free space (after a
+store, a removal or any write of the blob store), the flash the archives still take (a new
+segment) or the staging's room (`core/test/storage_stats_test.cpp`). A deploy above it runs; a store that fails
 names the limit in `storeError`, a store beyond the staging's half logs a warning naming it. The
 receive limit for `PUT /api/image` is the received staging's capacity less the NUL
 (`ImageService::receivable()`, `WebApi::body_limit()`; 413 with `WebApi::body_too_long()`'s reason

@@ -29,6 +29,7 @@
 #include "hc/platform/blob_store.h"
 #include "hc/platform/image_staging.h"
 #include "hc/platform/worker.h"
+#include "hc/storage_stats.h"
 #include "hc/rules/engine.h"
 #include "hc/scheduler.h"
 #include "hc/value_store.h"
@@ -191,12 +192,24 @@ public:
 	/// a failed image of the same size (`staging`, ImageStaging::shared_capacity() less the byte of the
 	/// NUL a body adds, ImageBody::begin()). A part the device
 	/// cannot tell (no free_space(), no staging or one that is off: the heap) is kMaxImageBytes.
+	///
+	/// Cached (homecontrol #74): it is computed again only when one of its inputs moved, the free
+	/// space (with StorageStats: its last measurement, which a store, a removal or any other write of
+	/// the blob store renews off the loop), the flash the archives still take (a new archive segment)
+	/// or the staging's room. Without StorageStats the free space is asked from the store on every
+	/// call, which on the C6 walks the file system.
 	struct Storable {
 		size_t bytes = 0;
 		size_t storage = 0;
 		size_t staging = 0;
 	};
 	Storable storable() const;
+	/// How often storable() computed its figures (not served from its cache), for the tests.
+	uint32_t storable_computations() const { return storable_computations_; }
+
+	/// The storage figures storable() takes the free space from (nullptr: the store, every call). The
+	/// service asks them to measure again after it stored or removed the image.
+	void set_storage_stats(StorageStats* stats) { stats_ = stats; }
 
 	/// The largest image the device can receive (homecontrol #52): with a staging area for received
 	/// images its capacity less the byte of the NUL (a larger body would need a heap block of its size,
@@ -377,6 +390,21 @@ private:
 	ImageStaging* staging_ = nullptr;
 	ImageStaging* stored_staging_ = nullptr;
 	Worker* worker_ = nullptr;
+	StorageStats* stats_ = nullptr;
+	/// storable()'s cache: its inputs and its result.
+	struct StorableKey {
+		bool known = false;
+		size_t free = 0;
+		size_t reserve = 0;
+		size_t shared = 0;
+		bool operator==(const StorableKey& other) const {
+			return known == other.known && free == other.free && reserve == other.reserve && shared == other.shared;
+		}
+	};
+	mutable bool storable_valid_ = false;
+	mutable StorableKey storable_key_;
+	mutable Storable storable_;
+	mutable uint32_t storable_computations_ = 0;
 	LoadProbe* probe_ = nullptr;
 	unsigned load_depth_ = 0; ///< load() within load() (a failed apply restores the stored image).
 	bool probe_open_ = false; ///< The probe was told the outer load began and not yet that it ended.

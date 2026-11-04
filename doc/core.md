@@ -116,8 +116,11 @@ writes (a sender task), and since #68 a generic job through `hc::Worker`
 `hc_work` (4 KB stack, priority 2) for each job and deletes it after, as the fetchers do, so its
 stack is heap only while it runs, and posts `done` through the `LoopQueue`; POSIX's `ThreadWorker`
 runs a thread per job and brings `done` over the `LoopExecutor`; the tests' `ManualWorker`
-(`core/test/fake_worker.h`) runs the job and `done` when the test says. The one job today is the
-runtime image's store (doc/image.md "Storing off the loop"). A job touches only what is safe beside
+(`core/test/fake_worker.h`) runs the job and `done` when the test says. Two workers run jobs: the
+runtime image's store (doc/image.md "Storing off the loop") and, since #74, the measurement of the
+storage figures the polled endpoints report (`StorageStats`, doc/persistence.md "The storage
+figures"; `hc_stat` on the ESP). Each has a worker of its own, so a deploy never finds the store's
+worker busy with a measurement. A job touches only what is safe beside
 the loop: its own data, the BlobStore on blobs nobody else writes meanwhile (doc/persistence.md
 "Threads"), the log.
 

@@ -4,6 +4,7 @@
 #ifndef HC_PLATFORM_BLOB_STORE_H
 #define HC_PLATFORM_BLOB_STORE_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -158,11 +159,29 @@ public:
 		return BlobStatus::unsupported;
 	}
 
-	/// The bytes a new blob can take now; false if the store cannot tell (the default).
+	/// The bytes a new blob can take now; false if the store cannot tell (the default). It may walk
+	/// the file system (LittleFS: tens of milliseconds, homecontrol #74): what the status reports
+	/// comes from StorageStats, which calls it off the loop.
 	virtual bool free_space(size_t& bytes) const {
 		(void)bytes;
 		return false;
 	}
+
+	/// The size and the used bytes of the file system that holds the store (the ESP's `storage`
+	/// partition); false if the store cannot tell (the default). A store that answers has a
+	/// free_space() of `total - used`, so StorageStats takes it from here instead of a second walk.
+	/// It may walk the file system like free_space().
+	virtual bool usage(uint64_t& total, uint64_t& used) const {
+		(void)total;
+		(void)used;
+		return false;
+	}
+
+	/// Counts the changes of the store's contents (homecontrol #74): every successful write(),
+	/// patch(), remove() and BlobWriter::commit() advances it (the implementation calls changed()).
+	/// StorageStats measures again when it moved. Any thread (the image's store writes from the
+	/// Worker's). A store that never calls changed() is measured once.
+	uint32_t changes() const { return changes_.load(); }
 
 	/// The bytes of free_space() a new blob of `bytes` takes (homecontrol #52: the largest image the
 	/// store can take, ImageStore::storable()). The default: its bytes; a store in blocks counts the
@@ -205,7 +224,20 @@ public:
 	}
 
 protected:
+	BlobStore() = default;
+	/// A copy has its own count (the fakes of the tests copy their content).
+	BlobStore(const BlobStore&) {}
+	BlobStore& operator=(const BlobStore&) {
+		changed();
+		return *this;
+	}
 	~BlobStore() = default;
+
+	/// Records a change of the contents (changes()); the implementations call it after each one.
+	void changed() { changes_.fetch_add(1); }
+
+private:
+	std::atomic<uint32_t> changes_{0};
 };
 
 } // namespace hc

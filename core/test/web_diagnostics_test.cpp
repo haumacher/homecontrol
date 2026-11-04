@@ -207,9 +207,12 @@ TEST_CASE("WebDiagnostics: the loop's counters, the link's reconnects, the stora
 	f.controller.run_once();
 	REQUIRE(slow.runs == 2);
 
-	f.host.storage = true;
 	hc_test::FakeBlobStore blobs;
-	f.api.set_blob_store(&blobs);
+	blobs.has_usage = true;
+	blobs.total_bytes = 1048576;
+	blobs.used_bytes = 65536;
+	hc::StorageStats storage(blobs);
+	f.api.set_storage_stats(&storage);
 	hc_test::FakeUdpSocket socket{f.fake.clock};
 	hc::knx::KnxTunnel tunnel{f.controller.loop(), f.fake.clock, f.controller.connectivity(), socket};
 	f.api.set_knx(&tunnel, nullptr);

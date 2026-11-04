@@ -27,21 +27,33 @@ char* WsSendRing::claim(size_t max, bool bulk) {
 	// A message never straddles the end: the rest before it is padding.
 	size_t pad = contiguous < need ? contiguous : 0;
 	if (free < pad + need || (bulk && free - pad - need < kBulkReserve)) {
+		// Refused because of the rest before the end (homecontrol #74): it would fit at the front once
+		// the reader passed what is queued. Pad the rest now, so the reader frees it with the rest:
+		// otherwise an empty ring with its head in the wrong place refuses every bulk claim for good,
+		// and the feed's retry on writable() spins the loop.
+		if (pad != 0 && free >= pad && free >= need && (!bulk || free - need >= kBulkReserve)) {
+			write_pad(head, offset, contiguous);
+		}
 		return nullptr;
 	}
 	if (pad != 0) {
-		if (contiguous >= sizeof(Header)) {
-			Header header = {};
-			header.flags = kPad;
-			std::memcpy(storage_ + offset, &header, sizeof(header));
-		} // else: too short for a header; the reader skips such a rest by itself
-		head += static_cast<uint32_t>(pad);
-		head_.store(head, std::memory_order_release);
+		head = write_pad(head, offset, contiguous);
 		offset = 0;
 	}
 	claimed_ = 1;
 	claimed_max_ = max;
 	return reinterpret_cast<char*>(storage_ + offset + sizeof(Header));
+}
+
+uint32_t WsSendRing::write_pad(uint32_t head, size_t offset, size_t contiguous) {
+	if (contiguous >= sizeof(Header)) {
+		Header header = {};
+		header.flags = kPad;
+		std::memcpy(storage_ + offset, &header, sizeof(header));
+	} // else: too short for a header; the reader skips such a rest by itself
+	head += static_cast<uint32_t>(contiguous);
+	head_.store(head, std::memory_order_release);
+	return head;
 }
 
 void WsSendRing::commit(const uint32_t* clients, size_t count, size_t length, bool close) {

@@ -128,6 +128,48 @@ TEST_CASE("WsSendRing: a refused claim queues nothing; bulk keeps room for a sin
 	CHECK_FALSE(ring.front(entry));
 }
 
+TEST_CASE("WsSendRing: an empty ring whose end is too short for a bulk message takes it after the reader passed the end") {
+	// The C6 (316d479, 2026-11-04): a page reload's snapshot stalled the loop until the task watchdog
+	// reset it. The ring was empty with its head 1300 bytes before the end: a largest bulk message
+	// needs the rest as padding (1300) and itself (1420) and leaves 1376, less than kBulkReserve
+	// (1420), so every claim was refused, the drain found nothing to send and posted writable(), and
+	// the feed claimed again, for ever, without the loop ever sleeping.
+	alignas(4) uint8_t storage[4096];
+	WsSendRing ring(storage, sizeof(storage));
+	uint32_t client = 1;
+	const size_t to_end = 1300;
+	// Small messages up to that offset, all sent.
+	std::string small(80, 's');
+	size_t offset = 0;
+	while (offset + WsSendRing::cost(small.size()) <= sizeof(storage) - to_end) {
+		REQUIRE(ring.push(&client, 1, small.data(), small.size(), false, false));
+		offset += WsSendRing::cost(small.size());
+	}
+	WsSendRing::Entry entry;
+	while (ring.front(entry)) {
+		ring.pop();
+	}
+	REQUIRE(ring.free_bytes() == sizeof(storage));
+	size_t rest = sizeof(storage) - offset;
+	REQUIRE(rest < WsSendRing::cost(WsSendRing::kMaxMessage));
+	REQUIRE(sizeof(storage) - rest - WsSendRing::cost(WsSendRing::kMaxMessage) < WsSendRing::kBulkReserve);
+
+	// The first claim may be refused, but it leaves the end to the reader: one pass of the reader
+	// (which finds nothing to send) and the claim fits at the front.
+	bool taken = ring.claim(WsSendRing::kMaxMessage, true) != nullptr;
+	if (!taken) {
+		CHECK_FALSE(ring.front(entry)); // nothing to send; the padding is skipped
+		char* room = ring.claim(WsSendRing::kMaxMessage, true);
+		REQUIRE(room != nullptr);
+		std::memset(room, 'b', WsSendRing::kMaxMessage);
+	}
+	ring.commit(&client, 1, WsSendRing::kMaxMessage);
+	REQUIRE(ring.front(entry));
+	CHECK(entry.length == WsSendRing::kMaxMessage);
+	ring.pop();
+	CHECK(ring.free_bytes() == sizeof(storage));
+}
+
 TEST_CASE("WsSendRing: one entry for a message to several clients, and close frames") {
 	alignas(4) uint8_t storage[4096];
 	WsSendRing ring(storage, sizeof(storage));

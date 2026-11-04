@@ -294,6 +294,12 @@ int main(int argc, char** argv) {
 	// The image's store off the loop (#68); declared after the service, so it ends first.
 	hc::posix::ThreadWorker store_worker(executor);
 	image.set_worker(&store_worker);
+	// The storage figures of the status, measured off the loop after a change (#74), on a worker of
+	// their own (the image's store needs its own when a deploy arrives).
+	hc::StorageStats storage(blobs);
+	hc::posix::ThreadWorker storage_worker(executor);
+	storage.set_worker(&storage_worker);
+	image.set_storage_stats(&storage);
 	// One HTTP client for every request, queued by priority (issue #45 item 13, as on the device).
 	hc::posix::HttplibFetcher fetcher(executor);
 	hc::FetchQueue fetches(controller.loop(), clock, fetcher);
@@ -336,6 +342,7 @@ int main(int argc, char** argv) {
 		demo_technology.load(); // without the image service: /api/image answers image.unavailable
 	} else {
 		blobs.start();
+		storage.measure_now();
 		image.start();
 		packs.start();
 		if (image_path != nullptr) {
@@ -371,7 +378,7 @@ int main(int argc, char** argv) {
 			web->set_language_packs(&packs, &blobs);
 			web->set_mqtt(&mqtt);
 			web->set_external(&external);
-			web->set_blob_store(&blobs);
+			web->set_storage_stats(&storage);
 		}
 		web->set_knx(&tunnel, &telegrams);
 		// Restart and factory reset over the API: the process stops (a supervisor such as systemd with

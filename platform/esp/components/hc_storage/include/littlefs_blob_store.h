@@ -45,8 +45,11 @@ public:
 	/// In place: LittleFS copies the touched block on write and commits the file when it is closed,
 	/// so a power cut before the close leaves the old content.
 	BlobStatus patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) override;
-	/// The partition's free bytes (esp_littlefs_info).
+	/// The partition's free bytes (esp_littlefs_info, which walks every file's blocks: StorageStats
+	/// calls it off the loop, homecontrol #74).
 	bool free_space(size_t& bytes) const override;
+	/// The partition's size and used bytes (esp_littlefs_info), free_space() being their difference.
+	bool usage(uint64_t& total, uint64_t& used) const override;
 	/// The blocks the file takes (littlefs_footprint() with the partition's 4 KB blocks).
 	size_t footprint(size_t bytes) const override { return littlefs_footprint(bytes, kBlockBytes); }
 
@@ -62,6 +65,8 @@ private:
 
 	class Writer : public BlobWriter {
 	public:
+		explicit Writer(LittleFsBlobStore& store) : store_(store) {}
+
 		BlobStatus append(const void* data, size_t size) override;
 		BlobStatus commit() override;
 		void discard() override;
@@ -71,6 +76,7 @@ private:
 		bool is_open() const { return fd_ >= 0; }
 
 	private:
+		LittleFsBlobStore& store_;
 		int fd_ = -1;
 		char name_[kMaxNameLength + 1] = {};
 		size_t written_ = 0;
@@ -85,7 +91,7 @@ private:
 
 	mutable State state_ = State::closed;
 	ConsoleCommand console_command_;
-	Writer writer_;
+	Writer writer_{*this};
 };
 
 } // namespace esp

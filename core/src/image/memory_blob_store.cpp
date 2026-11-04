@@ -67,6 +67,7 @@ BlobStatus MemoryBlobStore::write(const char* name, const BlobChunk* chunks, siz
 	blob->data = data;
 	blob->size = total;
 	used_ = used_ - previous + total;
+	changed();
 	return BlobStatus::ok;
 }
 
@@ -107,6 +108,7 @@ BlobStatus MemoryBlobStore::patch(const char* name, size_t offset, const BlobChu
 		std::memcpy(blob->data + offset, chunks[i].data, chunks[i].size);
 		offset += chunks[i].size;
 	}
+	changed();
 	return BlobStatus::ok;
 }
 
@@ -188,6 +190,7 @@ BlobStatus MemoryBlobStore::Writer::commit() {
 	data = nullptr;
 	allocated = 0;
 	size = 0;
+	store_.changed();
 	return BlobStatus::ok;
 }
 
@@ -242,6 +245,7 @@ BlobStatus MemoryBlobStore::remove(const char* name) {
 	used_ -= blob->size;
 	*blob = blobs_[--count_];
 	blobs_[count_] = Blob();
+	changed();
 	return BlobStatus::ok;
 }
 

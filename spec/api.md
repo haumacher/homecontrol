@@ -150,7 +150,9 @@ Members only `GET /api/status` carries (not the WebSocket's `status` message, wh
   warning naming the limit). E-Home warns before such a deploy. A controller without the member
   gives no figure (older firmware).
 - `storage`: `{"total", "used", "free"}` (bytes of the storage partition; ESP only) and `{"files",
-  "bytes"}` (the blob store's files and their size).
+  "bytes"}` (the blob store's files and their size). Like `image.storable`, the figures are the last
+  measurement, which the device makes off its event loop after each change of the blob store
+  (homecontrol #74): a change shows a request or two later, never in the request that follows it.
 - `knx`: `{"state": "down|connecting|up", "reason", "gateway": "<host:port or \"\">", "nat",
   "channel", "address" (both only while up), "queued", "telegrams"}`.
 - `external`: `{"sources": [{"id", "preset", "interval_s", "fetches", "failures", "fetching",

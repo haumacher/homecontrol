@@ -77,6 +77,18 @@ CONFIG_ESP_WIFI_RX_IRAM_OPT=y
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+# TCP send buffer (homecontrol #74): what each socket may hold of sent, unacknowledged data. Each such
+# segment sits twice on the heap until it is acknowledged or on the air: in lwIP's pbuf and in the
+# WiFi driver's copy (esp_wifi_internal_tx copies into a dynamic transmit buffer; no PSRAM, so no
+# zero-copy path). A browser loads the UI over 6 connections at once: 6 x (5760 + 5760) = 69 KB with
+# the default 5760, which is what the C6 lost (316d479, 2026-11-04): three reloads of the System
+# page took the lowest free heap from 86 KB to 17 KB, one from 43 KB to 35 KB. 2880 (2 x the MSS,
+# lwIP's minimum for a steady stream) halves it: 35 KB for a page load, 58 KB with all 10 server
+# sockets sending at once (doc/web.md "ESP specifics", the memory budget). A connection then sends
+# two segments per round trip, about 300 KB/s at 10 ms on the LAN; the UI's 94 KB arrive over the 6
+# connections in well under a second. Every TCP sender is bound by it: E-Home's TLS records of up
+# to 4 KB go out in two windows. Receiving (uploads, downloads) is unchanged (TCP_WND 5760).
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 
 # Task stacks of the IDF (issue #45): the size, what the C6 used of it (2026-11-03: firmware 5ceb29f+
 # on IDF 5.5.6, 45 min up, E-Home over wss, the KNX tunnel up, one Zigbee device; the System page's

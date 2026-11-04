@@ -247,24 +247,16 @@ void WebApi::diagnostics(const WebRequest& request, WebResponse& response) {
 	// ---- Storage: the blob store's file system and the settings store ----
 	json.key("storage").begin_object();
 	{
-		uint64_t total = 0;
-		uint64_t used = 0;
-		bool usage = host_.storage_usage(total, used);
-		json.member("available", usage || blobs_ != nullptr);
-		if (usage) {
-			json.member("total", total).member("used", used).member("free", total > used ? total - used : 0);
-		}
-		if (blobs_ != nullptr) {
-			struct Counter : BlobVisitor {
-				void blob(const char*, size_t size) override {
-					++files;
-					bytes += size;
-				}
-				uint32_t files = 0;
-				uint64_t bytes = 0;
-			} counter;
-			blobs_->visit(counter);
-			json.member("files", counter.files).member("bytes", counter.bytes);
+		// The last measurement, never a walk of the file system here (homecontrol #74).
+		const StorageStats::Figures* storage = storage_ != nullptr ? &storage_->figures() : nullptr;
+		bool known = storage != nullptr && storage->measured;
+		json.member("available", known);
+		if (known) {
+			if (storage->has_usage) {
+				json.member("total", storage->total).member("used", storage->used)
+					.member("free", storage->total > storage->used ? storage->total - storage->used : 0);
+			}
+			json.member("files", storage->files).member("bytes", storage->bytes);
 		}
 		json.key("nvs").begin_object();
 		const char* reason = nullptr;

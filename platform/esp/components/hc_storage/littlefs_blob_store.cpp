@@ -213,6 +213,7 @@ BlobStatus LittleFsBlobStore::write(const char* name, const BlobChunk* chunks, s
 		::unlink(temporary);
 		return failure(error, "cannot replace", target);
 	}
+	changed();
 	return BlobStatus::ok;
 }
 
@@ -292,6 +293,7 @@ BlobStatus LittleFsBlobStore::patch(const char* name, size_t offset, const BlobC
 		ok = false;
 		error = errno;
 	}
+	changed();
 	return ok ? BlobStatus::ok : failure(error, "cannot patch", path);
 }
 
@@ -332,6 +334,7 @@ BlobStatus LittleFsBlobStore::remove(const char* name) {
 	if (::unlink(path) != 0) {
 		return errno == ENOENT ? BlobStatus::not_found : failure(errno, "cannot delete", path);
 	}
+	changed();
 	return BlobStatus::ok;
 }
 
@@ -355,6 +358,17 @@ void LittleFsBlobStore::visit(BlobVisitor& visitor) const {
 		}
 	}
 	::closedir(dir);
+}
+
+bool LittleFsBlobStore::usage(uint64_t& total, uint64_t& used) const {
+	size_t t = 0;
+	size_t u = 0;
+	if (!ready() || !storage_usage(t, u)) {
+		return false;
+	}
+	total = t;
+	used = u;
+	return true;
 }
 
 bool LittleFsBlobStore::free_space(size_t& bytes) const {
@@ -445,6 +459,7 @@ BlobStatus LittleFsBlobStore::Writer::commit() {
 		::unlink(temporary);
 		return failure(error, "cannot replace", target);
 	}
+	store_.changed();
 	return BlobStatus::ok;
 }
 

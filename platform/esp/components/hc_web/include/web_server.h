@@ -110,11 +110,10 @@ public:
 	void set_zigbee(zigbee::ZigbeeAdapter* adapter, const char* reason) { api_.set_zigbee(adapter, reason); }
 	/// The external values behind POST /api/external/<id>/fetch and the "external" status.
 	void set_external(ExternalValues* external) { api_.set_external(external); }
-	/// The blob store the factory reset empties and the "storage" status counts.
-	void set_blob_store(BlobStore* blobs) {
-		blobs_ = blobs;
-		api_.set_blob_store(blobs);
-	}
+	/// The blob store the factory reset empties.
+	void set_blob_store(BlobStore* blobs) { blobs_ = blobs; }
+	/// The storage figures of the "storage" status and the image's storable (homecontrol #74).
+	void set_storage_stats(StorageStats* stats) { api_.set_storage_stats(stats); }
 	/// The diagnostics whose core dump DELETE /api/coredump erases.
 	void set_diagnostics(EspDiagnostics* diagnostics) { diagnostics_ = diagnostics; }
 	/// The JSON API and the live feed, for the E-Home connection (doc/ehome.md; on the loop).
@@ -140,7 +139,6 @@ public:
 	HostResult clear_coredump(const char** reason) override;
 	bool set_platform_log_level(const char* tag, LogLevel level) override;
 	bool has_platform_log() const override { return true; }
-	bool storage_usage(uint64_t& total, uint64_t& used) const override;
 
 	// WsTransport
 	bool ws_send(uint32_t client, const char* text, size_t length) override;

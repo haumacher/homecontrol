@@ -18,7 +18,10 @@ namespace hc {
 /// - A message never straddles the ring's end: a claim that does not fit before the end pads the
 ///   rest and starts at the front, so the reader sends every message as one piece from the ring.
 /// - A message is all or nothing: a claim is visible to the reader only once committed, and a
-///   claim or push that does not fit fails without writing anything the reader sees.
+///   claim or push that does not fit fails without queuing anything the reader sends. One that
+///   failed only because the rest before the end is too short pads that rest, which the reader
+///   skips: the next claim after a pass of the reader starts at the front (homecontrol #74; an
+///   empty ring would otherwise refuse a bulk message for good).
 /// - One message to several clients (the status, a batch of updates) takes one entry, not one copy
 ///   per client.
 /// - A bulk message (a snapshot chunk, a monitor batch: streams the feed resumes by itself) is
@@ -83,6 +86,9 @@ public:
 	size_t lowest_free() const { return lowest_free_; }
 
 private:
+	/// Pads the `contiguous` bytes from `offset` (the counter `head`) to the end; the new head.
+	uint32_t write_pad(uint32_t head, size_t offset, size_t contiguous);
+
 	static constexpr uint8_t kPad = 1;
 	static constexpr uint8_t kClose = 2;
 

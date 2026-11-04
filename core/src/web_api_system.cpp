@@ -116,15 +116,6 @@ int auth_http_status(AuthStatus status) {
 	}
 }
 
-struct BlobCounter : BlobVisitor {
-	void blob(const char*, size_t size) override {
-		++files;
-		bytes += size;
-	}
-	uint32_t files = 0;
-	uint64_t bytes = 0;
-};
-
 } // namespace
 
 // ---- Shared ------------------------------------------------------------------------------------
@@ -826,19 +817,15 @@ void WebApi::mqtt_discovery(const WebRequest& request, WebResponse& response) {
 
 void WebApi::write_status_details(JsonWriter& json) {
 	uint64_t now = controller_.clock().monotonic_ms();
-	uint64_t total = 0;
-	uint64_t used = 0;
-	bool usage = host_.storage_usage(total, used);
-	if (usage || blobs_ != nullptr) {
+	// The last measurement, never a walk of the file system here (homecontrol #74).
+	const StorageStats::Figures* storage = storage_ != nullptr ? &storage_->figures() : nullptr;
+	if (storage != nullptr && storage->measured) {
 		json.key("storage").begin_object();
-		if (usage) {
-			json.member("total", total).member("used", used).member("free", total > used ? total - used : 0);
+		if (storage->has_usage) {
+			json.member("total", storage->total).member("used", storage->used)
+				.member("free", storage->total > storage->used ? storage->total - storage->used : 0);
 		}
-		if (blobs_ != nullptr) {
-			BlobCounter counter;
-			blobs_->visit(counter);
-			json.member("files", counter.files).member("bytes", counter.bytes);
-		}
+		json.member("files", storage->files).member("bytes", storage->bytes);
 		json.end_object();
 	}
 	if (zigbee_ != nullptr) {

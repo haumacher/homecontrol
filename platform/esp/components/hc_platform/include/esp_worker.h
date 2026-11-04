@@ -19,18 +19,23 @@ namespace esp {
 /// image download's tasks are), so its stack is taken from the heap only while a job runs; `done`
 /// reaches the loop through the LoopQueue.
 ///
-/// The one job today is the runtime image's store (ImageStore::write on LittleFS: the chunk and
+/// Two workers run jobs: the runtime image's store (ImageStore::write on LittleFS: the chunk and
 /// manifest writes, the temporary file and rename, the garbage collection with its directory walk,
-/// and the log lines on a failure). kStack covers it with margin; the task's unused stack is logged
-/// with every job's end, so the margin can be read off the device.
+/// and the log lines on a failure; kStack covers it with margin) and the storage figures'
+/// measurement (StorageStats, homecontrol #74: esp_littlefs_info and the blob visit; `hc_stat`,
+/// kStatsStack). The task's unused stack is logged with every job's end (at debug level for a
+/// `quiet` worker, whose jobs follow every change of the blob store), so the margin can be read
+/// off the device.
 class EspWorker : public Worker {
 public:
 	static constexpr uint32_t kStack = 4096;
+	static constexpr uint32_t kStatsStack = 3072;
 	/// Below the event loop (5), the E-Home socket (4) and the console writer (3): the store fills the
 	/// loop's idle time.
 	static constexpr UBaseType_t kPriority = 2;
 
-	explicit EspWorker(LoopQueue& queue) : queue_(queue) {}
+	explicit EspWorker(LoopQueue& queue, const char* name = "hc_work", uint32_t stack = kStack, bool quiet = false)
+		: queue_(queue), name_(name), stack_(stack), quiet_(quiet) {}
 	EspWorker(const EspWorker&) = delete;
 	EspWorker& operator=(const EspWorker&) = delete;
 
@@ -42,6 +47,9 @@ private:
 	static void finished(void* context, const LoopMessage& message);
 
 	LoopQueue& queue_;
+	const char* name_;
+	uint32_t stack_;
+	bool quiet_;
 	Callback job_;
 	Callback done_;
 	std::atomic<bool> busy_{false};

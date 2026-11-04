@@ -15,6 +15,7 @@
 #include "hc/platform/blob_store.h"
 #include "hc/platform/image_staging.h"
 #include "hc/platform/web_host.h"
+#include "hc/storage_stats.h"
 #include "hc/zigbee/adapter.h"
 
 namespace hc {
@@ -172,8 +173,9 @@ public:
 	zigbee::ZigbeeAdapter* zigbee() const { return zigbee_; }
 	/// The external values (doc/external.md): POST /api/external/<id>/fetch, the "external" status.
 	void set_external(ExternalValues* external) { external_ = external; }
-	/// The blob store (doc/persistence.md): the file count and bytes of the "storage" status.
-	void set_blob_store(const BlobStore* blobs) { blobs_ = blobs; }
+	/// The storage figures (homecontrol #74): the "storage" member of the status and of the System
+	/// page, measured off the loop after each change of the blob store; without them it is left out.
+	void set_storage_stats(StorageStats* stats) { storage_ = stats; }
 	/// The E-Home connection (doc/ehome.md): /api/ehome, the setting ehome.enabled, the "ehome"
 	/// status. Set by EhomeLink::start(); without one /api/ehome answers 501.
 	void set_ehome(EhomeLink* link) { ehome_ = link; }
@@ -321,7 +323,7 @@ private:
 	zigbee::ZigbeeAdapter* zigbee_ = nullptr;
 	const char* zigbee_reason_ = nullptr;
 	ExternalValues* external_ = nullptr;
-	const BlobStore* blobs_ = nullptr;
+	StorageStats* storage_ = nullptr;
 	EhomeLink* ehome_ = nullptr;
 	/// The deferred system action (restart, factory reset, WiFi reconnect, the restart into the
 	/// updater for an upload) and its timer.

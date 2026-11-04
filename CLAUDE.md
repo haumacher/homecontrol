@@ -19,6 +19,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   `KnxAdapter`, the telegram tap `TelegramLog` over the platform's `UdpSocket`, `doc/knx.md`), the time service,
   astronomy and the scheduler (`doc/time.md`), the KNX time master, last-value persistence and
   short-term history over the platform's `BlobStore` (`ValueStore`, `History`, `doc/persistence.md`),
+  the storage figures the status reports, measured off the loop after each change (`StorageStats`),
   the web server's portable half (JSON API `WebApi`, WebSocket feed `LiveFeed` and codec `websocket`,
   `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2, the WebSocket send ring `WsSendRing`;
   `doc/web.md`), the monitor stream

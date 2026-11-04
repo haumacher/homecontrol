@@ -24,7 +24,7 @@ bool EspWorker::run(Callback job, Callback done, const char** error) {
 	job_ = job;
 	done_ = done;
 	busy_.store(true);
-	if (xTaskCreate(&EspWorker::task, "hc_work", kStack, this, kPriority, nullptr) != pdPASS) {
+	if (xTaskCreate(&EspWorker::task, name_, stack_, this, kPriority, nullptr) != pdPASS) {
 		busy_.store(false);
 		*error = "cannot create the worker task (memory)";
 		return false;
@@ -47,8 +47,15 @@ void EspWorker::task(void* context) {
 
 void EspWorker::finished(void* context, const LoopMessage&) {
 	EspWorker* self = static_cast<EspWorker*>(context);
-	Log::info(kTag, "job done in %u ms; task stack %u of %u B unused", static_cast<unsigned>(self->job_us_ / 1000),
-		static_cast<unsigned>(self->stack_unused_), static_cast<unsigned>(kStack));
+	if (self->quiet_) {
+		Log::debug(kTag, "%s: job done in %u ms; task stack %u of %u B unused", self->name_,
+			static_cast<unsigned>(self->job_us_ / 1000), static_cast<unsigned>(self->stack_unused_),
+			static_cast<unsigned>(self->stack_));
+	} else {
+		Log::info(kTag, "%s: job done in %u ms; task stack %u of %u B unused", self->name_,
+			static_cast<unsigned>(self->job_us_ / 1000), static_cast<unsigned>(self->stack_unused_),
+			static_cast<unsigned>(self->stack_));
+	}
 	Callback done = self->done_;
 	self->job_ = Callback();
 	self->done_ = Callback();

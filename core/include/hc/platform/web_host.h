@@ -109,14 +109,6 @@ public:
 	/// Whether set_platform_log_level() takes tags outside "hc.".
 	virtual bool has_platform_log() const { return false; }
 
-	/// The size and the used bytes of the storage partition (the blob store's file system). False
-	/// when the platform does not know them.
-	virtual bool storage_usage(uint64_t& total, uint64_t& used) const {
-		(void)total;
-		(void)used;
-		return false;
-	}
-
 protected:
 	~WebHost() = default;
 };
