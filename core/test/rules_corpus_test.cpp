@@ -1276,8 +1276,23 @@ HC_BLOCK_CASE("23", "room-valve-protection")
 HC_BLOCK_CASE("24", "room-modes")
 HC_BLOCK_CASE("25", "room-integral-reboot")
 HC_BLOCK_CASE("26", "fault-disabled-swap")
+HC_BLOCK_CASE("27", "demand-hysteresis-min-times")
+HC_BLOCK_CASE("28", "demand-top-mean-stale")
+HC_BLOCK_CASE("29", "demand-pump-run-on")
+HC_BLOCK_CASE("30", "demand-offset-persist")
+HC_BLOCK_CASE("31", "demand-32-valves")
+HC_BLOCK_CASE("32", "load-refused-multiple")
+HC_BLOCK_CASE("33", "load-refused-demand-thresholds")
+HC_BLOCK_CASE("34", "curve-forms")
+HC_BLOCK_CASE("35", "curve-filter-persist")
+HC_BLOCK_CASE("36", "curve-summer-switch")
+HC_BLOCK_CASE("37", "curve-frost")
+HC_BLOCK_CASE("38", "curve-sensor-timeout")
+HC_BLOCK_CASE("39", "load-refused-curve-points")
+HC_BLOCK_CASE("40", "heating-chain")
+HC_BLOCK_CASE("41", "demand-image-swap-keeps-hold")
 
 TEST_CASE("BlocksCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::corpus_files("blocks");
-	CHECK(files.size() == 26);
+	CHECK(files.size() == 41);
 }

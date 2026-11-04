@@ -56,9 +56,9 @@ protected:
 
 /// The binding of one port of an instance.
 struct PortBinding {
-	uint16_t datapoints[BlockLimits::kMultiple]; ///< Ids in the model; an output uses [0].
-	uint8_t count;                               ///< 0: unbound.
-	Aggregation aggregation;                     ///< Inputs bound to more than one datapoint.
+	uint16_t* datapoints;    ///< Ids in the model, in the spec's pool of bound ids; an output uses [0].
+	uint8_t count;           ///< 0: unbound.
+	Aggregation aggregation; ///< Inputs bound to more than one datapoint.
 };
 
 /// One compiled instance (spec/blocks.md 4).
@@ -70,6 +70,8 @@ struct BlockSpec {
 	bool enabled;
 	bool enabled_adjustable;
 	PortBinding* ports;      ///< One per manifest port.
+	uint16_t* bound;         ///< The pool of the ports' datapoint ids: two bytes per bound datapoint (B20).
+	uint16_t bound_size;     ///< Its capacity.
 	double* defaults;        ///< One per manifest parameter: the image's value or the manifest's default.
 };
 

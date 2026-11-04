@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "allocation_counter.h"
+#include "block_rig.h"
 #include "conformance_block.h"
 #include "doctest.h"
 #include "hc/value_store.h"
@@ -29,158 +30,9 @@ using hc::blocks::RoomController;
 
 namespace {
 
-constexpr uint64_t kBase = 1000000;
-constexpr uint64_t kMinute = 60000;
-constexpr uint64_t kHour = 60 * kMinute;
-
-/// The wall clock of the rules and blocks: settable, UTC.
-class Wall : public hc::rules::TimeSource {
-public:
-	bool local_now(hc::DateTime& out) const override {
-		if (!synchronized) {
-			return false;
-		}
-		return utc_to_local(start_utc + static_cast<int64_t>((clock->now_ms - kBase) / 1000), out);
-	}
-	bool sun_time(hc::rules::SunEvent, hc::TimeOfDay&) const override { return false; }
-	const hc_test::FakeClock* clock = nullptr;
-	bool synchronized = false;
-	int64_t start_utc = 0;
-};
-
-/// A controller on the device's runtime: the engine (no rules), the block runtime, a model with the
-/// room's datapoints and the block's mirrors.
-class Rig {
-public:
-	explicit Rig(const std::string& blocks, hc_test::FakeBlobStore* shared = nullptr) : blocks_text_(blocks) {
-		clock_.now_ms = kBase;
-		wall_.clock = &clock_;
-		blobs_ = shared != nullptr ? shared : &own_blobs_;
-		hc::JsonSpan span;
-		REQUIRE(hc::json_parse(blocks_text_.data(), blocks_text_.size(), span, nullptr, 48));
-		const char* names[] = {"temp", "temp2", "valve", "sw", "win", "mode", "on"};
-		hc::ValueType types[] = {hc::ValueType::real, hc::ValueType::real, hc::ValueType::real, hc::ValueType::boolean,
-			hc::ValueType::boolean, hc::ValueType::enumeration, hc::ValueType::boolean};
-		for (size_t i = 0; i < 7; ++i) {
-			names_.push_back(names[i]);
-			specs_types_.push_back(types[i]);
-			flags_.push_back(hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit);
-		}
-		std::vector<hc::blocks::ImpliedDatapoint> mirrors(hc::blocks::implied_datapoints(span, hc_test::corpus_registry(), nullptr, 0));
-		hc::blocks::implied_datapoints(span, hc_test::corpus_registry(), mirrors.data(), mirrors.size());
-		for (const auto& m : mirrors) {
-			names_.push_back(m.name);
-			specs_types_.push_back(m.type);
-			flags_.push_back(m.flags);
-		}
-		for (size_t i = 0; i < names_.size(); ++i) {
-			specs_.push_back(hc::DatapointSpec{names_[i].c_str(), specs_types_[i], flags_[i]});
-		}
-		REQUIRE(model_.load(specs_.data(), specs_.size()) == hc::DatapointStatus::ok);
-		for (uint16_t i = 0; i < 7; ++i) {
-			REQUIRE(model_.bind(i, technology_) == hc::DatapointStatus::ok);
-		}
-		boot(span);
-	}
-
-	void boot(const hc::JsonSpan& span) {
-		engine_ = std::make_unique<hc::rules::Engine>(loop_, model_, clock_, settings_, wall_);
-		hc_test::JsonTree tree;
-		hc_test::Json none;
-		none.kind = hc_test::Json::Kind::array;
-		REQUIRE(engine_->load(tree.value(none), nullptr).ok());
-		blocks_ = std::make_unique<BlockRuntime>(loop_, model_, clock_, settings_, *blobs_, *engine_);
-		hc::blocks::BlockSet set;
-		struct NoOwners : hc::blocks::BlockDirectory {
-			const char* owner(const char*) const override { return nullptr; }
-		} owners;
-		hc::blocks::BlockLoadResult result = set.load(span, model_, owners, hc_test::corpus_registry());
-		REQUIRE_MESSAGE(result.ok(), result.path << ": " << result.text);
-		REQUIRE(blocks_->adopt(std::move(set)));
-		engine_->start(hc::rules::StartReason::boot);
-		run(0);
-	}
-
-	/// An orderly reboot of the controller (the blobs and settings stay, the values go).
-	void reboot() {
-		blocks_.reset();
-		engine_.reset();
-		REQUIRE(model_.load(specs_.data(), specs_.size()) == hc::DatapointStatus::ok);
-		for (uint16_t i = 0; i < 7; ++i) {
-			REQUIRE(model_.bind(i, technology_) == hc::DatapointStatus::ok);
-		}
-		hc::JsonSpan span;
-		REQUIRE(hc::json_parse(blocks_text_.data(), blocks_text_.size(), span, nullptr, 48));
-		boot(span);
-	}
-
-	/// Runs the loop up to `ms` after the start, every timer at its time.
-	void run(uint64_t ms) {
-		uint64_t target = kBase + ms;
-		for (;;) {
-			uint64_t next = loop_.next_deadline();
-			if (next > target) {
-				break;
-			}
-			if (next > clock_.now_ms) {
-				clock_.now_ms = next;
-			}
-			loop_.run_once(clock_.now_ms);
-		}
-		clock_.now_ms = target;
-	}
-
-	uint64_t now() const { return clock_.now_ms - kBase; }
-
-	void report(const char* name, const hc::Value& value) {
-		const hc::Datapoint* dp = model_.find(name);
-		REQUIRE(dp != nullptr);
-		REQUIRE(model_.report(technology_, dp->id(), value) == hc::DatapointStatus::ok);
-		run(now());
-	}
-	void report(const char* name, double value) { report(name, hc::Value::of_real(value)); }
-	void stale(const char* name) {
-		REQUIRE(model_.report_stale(technology_, model_.find(name)->id()) == hc::DatapointStatus::ok);
-		run(now());
-	}
-
-	double number(const char* name) const {
-		const hc::Datapoint* dp = model_.find(name);
-		REQUIRE(dp != nullptr);
-		const hc::Value& v = dp->value();
-		return v.type() == hc::ValueType::boolean ? (v.as_bool() ? 1 : 0)
-			: v.type() == hc::ValueType::enumeration ? v.as_enum() : v.as_real();
-	}
-	double field(RoomController::Field f) const { return blocks_->state(0)[f]; }
-	void set(const char* parameter, double value) {
-		const char* reason = nullptr;
-		REQUIRE(blocks_->set_parameter("wz", parameter, value, &reason) == hc::blocks::ChangeStatus::ok);
-		run(now());
-	}
-
-	BlockRuntime& blocks() { return *blocks_; }
-	hc::DatapointModel& model() { return model_; }
-	hc_test::TestTechnology& technology() { return technology_; }
-	Wall& wall() { return wall_; }
-	hc_test::FakeBlobStore& blobs() { return *blobs_; }
-
-private:
-	std::string blocks_text_;
-	hc_test::FakeClock clock_;
-	Wall wall_;
-	hc_test::FakeSettings settings_;
-	hc_test::FakeBlobStore own_blobs_;
-	hc_test::FakeBlobStore* blobs_ = nullptr;
-	hc::EventLoop loop_;
-	hc::DatapointModel model_{clock_};
-	hc_test::TestTechnology technology_;
-	std::vector<std::string> names_;
-	std::vector<hc::ValueType> specs_types_;
-	std::vector<uint8_t> flags_;
-	std::vector<hc::DatapointSpec> specs_;
-	std::unique_ptr<hc::rules::Engine> engine_;
-	std::unique_ptr<BlockRuntime> blocks_; ///< Destroyed before the engine.
-};
+using hc_test::blocks::kHour;
+using hc_test::blocks::kMinute;
+using hc_test::blocks::Rig;
 
 std::string room_block(const std::string& parameters, const std::string& inputs = R"("temperature": "temp")",
 	const std::string& outputs = R"("valve": "valve", "switch": "sw")") {

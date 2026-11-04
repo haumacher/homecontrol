@@ -181,6 +181,7 @@ struct Compiler {
 	const BlockRegistry& registry;
 	BlockLoadResult& result;
 	char path[sizeof(BlockLoadResult::path)] = {};
+	size_t next_bound = 0; ///< The next free slot of the compiled spec's pool of bound ids.
 
 	bool refuse(BlockError error, const char* format, ...) HC_PRINTF_FORMAT(3, 4) {
 		if (result.error != BlockError::none) {
@@ -314,14 +315,48 @@ bool Compiler::compile(const JsonSpan& item, size_t index, BlockSpec& spec, cons
 		}
 	}
 	const Manifest& m = spec.type->manifest();
+	// The pool of bound ids (spec/blocks.md B20): one slot per output, and as many per input as the
+	// image lists for it (a list longer than the port's multiple is refused below).
+	size_t output_count = m.port_count - m.inputs();
+	size_t listed = 0;
+	JsonSpan inputs_member;
+	if (json_member(item, "inputs", inputs_member) && inputs_member.kind == JsonSpan::Kind::object) {
+		size_t position = 0;
+		JsonSpan key;
+		JsonSpan value;
+		while (json_next_member(inputs_member, position, key, value)) {
+			if (value.kind != JsonSpan::Kind::array) {
+				++listed;
+				continue;
+			}
+			size_t at_item = 0;
+			JsonSpan dp;
+			while (json_next_item(value, at_item, dp)) {
+				++listed;
+			}
+		}
+	}
+	if (output_count + listed > 0xffff) {
+		at("blocks[%u].inputs", static_cast<unsigned>(index));
+		return refuse(BlockError::limit_exceeded, "too many bound datapoints");
+	}
+	spec.bound_size = static_cast<uint16_t>(output_count + listed);
 	spec.ports = new (std::nothrow) PortBinding[m.port_count > 0 ? m.port_count : 1];
 	spec.defaults = new (std::nothrow) double[m.param_count > 0 ? m.param_count : 1];
-	if (spec.ports == nullptr || spec.defaults == nullptr) {
+	spec.bound = new (std::nothrow) uint16_t[spec.bound_size > 0 ? spec.bound_size : 1];
+	if (spec.ports == nullptr || spec.defaults == nullptr || spec.bound == nullptr) {
 		return refuse(BlockError::out_of_memory, "no memory for the block's tables");
 	}
+	size_t slot = listed;
 	for (size_t p = 0; p < m.port_count; ++p) {
-		spec.ports[p] = PortBinding{{0, 0, 0, 0}, 0, m.ports[p].default_aggregation};
+		uint16_t* own = nullptr;
+		if (m.ports[p].direction == Direction::out) {
+			own = spec.bound + slot++;
+			*own = 0;
+		}
+		spec.ports[p] = PortBinding{own, 0, m.ports[p].default_aggregation};
 	}
+	next_bound = 0;
 	for (size_t p = 0; p < m.param_count; ++p) {
 		spec.defaults[p] = m.params[p].default_value;
 	}
@@ -355,11 +390,9 @@ bool Compiler::inputs(const JsonSpan& item, size_t index, BlockSpec& spec) {
 				return refuse(BlockError::forbidden, "'%s' is an output of %s: bind it under 'outputs'", port_id, m.type);
 			}
 			PortBinding& b = spec.ports[p];
-			JsonSpan single[1] = {value};
+			const bool list = value.kind == JsonSpan::Kind::array;
 			size_t count = 1;
-			JsonSpan items[BlockLimits::kMultiple];
-			const JsonSpan* names = single;
-			if (value.kind == JsonSpan::Kind::array) {
+			if (list) {
 				count = 0;
 				size_t at_item = 0;
 				JsonSpan dp;
@@ -368,20 +401,27 @@ bool Compiler::inputs(const JsonSpan& item, size_t index, BlockSpec& spec) {
 						return refuse(BlockError::forbidden, "the port '%s' takes at most %u datapoint%s", port_id,
 							static_cast<unsigned>(decl.multiple), decl.multiple == 1 ? "" : "s");
 					}
-					items[count++] = dp;
+					++count;
 				}
 				if (count == 0) {
 					return refuse(BlockError::malformed, "an input binds 1..%u datapoints",
 						static_cast<unsigned>(decl.multiple));
 				}
-				names = items;
 			}
+			if (next_bound + count > spec.bound_size) {
+				return refuse(BlockError::malformed, "the inputs bind more datapoints than they list");
+			}
+			b.datapoints = spec.bound + next_bound;
+			next_bound += count;
+			size_t at_item = 0;
 			for (size_t k = 0; k < count; ++k) {
-				if (value.kind == JsonSpan::Kind::array) {
+				JsonSpan name = value;
+				if (list) {
+					json_next_item(value, at_item, name);
 					at("blocks[%u].inputs.%s[%u]", static_cast<unsigned>(index), port_id, static_cast<unsigned>(k));
 				}
 				uint16_t id = 0;
-				if (!datapoint(names[k], id)) {
+				if (!datapoint(name, id)) {
 					return false;
 				}
 				const Datapoint* dp = model.get(id);
@@ -572,9 +612,11 @@ void free_spec(BlockSpec& spec) {
 	delete[] spec.label;
 	delete[] spec.ports;
 	delete[] spec.defaults;
+	delete[] spec.bound;
 	spec.label = nullptr;
 	spec.ports = nullptr;
 	spec.defaults = nullptr;
+	spec.bound = nullptr;
 }
 
 } // namespace
@@ -804,7 +846,8 @@ BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointModel& mod
 	bytes_ = sizeof(BlockSpec) * count;
 	for (size_t i = 0; i < count; ++i) {
 		const Manifest& m = specs[i].type->manifest();
-		bytes_ += std::strlen(specs[i].label) + 1 + sizeof(PortBinding) * m.port_count + sizeof(double) * m.param_count;
+		bytes_ += std::strlen(specs[i].label) + 1 + sizeof(PortBinding) * m.port_count + sizeof(double) * m.param_count +
+			sizeof(uint16_t) * specs[i].bound_size;
 	}
 	return result;
 }

@@ -1,0 +1,188 @@
+{
+	"title": "An input bound to more datapoints than its multiple (33 for the heating demand's 32) refuses the image with forbidden.",
+	"datapoints": [
+		{
+			"name": "v1",
+			"type": "real"
+		},
+		{
+			"name": "v2",
+			"type": "real"
+		},
+		{
+			"name": "v3",
+			"type": "real"
+		},
+		{
+			"name": "v4",
+			"type": "real"
+		},
+		{
+			"name": "v5",
+			"type": "real"
+		},
+		{
+			"name": "v6",
+			"type": "real"
+		},
+		{
+			"name": "v7",
+			"type": "real"
+		},
+		{
+			"name": "v8",
+			"type": "real"
+		},
+		{
+			"name": "v9",
+			"type": "real"
+		},
+		{
+			"name": "v10",
+			"type": "real"
+		},
+		{
+			"name": "v11",
+			"type": "real"
+		},
+		{
+			"name": "v12",
+			"type": "real"
+		},
+		{
+			"name": "v13",
+			"type": "real"
+		},
+		{
+			"name": "v14",
+			"type": "real"
+		},
+		{
+			"name": "v15",
+			"type": "real"
+		},
+		{
+			"name": "v16",
+			"type": "real"
+		},
+		{
+			"name": "v17",
+			"type": "real"
+		},
+		{
+			"name": "v18",
+			"type": "real"
+		},
+		{
+			"name": "v19",
+			"type": "real"
+		},
+		{
+			"name": "v20",
+			"type": "real"
+		},
+		{
+			"name": "v21",
+			"type": "real"
+		},
+		{
+			"name": "v22",
+			"type": "real"
+		},
+		{
+			"name": "v23",
+			"type": "real"
+		},
+		{
+			"name": "v24",
+			"type": "real"
+		},
+		{
+			"name": "v25",
+			"type": "real"
+		},
+		{
+			"name": "v26",
+			"type": "real"
+		},
+		{
+			"name": "v27",
+			"type": "real"
+		},
+		{
+			"name": "v28",
+			"type": "real"
+		},
+		{
+			"name": "v29",
+			"type": "real"
+		},
+		{
+			"name": "v30",
+			"type": "real"
+		},
+		{
+			"name": "v31",
+			"type": "real"
+		},
+		{
+			"name": "v32",
+			"type": "real"
+		},
+		{
+			"name": "v33",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "hd",
+			"type": "org.homecontrol.heating-demand",
+			"version": "1.0",
+			"label": "Heat demand",
+			"inputs": {
+				"valves": [
+					"v1",
+					"v2",
+					"v3",
+					"v4",
+					"v5",
+					"v6",
+					"v7",
+					"v8",
+					"v9",
+					"v10",
+					"v11",
+					"v12",
+					"v13",
+					"v14",
+					"v15",
+					"v16",
+					"v17",
+					"v18",
+					"v19",
+					"v20",
+					"v21",
+					"v22",
+					"v23",
+					"v24",
+					"v25",
+					"v26",
+					"v27",
+					"v28",
+					"v29",
+					"v30",
+					"v31",
+					"v32",
+					"v33"
+				]
+			}
+		}
+	],
+	"timeline": [],
+	"end": 1000,
+	"expected": {
+		"loadRefused": "forbidden",
+		"path": "blocks[0].inputs.valves"
+	}
+}

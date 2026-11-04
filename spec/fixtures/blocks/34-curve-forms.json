@@ -1,0 +1,330 @@
+{
+	"title": "Heating curve: the slope form (slope and level), the design point and 2..6 points with linear interpolation, flat beyond the end points; the room setpoint moves the curve along the diagonal, the offset adds; minFlow and maxFlow limit; minChange holds back small changes.",
+	"note": "outsideFilter 0: the filtered value is the raw one at each period (the outside's trigger is none: steps at the 60 s periods and on changes of roomSetpoint and offset). s: slope 1.5, level 1, maxFlow 70, minChange 0.5. d: design (-10, 50) at room 20, slope 1. p: points (-10, 50) (0, 40) (10, 32) (20, 22), level -1, minFlow 20.",
+	"datapoints": [
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "rs",
+			"type": "real"
+		},
+		{
+			"name": "ofs",
+			"type": "real"
+		},
+		{
+			"name": "f1",
+			"type": "real"
+		},
+		{
+			"name": "f2",
+			"type": "real"
+		},
+		{
+			"name": "f3",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"out": 0.0
+	},
+	"blocks": [
+		{
+			"id": "s",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out",
+				"roomSetpoint": "rs",
+				"offset": "ofs"
+			},
+			"outputs": {
+				"flowSetpoint": "f1"
+			},
+			"parameters": {
+				"outsideFilter": 0,
+				"slope": 1.5,
+				"level": 1,
+				"maxFlow": 70,
+				"minChange": 0.5
+			}
+		},
+		{
+			"id": "d",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out"
+			},
+			"outputs": {
+				"flowSetpoint": "f2"
+			},
+			"parameters": {
+				"curve": "design",
+				"outsideFilter": 0,
+				"designOutside": -10,
+				"designFlow": 50,
+				"minChange": 0
+			}
+		},
+		{
+			"id": "p",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out",
+				"roomSetpoint": "rs"
+			},
+			"outputs": {
+				"flowSetpoint": "f3"
+			},
+			"parameters": {
+				"curve": "points",
+				"pointCount": 4,
+				"outside1": -10,
+				"flow1": 50,
+				"outside2": 0,
+				"flow2": 40,
+				"outside3": 10,
+				"flow3": 32,
+				"outside4": 20,
+				"flow4": 22,
+				"level": -1,
+				"minFlow": 20,
+				"minChange": 0,
+				"outsideFilter": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"f1": 51.0,
+					"f2": 40.0,
+					"f3": 39.0
+				}
+			}
+		},
+		{
+			"at": 30000,
+			"report": {
+				"datapoint": "out",
+				"value": -5.0
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"f1": 58.5,
+					"f2": 45.0,
+					"f3": 44.0
+				}
+			}
+		},
+		{
+			"at": 90000,
+			"report": {
+				"datapoint": "rs",
+				"value": 21.5
+			}
+		},
+		{
+			"at": 91000,
+			"check": {
+				"datapoints": {
+					"f1": 62.25,
+					"f3": 47.0,
+					"block/s/flowSetpoint": 62.25
+				}
+			}
+		},
+		{
+			"at": 100000,
+			"report": {
+				"datapoint": "ofs",
+				"value": 2.0
+			}
+		},
+		{
+			"at": 110000,
+			"report": {
+				"datapoint": "ofs",
+				"value": 2.3
+			}
+		},
+		{
+			"at": 111000,
+			"check": {
+				"datapoints": {
+					"f1": 64.25
+				}
+			}
+		},
+		{
+			"at": 150000,
+			"report": {
+				"datapoint": "out",
+				"value": 15.0
+			}
+		},
+		{
+			"at": 181000,
+			"check": {
+				"datapoints": {
+					"f1": 34.55,
+					"f2": 25.0,
+					"f3": 29.0
+				}
+			}
+		},
+		{
+			"at": 210000,
+			"report": {
+				"datapoint": "out",
+				"value": 40.0
+			}
+		},
+		{
+			"at": 241000,
+			"check": {
+				"datapoints": {
+					"f1": 25.0,
+					"f2": 25.0,
+					"f3": 22.5
+				}
+			}
+		},
+		{
+			"at": 270000,
+			"report": {
+				"datapoint": "out",
+				"value": -40.0
+			}
+		}
+	],
+	"end": 330000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "s",
+				"datapoint": "f1",
+				"value": 51.0
+			},
+			{
+				"at": 0,
+				"block": "d",
+				"datapoint": "f2",
+				"value": 40.0
+			},
+			{
+				"at": 0,
+				"block": "p",
+				"datapoint": "f3",
+				"value": 39.0
+			},
+			{
+				"at": 60000,
+				"block": "s",
+				"datapoint": "f1",
+				"value": 58.5
+			},
+			{
+				"at": 60000,
+				"block": "d",
+				"datapoint": "f2",
+				"value": 45.0
+			},
+			{
+				"at": 60000,
+				"block": "p",
+				"datapoint": "f3",
+				"value": 44.0
+			},
+			{
+				"at": 90000,
+				"block": "s",
+				"datapoint": "f1",
+				"value": 62.25
+			},
+			{
+				"at": 90000,
+				"block": "p",
+				"datapoint": "f3",
+				"value": 47.0
+			},
+			{
+				"at": 100000,
+				"block": "s",
+				"datapoint": "f1",
+				"value": 64.25
+			},
+			{
+				"at": 180000,
+				"block": "s",
+				"datapoint": "f1",
+				"value": 34.55
+			},
+			{
+				"at": 180000,
+				"block": "d",
+				"datapoint": "f2",
+				"value": 25.0
+			},
+			{
+				"at": 180000,
+				"block": "p",
+				"datapoint": "f3",
+				"value": 29.0
+			},
+			{
+				"at": 240000,
+				"block": "s",
+				"datapoint": "f1",
+				"value": 25.0
+			},
+			{
+				"at": 240000,
+				"block": "p",
+				"datapoint": "f3",
+				"value": 22.5
+			},
+			{
+				"at": 300000,
+				"block": "s",
+				"datapoint": "f1",
+				"value": 70.0
+			},
+			{
+				"at": 300000,
+				"block": "d",
+				"datapoint": "f2",
+				"value": 60.0
+			},
+			{
+				"at": 300000,
+				"block": "p",
+				"datapoint": "f3",
+				"value": 50.5
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"f1": 70.0,
+				"f2": 60.0,
+				"f3": 50.5,
+				"block/s/state": 0,
+				"block/p/outsideFiltered": -40.0
+			}
+		}
+	}
+}

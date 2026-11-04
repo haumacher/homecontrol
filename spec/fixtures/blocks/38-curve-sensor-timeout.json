@@ -1,0 +1,241 @@
+{
+	"title": "Heating curve: a stale outside temperature is not fed into the filter; state fault (4) once the outside has not been updated for sensorTimeout, stale or silent, the curve on the held filtered value; the next report feeds it again.",
+	"note": "outsideFilter 10 min, sensorTimeout 30 min, minChange 0. a: out reports 6 at 30 s and goes stale at 630 s. b: out2 is good at 0 and silent.",
+	"datapoints": [
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "out2",
+			"type": "real"
+		},
+		{
+			"name": "f1",
+			"type": "real"
+		},
+		{
+			"name": "f2",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"out": 0.0,
+		"out2": 3.0
+	},
+	"blocks": [
+		{
+			"id": "a",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out"
+			},
+			"outputs": {
+				"flowSetpoint": "f1"
+			},
+			"parameters": {
+				"outsideFilter": 600000,
+				"sensorTimeout": 1800000,
+				"minChange": 0
+			}
+		},
+		{
+			"id": "b",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out2"
+			},
+			"outputs": {
+				"flowSetpoint": "f2"
+			},
+			"parameters": {
+				"outsideFilter": 600000,
+				"sensorTimeout": 1800000,
+				"minChange": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 30000,
+			"report": {
+				"datapoint": "out",
+				"value": 6.0
+			}
+		},
+		{
+			"at": 601000,
+			"check": {
+				"datapoints": {
+					"block/a/outsideFiltered": 3.6867402634228097,
+					"block/a/state": 0
+				}
+			}
+		},
+		{
+			"at": 630000,
+			"stale": "out"
+		},
+		{
+			"at": 1799000,
+			"check": {
+				"datapoints": {
+					"block/a/outsideFiltered": 3.6867402634228097,
+					"block/a/state": 0,
+					"block/b/state": 0
+				}
+			}
+		},
+		{
+			"at": 1801000,
+			"check": {
+				"datapoints": {
+					"block/b/state": 0,
+					"f2": 40.4
+				}
+			}
+		},
+		{
+			"at": 1870000,
+			"check": {
+				"datapoints": {
+					"block/a/outsideFiltered": 3.6867402634228097,
+					"block/a/state": 4,
+					"f1": 39.57591168389263
+				}
+			}
+		},
+		{
+			"at": 1900000,
+			"report": {
+				"datapoint": "out",
+				"value": 6.0
+			}
+		},
+		{
+			"at": 2000000,
+			"check": {
+				"datapoints": {
+					"block/a/outsideFiltered": 4.088215093737859,
+					"block/a/state": 0
+				}
+			}
+		}
+	],
+	"end": 2100000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 44.0
+			},
+			{
+				"at": 0,
+				"block": "b",
+				"datapoint": "f2",
+				"value": 40.4
+			},
+			{
+				"at": 60000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 43.345454545454544
+			},
+			{
+				"at": 120000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 42.7504132231405
+			},
+			{
+				"at": 180000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 42.20946656649136
+			},
+			{
+				"at": 240000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 41.71769687862851
+			},
+			{
+				"at": 300000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 41.27063352602592
+			},
+			{
+				"at": 360000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 40.864212296387194
+			},
+			{
+				"at": 420000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 40.494738451261085
+			},
+			{
+				"at": 480000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 40.15885313751008
+			},
+			{
+				"at": 540000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 39.85350285228189
+			},
+			{
+				"at": 600000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 39.57591168389263
+			},
+			{
+				"at": 1920000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 39.32355607626603
+			},
+			{
+				"at": 1980000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 39.09414188751457
+			},
+			{
+				"at": 2040000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 38.88558353410416
+			},
+			{
+				"at": 2100000,
+				"block": "a",
+				"datapoint": "f1",
+				"value": 38.69598503100377
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"f1": 38.69598503100377,
+				"f2": 40.4,
+				"block/a/state": 0,
+				"block/b/state": 4,
+				"block/a/outsideFiltered": 4.42001247416352,
+				"block/b/outsideFiltered": 3.0
+			}
+		}
+	}
+}

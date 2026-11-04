@@ -1,0 +1,287 @@
+{
+	"title": "A room controller, a heating demand and a heating curve chained through their mirrors: the demand reads the room's valve, the curve adds the demand's offset, the curve's summer switches the demand's request off.",
+	"note": "wz: custom, xp 2, tn 60, td 0, filter 0. hd: targetLevel 30, offsetGain 0.5, minOn = minOff 0, pumpRunOn 0. hk: outsideFilter 0, summerDays 0, minChange 0.",
+	"datapoints": [
+		{
+			"name": "temp",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "req",
+			"type": "boolean"
+		},
+		{
+			"name": "flow",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"temp": 19.0,
+		"out": 5.0
+	},
+	"blocks": [
+		{
+			"id": "wz",
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"label": "Living room",
+			"inputs": {
+				"temperature": "temp"
+			},
+			"parameters": {
+				"system": "custom",
+				"xp": 2,
+				"tn": 60,
+				"td": 0,
+				"filter": 0
+			}
+		},
+		{
+			"id": "hd",
+			"type": "org.homecontrol.heating-demand",
+			"version": "1.0",
+			"label": "Heat demand",
+			"inputs": {
+				"valves": "block/wz/valve",
+				"summer": "block/hk/summer"
+			},
+			"outputs": {
+				"request": "req"
+			},
+			"parameters": {
+				"targetLevel": 30,
+				"offsetGain": 0.5,
+				"minOn": 0,
+				"minOff": 0,
+				"pumpRunOn": 0
+			}
+		},
+		{
+			"id": "hk",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out",
+				"offset": "block/hd/flowSetpointOffset"
+			},
+			"outputs": {
+				"flowSetpoint": "flow"
+			},
+			"parameters": {
+				"outsideFilter": 0,
+				"summerDays": 0,
+				"minChange": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"req": true,
+					"flow": 38.0,
+					"block/wz/valve": 100.0,
+					"block/hd/level": 100.0
+				}
+			}
+		},
+		{
+			"at": 601000,
+			"check": {
+				"datapoints": {
+					"flow": 43.0,
+					"block/hd/flowSetpointOffset": 5.0
+				}
+			}
+		},
+		{
+			"at": 610000,
+			"report": {
+				"datapoint": "temp",
+				"value": 21.0
+			}
+		},
+		{
+			"at": 611000,
+			"check": {
+				"datapoints": {
+					"block/wz/valve": 100.0,
+					"block/hd/level": 100.0,
+					"req": true
+				}
+			}
+		},
+		{
+			"at": 1200000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 1261000,
+			"check": {
+				"datapoints": {
+					"req": false,
+					"flow": 0.0,
+					"block/hk/summer": true,
+					"block/hd/state": 5
+				}
+			}
+		}
+	],
+	"end": 1500000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hd",
+				"datapoint": "req",
+				"value": true
+			},
+			{
+				"at": 0,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.0
+			},
+			{
+				"at": 60000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.583333333333336
+			},
+			{
+				"at": 120000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.166666666666664
+			},
+			{
+				"at": 180000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.75
+			},
+			{
+				"at": 240000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.333333333333336
+			},
+			{
+				"at": 300000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.916666666666664
+			},
+			{
+				"at": 360000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.5
+			},
+			{
+				"at": 420000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.083333333333336
+			},
+			{
+				"at": 480000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.666666666666664
+			},
+			{
+				"at": 540000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 43.0
+			},
+			{
+				"at": 660000,
+				"block": "hd",
+				"datapoint": "req",
+				"value": false
+			},
+			{
+				"at": 720000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.75
+			},
+			{
+				"at": 780000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.5
+			},
+			{
+				"at": 840000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.25
+			},
+			{
+				"at": 900000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.0
+			},
+			{
+				"at": 960000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.75
+			},
+			{
+				"at": 1020000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.5
+			},
+			{
+				"at": 1080000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.25
+			},
+			{
+				"at": 1140000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.0
+			},
+			{
+				"at": 1200000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.75
+			},
+			{
+				"at": 1260000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 0.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"req": false,
+				"flow": 0.0,
+				"block/hd/flowSetpointOffset": 1.5,
+				"block/hd/state": 5,
+				"block/hk/state": 1,
+				"block/wz/valve": 0.0
+			}
+		}
+	}
+}

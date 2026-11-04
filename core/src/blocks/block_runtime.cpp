@@ -253,6 +253,29 @@ public:
 		return rt_.aggregate(in_, port);
 	}
 
+	size_t count(size_t port) const override {
+		if (port >= m_.port_count || m_.ports[port].direction != Direction::in) {
+			return 0;
+		}
+		return spec_.ports[port].count;
+	}
+
+	InputValue read_at(size_t port, size_t k) const override {
+		InputValue v;
+		if (k >= count(port)) {
+			return v;
+		}
+		v.bound = true;
+		const Datapoint* dp = rt_.model_.get(spec_.ports[port].datapoints[k]);
+		if (dp == nullptr || dp->quality() == Quality::unknown) {
+			return v;
+		}
+		v.value = number_of(dp->value());
+		v.quality = dp->quality();
+		v.updated_ms = dp->updated_ms();
+		return v;
+	}
+
 	double param(size_t index) const override { return index < m_.param_count ? in_.params[index] : 0; }
 
 	void write(size_t port, double value) override {

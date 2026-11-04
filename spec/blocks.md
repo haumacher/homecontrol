@@ -123,6 +123,16 @@ Each names its alternatives; the sections state the decision as fact.
   writes them, without fused multiply-add (`-ffp-contract=off`), so Java (`double`, no `Math.fma`)
   and C++ give the same bits. No transcendental functions. The corpus compares reals with a
   relative tolerance of 1e-9 and its cases keep threshold decisions away from that tolerance.
+- **B20. An input binds up to 32 datapoints, and a block may read each of them.** `multiple` goes up
+  to 32, and besides the aggregated `read(port)` a call may ask `count(port)` and `readAt(port, k)`,
+  the k-th datapoint of the binding as a single-datapoint input reads it (3.1). The heating demand
+  (section 16) combines the valves of up to 32 rooms with rules of its own (the mean of the n
+  highest, a stale room counted as fully open) that no aggregation of 5.3 expresses: the runtime's
+  aggregations stay the simple, shared ones, and a type that needs more reads the datapoints one by
+  one. The compiled bindings take two bytes per bound datapoint, so the higher limit costs nothing
+  where it is not used. *Alternatives:* 32 single ports `valve1` .. `valve32` (beyond the 24 ports of a
+  type, and an instance would show 32 ports for a house of six rooms); new aggregations `topMean`
+  and a stale policy in the runtime (rules of one type moved into the contract of every type).
 
 ### 1.4 Terms
 
@@ -179,7 +189,7 @@ parameters share one namespace (they become `block/<id>/<x>`, section 6), which 
 | `type` | `boolean`, `integer`, `real`, `enumeration` | yes | B6. |
 | `label`, `unit` | label; string 1..15 | no | |
 | `required` | boolean | no, false | Inputs: the image must bind it. |
-| `multiple` | integer 1..4 | no, 1 | Inputs: how many datapoints the image may bind. |
+| `multiple` | integer 1..32 | no, 1 | Inputs: how many datapoints the image may bind (B20). |
 | `aggregations` | array of `mean`, `min`, `max` (numeric) or `any`, `all` (boolean) | with `multiple` > 1 | Inputs: what the image may choose; the first is the default. |
 | `trigger` | `change`, `update`, `none` | no, `change` | Inputs: which updates call `input(port)` (5.2). |
 | `failsafe` | number of the port's type | outputs, unless `diagnostic` | The value written when the instance stops (7). |
@@ -216,6 +226,8 @@ What a call may use (the imports of a loaded module, the `BlockContext` of a bui
 | `now()` | The cascade time on the monotonic clock in ms (`spec/rules.md` 7.1): control uses differences of it. |
 | `wall()` | The local wall time (date, time, day of the week 1..7) or none while the clock is not synchronized (calendars, `spec/rules.md` D9). |
 | `read(port)` | An input's value, its quality (`good`, `stale`, `unknown`), the monotonic time of its latest update and whether it is bound (5.3). |
+| `count(port)` | The number of datapoints bound to an input, 0 when it is unbound (B20). |
+| `readAt(port, k)` | The k-th of them (0-based, in binding order) as an input bound to that datapoint alone reads it (5.3): its value, quality, update time, bound. Outside 0..`count(port)` - 1: not bound, unknown. For an output or an index the type does not declare, `count` is 0. (A loaded module's imports for both follow with the WebAssembly runtime.) |
 | `param(parameter)` | A parameter's current value (B6). |
 | `write(port, v)` | Writes an output (5.4). |
 | `setTimer(timer, ms)`, `cancelTimer(timer)` | Starts (or restarts) a timer 1 ms .. 30 d after the cascade time; stops it. |
@@ -316,6 +328,9 @@ and its quality and update time. An aggregated port combines its datapoints, in 
 - `mean`: the sum, added left to right, divided by the count; `min`, `max`; `any`: true if one is
   true; `all`: true if all are;
 - the update time is the latest of the datapoints combined.
+
+`readAt(port, k)` gives one datapoint of the binding as it is, whatever its quality, without the
+aggregation (B20).
 
 Port types accept datapoint types: `real` from `real`, `unsigned`, `signed`; `integer` from
 `unsigned`, `signed`; `enumeration` from `enumeration`, `unsigned`; `boolean` from `boolean`.
@@ -483,7 +498,7 @@ failure of an instance refuses the image with the path and one of the reasons of
 
 | Reason | Examples, with their paths |
 |---|---|
-| `malformed` | wrong JSON type, an unknown member (with the hint of I4), a malformed id, label or version (`blocks[0].version`), an unknown aggregation name |
+| `malformed` | wrong JSON type, an unknown member (with the hint of I4), a malformed id, label or version (`blocks[0].version`), an unknown aggregation name, a datapoint listed twice in one input (`blocks[0].inputs.valves[3]`) |
 | `duplicateId` | two blocks with the same id (`blocks[1].id`) |
 | `unknownType` | a type the firmware does not have, or not in that major version or minor version (`blocks[2].type`: `unknownType: org.homecontrol.room-controller 1.3 (this firmware has 1.0)`) |
 | `unknownReference` | a port or parameter the type does not declare (`blocks[0].inputs.temprature`), a datapoint that does not exist (`blocks[0].inputs.temperature[1]`) |
@@ -498,7 +513,7 @@ failure of an instance refuses the image with the path and one of the reasons of
 | Limit | Value |
 |---|---|
 | Blocks per image | 32 |
-| Datapoints per input | 4 (`multiple`) |
+| Datapoints per input | 32 (`multiple`, B20) |
 | Ports / parameters / state fields / timers per type | 24 / 32 / 32 / 4 |
 | Timer duration | 1 ms .. 30 d |
 | Persisted record | 512 bytes |
@@ -515,10 +530,12 @@ parameters reach the control pages as datapoints (`spec/runtime-image.md` 3.9).
 
 The corpus pins the exact values. To give the same results, an implementation:
 
-- evaluates the formulas of sections 14 and 15 in IEEE 754 binary64 with round-to-nearest-even, in
+- evaluates the formulas of sections 14 to 17 in IEEE 754 binary64 with round-to-nearest-even, in
   the order written (left to right, the parentheses as given), without fused multiply-add and
   without extended precision;
-- uses `floor(x)`, `|x|`, `min`, `max` and comparisons only (no `exp`, `pow`, `log`);
+- uses `floor(x)`, `|x|`, `min`, `max` and comparisons only (no `exp`, `pow`, `log`), with
+  `min(a, b) = (b < a) ? b : a` and `max(a, b) = (a < b) ? b : a` (C++'s `std::min`/`std::max`: on a
+  tie, also of 0 and -0, the first argument);
 - takes times as integer milliseconds and converts them with `ms / 1000.0` where seconds are
   written;
 - orders calls, writes and log entries as section 5 says.
@@ -754,6 +771,358 @@ Every call first adds 1 to `count`. Then:
 *update*: if `x` is good: if `x > faultAbove` then `fault("x above faultAbove")`; otherwise write
 `y = gain * x + offset`. Then write `calls = count`.
 
-## 16. Changes
+## 16. The heating demand `org.homecontrol.heating-demand` 1.0
+
+Combines the rooms' demands into a request to the heat source and its circulation pump (issue #61):
+an on/off request with a hysteresis and minimum on and off times against cycling, the demand level
+for a modulating source, the pump with its run-on, and an offset for the heating curve (section 17)
+that raises the flow while the demand stays high. It reads what room controllers emit
+(`block/<id>/valve`, `block/<id>/demand`) or KNX valve positions and heat-request flags directly.
+
+### 16.1 Manifest
+
+Period 60 000 ms, `persistEvery` 600 000 ms, timer `wake`.
+
+| Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
+|---|---|---|---|---|---|---|
+| `valves` | real | % | | 32: `max` | update | Valve positions 0..100 %, e.g. the room controllers' `valve`. |
+| `demands` | boolean | | | 32: `any` | update | Heat requests, e.g. the room controllers' `demand`. |
+| `enable` | boolean | | | 1 | change | False: no request (heating off). |
+| `summer` | boolean | | | 1 | change | True: no request (e.g. the heating curve's `summer`). |
+
+| Output | Type | Unit | Failsafe | Meaning |
+|---|---|---|---|---|
+| `request` | boolean | | true | The heat source on. |
+| `level` | real, `min` 0, `max` 100 | % | 100 | The demand: the highest valve, or the mean of the `topCount` highest. |
+| `pump` | boolean | | true | The circulation pump. |
+| `flowSetpointOffset` | real, `min` 0, `max` 20 | K | 0 | For the heating curve's `offset` input. |
+| `state` | enumeration, `min` 0, `max` 5 | | diagnostic | 0 off, 1 on, 2 held on (off wanted, `minOn` runs), 3 held off (on wanted, `minOff` runs), 4 off by `enable`, 5 summer. |
+| `staleInputs` | integer | | diagnostic | The bound datapoints of `valves` and `demands` that are not good. |
+
+| Parameter | Type | Default | Range | Adjustable | Meaning |
+|---|---|---|---|---|---|
+| `mode` | enumeration | `max` (0) | `max` 0, `topMean` 1 | | The level: the highest input, or the mean of the `topCount` highest. |
+| `topCount` | integer | 3 | 1..32 | | For `topMean`. |
+| `onThreshold` | real, % | 20 | 0..100 | | The request goes on at a level at or above it. |
+| `offThreshold` | real, % | 5 | 0..100 | | It goes off at a level at or below it; `offThreshold` < `onThreshold` (B17, blamed: `offThreshold`). |
+| `minOn` | duration | 300 000 | 0..3 600 000 | | The shortest time the request stays on. |
+| `minOff` | duration | 300 000 | 0..3 600 000 | | The shortest time it stays off. |
+| `pumpRunOn` | duration | 300 000 | 0..3 600 000 | | The pump runs this long after the request went off. |
+| `targetLevel` | real, % | 70 | 10..100 | | The level above which the offset rises (at least 10, so that it falls while the request is off). |
+| `offsetGain` | real, K/(% h) | 0.1 | 0..1 | | How fast it rises (and falls) per % of level above (below) `targetLevel`; 0: no offset. |
+| `maxOffset` | real, K | 5 | 0..20 | | The highest offset. |
+| `staleInput` | enumeration | `ignore` (0) | `ignore` 0, `full` 1 | | An input that is not good: left out, or counted as fully open (100 %, a true demand). |
+
+State: `offset` persisted, and not persisted `lastStep`, `lastLevel`, `heat`, `switchedAt`,
+`hasSwitched`, `hasSent`, `sentRequest`, `sentPump`, `sentLevel`, `sentOffset`.
+
+### 16.2 Decisions
+
+- **D1. One level over valves and demands.** A true demand counts as a valve at 100 %, a false one as
+  0 %; the level is taken over all of them together. So a room that has only a heat-request flag (a
+  two-point thermostat, a radiator thermostat with a call-for-heat bit) and a room with a valve
+  position combine under one rule and one hysteresis. A room is bound by its valve or by its demand,
+  not by both: its true demand would count as 100 % beside its valve. *Alternative:* a separate
+  "any demand" condition beside the level (a second switching rule, and with room controllers it
+  would switch on at every valve above 0 %).
+- **D2. The inputs are read one by one** (B20), with trigger `update`: a change of a valve that is not
+  the highest moves the mean of the highest, and a datapoint that goes stale changes nothing in the
+  aggregated value while another is good. The ports' aggregations (`max`, `any`) serve only their
+  mirrors, which show the highest valve and whether any room asks.
+- **D3. "Not good" is stale or unknown.** A datapoint without a value since the load and one whose
+  technology lost contact are treated alike by `staleInput`: `full` heats on missing information.
+  After a reboot the restored values are stale until their next report, so `full` requests heat
+  until the rooms have reported; that is its purpose (better heated than frozen). Times of updates
+  are not checked: a room controller sends its valve only on a change, so a valve that has not
+  changed for hours is not missing.
+- **D4. The minimum times apply to every switching**, also to `enable` and `summer`: they protect the
+  heat source, whatever asks for the change. A switch they hold back happens when they expire (the
+  timer `wake`), not at the next period. They count from the last switching of this instance; after a
+  boot (no switching yet) the first switching is not held.
+- **D5. The offset integrates the level.** `flowSetpointOffset` rises by `offsetGain` K per hour for
+  every % the level lies above `targetLevel` while the request is on, and falls the same way below
+  it; while the request is off the level counts as 0 (no flow, the offset winds down). It stays in
+  0..`maxOffset`. The level of an interval is the one at its start (the step integrates over the time
+  since the previous step with the level and request that held during it), so the result does not
+  depend on how often the inputs report. The offset is persisted: a reboot during a cold spell does
+  not drop the raised flow.
+- **D6. Failsafe: the heat source on its own control.** A fault or a disabled instance writes
+  `request` true, `pump` true, `level` 100 and the offset 0: with an external request, a boiler or
+  heat pump runs on its own controller, which keeps the house from freezing; a pump never stays off
+  while the source runs. Heating is switched off with the `enable` input, not with the instance's
+  enable switch.
+- **D7. Writes on change.** `request`, `pump` and `level` are written at the start and when they
+  change; the offset when it moved by at least 0.1 K since it was last written, or reached 0 or
+  `maxOffset`; the diagnostic outputs at every step. Nothing is rounded: `level` is the mean as
+  computed (33.333... %); bound to an integer datapoint it gets the rounding of 5.4.
+- **D8. Neither input is required.** An instance may bind only valves or only demands; without any
+  bound or good input the level is 0 and the request goes off (after `minOn`).
+- **D9. The minimum times count this instance's own switchings.** The failsafe phase of a disable or
+  fault is none: the heat source ran on its own control then, with its own protection against
+  cycling. So at enabling the first step writes `request` = `heat` at once, and after a boot or a
+  restart (`heat` and `hasSwitched` are not persisted) the first switching is not held.
+- **D10. A start integrates nothing.** `start` sets `lastStep` to the cascade time, as the room
+  controller does: the time since the last step before an image swap (at most a period) is not
+  added to the offset.
+
+### 16.3 The calls
+
+| Call | What it does |
+|---|---|
+| `start(reason, restored)` | Without `restored`, every field at its initial value. Then `lastStep = now`, `hasSent = 0`, the timer `wake` cancelled; then the step. |
+| every `input`, `timer(wake)`, `period()`, `parameter` | The step. |
+
+At an image swap the record in RAM is kept (8.1), with `heat`, `switchedAt` and `hasSwitched`: a
+deploy does not cut short a minimum time, and the step sets `wake` again.
+
+### 16.4 The step
+
+With `t` = now (ms):
+
+```
+dt = (t - lastStep) / 1000.0;  lastStep = t                       // seconds, >= 0
+e  = (heat == 1 ? lastLevel : 0) - targetLevel                    // the interval just ended (D5)
+offset = offset + offsetGain * e * (dt / 3600.0)
+offset = min(max(offset, 0), maxOffset)
+
+values = [];  staleCount = 0                                      // the level (D1, D2, D3)
+for k in 0 .. count(valves) - 1:
+    v = readAt(valves, k)
+    if v.quality == good:          append min(max(v.value, 0), 100)
+    else:                          staleCount = staleCount + 1;  if staleInput == full: append 100
+for k in 0 .. count(demands) - 1:
+    v = readAt(demands, k)
+    if v.quality == good:          append (v.value != 0 ? 100 : 0)
+    else:                          staleCount = staleCount + 1;  if staleInput == full: append 100
+m = the length of values
+if m == 0:            level = 0
+else if mode == max:  level = the largest of values
+else:                 n = min(topCount, m)
+                      level = (the n largest of values, added from the largest down, left to right) / n
+
+off    = enable is good and false
+summer = summer is good and true                                  // the input
+if off or summer:                  want = 0
+else if level >= onThreshold:      want = 1
+else if level <= offThreshold:     want = 0
+else:                              want = heat
+
+held = 0;  holdUntil = 0                                          // the minimum times (D4)
+if want != heat:
+    hold = (heat == 1 ? minOn : minOff)
+    if hasSwitched == 0 or t - switchedAt >= hold:
+        heat = want;  switchedAt = t;  hasSwitched = 1
+    else:
+        held = 1;  holdUntil = switchedAt + hold
+
+pump = heat == 1 or (hasSwitched == 1 and t - switchedAt < pumpRunOn)
+wakeAt = holdUntil when held, else none
+if heat == 0 and pump:  wakeAt = the earlier of wakeAt and switchedAt + pumpRunOn
+if wakeAt is set: setTimer(wake, wakeAt - t)  else: cancelTimer(wake)
+lastLevel = level
+
+state = held == 1 ? (heat == 1 ? 2 : 3) : off ? 4 : summer ? 5 : heat
+```
+
+`pump` with `pumpRunOn` 0 follows `heat`. Then the outputs, in this order, with `first = (hasSent == 0)`:
+
+1. `request` = `heat`, when `first` or `heat != sentRequest`; `sentRequest = heat`.
+2. `level`, when `first` or `level != sentLevel`; `sentLevel = level`.
+3. `pump`, when `first` or `pump != sentPump`; `sentPump = pump`.
+4. `flowSetpointOffset` = `offset`, when `first`, or `offset != sentOffset` and
+   (`|offset - sentOffset| >= 0.1` or `offset` is 0 or `maxOffset`); only when it is written,
+   `sentOffset = offset` (so small moves add up to the 0.1 K).
+5. `state`, `staleInputs` = `staleCount`: at every step.
+6. `hasSent = 1`.
+
+### 16.5 Cost
+
+One instance with 8 valves and 4 demands bound: about 2.0 KB of heap on the host (64-bit; 2013 B),
+against 3.3 KB (3255 B) of a room controller measured the same way (doc/blocks.md "Memory"): 11
+state fields, 11 parameters, 9 mirror datapoints (enabled, 6 outputs, the two aggregated inputs), two
+bytes per bound datapoint. The C6's 32-bit pointers make it slightly smaller.
+
+### 16.6 Tests
+
+The host tests (`core/test/heating_test.cpp`) drive the block with a fluctuating demand and check
+the hysteresis and the minimum times (no switching closer than `minOn`/`minOff`, held switchings
+happen when they expire), a stale valve per `staleInput`, the mean of the highest, the pump's
+run-on, the offset rising under a sustained high demand and falling again, its persistence over a
+reboot, and no allocation in steady state. The corpus has the contract cases
+(`spec/fixtures/blocks/README.md`).
+
+## 17. The heating curve `org.homecontrol.heating-curve` 1.0
+
+The weather-compensated flow setpoint of a heat source or a mixing circuit that takes one (KNX DPT
+9.001, later Modbus and others; issue #62): the curve over the filtered outside temperature, shifted
+by the room setpoint and an offset (the heating demand's `flowSetpointOffset`), limited, with the
+summer/winter switch derived from the filtered outside temperature and frost protection.
+
+### 17.1 Manifest
+
+Period 60 000 ms, `persistEvery` 1 800 000 ms, no timers.
+
+| Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
+|---|---|---|---|---|---|---|
+| `outside` | real | °C | required | 4: `mean`, `min` | none | The outside temperature: sensors, or a weather value (`spec/external-values.md`). |
+| `roomSetpoint` | real | °C | | 1 | change | Shifts the curve (17.4); unbound or not good: `roomTemperature`. |
+| `offset` | real | K | | 1 | change | Added to the flow while good, e.g. the heating demand's `flowSetpointOffset`. |
+| `enable` | boolean | | | 1 | change | False: off (frost protection only). |
+| `summerSwitch` | boolean | | | 1 | change | An external summer/winter switch: while good it decides instead of the derived one. |
+
+| Output | Type | Unit | Failsafe | Meaning |
+|---|---|---|---|---|
+| `flowSetpoint` | real (no `min`/`max`) | °C | 40 | The flow setpoint. |
+| `summer` | boolean | | false | The summer/winter switch, e.g. for the room controllers' and the heating demand's `summer`. |
+| `outsideFiltered` | real | °C | diagnostic | The filtered outside temperature. |
+| `state` | enumeration, `min` 0, `max` 4 | | diagnostic | 0 heating, 1 summer, 2 off, 3 frost protection, 4 fault (no outside temperature). |
+
+| Parameter | Type | Default | Range | Adjustable | Meaning |
+|---|---|---|---|---|---|
+| `curve` | enumeration | `slope` (0) | `slope` 0, `design` 1, `points` 2 | | The form of the curve (17.4). |
+| `slope` | real | 1.2 | 0.2..4 | yes | K of flow per K the outside is below the room (`slope`). |
+| `level` | real, K | 0 | -15..15 | yes | A parallel shift of the curve (every form). |
+| `roomTemperature` | real, °C | 20 | 10..30 | | The room temperature the curve is drawn for. |
+| `designOutside` | real, °C | -12 | -30..10 | | The design point (`design`): the outside temperature ... |
+| `designFlow` | real, °C | 55 | 20..90 | | ... and the flow it needs. |
+| `pointCount` | integer | 6 | 2..6 | | The points used (`points`). |
+| `outside1` .. `outside6` | real, °C | -15, -10, -5, 0, 10, 20 | -40..40 | | The points' outside temperatures, rising (`points`). |
+| `flow1` .. `flow6` | real, °C | 60, 55, 49, 43, 32, 20 | 10..90 | | Their flows. |
+| `minFlow` | real, °C | 25 | 10..60 | | The lowest flow while heating; the flow of frost protection. |
+| `maxFlow` | real, °C | 60 | 20..90 | | The highest flow; `minFlow` < `maxFlow` (B17). |
+| `minChange` | real, K | 0.5 | 0..5 | | The smallest change of `flowSetpoint` that is sent. |
+| `outsideFilter` | duration | 43 200 000 | 0..172 800 000 | | The filter's time constant (the building's inertia, 12 h); 0: none. |
+| `summerOn` | real, °C | 18 | 5..30 | | Summer when the filtered temperature stays above it ... |
+| `summerOff` | real, °C | 15 | 5..30 | | ... winter when it falls below; `summerOff` < `summerOn` (B17). |
+| `summerDays` | integer | 3 | 0..14 | | ... for this many days (0: at once). |
+| `frostOutside` | real, °C | 3 | -20..10 | | Frost protection below it (with 1 K hysteresis). |
+| `offFlow` | real, °C | 0 | 0..40 | | The flow setpoint in summer and when off, without frost. |
+| `sensorTimeout` | duration | 10 800 000 | 600 000..86 400 000 | | No update of `outside` for this long is a fault. |
+
+The points are written in the manifest in the order `outside1`, `flow1`, `outside2`, `flow2`, ...,
+`outside6`, `flow6`, between `pointCount` and `minFlow`. Cross-parameter checks (B17), in this
+order: `minFlow` < `maxFlow` (blamed: `minFlow`); `summerOff` < `summerOn` (`summerOff`); with
+`curve` `design`: `designOutside` < `roomTemperature` (`designOutside`) and `designFlow` >
+`roomTemperature` (`designFlow`); with `points`: `outside<i+1>` > `outside<i>` for the first
+`pointCount` points (`outside<i+1>`).
+
+State: `filtered`, `hasFiltered`, `aboveFor` and `derivedSummer` persisted, and not persisted
+`lastStep`, `frostOn`, `hasSent`, `sentFlow`, `sentSummer`.
+
+### 17.2 Decisions
+
+- **D1. A linear curve, three ways to give it.** `slope`: flow = room + level + slope × (room -
+  outside), the classic slope and level of a boiler's heating curve; `design`: the line through the
+  design point and (room, room); `points`: 2..6 points joined by straight lines, which model the
+  bend of a radiator curve without the exponent B19 forbids. Beyond the first and the last point the
+  flow stays at theirs (no extrapolation).
+- **D2. The room setpoint moves the curve along the diagonal.** A room `d` K warmer than
+  `roomTemperature` gets the flow the curve gives for an outside `d` K colder, plus `d`. For the
+  linear forms this is the same as putting the room setpoint into the formula; it holds for the
+  points the same way.
+- **D3. The filter is the room controller's** (14.4, backward Euler over the monotonic dt), fed only
+  by good values that are not older than `sensorTimeout`, and persisted: a reboot does not restart a
+  12 h filter from the momentary temperature.
+- **D4. The summer switch counts time, not calendar days.** `aboveFor` adds up the time the filtered
+  temperature is above `summerOn` and is reset when it is not; summer begins when it reaches
+  `summerDays` × 24 h. The filter already smooths the day and the night, so a run of warm days is a
+  run of time above; no wall clock is needed, and a clock that is not synchronized changes nothing.
+  An interval counts by the filtered value at its end (the step's new value), and one step at or
+  below `summerOn` resets the count. `summerDays` 0 switches at the first step above.
+  Winter begins as soon as the filtered temperature falls below `summerOff`. Both are persisted.
+- **D5. Frost protection on the momentary outside temperature**, not the filtered one: frost is a
+  matter of the hour. Below `frostOutside` the flow is at least `minFlow` also in summer and when off;
+  it ends at `frostOutside` + 1 K. A stale value younger than `sensorTimeout` is the last known
+  outside temperature and counts; without a fresh value the filtered one stands in.
+- **D6. A missing outside temperature holds the filter.** An outside temperature that is unknown
+  (after a boot until its first report) or not updated for `sensorTimeout` (whether good or stale)
+  shows the state `fault`: the curve runs on the held filtered value (persisted, so a reboot keeps
+  it), the summer switch neither counts nor switches. A stale value younger than the timeout is not
+  fed but not a fault either. The state is diagnostic: the instance keeps running, this is no fault
+  of section 7 and writes no failsafe. Without any value since the first start, the filtered value is
+  its initial 0 °C (a moderate winter flow). The steps that do not feed the filter still advance
+  `lastStep`: after an outage the filter moves on from where it was held, by the weight of one
+  interval at a time.
+- **D7. Failsafe 40 °C, winter.** A fault writes a moderate flow that a radiator circuit lives with;
+  a floor circuit needs its own high-limit thermostat in any case. The failsafe of `summer` is
+  winter, which lets the rooms heat.
+- **D8. The flow is sent on a change of `minChange`**, and at once when it reaches `offFlow`,
+  `minFlow` or `maxFlow`; the filter moves it a little every period.
+
+### 17.3 The calls
+
+| Call | What it does |
+|---|---|
+| `start(reason, restored)` | Without `restored`, every field at its initial value. Then `lastStep = now`, `hasSent = 0`; then the step. |
+| every `input`, `period()`, `parameter` | The step. |
+
+### 17.4 The step
+
+With `t` = now (ms):
+
+```
+dt = (t - lastStep) / 1000.0;  lastStep = t
+Tf = outsideFilter / 1000.0
+X  = read(outside)
+fresh = X.quality != unknown and t - X.updated <= sensorTimeout
+if fresh and X.quality == good:
+    x = X.value
+    if hasFiltered == 0 or Tf == 0:  filtered = x;  hasFiltered = 1
+    else:                             filtered = filtered + (x - filtered) * (dt / (Tf + dt))
+    if filtered > summerOn:  aboveFor = min(aboveFor + dt, summerDays * 86400.0)
+    else:                    aboveFor = 0
+    if derivedSummer == 0 and filtered > summerOn and aboveFor >= summerDays * 86400.0:  derivedSummer = 1
+    else if derivedSummer == 1 and filtered < summerOff:                                derivedSummer = 0
+fx = fresh ? X.value : filtered                                   // frost (D5)
+if fx < frostOutside:               frostOn = 1
+else if fx >= frostOutside + 1.0:   frostOn = 0
+
+S = read(summerSwitch);  summer = S.quality == good ? S.value != 0 : derivedSummer == 1
+
+R  = roomTemperature
+RS = read(roomSetpoint);  Tr = RS.quality == good ? RS.value : R
+curve slope:   flow = Tr + level + slope * (Tr - filtered)
+curve design:  s = (designFlow - R) / (R - designOutside);  flow = Tr + level + s * (Tr - filtered)
+curve points:  d = Tr - R;  flow = interpolate(filtered - d) + d + level
+O = read(offset);  if O.quality == good:  flow = flow + O.value
+flow = min(max(flow, minFlow), maxFlow)
+
+off = enable is good and false
+if off or summer:
+    if frostOn == 1:  out = minFlow;  state = 3
+    else:             out = offFlow;  state = off ? 2 : 1
+else:                 out = flow;     state = 0
+if not fresh:  state = 4
+```
+
+`interpolate(x)` over the points (`outside<i>`, `flow<i>`), i = 1 .. n with n = `pointCount`: `flow1` when
+x <= `outside1`; `flow<n>` when x >= `outside<n>`; otherwise, for the first i with x <=
+`outside<i+1>`: `flow<i> + (flow<i+1> - flow<i>) * ((x - outside<i>) / (outside<i+1> - outside<i>))`.
+
+Then the outputs, in this order, with `first = (hasSent == 0)`:
+
+1. `flowSetpoint` = `out`, when `first`, or `out != sentFlow` and (`|out - sentFlow| >= minChange`
+   or `out` is `offFlow`, `minFlow` or `maxFlow`); only when it is written, `sentFlow = out`.
+2. `summer`, when `first` or `summer != sentSummer`; `sentSummer = summer`.
+3. `outsideFiltered` = `filtered`, `state`: at every step.
+4. `hasSent = 1`.
+
+### 17.5 Cost
+
+One instance with two outside sensors: about 2.2 KB of heap on the host (64-bit; 2170 B), against
+3.3 KB of a room controller: 9 state fields, 29 parameters, 8 mirror datapoints (enabled, `slope`,
+`level`, 4 outputs, the aggregated outside temperature).
+
+### 17.6 Tests
+
+The host tests (`core/test/heating_test.cpp`) check the curve's points and the interpolation between
+them and the linear forms, the filter's lag of 12 h on a ramp of the outside temperature, the summer
+switch (consecutive days, the hysteresis, a reboot in the middle of the count), frost protection in
+summer, a stale or silent outside temperature (the held value, `fault` after `sensorTimeout`), and no
+allocation in steady state. The corpus has the contract cases (`spec/fixtures/blocks/README.md`).
+
+## 18. Changes
 
 - 1.0 (schema 1.3, issue #60): first version; the room controller 1.0.
+- 1.1 (schema 1.3, issues #61, #62): the heating demand 1.0 (section 16) and the heating curve 1.0
+  (section 17); an input binds up to 32 datapoints and a call reads each with `count`/`readAt` (B20).

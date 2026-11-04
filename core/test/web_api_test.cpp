@@ -1187,3 +1187,56 @@ TEST_CASE("Blocks review probe: a schedule's output drives the setpoint; a diagn
 	}
 	CHECK(saw19);
 }
+
+TEST_CASE("Blocks review probe: a heating demand over a room controller that is disabled and a plain valve") {
+	DashboardFixture f;
+	f.load(R"({
+		"image": {"schemaVersion": "1.3", "projectId": "demand", "revision": 1},
+		"datapoints": [{"id": "temp", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "v2", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "req", "type": "boolean", "writable": true, "virtual": {}}],
+		"blocks": [{"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Living",
+		            "inputs": {"temperature": "temp"}, "parameters": {"system": "custom", "filter": 0, "td": 0}},
+		           {"id": "hd", "type": "org.homecontrol.heating-demand", "version": "1.0", "label": "Demand",
+		            "inputs": {"valves": ["block/wz/valve", "v2"]}, "outputs": {"request": "req"},
+		            "parameters": {"minOn": 0, "minOff": 0}}]
+	})");
+	f.controller.run_once();
+	f.controller.run_once();
+	// No temperature yet: the room controller sends its fallback 30 %; v2 has no value (ignored, counted stale).
+	CHECK(f.model.find("block/wz/valve")->value().as_real() == 30);
+	CHECK(f.model.find("block/hd/level")->value().as_real() == 30);
+	CHECK(f.model.find("block/hd/staleInputs")->value().as_signed() == 1);
+	CHECK(f.model.find("req")->value().as_bool() == true);
+	CHECK(f.model.find("block/hd/valves")->value().as_real() == 30); // the mirror: max over the good ones
+	REQUIRE(f.model.command(f.model.find("temp")->id(), hc::Value::of_real(23.0)) == hc::DatapointStatus::ok);
+	f.fake.clock.advance(61000);
+	for (int i = 0; i < 4; ++i) {
+		f.controller.run_once();
+	}
+	// 2 K above the setpoint: the valve closes, the level falls to 0, the request goes off.
+	CHECK(f.model.find("block/wz/valve")->value().as_real() == 0);
+	CHECK(f.model.find("block/hd/level")->value().as_real() == 0);
+	CHECK(f.model.find("req")->value().as_bool() == false);
+	// The room controller disabled: its failsafe 30 % reaches the demand through its mirror.
+	auto r = f.put("/api/blocks/wz", R"({"enabled": false})");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	f.controller.run_once();
+	CHECK(f.model.find("block/wz/valve")->value().as_real() == 30);
+	CHECK(f.model.find("block/hd/level")->value().as_real() == 30);
+	CHECK(f.model.find("req")->value().as_bool() == true);
+	// The plain valve reports: the higher one wins, nothing stale any more.
+	REQUIRE(f.model.command(f.model.find("v2")->id(), hc::Value::of_real(80.0)) == hc::DatapointStatus::ok);
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/hd/level")->value().as_real() == 80);
+	CHECK(f.model.find("block/hd/staleInputs")->value().as_signed() == 0);
+	CHECK(f.model.find("block/hd/valves")->value().as_real() == 80);
+	// A reload from the store (the boot path): wz stays disabled, the demand starts over the same inputs.
+	REQUIRE(f.service.load_stored(hc::image::Source::boot));
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/wz/enabled")->value().as_bool() == false);
+	CHECK(f.model.find("block/wz/valve")->value().as_real() == 30);
+	CHECK(f.model.find("req")->value().as_bool() == true);
+}

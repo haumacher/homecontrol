@@ -1,0 +1,190 @@
+{
+	"title": "Heating demand at an image swap: the record in RAM keeps the request and its switching time, so a deploy does not cut short minOn; the start writes the outputs again and the step sets the timer wake anew.",
+	"note": "On at 30 s. The swap at 60 s (onThreshold 20 -> 25, same id, type and major) keeps heat and switchedAt. v1 0 at 90 s: held on until 330 s (minOn from 30 s, not from the swap), then the pump runs on until 390 s.",
+	"datapoints": [
+		{
+			"name": "v1",
+			"type": "real"
+		},
+		{
+			"name": "req",
+			"type": "boolean"
+		},
+		{
+			"name": "pump",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"v1": 0.0
+	},
+	"blocks": [
+		{
+			"id": "hd",
+			"type": "org.homecontrol.heating-demand",
+			"version": "1.0",
+			"label": "Heat demand",
+			"inputs": {
+				"valves": "v1"
+			},
+			"outputs": {
+				"request": "req",
+				"pump": "pump"
+			},
+			"parameters": {
+				"minOn": 300000,
+				"minOff": 300000,
+				"pumpRunOn": 60000,
+				"onThreshold": 20,
+				"offsetGain": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 30000,
+			"report": {
+				"datapoint": "v1",
+				"value": 50.0
+			}
+		},
+		{
+			"at": 60000,
+			"image": {
+				"blocks": [
+					{
+						"id": "hd",
+						"type": "org.homecontrol.heating-demand",
+						"version": "1.0",
+						"label": "Heat demand",
+						"inputs": {
+							"valves": "v1"
+						},
+						"outputs": {
+							"request": "req",
+							"pump": "pump"
+						},
+						"parameters": {
+							"minOn": 300000,
+							"minOff": 300000,
+							"pumpRunOn": 60000,
+							"onThreshold": 25,
+							"offsetGain": 0
+						}
+					}
+				]
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"req": true,
+					"block/hd/state": 1
+				},
+				"blocks": {
+					"hd": {
+						"state": {
+							"heat": 1.0,
+							"hasSwitched": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 90000,
+			"report": {
+				"datapoint": "v1",
+				"value": 0.0
+			}
+		},
+		{
+			"at": 200000,
+			"check": {
+				"datapoints": {
+					"req": true,
+					"block/hd/state": 2
+				}
+			}
+		},
+		{
+			"at": 331000,
+			"check": {
+				"datapoints": {
+					"req": false,
+					"pump": true
+				}
+			}
+		},
+		{
+			"at": 391000,
+			"check": {
+				"datapoints": {
+					"pump": false
+				}
+			}
+		}
+	],
+	"end": 420000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hd",
+				"datapoint": "req",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": false
+			},
+			{
+				"at": 30000,
+				"block": "hd",
+				"datapoint": "req",
+				"value": true
+			},
+			{
+				"at": 30000,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": true
+			},
+			{
+				"at": 60000,
+				"block": "hd",
+				"datapoint": "req",
+				"value": true
+			},
+			{
+				"at": 60000,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": true
+			},
+			{
+				"at": 330000,
+				"block": "hd",
+				"datapoint": "req",
+				"value": false
+			},
+			{
+				"at": 390000,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": false
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"req": false,
+				"pump": false,
+				"block/hd/state": 0
+			}
+		}
+	}
+}

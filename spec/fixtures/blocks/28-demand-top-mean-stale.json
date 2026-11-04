@@ -1,0 +1,191 @@
+{
+	"title": "Heating demand: the level over valves and demands read one by one (B20): the mean of the topCount highest, a true demand as 100 %; a datapoint that is not good (stale or unknown) left out with staleInput ignore, counted as 100 % with full; staleInputs counts them.",
+	"note": "Two instances on the same datapoints, outputs unbound (their mirrors). a: topMean of 2, ignore. b: max, full. v3 and d2 are unknown at the start. The ports' mirrors are their max and any aggregations (5.3: the good datapoints first).",
+	"datapoints": [
+		{
+			"name": "v1",
+			"type": "real"
+		},
+		{
+			"name": "v2",
+			"type": "real"
+		},
+		{
+			"name": "v3",
+			"type": "real"
+		},
+		{
+			"name": "d1",
+			"type": "boolean"
+		},
+		{
+			"name": "d2",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"v1": 60.0,
+		"v2": 30.0,
+		"d1": false
+	},
+	"blocks": [
+		{
+			"id": "a",
+			"type": "org.homecontrol.heating-demand",
+			"version": "1.0",
+			"label": "Heat demand",
+			"inputs": {
+				"valves": [
+					"v1",
+					"v2",
+					"v3"
+				],
+				"demands": [
+					"d1",
+					"d2"
+				]
+			},
+			"parameters": {
+				"mode": "topMean",
+				"topCount": 2,
+				"staleInput": "ignore",
+				"minOn": 0,
+				"minOff": 0
+			}
+		},
+		{
+			"id": "b",
+			"type": "org.homecontrol.heating-demand",
+			"version": "1.0",
+			"label": "Heat demand",
+			"inputs": {
+				"valves": [
+					"v1",
+					"v2",
+					"v3"
+				],
+				"demands": [
+					"d1",
+					"d2"
+				]
+			},
+			"parameters": {
+				"mode": "max",
+				"staleInput": "full",
+				"minOn": 0,
+				"minOff": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/a/level": 45.0,
+					"block/b/level": 100.0,
+					"block/a/staleInputs": 2,
+					"block/b/staleInputs": 2,
+					"block/a/request": true,
+					"block/b/request": true
+				}
+			}
+		},
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "v3",
+				"value": 90.0
+			}
+		},
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "d2",
+				"value": false
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/a/level": 75.0,
+					"block/b/level": 90.0,
+					"block/a/staleInputs": 0,
+					"block/a/valves": 90.0
+				}
+			}
+		},
+		{
+			"at": 120000,
+			"stale": "v3"
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"block/a/level": 45.0,
+					"block/b/level": 100.0,
+					"block/a/staleInputs": 1,
+					"block/b/staleInputs": 1,
+					"block/a/valves": 60.0
+				}
+			}
+		},
+		{
+			"at": 180000,
+			"report": {
+				"datapoint": "d1",
+				"value": true
+			}
+		},
+		{
+			"at": 181000,
+			"check": {
+				"datapoints": {
+					"block/a/level": 80.0,
+					"block/b/level": 100.0,
+					"block/a/demands": true
+				}
+			}
+		},
+		{
+			"at": 240000,
+			"report": {
+				"datapoint": "v1",
+				"value": 33.3
+			}
+		},
+		{
+			"at": 250000,
+			"report": {
+				"datapoint": "v1",
+				"value": 150.0
+			}
+		},
+		{
+			"at": 260000,
+			"report": {
+				"datapoint": "v2",
+				"value": -5.0
+			}
+		}
+	],
+	"end": 300000,
+	"expected": {
+		"commands": [],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/a/level": 100.0,
+				"block/b/level": 100.0,
+				"block/a/staleInputs": 1,
+				"block/b/staleInputs": 1,
+				"block/a/valves": 150.0,
+				"block/a/demands": true,
+				"block/a/state": 1,
+				"block/b/state": 1
+			}
+		}
+	}
+}

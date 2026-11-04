@@ -1,0 +1,195 @@
+{
+	"title": "Heating curve: frost protection on the momentary outside temperature: below frostOutside the flow is minFlow also in summer and when off, until frostOutside + 1 K; otherwise offFlow there.",
+	"note": "outsideFilter 0, frostOutside 3, minFlow 25, offFlow 10; the summerSwitch sw and enable en are bound.",
+	"datapoints": [
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "en",
+			"type": "boolean"
+		},
+		{
+			"name": "flow",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"out": 5.0,
+		"sw": true,
+		"en": true
+	},
+	"blocks": [
+		{
+			"id": "hk",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out",
+				"summerSwitch": "sw",
+				"enable": "en"
+			},
+			"outputs": {
+				"flowSetpoint": "flow"
+			},
+			"parameters": {
+				"outsideFilter": 0,
+				"frostOutside": 3,
+				"minFlow": 25,
+				"offFlow": 10
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"flow": 10.0,
+					"block/hk/state": 1
+				}
+			}
+		},
+		{
+			"at": 30000,
+			"report": {
+				"datapoint": "out",
+				"value": 2.5
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"flow": 25.0,
+					"block/hk/state": 3
+				}
+			}
+		},
+		{
+			"at": 90000,
+			"report": {
+				"datapoint": "out",
+				"value": 3.5
+			}
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"flow": 25.0,
+					"block/hk/state": 3
+				}
+			}
+		},
+		{
+			"at": 150000,
+			"report": {
+				"datapoint": "out",
+				"value": 4.0
+			}
+		},
+		{
+			"at": 181000,
+			"check": {
+				"datapoints": {
+					"flow": 10.0,
+					"block/hk/state": 1
+				}
+			}
+		},
+		{
+			"at": 210000,
+			"report": {
+				"datapoint": "sw",
+				"value": false
+			}
+		},
+		{
+			"at": 211000,
+			"check": {
+				"datapoints": {
+					"flow": 39.2,
+					"block/hk/state": 0
+				}
+			}
+		},
+		{
+			"at": 240000,
+			"report": {
+				"datapoint": "en",
+				"value": false
+			}
+		},
+		{
+			"at": 241000,
+			"check": {
+				"datapoints": {
+					"flow": 10.0,
+					"block/hk/state": 2
+				}
+			}
+		},
+		{
+			"at": 270000,
+			"report": {
+				"datapoint": "out",
+				"value": -2.0
+			}
+		}
+	],
+	"end": 330000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 10.0
+			},
+			{
+				"at": 60000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 25.0
+			},
+			{
+				"at": 180000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 10.0
+			},
+			{
+				"at": 210000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.2
+			},
+			{
+				"at": 240000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 10.0
+			},
+			{
+				"at": 300000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 25.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"flow": 25.0,
+				"block/hk/state": 3
+			}
+		}
+	}
+}

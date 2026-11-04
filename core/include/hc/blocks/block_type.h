@@ -54,7 +54,7 @@ struct PortDecl {
 	const char* label;
 	const char* unit;           ///< "" for none.
 	bool required;              ///< Inputs.
-	uint8_t multiple;           ///< Inputs: 1..4 datapoints.
+	uint8_t multiple;           ///< Inputs: 1..32 datapoints (spec/blocks.md B20).
 	uint8_t aggregations;       ///< Inputs with multiple > 1: aggregation_bit()s allowed.
 	Aggregation default_aggregation;
 	InputTrigger trigger;       ///< Inputs.
@@ -123,7 +123,7 @@ struct Manifest {
 /// The limits of spec/blocks.md 11.
 struct BlockLimits {
 	static constexpr size_t kBlocks = 32;
-	static constexpr size_t kMultiple = 4;
+	static constexpr size_t kMultiple = 32;
 	static constexpr size_t kPorts = 24;
 	static constexpr size_t kParams = 32;
 	static constexpr size_t kStateFields = 32;
@@ -167,6 +167,11 @@ public:
 	/// The local wall time with its day of the week (1 Monday .. 7 Sunday); false while not synchronized.
 	virtual bool wall(DateTime& out) const = 0;
 	virtual InputValue read(size_t port) const = 0;
+	/// The number of datapoints bound to an input (spec/blocks.md B20); 0 when unbound.
+	virtual size_t count(size_t port) const = 0;
+	/// The k-th datapoint of an input's binding as a single-datapoint input reads it, whatever its
+	/// quality; not bound and unknown outside 0..count(port)-1.
+	virtual InputValue read_at(size_t port, size_t k) const = 0;
 	virtual double param(size_t index) const = 0;
 	/// Writes an output (spec/blocks.md 5.4); an invalid value faults the instance.
 	virtual void write(size_t port, double value) = 0;

@@ -1,0 +1,400 @@
+{
+	"title": "Heating curve: summer when the filtered outside temperature stays above summerOn for summerDays days (the count resets when it is not above), winter at once below summerOff (hysteresis); an external summerSwitch decides while it is good.",
+	"note": "outsideFilter 0, summerOn 18, summerOff 15, summerDays 1, offFlow 10. Above from the period at 46 860 s (the report at 46 830 s): an interval counts by the value at its end, so summer at the period where aboveFor reaches 86 400 s, 133 200 s. The outside reports every 2 h (sensorTimeout 3 h). The switch sw is unknown until 155 000 s.",
+	"datapoints": [
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "sum",
+			"type": "boolean"
+		},
+		{
+			"name": "flow",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"out": 20.0
+	},
+	"blocks": [
+		{
+			"id": "hk",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out",
+				"summerSwitch": "sw"
+			},
+			"outputs": {
+				"summer": "sum",
+				"flowSetpoint": "flow"
+			},
+			"parameters": {
+				"outsideFilter": 0,
+				"summerOn": 18,
+				"summerOff": 15,
+				"summerDays": 1,
+				"offFlow": 10
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 7230000,
+			"report": {
+				"datapoint": "out",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 14430000,
+			"report": {
+				"datapoint": "out",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 21630000,
+			"report": {
+				"datapoint": "out",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 28830000,
+			"report": {
+				"datapoint": "out",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 36030000,
+			"report": {
+				"datapoint": "out",
+				"value": 20.0
+			}
+		},
+		{
+			"at": 43170000,
+			"check": {
+				"datapoints": {
+					"sum": false
+				},
+				"blocks": {
+					"hk": {
+						"state": {
+							"aboveFor": 43140.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 43230000,
+			"report": {
+				"datapoint": "out",
+				"value": 17.0
+			}
+		},
+		{
+			"at": 43290000,
+			"check": {
+				"datapoints": {
+					"sum": false
+				},
+				"blocks": {
+					"hk": {
+						"state": {
+							"aboveFor": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 46830000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 54030000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 61230000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 68430000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 75630000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 82830000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 90030000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 97230000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 104430000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 111630000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 118830000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 126030000,
+			"report": {
+				"datapoint": "out",
+				"value": 19.0
+			}
+		},
+		{
+			"at": 133140000,
+			"check": {
+				"datapoints": {
+					"sum": false,
+					"flow": 25.0
+				},
+				"blocks": {
+					"hk": {
+						"state": {
+							"aboveFor": 86340.0,
+							"derivedSummer": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 133260000,
+			"check": {
+				"datapoints": {
+					"sum": true,
+					"flow": 10.0,
+					"block/hk/state": 1
+				},
+				"blocks": {
+					"hk": {
+						"state": {
+							"aboveFor": 86400.0,
+							"derivedSummer": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 140000030,
+			"report": {
+				"datapoint": "out",
+				"value": 16.0
+			}
+		},
+		{
+			"at": 145000000,
+			"check": {
+				"datapoints": {
+					"sum": true
+				}
+			}
+		},
+		{
+			"at": 147000030,
+			"report": {
+				"datapoint": "out",
+				"value": 16.0
+			}
+		},
+		{
+			"at": 150000030,
+			"report": {
+				"datapoint": "out",
+				"value": 14.9
+			}
+		},
+		{
+			"at": 150100000,
+			"check": {
+				"datapoints": {
+					"sum": false,
+					"block/hk/state": 0
+				},
+				"blocks": {
+					"hk": {
+						"state": {
+							"aboveFor": 0.0,
+							"derivedSummer": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 155000030,
+			"report": {
+				"datapoint": "sw",
+				"value": true
+			}
+		},
+		{
+			"at": 155001000,
+			"check": {
+				"datapoints": {
+					"sum": true,
+					"flow": 10.0,
+					"block/hk/state": 1
+				}
+			}
+		},
+		{
+			"at": 160000030,
+			"report": {
+				"datapoint": "sw",
+				"value": false
+			}
+		}
+	],
+	"end": 160100000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 25.0
+			},
+			{
+				"at": 0,
+				"block": "hk",
+				"datapoint": "sum",
+				"value": false
+			},
+			{
+				"at": 133200000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 10.0
+			},
+			{
+				"at": 133200000,
+				"block": "hk",
+				"datapoint": "sum",
+				"value": true
+			},
+			{
+				"at": 150060000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 26.119999999999997
+			},
+			{
+				"at": 150060000,
+				"block": "hk",
+				"datapoint": "sum",
+				"value": false
+			},
+			{
+				"at": 155000030,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 10.0
+			},
+			{
+				"at": 155000030,
+				"block": "hk",
+				"datapoint": "sum",
+				"value": true
+			},
+			{
+				"at": 160000030,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 26.119999999999997
+			},
+			{
+				"at": 160000030,
+				"block": "hk",
+				"datapoint": "sum",
+				"value": false
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"sum": false,
+				"flow": 26.119999999999997,
+				"block/hk/state": 0
+			},
+			"blocks": {
+				"hk": {
+					"state": {
+						"derivedSummer": 0.0,
+						"aboveFor": 0.0
+					}
+				}
+			},
+			"records": {
+				"hk": {
+					"filtered": 14.9,
+					"hasFiltered": 1.0,
+					"aboveFor": 0.0,
+					"derivedSummer": 0.0
+				}
+			}
+		}
+	}
+}

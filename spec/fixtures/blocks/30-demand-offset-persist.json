@@ -1,0 +1,284 @@
+{
+	"title": "Heating demand: flowSetpointOffset integrates the level above targetLevel while the request is on (offsetGain K per % and hour), falls below it and while the request is off, stays in 0..maxOffset, is sent in steps of 0.1 K, and survives an orderly reboot (persisted).",
+	"note": "targetLevel 50, offsetGain 0.5, maxOffset 3. The level 80 from 60 s: +0.25 K per period, clamped at 3. The reboot at 900 s writes the due record; after it v1 is unknown (level 0, the request off): the offset falls by 50 * 0.5 / 60 K a minute until v1 reports again.",
+	"datapoints": [
+		{
+			"name": "v1",
+			"type": "real"
+		},
+		{
+			"name": "ofs",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"v1": 0.0
+	},
+	"blocks": [
+		{
+			"id": "hd",
+			"type": "org.homecontrol.heating-demand",
+			"version": "1.0",
+			"label": "Heat demand",
+			"inputs": {
+				"valves": "v1"
+			},
+			"outputs": {
+				"flowSetpointOffset": "ofs"
+			},
+			"parameters": {
+				"targetLevel": 50,
+				"offsetGain": 0.5,
+				"maxOffset": 3,
+				"minOn": 0,
+				"minOff": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "v1",
+				"value": 80.0
+			}
+		},
+		{
+			"at": 130000,
+			"check": {
+				"datapoints": {
+					"ofs": 0.25,
+					"block/hd/flowSetpointOffset": 0.25
+				},
+				"blocks": {
+					"hd": {
+						"state": {
+							"offset": 0.25
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 310000,
+			"check": {
+				"datapoints": {
+					"ofs": 1.0,
+					"block/hd/flowSetpointOffset": 1.0
+				},
+				"blocks": {
+					"hd": {
+						"state": {
+							"offset": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 890000,
+			"check": {
+				"datapoints": {
+					"ofs": 3.0
+				},
+				"blocks": {
+					"hd": {
+						"state": {
+							"offset": 3.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 900000,
+			"reboot": true
+		},
+		{
+			"at": 901000,
+			"check": {
+				"blocks": {
+					"hd": {
+						"state": {
+							"offset": 3.0,
+							"heat": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1030000,
+			"check": {
+				"datapoints": {
+					"ofs": 2.166666666666667
+				},
+				"blocks": {
+					"hd": {
+						"state": {
+							"offset": 2.166666666666667
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1050000,
+			"report": {
+				"datapoint": "v1",
+				"value": 80.0
+			}
+		}
+	],
+	"end": 1300000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 0.0
+			},
+			{
+				"at": 120000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 0.25
+			},
+			{
+				"at": 180000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 0.5
+			},
+			{
+				"at": 240000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 0.75
+			},
+			{
+				"at": 300000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 1.0
+			},
+			{
+				"at": 360000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 1.25
+			},
+			{
+				"at": 420000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 1.5
+			},
+			{
+				"at": 480000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 1.75
+			},
+			{
+				"at": 540000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.0
+			},
+			{
+				"at": 600000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.25
+			},
+			{
+				"at": 660000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.5
+			},
+			{
+				"at": 720000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.75
+			},
+			{
+				"at": 780000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 3.0
+			},
+			{
+				"at": 900000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 3.0
+			},
+			{
+				"at": 960000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.5833333333333335
+			},
+			{
+				"at": 1020000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.166666666666667
+			},
+			{
+				"at": 1050000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 1.9583333333333337
+			},
+			{
+				"at": 1080000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.083333333333334
+			},
+			{
+				"at": 1140000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.333333333333334
+			},
+			{
+				"at": 1200000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.583333333333334
+			},
+			{
+				"at": 1260000,
+				"block": "hd",
+				"datapoint": "ofs",
+				"value": 2.833333333333334
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"ofs": 2.833333333333334,
+				"block/hd/flowSetpointOffset": 2.833333333333334
+			},
+			"blocks": {
+				"hd": {
+					"state": {
+						"offset": 2.833333333333334,
+						"heat": 1.0
+					}
+				}
+			},
+			"records": {
+				"hd": {
+					"offset": 2.833333333333334
+				}
+			}
+		}
+	}
+}

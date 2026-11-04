@@ -9,10 +9,11 @@ WebAssembly spike that the interface is shaped for is `doc/blocks-wasm.md`.
 | The loader of the image's `blocks`, the implied datapoints | `block_set.h`, `core/src/blocks/block_set.cpp` |
 | The runtime: calls, timers, faults, persistence, mirrors | `block_runtime.h`, `core/src/blocks/block_runtime.cpp` |
 | The room controller 1.0 | `room_controller.h`, `core/src/blocks/room_controller.cpp` |
+| The heating demand 1.0, the heating curve 1.0 (#61, #62) | `heating_demand.h`, `heating_curve.h`, `core/src/blocks/heating_{demand,curve}.cpp` |
 | The API | `core/src/web_api_blocks.cpp` |
 | The UI's "Blocks" section | `web/ui/dist/diagnostics.js` (System page) |
 | The conformance type (tests only) | `core/test/conformance_block.{h,cpp}` |
-| Tests | `core/test/room_controller_test.cpp`, the corpus `spec/fixtures/blocks/` in `rules_corpus_test.cpp`, `web_api_test.cpp` ("Image.Blocks", "WebApi.Blocks") |
+| Tests | `core/test/room_controller_test.cpp`, `core/test/heating_test.cpp` (both on the rig `core/test/block_rig.h`), the corpus `spec/fixtures/blocks/` in `rules_corpus_test.cpp`, `web_api_test.cpp` ("Image.Blocks", "WebApi.Blocks") |
 
 ## The type interface and a later WebAssembly type
 
@@ -21,8 +22,11 @@ the five calls `start(cx, reason, restored)`, `input(cx, port)`, `timer(cx, time
 `parameter(cx, index)`, plus `check(params, blamed)` for cross-parameter checks at load. A type keeps
 nothing per instance: everything an instance needs between calls is its *state record*, an array
 of doubles the runtime owns, persists by field id and shows in the diagnostics. The calls reach the
-runtime through `BlockContext` (`now`, `wall`, `read`, `param`, `write`, `set_timer`,
-`cancel_timer`, `timer_running`, `state`, `log`, `fault`); every value is a double (spec B6).
+runtime through `BlockContext` (`now`, `wall`, `read`, `count`, `read_at`, `param`, `write`,
+`set_timer`, `cancel_timer`, `timer_running`, `state`, `log`, `fault`); every value is a double
+(spec B6). `count`/`read_at` give the datapoints of an input one by one (spec B20); the compiled
+bindings keep their ids in one pool per instance (`BlockSpec::bound`, two bytes per bound
+datapoint), so an input's `multiple` of 32 costs only what the image binds.
 
 This is the spike's ABI made complete: a WebAssembly type will be a `BlockType` whose calls enter
 the module's exports `hc_start(self, reason, restored)`, `hc_input(self, port)`, `hc_timer(self,
@@ -93,15 +97,18 @@ instance is not written. The budget is in `doc/persistence.md` "The flash wear b
 ## Memory (ESP32-C6)
 
 Measured on the host (64-bit) by `BlockRuntime: no allocation in steady state; the cost of a room
-controller`; the C6's 32-bit pointers make the figures slightly smaller.
+controller` and `Heating: no allocation in steady state; the cost of an instance is at most a room
+controller's`; the C6's 32-bit pointers make the figures slightly smaller.
 
 | What | Size |
 |---|---|
 | Static: the `BlockRuntime` in the image service, the device registry, the type singletons | about 0.25 KB (144 B + 136 B on the host) |
 | Per room controller: the runtime (state record 20 fields, its stored copy, 26 parameters, the port tables) | about 1.2 KB |
-| Per room controller: the compiled spec (bindings, the image's parameter values, the label) | about 0.5 KB |
+| Per room controller: the compiled spec (bindings with the pool of bound ids, the image's parameter values, the label) | about 0.65 KB on the host (649 B) |
 | Per room controller: 16 mirror datapoints (enabled, 4 setpoints, 10 outputs, an aggregated input) | about 1.3 KB in the model (64 B + the name each) |
-| Per room controller in all | about 3 KB |
+| Per room controller in all | about 3.3 KB on the host (3255 B) |
+| Per heating demand (8 valves, 4 demands): 11 fields, 11 parameters, 9 mirrors | about 2.0 KB on the host (2013 B) |
+| Per heating curve (2 outside sensors): 9 fields, 29 parameters, 8 mirrors | about 2.2 KB on the host (2170 B) |
 | Steady state | no allocation (calls, writes, timers, periods; the record writes allocate nothing in the core) |
 
 Ten rooms cost about 30 KB of heap. On the C6, whose heap minimum at a deploy is about 33 to 37 KB,
@@ -111,3 +118,6 @@ measurements of #60 say more. The diagnostic outputs (`p`, `i`, `d`, `error`, `f
 
 Flash: the blocks (runtime, loader, room controller, API, UI) took the C6 application from 0x411a0
 to 0x33580 bytes free of the 0x2b0000 ota_0 partition (about 55 KB, at the project's `-Og`).
+The heating demand and the heating curve (#61, #62) add 4.4 KB and 6.2 KB (`idf.py size-files`:
+`heating_demand.cpp.obj` 4380 B, `heating_curve.cpp.obj` 6248 B, about half of each the manifest's
+tables); with them 0x301c0 bytes stay free.

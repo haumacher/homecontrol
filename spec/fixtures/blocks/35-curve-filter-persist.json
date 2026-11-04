@@ -1,0 +1,390 @@
+{
+	"title": "Heating curve: the outside filter (backward Euler over the monotonic dt, time constant outsideFilter) and its persistence: an orderly reboot keeps the filtered value; until the outside temperature reports again the state is fault (4) and the curve runs on the kept value.",
+	"note": "outsideFilter 1 h, minChange 0, persistEvery 30 min. A step of the outside from 0 to 10 at 30 s.",
+	"datapoints": [
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "flow",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"out": 0.0
+	},
+	"blocks": [
+		{
+			"id": "hk",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out"
+			},
+			"outputs": {
+				"flowSetpoint": "flow"
+			},
+			"parameters": {
+				"outsideFilter": 3600000,
+				"minChange": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 30000,
+			"report": {
+				"datapoint": "out",
+				"value": 10.0
+			}
+		},
+		{
+			"at": 601000,
+			"check": {
+				"datapoints": {
+					"flow": 42.171743493021594,
+					"block/hk/outsideFiltered": 1.5235470891486762
+				},
+				"blocks": {
+					"hk": {
+						"state": {
+							"filtered": 1.5235470891486762,
+							"hasFiltered": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1799000,
+			"check": {
+				"datapoints": {
+					"block/hk/outsideFiltered": 3.8081411752381946
+				}
+			}
+		},
+		{
+			"at": 1800000,
+			"reboot": true
+		},
+		{
+			"at": 1801000,
+			"check": {
+				"datapoints": {
+					"flow": 39.30842353086639,
+					"block/hk/state": 4,
+					"block/hk/outsideFiltered": 3.909647057611339
+				},
+				"blocks": {
+					"hk": {
+						"state": {
+							"filtered": 3.909647057611339,
+							"hasFiltered": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1830000,
+			"report": {
+				"datapoint": "out",
+				"value": 10.0
+			}
+		},
+		{
+			"at": 1861000,
+			"check": {
+				"datapoints": {
+					"block/hk/state": 0,
+					"block/hk/outsideFiltered": 4.009488909125907
+				}
+			}
+		}
+	],
+	"end": 2400000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 44.0
+			},
+			{
+				"at": 60000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 43.803278688524586
+			},
+			{
+				"at": 120000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 43.609782316581565
+			},
+			{
+				"at": 180000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 43.41945801630973
+			},
+			{
+				"at": 240000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 43.232253786534166
+			},
+			{
+				"at": 300000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 43.048118478558195
+			},
+			{
+				"at": 360000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.86700178218839
+			},
+			{
+				"at": 420000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.688854211988584
+			},
+			{
+				"at": 480000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.513627093759254
+			},
+			{
+				"at": 540000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.34127255123862
+			},
+			{
+				"at": 600000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.171743493021594
+			},
+			{
+				"at": 660000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 42.004993599693364
+			},
+			{
+				"at": 720000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.8409773111738
+			},
+			{
+				"at": 780000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.67964981426931
+			},
+			{
+				"at": 840000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.520967030428835
+			},
+			{
+				"at": 900000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.36488560370049
+			},
+			{
+				"at": 960000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.21136288888573
+			},
+			{
+				"at": 1020000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 41.0603569398876
+			},
+			{
+				"at": 1080000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.9118264982501
+			},
+			{
+				"at": 1140000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.76573098188534
+			},
+			{
+				"at": 1200000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.62203047398559
+			},
+			{
+				"at": 1260000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.480685712116966
+			},
+			{
+				"at": 1320000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.3416580774921
+			},
+			{
+				"at": 1380000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.20490958441846
+			},
+			{
+				"at": 1440000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 40.070402869919796
+			},
+			{
+				"at": 1500000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.938101183527664
+			},
+			{
+				"at": 1560000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.80796837724033
+			},
+			{
+				"at": 1620000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.679968895646226
+			},
+			{
+				"at": 1680000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.5540677662094
+			},
+			{
+				"at": 1740000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.43023058971417
+			},
+			{
+				"at": 1800000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.30842353086639
+			},
+			{
+				"at": 1800000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.30842353086639
+			},
+			{
+				"at": 1860000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.18861330904891
+			},
+			{
+				"at": 1920000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 39.070767189228434
+			},
+			{
+				"at": 1980000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.954852973011576
+			},
+			{
+				"at": 2040000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.840838989847455
+			},
+			{
+				"at": 2100000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.728694088374546
+			},
+			{
+				"at": 2160000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.618387627909385
+			},
+			{
+				"at": 2220000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.50988947007481
+			},
+			{
+				"at": 2280000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.403169970565386
+			},
+			{
+				"at": 2340000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.29819997104792
+			},
+			{
+				"at": 2400000,
+				"block": "hk",
+				"datapoint": "flow",
+				"value": 38.19495079119467
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"flow": 38.19495079119467,
+				"block/hk/state": 0,
+				"block/hk/outsideFiltered": 4.83754100733777
+			},
+			"blocks": {
+				"hk": {
+					"state": {
+						"filtered": 4.83754100733777,
+						"hasFiltered": 1.0,
+						"aboveFor": 0.0,
+						"derivedSummer": 0.0
+					}
+				}
+			},
+			"records": {
+				"hk": {
+					"filtered": 4.83754100733777,
+					"hasFiltered": 1.0,
+					"aboveFor": 0.0,
+					"derivedSummer": 0.0
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,30 @@
+{
+	"title": "The heating demand's cross-parameter check (B17): offThreshold not below onThreshold refuses the image with invalidParameter, blaming offThreshold.",
+	"datapoints": [
+		{
+			"name": "v1",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "hd",
+			"type": "org.homecontrol.heating-demand",
+			"version": "1.0",
+			"label": "Heat demand",
+			"inputs": {
+				"valves": "v1"
+			},
+			"parameters": {
+				"onThreshold": 20,
+				"offThreshold": 20
+			}
+		}
+	],
+	"timeline": [],
+	"end": 1000,
+	"expected": {
+		"loadRefused": "invalidParameter",
+		"path": "blocks[0].parameters.offThreshold"
+	}
+}

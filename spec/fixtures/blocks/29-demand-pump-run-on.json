@@ -1,0 +1,247 @@
+{
+	"title": "Heating demand: the pump runs on for pumpRunOn after the request went off; the timer wake serves the earlier of a held switching and the run-on's end; a switching off by enable runs the pump on too.",
+	"note": "minOn 60 s, minOff 300 s, pumpRunOn 120 s. On at 10 s; off at 70 s (held from 40 s), the pump until 190 s; on wanted at 100 s, held until 370 s: wake at 190 s (pump off), then at 370 s (on). Off by enable at 430 s (held from 420 s), the pump until 550 s; on again at 730 s (minOff from 430 s).",
+	"datapoints": [
+		{
+			"name": "v1",
+			"type": "real"
+		},
+		{
+			"name": "en",
+			"type": "boolean"
+		},
+		{
+			"name": "req",
+			"type": "boolean"
+		},
+		{
+			"name": "pump",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"v1": 0.0,
+		"en": true
+	},
+	"blocks": [
+		{
+			"id": "hd",
+			"type": "org.homecontrol.heating-demand",
+			"version": "1.0",
+			"label": "Heat demand",
+			"inputs": {
+				"valves": "v1",
+				"enable": "en"
+			},
+			"outputs": {
+				"request": "req",
+				"pump": "pump"
+			},
+			"parameters": {
+				"minOn": 60000,
+				"minOff": 300000,
+				"pumpRunOn": 120000,
+				"offsetGain": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 10000,
+			"report": {
+				"datapoint": "v1",
+				"value": 50.0
+			}
+		},
+		{
+			"at": 40000,
+			"report": {
+				"datapoint": "v1",
+				"value": 0.0
+			}
+		},
+		{
+			"at": 69000,
+			"check": {
+				"datapoints": {
+					"req": true,
+					"pump": true
+				}
+			}
+		},
+		{
+			"at": 71000,
+			"check": {
+				"datapoints": {
+					"req": false,
+					"pump": true,
+					"block/hd/state": 0
+				}
+			}
+		},
+		{
+			"at": 100000,
+			"report": {
+				"datapoint": "v1",
+				"value": 50.0
+			}
+		},
+		{
+			"at": 189000,
+			"check": {
+				"datapoints": {
+					"req": false,
+					"pump": true,
+					"block/hd/state": 3
+				}
+			}
+		},
+		{
+			"at": 191000,
+			"check": {
+				"datapoints": {
+					"req": false,
+					"pump": false,
+					"block/hd/state": 3
+				}
+			}
+		},
+		{
+			"at": 371000,
+			"check": {
+				"datapoints": {
+					"req": true,
+					"pump": true,
+					"block/hd/state": 1
+				}
+			}
+		},
+		{
+			"at": 420000,
+			"report": {
+				"datapoint": "en",
+				"value": false
+			}
+		},
+		{
+			"at": 431000,
+			"check": {
+				"datapoints": {
+					"req": false,
+					"pump": true,
+					"block/hd/state": 4
+				}
+			}
+		},
+		{
+			"at": 551000,
+			"check": {
+				"datapoints": {
+					"req": false,
+					"pump": false
+				}
+			}
+		},
+		{
+			"at": 600000,
+			"report": {
+				"datapoint": "en",
+				"value": true
+			}
+		},
+		{
+			"at": 601000,
+			"check": {
+				"datapoints": {
+					"req": false,
+					"block/hd/state": 3
+				}
+			}
+		}
+	],
+	"end": 800000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hd",
+				"datapoint": "req",
+				"value": false
+			},
+			{
+				"at": 0,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": false
+			},
+			{
+				"at": 10000,
+				"block": "hd",
+				"datapoint": "req",
+				"value": true
+			},
+			{
+				"at": 10000,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": true
+			},
+			{
+				"at": 70000,
+				"block": "hd",
+				"datapoint": "req",
+				"value": false
+			},
+			{
+				"at": 190000,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": false
+			},
+			{
+				"at": 370000,
+				"block": "hd",
+				"datapoint": "req",
+				"value": true
+			},
+			{
+				"at": 370000,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": true
+			},
+			{
+				"at": 430000,
+				"block": "hd",
+				"datapoint": "req",
+				"value": false
+			},
+			{
+				"at": 550000,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": false
+			},
+			{
+				"at": 730000,
+				"block": "hd",
+				"datapoint": "req",
+				"value": true
+			},
+			{
+				"at": 730000,
+				"block": "hd",
+				"datapoint": "pump",
+				"value": true
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"req": true,
+				"pump": true,
+				"block/hd/state": 1
+			}
+		}
+	}
+}

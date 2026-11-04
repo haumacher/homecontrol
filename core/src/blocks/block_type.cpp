@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstring>
 
+#include "hc/blocks/heating_curve.h"
+#include "hc/blocks/heating_demand.h"
 #include "hc/blocks/room_controller.h"
 
 namespace hc::blocks {
@@ -179,7 +181,7 @@ const char* check_manifest(const Manifest& m) {
 		const PortDecl& p = m.ports[i];
 		if (p.direction == Direction::in) {
 			if (p.multiple < 1 || p.multiple > BlockLimits::kMultiple) {
-				return "an input's multiple is not 1..4";
+				return "an input's multiple is not 1..32";
 			}
 			if (p.multiple > 1) {
 				uint8_t allowed = p.type == PortType::boolean
@@ -234,6 +236,8 @@ const char* check_manifest(const Manifest& m) {
 BlockRegistry::BlockRegistry(bool builtins) {
 	if (builtins) {
 		add(RoomController::instance());
+		add(HeatingDemand::instance());
+		add(HeatingCurve::instance());
 	}
 }
 

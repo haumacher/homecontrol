@@ -98,6 +98,8 @@ set(HC_CORE_BLOCK_SOURCES
 	"${HC_CORE_DIR}/src/blocks/block_set.cpp"
 	"${HC_CORE_DIR}/src/blocks/block_runtime.cpp"
 	"${HC_CORE_DIR}/src/blocks/room_controller.cpp"
+	"${HC_CORE_DIR}/src/blocks/heating_demand.cpp"
+	"${HC_CORE_DIR}/src/blocks/heating_curve.cpp"
 )
 list(APPEND HC_CORE_SOURCES ${HC_CORE_BLOCK_SOURCES})
 # (Not in the ESP-IDF's script-mode pass that only collects the component's requirements.)

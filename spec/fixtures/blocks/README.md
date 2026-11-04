@@ -2,7 +2,7 @@
 
 The cases in this directory pin the semantics of `spec/blocks.md`: the block contract (calls,
 cascades, faults, failsafe values, the enable switch, persistence, image swaps, overrides, the quiet
-load, load refusals) and the built-in room controller (`spec/blocks.md` 14). Every implementation
+load, load refusals) and the built-in types (`spec/blocks.md` 14, 16, 17: the room controller, the heating demand, the heating curve). Every implementation
 runs every case and must produce exactly the expected outputs: the C++ core (one table-driven test,
 `core/test/rules_corpus_test.cpp`, which runs the rules corpus too) and E-Home's simulation
 (haumacher/ehome#75). A change of block semantics lands with new or changed cases.
@@ -53,7 +53,8 @@ As in the rules corpus, with these additions:
 
 Reals compare with a relative tolerance of 1e-9 (and an absolute one of 1e-9 around 0); everything
 else compares exactly. State fields that hold monotonic times (the room controller's `lastStep`,
-`cycleStart`, `boostUntil` while set, `protectionUntil`, `sentAt`) depend on the origin a runner
+`cycleStart`, `boostUntil` while set, `protectionUntil`, `sentAt`; the heating demand's `lastStep` and
+`switchedAt`; the heating curve's `lastStep`) depend on the origin a runner
 gives the monotonic clock and are not compared; differences of them are. Several `parameterReset`
 entries of one block for parameters that are gone come in an unspecified order; no case has two.
 
@@ -87,6 +88,21 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `24-room-modes` | The setpoint from presence, the heating period, the HVAC mode and an external setpoint; frost mode, off, forced and summer. |
 | `25-room-integral-reboot` | The integral survives an orderly reboot (persisted at most every persistEvery and at the reboot); the filter starts again from the first report. |
 | `26-fault-disabled-swap` | A block disabled while faulted is found disabled by the next image and writes nothing; its outputs hold the failsafe values of the fault (6.1). |
+| `27-demand-hysteresis-min-times` | Heating demand: the request's hysteresis; minOn and minOff hold a switching until they expire (the timer wake), also one asked by enable and summer. |
+| `28-demand-top-mean-stale` | Heating demand: the level over valves and demands read one by one (B20), the mean of the highest, a demand as 100 %, clamping; a datapoint that is not good ignored or counted as full; staleInputs; the ports' mirrors. |
+| `29-demand-pump-run-on` | Heating demand: the pump's run-on; the wake timer at the earlier of a held switching and the run-on's end; a switching off by enable runs the pump on. |
+| `30-demand-offset-persist` | Heating demand: the offset integrates the level above targetLevel, falls below it and while the request is off, stays in 0..maxOffset, is sent in steps of 0.1 K and survives an orderly reboot. |
+| `31-demand-32-valves` | An input binds 32 datapoints (B20): the mean of all of them, one stale left out. |
+| `32-load-refused-multiple` | 33 datapoints for an input of multiple 32 refuse the image with forbidden. |
+| `33-load-refused-demand-thresholds` | The heating demand's check (B17): offThreshold not below onThreshold is invalidParameter on offThreshold. |
+| `34-curve-forms` | Heating curve: slope and level, the design point, points with interpolation and flat ends; the room setpoint along the diagonal, the offset, minFlow/maxFlow, minChange. |
+| `35-curve-filter-persist` | Heating curve: the outside filter over the monotonic dt, persisted over an orderly reboot; state fault until the outside reports again. |
+| `36-curve-summer-switch` | Heating curve: summer after summerDays above summerOn (reset when not above), winter below summerOff; the external summerSwitch decides while good. |
+| `37-curve-frost` | Heating curve: frost protection on the momentary outside temperature in summer and when off, with its 1 K hysteresis; offFlow otherwise. |
+| `38-curve-sensor-timeout` | Heating curve: a stale outside temperature is not fed; fault after sensorTimeout for a stale and for a silent one, on the held value; a report recovers. |
+| `39-load-refused-curve-points` | The heating curve's check (B17): the points' outside temperatures must rise; the first that does not is blamed. |
+| `40-heating-chain` | A room controller, a heating demand and a heating curve chained through their mirrors: valve to level, offset to flow, the curve's summer to the request. |
+| `41-demand-image-swap-keeps-hold` | Heating demand at an image swap: the record in RAM keeps the request and its switching time, so a deploy does not cut short minOn; the start writes the outputs again. |
 
 ## How the expected values were computed
 
@@ -102,3 +118,21 @@ dead bumpless code, timers across a swap, a faulted block at a swap, among other
 the cases with `--write`; first numbers were checked by hand (valve 40 then 27 in case 17, the
 filtered value, P, I and D of its first step), and the C++ runner passes every case unchanged. A
 `note` names what the case pins or a judgment call.
+
+Cases 27 to 41 (the heating demand and the heating curve, `spec/blocks.md` 16, 17 and B20) were made
+the same way. Their inputs were written by hand, with the load refusals of 32, 33 and 39. The same
+model was extended by a separate agent from the specification texts alone, without access to the
+C++ or the Java sources (`count`/`readAt`, the two types' manifests, checks, calls and steps,
+literally in IEEE doubles), with two self-test cases of its own whose values it computed by hand.
+Its 19 questions on sections 16, 17 and B20 were answered in the specification before the cases were
+filled (among them `targetLevel`'s lower bound, `min`/`max` on ties in 13, the failsafe phase and the
+minimum times, the stale value for frost protection, a duplicate binding). The model filled the cases
+with `--write`. Independently, the numbers were derived by hand while the cases were designed and
+compared with the model's: the switching times of 27 (30, 330, 570, 870, 1110, 1410 s) and 29 (10,
+70, 190, 370, 430, 550, 730 s); the levels of 28 (45, 100, 75, 90, 45, 100, 80) and 31 (16.5, 16,
+594.5/31); the offset of 30 (0.25 K a minute, 3 at 780 s, 2.1667 after the reboot, 2.8333 at the
+end); the flows of 34 (slope 51, 58.5, 62.25, 64.25, 34.55, 25, 70; design 40, 45, 25, 60; points 39,
+44, 47, 29, 22.5, 50.5), 37 (10, 25, 10, 39.2, 10, 25) and the first filter step of 35 (43.8033); the
+summer of 36 at 133 200 s; the swap of 41 (the outputs again at 60 s, off at 330 s, the pump at 390 s). Two inputs of the first draft were wrong, not the model (a missing
+`outsideFilter` in 34, a single report in 36 that ran into `sensorTimeout`); they were corrected and
+filled again. The C++ runner passes every case unchanged.

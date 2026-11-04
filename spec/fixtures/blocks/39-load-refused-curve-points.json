@@ -1,0 +1,31 @@
+{
+	"title": "The heating curve's cross-parameter check (B17): with curve points, the outside temperatures of the first pointCount points must rise; the first that does not is blamed (invalidParameter).",
+	"datapoints": [
+		{
+			"name": "out",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "hk",
+			"type": "org.homecontrol.heating-curve",
+			"version": "1.0",
+			"label": "Heating curve",
+			"inputs": {
+				"outside": "out"
+			},
+			"parameters": {
+				"curve": "points",
+				"pointCount": 3,
+				"outside3": -10
+			}
+		}
+	],
+	"timeline": [],
+	"end": 1000,
+	"expected": {
+		"loadRefused": "invalidParameter",
+		"path": "blocks[0].parameters.outside3"
+	}
+}

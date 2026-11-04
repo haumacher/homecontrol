@@ -1,0 +1,263 @@
+{
+	"title": "Heating demand: an input binds 32 datapoints (B20); the mean of the 32 highest is the mean of all good ones, in descending order; a stale one is left out.",
+	"note": "v1..v32 at 1..32 %: the mean is 16.5. v32 stale: the mean of 1..31 is 16. topCount 32.",
+	"datapoints": [
+		{
+			"name": "v1",
+			"type": "real"
+		},
+		{
+			"name": "v2",
+			"type": "real"
+		},
+		{
+			"name": "v3",
+			"type": "real"
+		},
+		{
+			"name": "v4",
+			"type": "real"
+		},
+		{
+			"name": "v5",
+			"type": "real"
+		},
+		{
+			"name": "v6",
+			"type": "real"
+		},
+		{
+			"name": "v7",
+			"type": "real"
+		},
+		{
+			"name": "v8",
+			"type": "real"
+		},
+		{
+			"name": "v9",
+			"type": "real"
+		},
+		{
+			"name": "v10",
+			"type": "real"
+		},
+		{
+			"name": "v11",
+			"type": "real"
+		},
+		{
+			"name": "v12",
+			"type": "real"
+		},
+		{
+			"name": "v13",
+			"type": "real"
+		},
+		{
+			"name": "v14",
+			"type": "real"
+		},
+		{
+			"name": "v15",
+			"type": "real"
+		},
+		{
+			"name": "v16",
+			"type": "real"
+		},
+		{
+			"name": "v17",
+			"type": "real"
+		},
+		{
+			"name": "v18",
+			"type": "real"
+		},
+		{
+			"name": "v19",
+			"type": "real"
+		},
+		{
+			"name": "v20",
+			"type": "real"
+		},
+		{
+			"name": "v21",
+			"type": "real"
+		},
+		{
+			"name": "v22",
+			"type": "real"
+		},
+		{
+			"name": "v23",
+			"type": "real"
+		},
+		{
+			"name": "v24",
+			"type": "real"
+		},
+		{
+			"name": "v25",
+			"type": "real"
+		},
+		{
+			"name": "v26",
+			"type": "real"
+		},
+		{
+			"name": "v27",
+			"type": "real"
+		},
+		{
+			"name": "v28",
+			"type": "real"
+		},
+		{
+			"name": "v29",
+			"type": "real"
+		},
+		{
+			"name": "v30",
+			"type": "real"
+		},
+		{
+			"name": "v31",
+			"type": "real"
+		},
+		{
+			"name": "v32",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"v1": 1.0,
+		"v2": 2.0,
+		"v3": 3.0,
+		"v4": 4.0,
+		"v5": 5.0,
+		"v6": 6.0,
+		"v7": 7.0,
+		"v8": 8.0,
+		"v9": 9.0,
+		"v10": 10.0,
+		"v11": 11.0,
+		"v12": 12.0,
+		"v13": 13.0,
+		"v14": 14.0,
+		"v15": 15.0,
+		"v16": 16.0,
+		"v17": 17.0,
+		"v18": 18.0,
+		"v19": 19.0,
+		"v20": 20.0,
+		"v21": 21.0,
+		"v22": 22.0,
+		"v23": 23.0,
+		"v24": 24.0,
+		"v25": 25.0,
+		"v26": 26.0,
+		"v27": 27.0,
+		"v28": 28.0,
+		"v29": 29.0,
+		"v30": 30.0,
+		"v31": 31.0,
+		"v32": 32.0
+	},
+	"blocks": [
+		{
+			"id": "hd",
+			"type": "org.homecontrol.heating-demand",
+			"version": "1.0",
+			"label": "Heat demand",
+			"inputs": {
+				"valves": [
+					"v1",
+					"v2",
+					"v3",
+					"v4",
+					"v5",
+					"v6",
+					"v7",
+					"v8",
+					"v9",
+					"v10",
+					"v11",
+					"v12",
+					"v13",
+					"v14",
+					"v15",
+					"v16",
+					"v17",
+					"v18",
+					"v19",
+					"v20",
+					"v21",
+					"v22",
+					"v23",
+					"v24",
+					"v25",
+					"v26",
+					"v27",
+					"v28",
+					"v29",
+					"v30",
+					"v31",
+					"v32"
+				]
+			},
+			"parameters": {
+				"mode": "topMean",
+				"topCount": 32,
+				"onThreshold": 10,
+				"offThreshold": 5
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/hd/level": 16.5,
+					"block/hd/valves": 32.0,
+					"block/hd/request": true
+				}
+			}
+		},
+		{
+			"at": 60000,
+			"stale": "v32"
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/hd/level": 16.0,
+					"block/hd/staleInputs": 1,
+					"block/hd/valves": 31.0
+				}
+			}
+		},
+		{
+			"at": 90000,
+			"report": {
+				"datapoint": "v1",
+				"value": 99.5
+			}
+		}
+	],
+	"end": 120000,
+	"expected": {
+		"commands": [],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/hd/level": 19.177419354838708,
+				"block/hd/staleInputs": 1,
+				"block/hd/valves": 99.5
+			}
+		}
+	}
+}
