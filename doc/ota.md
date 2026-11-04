@@ -534,6 +534,32 @@ The page explains both paths, recommends the over-the-air update or the browser 
 everything) for an installed controller, and offers older releases on the site through
 `firmware/<version>/install.json`.
 
+**The web flasher on the C6's own USB port.** ESP Web Tools 10.4 needs two adaptations there,
+both in `web/flasher/flasher.js` (measured on the bench with a Chrome under the policy
+`SerialAllowUsbDevicesForUrls` and Playwright, November 2026):
+
+- The port dialog lists every serial device of the computer (a laptop's mobile modem shows up as a
+  "Rolling Wireless" port): the page filters it to Espressif's vendor id 0x303a, the chip's own USB
+  port.
+- After writing, ESP Web Tools resets with the RTS line. On a board that came up in download mode
+  when it was plugged in (a new or erased board: its ROM finds no firmware and waits for the
+  download over USB, without restarting), that reset starts the download mode again: HomeControl
+  does not start, Improv is not found and the WiFi setup never comes; RESET or a re-plug was needed.
+  A board that ESP Web Tools put into download mode itself (an update of a running HomeControl)
+  starts the firmware after that reset. The page therefore takes ESP Web Tools' open of the port
+  after the installation (for Improv): if the ROM answers SYNC there, it resets the chip with the
+  LP watchdog (WRITE_REG on `LP_WDT_RWDT_*` at 0x600b1c00, the sequence esptool's `watchdog_reset`
+  uses on the ESP32-C3; esptool 4.12 leaves it out on the C6 because the USB port disappears with
+  the reset), waits for the board to come back on USB (0.4 s on the bench), sets the dialog's port
+  to it and opens it; ESP Web Tools then finds Improv and offers *Connect to Wi-Fi*. If the board
+  does not come back within 8 s, the page asks for RESET and continues as soon as it is there.
+  When the firmware runs already, the ROM does not answer and nothing happens.
+
+A bench trap: pyserial (esptool, miniterm) leaves `VMIN=0` on the tty, and the kernel keeps the
+setting for the device node across opens and re-plugs. Chrome opens the port non-blocking without
+setting `VMIN`, so every quiet moment reads as end of stream, which Chrome reports as "The device
+has been lost". After any pyserial use on the node: `stty -F /dev/ttyACMx min 1 time 0`.
+
 ## Development procedure
 
 Build both apps (each target in its own directory; the updater into the directory of the same name
