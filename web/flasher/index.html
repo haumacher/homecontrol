@@ -9,7 +9,8 @@
   as manifest.json; German in de/index.html (keep both in step).
   Local test: scripts/flasher-local.sh, then `python3 -m http.server` in this directory (the local
   manifest.json points at firmware/esp32c6/), or the site preview of scripts/release.sh --stage.
-  Web Serial needs Chrome or Edge on a desktop and a secure origin (HTTPS, or http://localhost).
+  It needs a browser with Web Serial (the page detects it, never names browsers: support changes)
+  and a secure origin (HTTPS, or http://localhost).
 -->
 <html lang="en">
 <head>
@@ -61,8 +62,8 @@
 			ESP32-C6-DevKitC-1 or -DevKitM-1. The status LED and the button of these devkits are used
 			as they are.</li>
 		<li>A USB cable that carries data (not a charging-only cable).</li>
-		<li><strong>Google Chrome or Microsoft Edge on a desktop computer</strong> (Windows, macOS,
-			Linux). Firefox, Safari and phones cannot talk to serial ports.</li>
+		<li><strong>A browser with Web Serial</strong>, the browser interface to serial ports. Step 2
+			tells you if yours lacks it.</li>
 		<li>Your WiFi name and key (2.4 GHz; the ESP32-C6 has no 5 GHz radio).</li>
 		<li>For KNX: a KNXnet/IP interface or router in the same network. For Zigbee: nothing, the
 			radio is on the board.</li>
@@ -82,8 +83,8 @@
 
 	<h2 id="step-2">Step 2 — Install the firmware</h2>
 	<div class="note warn" id="install-unsupported" hidden>
-		<p><strong>This browser cannot install the firmware.</strong> Open this page in Google
-			Chrome or Microsoft Edge on a desktop computer.</p>
+		<p><strong>This browser cannot install the firmware:</strong> it offers no Web Serial. Open
+			this page in a browser that does.</p>
 	</div>
 
 	<p>Click the button. The browser asks which device the page may use: choose
