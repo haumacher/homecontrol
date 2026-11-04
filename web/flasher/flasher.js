@@ -18,6 +18,15 @@ if (!("serial" in navigator)) {
 	if (box) {
 		box.hidden = false;
 	}
+} else {
+	// The browser's port dialog lists every serial device (a laptop's mobile modem, USB adapters)
+	// under names a user cannot judge. ESP Web Tools asks without filters, so the page adds one: only
+	// the chip's own USB port (Espressif's vendor id), which the installation and the WiFi setup over
+	// Improv need (step 1: the socket labelled USB, not UART).
+	const ESPRESSIF = 0x303a;
+	const requestPort = navigator.serial.requestPort.bind(navigator.serial);
+	navigator.serial.requestPort = (options = {}) =>
+		requestPort({ ...options, filters: options.filters && options.filters.length ? options.filters : [{ usbVendorId: ESPRESSIF }] });
 }
 
 function showVersion(manifestUrl) {
