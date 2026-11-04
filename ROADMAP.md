@@ -243,18 +243,22 @@ outside world (weather, external services).
   log everybody out is replaced by an explicit "log out everywhere" (Settings, System; `POST
   /api/auth/sessions/clear`; console `web session clear`), which ends the remembered sessions too,
   as does `web password clear`. Plain sessions are unchanged (RAM, 24 h idle, end at reboot).
-- **2026-11-04 — Releases: signed on the owner's machine, published as GitHub releases, served by
-  GitHub Pages (`doc/ota.md` "Releases and the web flasher").** The release key never leaves the
-  owner's machine: `scripts/release.sh` builds the host tests, the updater and the application from
-  the defaults alone (4 MB table, the committed release key, no development CA) on the tag `vX.Y.Z`
-  = `hc::kVersion`, signs the update manifest, verifies the signature against
-  `platform/esp/release-key.pub`, and publishes the flash parts, the signed manifest, the language
-  packs and the ELF files as the GitHub release of the tag; no CI job signs and no secret holds the
-  key. A workflow builds https://haumacher.github.io/homecontrol/ from the releases (the newest
-  five completely, the language packs of all): the web flasher (English, German), `stable/` as the
-  update source (`update.url`), `firmware/<version>/` per release; rollback by pointing `stable`
-  at an older release by hand. The web flasher writes everything but NVS, the core dump and the
-  Zigbee partitions, including the empty storage image; it asks before erasing (unticked by
-  default) a board that does not answer Improv as HomeControl and updates one that does without
-  erasing, so a reinstall keeps WiFi, password, enrollment and the Zigbee network but loses the
-  deployed image, the values and the history. Only the 4 MB layout is offered.
+- **2026-11-04 — Releases: built and signed in GitHub Actions on a tag, served by GitHub Pages
+  (`doc/ota.md` "Releases and the web flasher").** Pushing the tag `vX.Y.Z` = `hc::kVersion` runs
+  `release.yml`: the host tests, the updater and the application for esp32c6 from fresh build
+  directories (4 MB table, the committed release key, no development CA), the assets
+  (`scripts/release-assets.py`), the update manifest signed with the release key and verified
+  against `platform/esp/release-key.pub`, the GitHub release, then the Pages site. The key is the
+  secret `HC_RELEASE_KEY` of the environment `release`, which admits only tags `v*`, used by the
+  signing job alone. This replaces the first decision of the same day (sign only on the owner's
+  machine, which published v1.0.0): E-Home's apt signing key already lives in CI the same way, a
+  tag-only environment protects the key as well, and the binaries now have a public build log.
+  `scripts/release.sh` stays as the local check of the same build and signature and publishes
+  nothing. The site https://haumacher.github.io/homecontrol/ holds the web flasher (English,
+  German), `stable/` as the update source (`update.url`) and `firmware/<version>/` for the newest
+  five releases (the language packs of all); rollback by pointing `stable` at an older release by
+  hand. The web flasher writes everything but NVS, the core dump and the Zigbee partitions,
+  including the empty storage image; it asks before erasing (unticked by default) a board that does
+  not answer Improv as HomeControl and updates one that does without erasing, so a reinstall keeps
+  WiFi, password, enrollment and the Zigbee network but loses the deployed image, the values and the
+  history. Only the 4 MB layout is offered.

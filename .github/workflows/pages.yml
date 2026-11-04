@@ -2,10 +2,11 @@
 #
 # The GitHub Pages site https://haumacher.github.io/homecontrol/ (doc/ota.md "Releases and the web
 # flasher"): the web flasher and the firmware of the releases. Built from the GitHub releases, which
-# scripts/release.sh publishes on the author's machine (the release key never reaches CI): the
-# newest five releases with their flash parts and signed update manifests, the language packs of
-# every release. Runs when a release is published, when the flasher pages change, and by hand;
-# by hand with `stable` set, the stable channel points at an older release on the site (rollback).
+# release.yml publishes: the newest five releases with their flash parts and signed update
+# manifests, the language packs of every release. release.yml calls it after creating a release (a
+# release made with GITHUB_TOKEN starts no workflow by itself); it also runs when a release is
+# published by hand, when the flasher pages change, and by hand; by hand with `stable` set, the
+# stable channel points at an older release on the site (rollback).
 name: Pages
 
 on:
@@ -17,17 +18,19 @@ on:
       - web/flasher/**
       - scripts/pages-site.py
       - .github/workflows/pages.yml
+  workflow_call:
+    inputs:
+      stable:
+        description: Version of the stable channel (empty for the newest release)
+        type: string
+        required: false
+        default: ''
   workflow_dispatch:
     inputs:
       stable:
         description: Version of the stable channel (empty for the newest release)
         required: false
         default: ''
-
-# One deployment at a time, the newest wins.
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -38,6 +41,10 @@ jobs:
   site:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # One deployment at a time (on the job, so that it also holds when release.yml calls this).
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}

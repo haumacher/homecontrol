@@ -1,0 +1,192 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# A firmware release (doc/ota.md "Releases and the web flasher"): pushing the tag vX.Y.Z, where X.Y.Z
+# is hc::kVersion, builds the host tests, the OTA updater and the application for esp32c6 from fresh
+# build directories (4 MB table, the committed release key, no HC_EXTRA_CA), assembles the assets
+# with scripts/release-assets.py, signs the update manifest with the release key, verifies it
+# against platform/esp/release-key.pub, creates the GitHub release and deploys the Pages site.
+#
+# The release key is the secret HC_RELEASE_KEY of the environment `release`, which admits only tags
+# v*; only the job `sign` uses it, written to a mode 600 temporary file and shredded after use.
+#
+# Run by hand (workflow_dispatch) it is a dry run of the current branch: everything up to the
+# signature, but signed with a key generated in the job (the environment refuses a branch) and
+# verified against that key; no release, no site. The assets and the site preview are the run's
+# artifacts.
+#
+# The site: a release created with GITHUB_TOKEN starts no other workflow, so the job `pages` calls
+# pages.yml as a reusable workflow in this run.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dry_run: ${{ steps.version.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe for the build id
+
+      - name: Version and tag
+        id: version
+        run: |
+          VERSION=$(sed -n 's/.*constexpr const char\* kVersion = "\([^"]*\)".*/\1/p' core/include/hc/version.h)
+          echo "hc::kVersion is $VERSION"
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::hc::kVersion $VERSION is not a release version X.Y.Z[-pre]"; exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+              echo "::error::the tag $GITHUB_REF_NAME is not v$VERSION (hc::kVersion)"; exit 1
+            fi
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry run of $GITHUB_REF_NAME: no release"
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Ninja
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build
+
+      - name: Host tests
+        run: |
+          cmake -S platform/posix -B build-release-host -G Ninja
+          cmake --build build-release-host
+          ctest --test-dir build-release-host --output-on-failure
+
+      - name: Partition tables match their generator
+        run: python3 platform/esp/tools/gen_partitions.py --check
+
+      # The same command lines as scripts/release.sh, in fresh build directories.
+      - name: Build the OTA updater
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.6
+          target: esp32c6
+          path: platform/esp/updater
+          command: idf.py -B build-esp32c6-release -D IDF_TARGET=esp32c6 -D HC_FLASH_SIZE=4MB -D HC_EXTRA_CA= build
+
+      - name: Build the application
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.6
+          target: esp32c6
+          path: platform/esp
+          command: idf.py -B build-esp32c6-release -D IDF_TARGET=esp32c6 -D HC_FLASH_SIZE=4MB -D HC_EXTRA_CA= build
+
+      - name: Assemble the assets
+        run: |
+          python3 scripts/release-assets.py assemble --app platform/esp/build-esp32c6-release \
+            --updater platform/esp/updater/build-esp32c6-release --version "${{ steps.version.outputs.version }}" \
+            --out "$RUNNER_TEMP/assets"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-unsigned
+          path: ${{ runner.temp }}/assets
+          retention-days: 7
+
+  sign:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The environment holds the release key and admits only tags v*; a dry run uses none.
+    environment: ${{ needs.build.outputs.dry_run == 'true' && '' || 'release' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-unsigned
+          path: ${{ runner.temp }}/assets
+
+      - name: Ed25519 for Python
+        run: python3 -c 'import cryptography' 2>/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq python3-cryptography)
+
+      - name: Sign with the release key
+        if: needs.build.outputs.dry_run != 'true'
+        env:
+          HC_RELEASE_KEY: ${{ secrets.HC_RELEASE_KEY }}
+        run: |
+          KEY=$(mktemp)
+          trap 'shred -u "$KEY"' EXIT
+          chmod 600 "$KEY"
+          printf '%s\n' "$HC_RELEASE_KEY" > "$KEY"
+          python3 scripts/release-assets.py sign --key "$KEY" --out "$RUNNER_TEMP/assets" --site "$RUNNER_TEMP/site"
+
+      - name: Sign with a key of this run (dry run)
+        if: needs.build.outputs.dry_run == 'true'
+        run: |
+          DIR=$(mktemp -d)
+          trap 'shred -u "$DIR/key"; rm -rf "$DIR"' EXIT
+          python3 scripts/sign.py keygen "$DIR/key"
+          python3 scripts/release-assets.py sign --key "$DIR/key" --public "$DIR/key.pub" --out "$RUNNER_TEMP/assets" \
+            --site "$RUNNER_TEMP/site"
+          echo "dry run: signed with a key of this run, not the release key"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ needs.build.outputs.dry_run == 'true' && 'dry-run' || 'signed' }}
+          path: ${{ runner.temp }}/assets
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-preview
+          path: ${{ runner.temp }}/site
+          retention-days: 7
+
+  publish:
+    needs: [build, sign]
+    if: needs.build.outputs.dry_run != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-signed
+          path: assets
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          PRE=
+          case "$VERSION" in *-*) PRE=--prerelease ;; esac
+          NOTES="HomeControl $VERSION for the ESP32-C6 (4 MB flash).
+
+          - Install it on a new controller from the browser: https://haumacher.github.io/homecontrol/
+          - Update an installed controller over the air: update source https://haumacher.github.io/homecontrol/stable (Settings, Firmware update)
+          - Or upload \`homecontrol.bin\` on the controller's Settings page (Install firmware file).
+
+          Built and signed by this workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. The update manifest is signed with the release key \`platform/esp/release-key.pub\`."
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --verify-tag $PRE \
+            --title "HomeControl $VERSION" --notes "$(printf '%s\n' "$NOTES" | sed 's/^          //')" --generate-notes \
+            assets/*
+
+  pages:
+    needs: publish
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml

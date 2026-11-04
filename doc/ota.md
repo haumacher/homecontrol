@@ -159,7 +159,7 @@ status's `update.last` (the System card on the Settings page):
 
 | Verdict | `last` |
 |---|---|
-| no `manifest.sig` (404) | `manifest refused: the manifest is not signed (no manifest.sig next to it; the release key is dfba 89a7 15ad 2217)` |
+| no `manifest.sig` (404) | `manifest refused: the manifest is not signed (no manifest.sig next to it; the release key is e12f 90a9 fd8b f2c4)` |
 | not 128 hex digits / 64 bytes | `manifest refused: manifest.sig is not a signature (128 hex digits or 64 bytes)` |
 | another key, or the manifest changed | `manifest refused: the manifest's signature does not match the release key ... (another key, or the manifest changed)` |
 | another HTTP error on `manifest.sig` | `check failed: manifest.sig: HTTP status <n>` |
@@ -422,48 +422,65 @@ upload is authorized by the device's own session or token, not by the release ke
 
 ## Releases and the web flasher
 
-Decided on 2026-11-04 (ROADMAP.md): a release is built and signed on the release owner's machine
-and published as a GitHub release; a workflow turns the releases into the GitHub Pages site
+Decided on 2026-11-04 (ROADMAP.md): pushing a tag `vX.Y.Z` builds, signs and publishes the
+release in GitHub Actions; the releases are turned into the GitHub Pages site
 https://haumacher.github.io/homecontrol/, which is the web flasher, the update source and the home
-of the language packs at once.
+of the language packs at once. (v1.0.0 was still built and signed on the owner's machine.)
 
-**The release key never leaves the owner's machine.** No CI job signs and no GitHub secret holds
-the key. `scripts/release.sh` (`--help`) signs the manifest with
-`~/.config/homecontrol/release-key.secret` (`HC_RELEASE_SECRET` for another file) through
-`scripts/sign.py`, which reads the file itself (no copy is made), and refuses to go on unless the
-signature verifies against the committed `platform/esp/release-key.pub`, the key every firmware
-carries. CI only copies signed bytes.
+**Publishing a release:**
 
-**`scripts/release.sh`**, modeled on the PhoneBlock dongle's:
+```bash
+# hc::kVersion (core/include/hc/version.h) is X.Y.Z, committed and pushed
+scripts/release.sh --dry-run          # optional: the same build and signature locally
+git tag -a vX.Y.Z -m 'HomeControl X.Y.Z' && git push origin vX.Y.Z
+```
 
-1. Preconditions: a clean tree (untracked files included), HEAD exactly on the tag `vX.Y.Z` where
-   `X.Y.Z` is `hc::kVersion` and no other `v*` tag, not behind its upstream, the tag on origin (if
-   there) at the same commit, no published GitHub release of the tag, ESP-IDF v5.5.6.
-2. The host tests in `build-release-host/`.
-3. The updater and the application for esp32c6 in `updater/build-esp32c6-release` and
-   `build-esp32c6-release`, both wiped first so the sdkconfig comes from the defaults alone:
-   `HC_FLASH_SIZE=4MB`, `HC_RELEASE_KEY` the committed key, `HC_EXTRA_CA` empty (checked in the
-   generated sdkconfig, as is the updater's test option `HC_UPDATER_TEST_BUTTON_WINDOW`).
-4. The stage `build-release/<version>/assets/`: the six flash parts, `install.json` (the ESP Web
-   Tools manifest, from the template `web/flasher/manifest.json`, its offsets checked against the
-   build's `flasher_args.json` and the application's descriptor checked to carry the release's
-   version), the update manifest `manifest.json` with `url` =
-   `/homecontrol/firmware/<version>/homecontrol.bin` and its `manifest.sig`, the language packs
-   (`scripts/i18n-pack.py manifest`, as `i18n-manifest.json` and `lang-<code>.json.gz`),
-   `SHA256SUMS`, and `homecontrol.elf` and `hc_updater.elf` for decoding core dumps (release assets
-   only). `build-release/<version>/site/` is the Pages site built from this release alone
-   (`scripts/pages-site.py`), for a look before publishing.
-5. Publishing (not with `--stage` or `--dry-run`, which prints the commands): `git push origin
-   vX.Y.Z`, `gh release create --draft --verify-tag` with every asset (a version with a pre-release
-   suffix becomes a GitHub pre-release), then `gh release edit --draft=false`. The published release
-   starts the Pages workflow. A run that failed after pushing the tag can be repeated: it uploads
-   to the draft of the tag.
+**The release key in CI.** The secret half of the release key is the secret `HC_RELEASE_KEY` (the
+64 hex digits of `~/.config/homecontrol/release-key.secret`, as `scripts/sign.py` reads them) of the
+repository environment `release`, whose deployment policy admits only tags `v*`: no branch, pull
+request or manual run of the workflow can read it. Only the job `sign` uses the environment; it
+writes the key to a `mktemp` file (mode 600), signs, and shreds the file. The signature must verify
+against the committed `platform/esp/release-key.pub` before anything is published. The reasons:
+E-Home's apt signing key already lives in CI the same way, a tag-only environment protects the key
+as well as a single machine does, and every published binary now has a public build log on the
+standard ESP-IDF image. The owner's copy stays the backup and signs `scripts/release.sh`'s check.
 
-`--stage` and `--dry-run` check everything a release checks but only warn about the missing tag
-(their output stays on the machine); both sign, so the stage mirrors what is published.
+**`.github/workflows/release.yml`** (on a pushed tag `v*`):
 
-**The Pages site** (`.github/workflows/pages.yml`, source "GitHub Actions"; it runs when a release
-is published, when `web/flasher/` or the site script change on master, and by hand). It downloads
+1. `build`: the tag must be `v` + `hc::kVersion`; the host tests; the partition check; the updater
+   and the application with `espressif/esp-idf-ci-action` (ESP-IDF v5.5.6) in fresh build
+   directories `build-esp32c6-release` (`-D IDF_TARGET=esp32c6 -D HC_FLASH_SIZE=4MB -D
+   HC_EXTRA_CA=`, `HC_RELEASE_KEY` the committed default); `scripts/release-assets.py assemble`
+   checks the builds (the release key in `hc_generated/hc_release_key.h`, no extra CA, no updater
+   test option `HC_UPDATER_TEST_BUTTON_WINDOW`, the 4 MB table, the application's version) and
+   writes the unsigned assets: the six flash parts, `install.json` (the ESP Web Tools manifest from
+   the template `web/flasher/manifest.json`, its offsets checked against the build's
+   `flasher_args.json`), the update manifest `manifest.json` with `url` =
+   `/homecontrol/firmware/<version>/homecontrol.bin`, the language packs (`scripts/i18n-pack.py
+   manifest`, as `i18n-manifest.json` and `lang-<code>.json.gz`), and `homecontrol.elf` and
+   `hc_updater.elf` for decoding core dumps (release assets only).
+2. `sign` (environment `release`): `scripts/release-assets.py sign` writes `manifest.sig`, verifies
+   it, writes `SHA256SUMS` and the site preview.
+3. `publish`: `gh release create --verify-tag` with every asset (a version with a pre-release
+   suffix becomes a GitHub pre-release).
+4. `pages`: calls `pages.yml` as a reusable workflow. A release created with `GITHUB_TOKEN` starts
+   no other workflow, so the `release: published` trigger of `pages.yml` would not fire.
+
+**Dry run.** Started by hand (`gh workflow run release.yml --ref master`), the workflow builds and
+assembles the current branch, signs with a key generated in the job (the environment refuses a
+branch, so the release key is never available to it) and verifies against that key's public half;
+it creates no release and deploys nothing. The assets and the site preview are the run's artifacts.
+
+**`scripts/release.sh`** is the same check on the owner's machine and publishes nothing:
+a clean tree, not behind its upstream, ESP-IDF v5.5.6, warnings when HEAD is not on the tag of
+`hc::kVersion` or the release exists; the host tests in `build-release-host/`; the same `idf.py`
+command lines in wiped `build-esp32c6-release` directories; `release-assets.py assemble` and `sign`
+with the local key into `build-release/<version>/assets/`, and the site built from this release
+alone into `build-release/<version>/site/`. `--dry-run` also prints the tag commands.
+
+**The Pages site** (`.github/workflows/pages.yml`, source "GitHub Actions"; called by the release
+workflow, and run when a release is published by hand, when `web/flasher/` or the site script
+change on master, and by hand; the `github-pages` environment admits `master` and tags `v*`). It downloads
 the GitHub releases with `gh`: the newest five completely, the older ones only their language
 packs. The releases are the store; nothing is fetched from the live site, so a deployment is
 reproducible from the releases alone (deleting a GitHub release takes it off the site at the next
