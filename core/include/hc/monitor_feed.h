@@ -135,6 +135,7 @@ static_assert(sizeof(MonitorEvent) == 76, "a MonitorEvent is 76 bytes (issue #45
 /// fed by
 ///
 /// - the KNX TelegramLog (its listener: every group telegram received, and sent once confirmed,
+///   kept only here since issue #45: the console's `knx log` reads them from this ring,
 ///   with the decoded value of the mapped datapoint: the value the adapter reports right after
 ///   logging it, or for a sent telegram the datapoint's value),
 /// - the Zigbee adapter (its traffic listener: attribute reports, button commands, commands sent),
@@ -216,6 +217,17 @@ public:
 
 	/// One event as JSON (spec/api.md, "Monitor").
 	void write_event(JsonWriter& json, const MonitorEvent& event, uint32_t sequence) const;
+
+	/// Longest line format_knx() writes including the NUL.
+	static constexpr size_t kMaxKnxLine = 192;
+	/// The events of `kind` the ring holds.
+	size_t count(MonitorEvent::Kind kind) const;
+	/// A KNX event as the console's `knx log` line: "<uptime s> rx 1.1.5 -> 1/2/3 write 0C 1A [name]"
+	/// (the name while the event's datapoint refers to the current model). Returns `buffer`.
+	const char* format_knx(const MonitorEvent& event, char* buffer, size_t size) const;
+	/// The console's `knx log [<count>]`: the last `count` KNX events the ring holds, oldest first,
+	/// each as format_knx() writes it, handed to `print(context, line)`. Returns the lines printed.
+	size_t write_knx_log(size_t count, void (*print)(void* context, const char* line), void* context) const;
 
 	/// A send or read request of a monitor client ({"knx": {...}}). False with the refusal's code and
 	/// reason; true when the tunnel took the telegram (its tx event follows when confirmed).

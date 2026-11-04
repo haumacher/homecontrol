@@ -9,6 +9,6 @@ idf_component_register(
 	SRCS "image_console.cpp" "esp_image_staging.cpp" "esp_load_probe.cpp"
 	INCLUDE_DIRS "include"
 	REQUIRES hc_core hc_platform esp_partition
-	PRIV_REQUIRES esp_http_client mbedtls freertos log bootloader_support esp_mm esp_timer spi_flash heap)
+	PRIV_REQUIRES mbedtls freertos log bootloader_support esp_mm esp_timer spi_flash heap)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

@@ -150,6 +150,21 @@ public:
 	void ws_close(uint32_t client, uint16_t code, const char* reason) override {
 		closes.push_back({client, code, reason});
 	}
+	char* ws_claim(bool) override {
+		if (refuse) {
+			++refused;
+			return nullptr;
+		}
+		claimed = true;
+		return claim_buffer;
+	}
+	void ws_commit(const uint32_t* clients, size_t count, size_t length) override {
+		claimed = false;
+		for (size_t i = 0; i < count; ++i) {
+			sent.push_back({clients[i], std::string(claim_buffer, length)});
+		}
+	}
+	void ws_abandon() override { claimed = false; }
 
 	/// Parsed messages to `client` of `type`.
 	std::vector<Json> messages(uint32_t client, const std::string& type) const {
@@ -180,6 +195,8 @@ public:
 	std::vector<Close> closes;
 	bool refuse = false;
 	int refused = 0;
+	bool claimed = false;
+	char claim_buffer[hc::LiveFeed::kMessageSize];
 };
 
 /// A controller with a datapoint model, the authentication and the API, wired to fakes.

@@ -91,6 +91,16 @@ public:
 	}
 	size_t send_room() override { return session ? room : 0; }
 	void want_writable() override { ++writable_wanted; }
+	std::string claim;
+	char* claim_text(size_t max) override {
+		if (!session || fail_sends || max > room) {
+			return nullptr;
+		}
+		claim.assign(max, '\0');
+		return &claim[0];
+	}
+	void commit_text(size_t length) override { send_text(claim.data(), length); }
+	void abandon_text() override {}
 	void close(uint16_t code, const char* reason) override {
 		closes.push_back({code, reason});
 		session = false;

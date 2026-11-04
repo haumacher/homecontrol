@@ -44,13 +44,16 @@ public:
 
 	bool fetch(const char* url, FetchReceiver& receiver, const char** error) override;
 	bool post(const char* url, const char* body, size_t length, FetchReceiver& receiver, const char** error) override;
+	/// With the request's own timeout (0: kTimeoutMs), for the FetchQueue's lanes.
+	bool request(const char* url, const char* body, size_t length, uint32_t timeout_ms, FetchReceiver& receiver,
+		const char** error) override;
 	bool busy() const override { return busy_.load(); }
 
 private:
 	/// The message's number: what the loop hands to the receiver.
 	enum Event : int32_t { kBegin = 0, kChunk = 1, kEnd = 2 };
 
-	bool start(const char* url, FetchReceiver& receiver, const char** error);
+	bool start(const char* url, uint32_t timeout_ms, FetchReceiver& receiver, const char** error);
 	static void task(void* context);
 	void run();
 	void read_body(void* client);
@@ -69,6 +72,7 @@ private:
 	std::atomic<bool> busy_{false};
 	FetchReceiver* receiver_ = nullptr;
 	char url_[kMaxUrl + 1] = {};
+	uint32_t timeout_ms_ = kTimeoutMs;
 	/// The POST body; post_length_ 0 for a GET.
 	char post_body_[kMaxPostBody] = {};
 	size_t post_length_ = 0;

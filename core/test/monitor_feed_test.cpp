@@ -728,3 +728,61 @@ TEST_CASE("MonitorFeed: GET /api/monitor without a live feed") {
 	CHECK(r.status == 404);
 	CHECK(r.json["code"].text == "monitor.unavailable");
 }
+
+namespace {
+
+void collect_line(void* context, const char* line) {
+	static_cast<std::vector<std::string>*>(context)->push_back(line);
+}
+
+/// The line without its uptime ("12.345 rx ..." -> "rx ...").
+std::string without_time(const std::string& line) {
+	size_t space = line.find(' ');
+	return space == std::string::npos ? line : line.substr(space + 1);
+}
+
+} // namespace
+
+TEST_CASE("MonitorFeed: knx log is served from the monitor ring, KNX events only (issue #45 item 10)") {
+	MonitorFixture f;
+	f.connect();
+	f.fake.clock.now_ms = 12345;
+	f.receive(0x0A03, "00 80 0C 1A"); // hall.temperature, from 1.1.10
+	f.receive(0x0A04, "00 80 0C 1A"); // 1/2/4: no datapoint
+	// A command from the API (a command event, no telegram) and one that goes out on the bus.
+	REQUIRE(f.model.command(f.id("hall.scene"), hc::Value::of_real(3)) == DatapointStatus::ok);
+	REQUIRE(f.model.command(f.id("hall.light"), hc::Value::of_bool(true)) == DatapointStatus::ok);
+	f.pump();
+	CHECK(f.feed.monitor().count(MonitorEvent::Kind::command) >= 2);
+	std::vector<std::string> lines;
+	size_t printed = f.feed.monitor().write_knx_log(64, collect_line, &lines);
+	REQUIRE(printed == 3);
+	REQUIRE(lines.size() == 3);
+	// The format of the former TelegramLog: uptime with milliseconds, direction, addresses, service,
+	// the octets, the datapoint's name.
+	CHECK(lines[0] == "12.345 rx 1.1.10 -> 1/2/3 write 0C 1A [hall.temperature]");
+	CHECK(without_time(lines[1]) == "rx 1.1.10 -> 1/2/4 write 0C 1A");
+	CHECK(without_time(lines[2]) == "tx 1.1.250 -> 1/0/1 write 01 [hall.light]");
+	// The last n.
+	lines.clear();
+	CHECK(f.feed.monitor().write_knx_log(1, collect_line, &lines) == 1);
+	CHECK(without_time(lines.at(0)) == "tx 1.1.250 -> 1/0/1 write 01 [hall.light]");
+	// After a model change the ids mean other datapoints: the names are left out.
+	const char* error = nullptr;
+	REQUIRE(f.image.unload(&error));
+	f.run();
+	lines.clear();
+	f.feed.monitor().write_knx_log(64, collect_line, &lines);
+	REQUIRE(lines.size() == 3);
+	CHECK(lines[0] == "12.345 rx 1.1.10 -> 1/2/3 write 0C 1A");
+	// A repeated telegram says so.
+	char line[MonitorFeed::kMaxKnxLine];
+	MonitorEvent event;
+	event.kind = MonitorEvent::Kind::knx;
+	event.set_ms(5001);
+	event.knx.source = hc::knx::IndividualAddress::of(1, 1, 5).raw;
+	event.knx.destination = hc::knx::GroupAddress::of(1, 0, 1).raw;
+	event.knx.service = static_cast<uint8_t>(hc::knx::GroupService::read);
+	event.flags = MonitorEvent::kRepeated;
+	CHECK(std::string(f.feed.monitor().format_knx(event, line, sizeof(line))) == "5.001 rx 1.1.5 -> 1/0/1 read (repeated)");
+}

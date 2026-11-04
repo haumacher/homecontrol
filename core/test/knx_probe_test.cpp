@@ -51,6 +51,7 @@ struct Counting : DatapointListener {
 struct Probe : hc_test::TunnelFixture {
 	hc::DatapointModel model{clock};
 	TelegramLog log{clock};
+	hc_test::TelegramRecorder recorded;
 	KnxAdapter adapter{loop, clock, model, tunnel, &log};
 	Counting listener;
 	GroupAddress other_listen[1] = {GroupAddress::of(1, 0, 1)};
@@ -58,6 +59,7 @@ struct Probe : hc_test::TunnelFixture {
 	uint8_t gateway_sequence = 0;
 
 	Probe() {
+		log.set_listener(&recorded);
 		DatapointSpec specs[] = {
 			{"light", ValueType::boolean, kRWT},
 			{"other.light", ValueType::boolean, 0},
@@ -214,5 +216,5 @@ TEST_CASE("KnxProbe.ARepeatedGatewayTelegramUpdatesTheDatapointOnce") {
 	p.receive(0x0A03, "00 80 0C 1A 00");
 	CHECK(p.dp(3).value().as_real() == doctest::Approx(21.0));
 	CHECK(p.capture.sink.count("W hc.knx") + p.capture.sink.count("E hc.knx") > errors);
-	CHECK(p.log.size() >= 1);
+	CHECK(p.recorded.size() >= 1);
 }

@@ -16,11 +16,12 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   (`Connectivity`, `Backoff`), Improv Wi-Fi serial provisioning (`Improv`, `ImprovReader`), status
   LED patterns, settings keys and validators, the datapoint model (`DatapointModel`, `Technology`)
   and the KNX DPT codecs (`doc/datapoints.md`), KNXnet/IP tunnelling (`hc::knx`: `KnxTunnel`,
-  `KnxAdapter`, `TelegramLog` over the platform's `UdpSocket`, `doc/knx.md`), the time service,
+  `KnxAdapter`, the telegram tap `TelegramLog` over the platform's `UdpSocket`, `doc/knx.md`), the time service,
   astronomy and the scheduler (`doc/time.md`), the KNX time master, last-value persistence and
   short-term history over the platform's `BlobStore` (`ValueStore`, `History`, `doc/persistence.md`),
   the web server's portable half (JSON API `WebApi`, WebSocket feed `LiveFeed` and codec `websocket`,
-  `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2; `doc/web.md`), the monitor stream
+  `Auth`, `JsonWriter`/`json_parse`, `LogRing`, SHA-256/PBKDF2, the WebSocket send ring `WsSendRing`;
+  `doc/web.md`), the monitor stream
   for E-Home's group monitor (`MonitorFeed`: KNX, Zigbee and the controller's actions, spec/api.md
   "Monitor"), the rule interpreter (`hc::rules`, `doc/rules.md`), the blocks (`hc::blocks`: the
   block type interface and registry, the loader of the image's `blocks`, the runtime the rule engine
@@ -29,7 +30,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   providers such as the Zigbee adapter through `DynamicSpecProvider`; `doc/image.md`), the Zigbee
   adapter (`hc::zigbee`: `ZigbeeAdapter`, `DeviceDatabase`, the cluster mapping, over the platform's
   `ZigbeeDriver`; `doc/zigbee.md`), external values from HTTP JSON sources (`ExternalValues`,
-  `doc/external.md`), the language packs of the web UI (`LanguagePacks`, the `ui.lang` setting;
+  `doc/external.md`), the one fetch worker of every HTTP request (`FetchQueue`, `doc/external.md`), the language packs of the web UI (`LanguagePacks`, the `ui.lang` setting;
   `doc/i18n.md`), the MQTT client (`Mqtt`: states, commands, Home Assistant discovery, history
   export over the platform's `MqttClient`; `spec/mqtt.md`, `doc/mqtt.md`), and the E-Home
   connection (`EhomeLink`: enrollment, the outbound WebSocket over the platform's

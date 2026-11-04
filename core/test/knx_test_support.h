@@ -12,6 +12,7 @@
 #include "hc/connectivity.h"
 #include "hc/event_loop.h"
 #include "hc/knx/knxnetip.h"
+#include "hc/knx/telegram_log.h"
 #include "hc/knx/tunnel.h"
 #include "hc/platform/udp_socket.h"
 #include "test_support.h"
@@ -208,6 +209,14 @@ inline Bytes disconnect_request(uint8_t channel) {
 }
 
 /// Records what a tunnel tells its listeners.
+/// The records a TelegramLog hands on, kept for a test (the device keeps them in the monitor ring).
+struct TelegramRecorder : hc::knx::TelegramListener {
+	std::vector<hc::knx::TelegramRecord> records;
+	void telegram_logged(const hc::knx::TelegramRecord& record, uint64_t) override { records.push_back(record); }
+	size_t size() const { return records.size(); }
+	const hc::knx::TelegramRecord* at(size_t i) const { return i < records.size() ? &records[i] : nullptr; }
+};
+
 struct TunnelRecorder : hc::knx::KnxTunnelListener {
 	void tunnel_state_changed(const hc::knx::KnxTunnel& tunnel, hc::knx::TunnelState previous) override {
 		states.push_back(std::string(hc::knx::tunnel_state_name(previous)) + "->" +

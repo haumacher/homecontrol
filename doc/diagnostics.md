@@ -253,7 +253,8 @@ Every task that may print keeps at least 1.3 KB over its high-water mark.
 | `wifi` | 6656 (the IDF's, with WPA3) | 2600 | WPS, a WPA3 handshake |
 | `IDLE` | 1536 (the IDF's) | 284 | |
 
-The short-lived workers (`hc_ota_fetch`, `hc_ext_fetch`, `hc_image_get`, the MQTT client's task, the
+The short-lived workers (`hc_fetch`, the one fetch worker of the update check, the image download,
+the enrollment, the external values and the language packs since issue #45; the MQTT client's task, the
 Improv reader `hc_serial`) keep their sizes: they did not run during the measurement. The `hc.ws`
 line at every WebSocket open reports the E-Home client's reserve after the handshake; the line at
 the end of every session the reserve of its sender task `hc_ehome_tx` (issue #55, 3072 B, 1572 B

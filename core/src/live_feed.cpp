@@ -51,6 +51,70 @@ uint32_t fnv(const char* text) {
 
 } // namespace
 
+template <typename Format>
+bool LiveFeed::deliver(Client* const* targets, size_t count, bool bulk, Format&& format) {
+	if (count == 0) {
+		return true;
+	}
+	// The claim of the first transport that has room; each transport is asked once.
+	char* buffer = nullptr;
+	WsTransport* owner = nullptr;
+	for (size_t i = 0; i < count && buffer == nullptr; ++i) {
+		WsTransport* transport = targets[i]->transport;
+		bool asked = false;
+		for (size_t j = 0; j < i; ++j) {
+			asked = asked || targets[j]->transport == transport;
+		}
+		if (!asked) {
+			buffer = transport->ws_claim(bulk);
+			owner = transport;
+		}
+	}
+	if (buffer == nullptr) {
+		if (!bulk) {
+			for (size_t i = 0; i < count; ++i) {
+				missed(*targets[i]);
+			}
+		}
+		return false;
+	}
+	JsonWriter json(buffer, kMessageSize);
+	if (!format(json)) {
+		owner->ws_abandon();
+		return true;
+	}
+	size_t length = json.length();
+	bool all = true;
+	uint32_t handles[kMaxClients + 1];
+	size_t own = 0;
+	for (size_t i = 0; i < count; ++i) {
+		Client& c = *targets[i];
+		if (c.transport == owner) {
+			handles[own++] = c.handle;
+			continue;
+		}
+		bool ok = bulk ? c.transport->ws_send_bulk(c.handle, buffer, length) : c.transport->ws_send(c.handle, buffer, length);
+		if (!ok) {
+			all = false;
+			if (!bulk) {
+				missed(c);
+			}
+		}
+	}
+	owner->ws_commit(handles, own, length);
+	return all;
+}
+
+size_t LiveFeed::subscribed(Client** targets) {
+	size_t n = 0;
+	for (Client& c : clients_) {
+		if (c.used && c.subscribed) {
+			targets[n++] = &c;
+		}
+	}
+	return n;
+}
+
 LiveFeed::LiveFeed(WebApi& api, EventLoop& loop, WsTransport& transport)
 	: api_(api), loop_(loop), transport_(transport), monitor_(api.controller().clock(), api.model()) {}
 
@@ -128,15 +192,16 @@ void LiveFeed::attach_ehome(WsTransport& transport, uint32_t handle) {
 	slot.snapshot_next = kNoSnapshot;
 	slot.opened_ms = api_.controller().clock().monotonic_ms();
 	Log::info(kTag, "E-Home joined the live feed");
-	JsonWriter json(out_, sizeof(out_));
-	json.begin_object()
-		.member("type", "hello")
-		.member("authenticated", true)
-		.member("onboarded", api_.auth().has_password())
-		.member("device", api_.host().device_name())
-		.member("version", kVersion)
-		.end_object();
-	send(slot, out_, json.length());
+	deliver_to(slot, [this](JsonWriter& json) {
+		json.begin_object()
+			.member("type", "hello")
+			.member("authenticated", true)
+			.member("onboarded", api_.auth().has_password())
+			.member("device", api_.host().device_name())
+			.member("version", kVersion)
+			.end_object();
+		return true;
+	});
 }
 
 void LiveFeed::ehome_message(const char* text, size_t length) {
@@ -176,9 +241,13 @@ bool LiveFeed::open(uint32_t handle, const char* cookie, const char* origin, con
 	}
 	if (refusal_code != nullptr) {
 		Log::warn(kTag, "WebSocket client refused: %s", refusal_text);
-		JsonWriter json(out_, sizeof(out_));
-		json.begin_object().member("type", "error").member("error", refusal_text).member("code", refusal_code).end_object();
-		transport_.ws_send(handle, out_, json.length());
+		Client refused;
+		refused.handle = handle;
+		refused.transport = &transport_;
+		deliver_to(refused, [&](JsonWriter& json) {
+			json.begin_object().member("type", "error").member("error", refusal_text).member("code", refusal_code).end_object();
+			return true;
+		});
 		transport_.ws_close(handle, ws_code, refusal_text);
 		return false;
 	}
@@ -198,15 +267,16 @@ bool LiveFeed::open(uint32_t handle, const char* cookie, const char* origin, con
 	Log::info(kTag, "WebSocket client %u connected (%s, %u of %u)", static_cast<unsigned>(handle),
 		authenticated(*slot) ? "session" : "awaiting a token", static_cast<unsigned>(client_count()),
 		static_cast<unsigned>(kMaxClients));
-	JsonWriter json(out_, sizeof(out_));
-	json.begin_object()
-		.member("type", "hello")
-		.member("authenticated", authenticated(*slot))
-		.member("onboarded", auth.has_password())
-		.member("device", api_.host().device_name())
-		.member("version", kVersion)
-		.end_object();
-	send(*slot, out_, json.length());
+	deliver_to(*slot, [&](JsonWriter& json) {
+		json.begin_object()
+			.member("type", "hello")
+			.member("authenticated", authenticated(*slot))
+			.member("onboarded", auth.has_password())
+			.member("device", api_.host().device_name())
+			.member("version", kVersion)
+			.end_object();
+		return true;
+	});
 	return true;
 }
 
@@ -221,7 +291,13 @@ void LiveFeed::closed(uint32_t handle) {
 }
 
 void LiveFeed::send(Client& client, const char* text, size_t length) {
-	if (!client.transport->ws_send(client.handle, text, length) && client.subscribed) {
+	if (!client.transport->ws_send(client.handle, text, length)) {
+		missed(client);
+	}
+}
+
+void LiveFeed::missed(Client& client) {
+	if (client.subscribed) {
 		if (client.snapshot_next != 0) {
 			Log::warn(kTag, "WebSocket client %u: message dropped (send buffers full): full resync follows",
 				static_cast<unsigned>(client.handle));
@@ -231,9 +307,10 @@ void LiveFeed::send(Client& client, const char* text, size_t length) {
 }
 
 void LiveFeed::send_error(Client& client, const char* code, const char* text) {
-	JsonWriter json(out_, sizeof(out_));
-	json.begin_object().member("type", "error").member("error", text).member("code", code).end_object();
-	send(client, out_, json.length());
+	deliver_to(client, [&](JsonWriter& json) {
+		json.begin_object().member("type", "error").member("error", text).member("code", code).end_object();
+		return true;
+	});
 }
 
 void LiveFeed::refuse_and_close(Client& client, uint16_t ws_code, const char* code, const char* text) {
@@ -311,9 +388,10 @@ void LiveFeed::authenticate_token(Client& client, const JsonSpan& message) {
 	client.principal = Principal::token;
 	client.token_slot = slot;
 	std::memcpy(client.token_hash, auth.token_hash(slot), sizeof(client.token_hash));
-	JsonWriter json(out_, sizeof(out_));
-	json.begin_object().member("type", "auth").member("ok", true).end_object();
-	send(client, out_, json.length());
+	deliver_to(client, [](JsonWriter& json) {
+		json.begin_object().member("type", "auth").member("ok", true).end_object();
+		return true;
+	});
 }
 
 void LiveFeed::command(Client& client, const JsonSpan& message) {
@@ -353,20 +431,21 @@ void LiveFeed::command(Client& client, const JsonSpan& message) {
 			}
 		}
 	}
-	JsonWriter json(out_, sizeof(out_));
-	json.begin_object().member("type", "result");
-	if (id_number >= 0 && id_number <= 65535) {
-		json.member("id", static_cast<uint32_t>(id_number));
-	}
-	if (has_ref) {
-		json.key("ref").raw(ref.data, ref.length);
-	}
-	json.member("ok", code == nullptr);
-	if (code != nullptr) {
-		json.member("error", reason).member("code", code);
-	}
-	json.end_object();
-	send(client, out_, json.length());
+	deliver_to(client, [&](JsonWriter& json) {
+		json.begin_object().member("type", "result");
+		if (id_number >= 0 && id_number <= 65535) {
+			json.member("id", static_cast<uint32_t>(id_number));
+		}
+		if (has_ref) {
+			json.key("ref").raw(ref.data, ref.length);
+		}
+		json.member("ok", code == nullptr);
+		if (code != nullptr) {
+			json.member("error", reason).member("code", code);
+		}
+		json.end_object();
+		return true;
+	});
 }
 
 void LiveFeed::subscribe(Client& client) {
@@ -394,46 +473,44 @@ LiveFeed::StatusSignature LiveFeed::signature() {
 }
 
 void LiveFeed::zigbee_event(const zigbee::ZigbeeEvent& event) {
-	JsonWriter json(out_, sizeof(out_));
-	json.begin_object().member("type", "zigbee").member("event", zigbee::zigbee_event_name(event.kind));
-	if (event.ieee != 0) {
-		char ieee[zigbee::kIeeeText];
-		zigbee::format_ieee(event.ieee, ieee);
-		json.member("ieee", ieee);
-	}
-	if (event.kind == zigbee::ZigbeeEvent::Kind::permit) {
-		json.member("permit_join_s", event.permit_join_s);
-	}
-	json.member("generation", api_.zigbee() != nullptr ? api_.zigbee()->generation() : 0);
-	json.end_object();
-	size_t length = json.length();
-	for (Client& c : clients_) {
-		if (c.used && c.subscribed) {
-			send(c, out_, length);
+	Client* targets[kMaxClients + 1];
+	deliver(targets, subscribed(targets), false, [&](JsonWriter& json) {
+		json.begin_object().member("type", "zigbee").member("event", zigbee::zigbee_event_name(event.kind));
+		if (event.ieee != 0) {
+			char ieee[zigbee::kIeeeText];
+			zigbee::format_ieee(event.ieee, ieee);
+			json.member("ieee", ieee);
 		}
-	}
+		if (event.kind == zigbee::ZigbeeEvent::Kind::permit) {
+			json.member("permit_join_s", event.permit_join_s);
+		}
+		json.member("generation", api_.zigbee() != nullptr ? api_.zigbee()->generation() : 0);
+		json.end_object();
+		return true;
+	});
 }
 
 void LiveFeed::send_status(Client* only) {
-	JsonWriter json(out_, sizeof(out_));
-	json.begin_object().member("type", "status");
-	api_.write_status(json);
-	json.end_object();
-	if (json.overflowed()) {
-		Log::error(kTag, "status message larger than %u bytes: not sent", static_cast<unsigned>(sizeof(out_)));
-		return;
-	}
-	size_t length = json.length();
+	Client* targets[kMaxClients + 1];
+	size_t count = 0;
 	if (only != nullptr) {
-		send(*only, out_, length);
-		return;
+		targets[count++] = only;
+	} else {
+		count = subscribed(targets);
 	}
-	for (Client& c : clients_) {
-		if (c.used && c.subscribed) {
-			send(c, out_, length);
+	deliver(targets, count, false, [this](JsonWriter& json) {
+		json.begin_object().member("type", "status");
+		api_.write_status(json);
+		json.end_object();
+		if (json.overflowed()) {
+			Log::error(kTag, "status message larger than %u bytes: not sent", static_cast<unsigned>(kMessageSize));
+			return false;
 		}
+		return true;
+	});
+	if (only == nullptr) {
+		last_status_ms_ = api_.controller().clock().monotonic_ms();
 	}
-	last_status_ms_ = api_.controller().clock().monotonic_ms();
 }
 
 bool LiveFeed::still_authorized(Client& client) {
@@ -513,43 +590,43 @@ void LiveFeed::flush() {
 	}
 	DatapointModel& model = api_.model();
 	uint64_t now = api_.controller().clock().monotonic_ms();
+	Client* targets[kMaxClients + 1];
+	size_t count = subscribed(targets);
 	size_t index = 0;
-	while (index < pending_count_) {
-		JsonWriter json(out_, sizeof(out_));
-		json.reserve(kClosingReserve);
-		json.begin_object().member("type", "datapoints").member("now_ms", now).key("updates").begin_array();
-		size_t in_message = 0;
-		for (; index < pending_count_; ++index) {
-			const Datapoint* dp = model.get(pending_[index]);
-			if (dp == nullptr) {
-				continue; // the model was replaced meanwhile
-			}
-			JsonWriter::Mark mark = json.mark();
-			json.begin_object().member("id", static_cast<uint32_t>(dp->id()));
-			json.key("value");
-			write_value_json(json, dp->value());
-			json.member("quality", quality_name(dp->quality()))
-				.member("updated_ms", dp->updated_ms())
-				.member("pending", dp->pending())
-				.end_object();
-			if (json.overflowed()) {
-				json.reset(mark);
-				break;
-			}
-			++in_message;
-		}
-		json.release();
-		json.end_array().end_object();
-		if (in_message == 0 && index < pending_count_) {
-			++index; // cannot happen with a 1400-byte buffer; never loop forever
-			continue;
-		}
-		if (in_message > 0) {
-			for (Client& c : clients_) {
-				if (c.used && c.subscribed) {
-					send(c, out_, json.length());
+	while (index < pending_count_ && count > 0) {
+		size_t start = index;
+		bool reached = deliver(targets, count, false, [&](JsonWriter& json) {
+			json.reserve(kClosingReserve);
+			json.begin_object().member("type", "datapoints").member("now_ms", now).key("updates").begin_array();
+			size_t in_message = 0;
+			for (; index < pending_count_; ++index) {
+				const Datapoint* dp = model.get(pending_[index]);
+				if (dp == nullptr) {
+					continue; // the model was replaced meanwhile
 				}
+				JsonWriter::Mark mark = json.mark();
+				json.begin_object().member("id", static_cast<uint32_t>(dp->id()));
+				json.key("value");
+				write_value_json(json, dp->value());
+				json.member("quality", quality_name(dp->quality()))
+					.member("updated_ms", dp->updated_ms())
+					.member("pending", dp->pending())
+					.end_object();
+				if (json.overflowed()) {
+					json.reset(mark);
+					break;
+				}
+				++in_message;
 			}
+			json.release();
+			json.end_array().end_object();
+			if (in_message == 0 && index < pending_count_) {
+				++index; // cannot happen with a 1400-byte buffer; never loop forever
+			}
+			return in_message > 0;
+		});
+		if (!reached && index == start) {
+			break; // no transport had room: every target resynchronizes with a snapshot
 		}
 	}
 	pending_count_ = 0;
@@ -593,36 +670,39 @@ void LiveFeed::pump() {
 			continue;
 		}
 		bool blocked = false;
+		Client* target = &c;
 		for (size_t chunk = 0; chunk < kChunksPerPump && c.snapshot_next != kNoSnapshot; ++chunk) {
 			size_t start = c.snapshot_next;
-			JsonWriter json(out_, sizeof(out_));
-			json.reserve(kClosingReserve);
-			json.begin_object()
-				.member("type", "datapoints")
-				.member("snapshot", true)
-				.member("now_ms", now)
-				.member("count", static_cast<uint32_t>(model.size()))
-				.member("from", static_cast<uint32_t>(start))
-				.key("updates")
-				.begin_array();
 			size_t id = start;
-			for (; id < model.size(); ++id) {
-				JsonWriter::Mark mark = json.mark();
-				WebApi::write_datapoint(json, *model.get(static_cast<uint16_t>(id)));
-				if (json.overflowed()) {
-					json.reset(mark);
-					break;
-				}
-			}
-			if (id == start && id < model.size()) {
-				Log::error(kTag, "datapoint %u does not fit a WebSocket message: skipped in the snapshot",
-					static_cast<unsigned>(id));
-				++id;
-			}
-			json.release();
-			bool done = id >= model.size();
-			json.end_array().member("done", done).end_object();
-			if (!c.transport->ws_send_bulk(c.handle, out_, json.length())) {
+			bool done = false;
+			if (!deliver(&target, 1, true, [&](JsonWriter& json) {
+					json.reserve(kClosingReserve);
+					json.begin_object()
+						.member("type", "datapoints")
+						.member("snapshot", true)
+						.member("now_ms", now)
+						.member("count", static_cast<uint32_t>(model.size()))
+						.member("from", static_cast<uint32_t>(start))
+						.key("updates")
+						.begin_array();
+					for (; id < model.size(); ++id) {
+						JsonWriter::Mark mark = json.mark();
+						WebApi::write_datapoint(json, *model.get(static_cast<uint16_t>(id)));
+						if (json.overflowed()) {
+							json.reset(mark);
+							break;
+						}
+					}
+					if (id == start && id < model.size()) {
+						Log::error(kTag, "datapoint %u does not fit a WebSocket message: skipped in the snapshot",
+							static_cast<unsigned>(id));
+						++id;
+					}
+					json.release();
+					done = id >= model.size();
+					json.end_array().member("done", done).end_object();
+					return true;
+				})) {
 				blocked = true; // retried on writable() or the next tick
 				break;
 			}
@@ -650,8 +730,8 @@ void LiveFeed::monitor_message(Client& client, const JsonSpan& message) {
 			send_error(client, "ws.bad_message", "\"subscribe\" is true or false");
 			return;
 		}
-		JsonWriter json(out_, sizeof(out_));
-		json.begin_object().member("type", "monitor").member("subscribed", on);
+		uint32_t start = 0;
+		bool reset = false;
 		if (on) {
 			JsonSpan since_span;
 			double since = 0;
@@ -661,25 +741,29 @@ void LiveFeed::monitor_message(Client& client, const JsonSpan& message) {
 				send_error(client, "ws.bad_message", "\"since\" is a sequence number");
 				return;
 			}
-			bool reset = false;
-			uint32_t start = has_since ? monitor_.start_of(static_cast<uint32_t>(since), reset) : monitor_.next();
+			start = has_since ? monitor_.start_of(static_cast<uint32_t>(since), reset) : monitor_.next();
 			client.monitor = true;
 			client.monitor_next = start;
-			json.member("since", start).member("first", monitor_.first()).member("next", monitor_.next())
-				.member("capacity", static_cast<uint32_t>(MonitorFeed::kCapacity));
-			if (reset) {
-				json.member("reset", true);
-			}
 			Log::info(kTag, "WebSocket client %u: monitor stream from event %u", static_cast<unsigned>(client.handle),
 				static_cast<unsigned>(start));
 		} else {
 			client.monitor = false;
 		}
-		if (has_ref) {
-			json.key("ref").raw(ref.data, ref.length);
-		}
-		json.end_object();
-		send(client, out_, json.length());
+		deliver_to(client, [&](JsonWriter& json) {
+			json.begin_object().member("type", "monitor").member("subscribed", on);
+			if (on) {
+				json.member("since", start).member("first", monitor_.first()).member("next", monitor_.next())
+					.member("capacity", static_cast<uint32_t>(MonitorFeed::kCapacity));
+				if (reset) {
+					json.member("reset", true);
+				}
+			}
+			if (has_ref) {
+				json.key("ref").raw(ref.data, ref.length);
+			}
+			json.end_object();
+			return true;
+		});
 		if (on) {
 			schedule_monitor_flush();
 		}
@@ -697,16 +781,17 @@ void LiveFeed::monitor_message(Client& client, const JsonSpan& message) {
 		Log::warn(kTag, "WebSocket client %u: monitor %s refused: %s", static_cast<unsigned>(client.handle),
 			is_send ? "send" : "read", reason);
 	}
-	JsonWriter json(out_, sizeof(out_));
-	json.begin_object().member("type", "monitor").member("result", is_send ? "send" : "read").member("ok", ok);
-	if (!ok) {
-		json.member("error", reason).member("code", code);
-	}
-	if (has_ref) {
-		json.key("ref").raw(ref.data, ref.length);
-	}
-	json.end_object();
-	send(client, out_, json.length());
+	deliver_to(client, [&](JsonWriter& json) {
+		json.begin_object().member("type", "monitor").member("result", is_send ? "send" : "read").member("ok", ok);
+		if (!ok) {
+			json.member("error", reason).member("code", code);
+		}
+		if (has_ref) {
+			json.key("ref").raw(ref.data, ref.length);
+		}
+		json.end_object();
+		return true;
+	});
 }
 
 void LiveFeed::schedule_monitor_flush() {
@@ -724,23 +809,31 @@ void LiveFeed::monitor_flush() {
 			continue;
 		}
 		bool blocked = false;
+		Client* target = &c;
 		for (size_t chunk = 0; chunk < kChunksPerPump && c.monitor_next != monitor_.next(); ++chunk) {
-			JsonWriter json(out_, sizeof(out_));
-			json.reserve(MonitorFeed::kClosingReserve);
-			json.begin_object().member("type", "monitor").member("now_ms", now).key("events").begin_array();
-			uint32_t next = monitor_.write_events(json, c.monitor_next, static_cast<size_t>(-1));
-			json.release();
-			if (next == c.monitor_next) {
+			uint32_t next = c.monitor_next;
+			bool skipped = false;
+			if (!deliver(&target, 1, true, [&](JsonWriter& json) {
+					json.reserve(MonitorFeed::kClosingReserve);
+					json.begin_object().member("type", "monitor").member("now_ms", now).key("events").begin_array();
+					next = monitor_.write_events(json, c.monitor_next, static_cast<size_t>(-1));
+					json.release();
+					if (next == c.monitor_next) {
+						skipped = true;
+						return false;
+					}
+					json.end_array().member("next", next).end_object();
+					return true;
+				})) {
+				blocked = true; // retried on writable() or the next tick; the ring may overtake it (gap)
+				break;
+			}
+			if (skipped) {
 				// Cannot happen with 1400 bytes (an event is at most a few hundred); never loop forever.
 				Log::error(kTag, "monitor event %u does not fit a WebSocket message: skipped",
 					static_cast<unsigned>(next));
 				c.monitor_next = next < monitor_.first() ? monitor_.first() : next + 1;
 				continue;
-			}
-			json.end_array().member("next", next).end_object();
-			if (!c.transport->ws_send_bulk(c.handle, out_, json.length())) {
-				blocked = true; // retried on writable() or the next tick; the ring may overtake it (gap)
-				break;
 			}
 			c.monitor_next = next;
 		}

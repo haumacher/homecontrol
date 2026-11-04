@@ -9,20 +9,20 @@
 #include "hc/controller.h"
 #include "hc/ehome_link.h"
 #include "loop_queue.h"
-#include "on_demand_fetcher.h"
+#include "hc/platform/http_fetcher.h"
 #include "web_server.h"
 
 namespace hc {
 namespace esp {
 
 /// The E-Home connection on the device (issue #41, doc/ehome.md): the core's EhomeLink over the
-/// EspWebSocketClient (wss:// with the certificate bundle) and an OnDemandFetcher for the
-/// enrollment (its 8 KB buffer exists only while the enrollment's POST runs), wired to the web
+/// EspWebSocketClient (wss:// with the certificate bundle) and its lane of the one fetch worker
+/// for the enrollment (FetchService, issue #45 item 13), wired to the web
 /// server's API and live feed. It carries the console command `ehome` (console_command(): the
 /// connection's state, the installation key, accepting a key E-Home offered).
 class EhomeService {
 public:
-	EhomeService(Controller& controller, LoopQueue& queue, WebServer& web);
+	EhomeService(LoopQueue& queue, WebServer& web, HttpFetcher& fetcher);
 
 	EhomeService(const EhomeService&) = delete;
 	EhomeService& operator=(const EhomeService&) = delete;
@@ -39,7 +39,7 @@ private:
 	int console(int argc, char** argv);
 
 	EspWebSocketClient client_;
-	OnDemandFetcher fetcher_;
+	HttpFetcher& fetcher_;
 	EhomeLink link_;
 	ConsoleCommand console_command_;
 };

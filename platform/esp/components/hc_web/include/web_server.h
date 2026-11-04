@@ -21,6 +21,7 @@
 #include "hc/platform/crypto.h"
 #include "hc/platform/web_host.h"
 #include "hc/web_api.h"
+#include "hc/ws_send_ring.h"
 #include "loop_queue.h"
 #include "net_services.h"
 #include "ota_service.h"
@@ -51,8 +52,10 @@ public:
 ///   length, freed after the response (507 when the heap has no block that large). A streamed
 ///   response (GET /api/image) is sent chunked, each piece fetched by a job of its own.
 /// - /ws : the WebSocket of the core's LiveFeed. Incoming messages go to the loop the same way;
-///   outgoing messages are copied into a pool of kSendBuffers buffers and sent by work queued to
-///   the httpd task (httpd_queue_work), so the loop never blocks on a socket.
+///   outgoing messages are formatted into (or copied into) one send ring of kSendRingBytes
+///   (hc::WsSendRing: whole messages of variable length, one entry per message for all its
+///   clients) and sent by work queued to the httpd task (httpd_queue_work), so the loop never
+///   blocks on a socket.
 /// - everything else: the UI files, compiled into the firmware (ui_files.h, gzip-compressed, ETag =
 ///   the UI's content hash), extensionless paths fall back to index.html.
 ///
@@ -73,7 +76,9 @@ public:
 	/// login); 4608 B keep 1.9 KB over that. 6144 B before issue #45.
 	static constexpr uint32_t kStack = 4608;
 	static constexpr uint32_t kJobTimeoutMs = 5000;
-	static constexpr size_t kSendBuffers = 8;
+	/// The WebSocket send ring (issue #45 item 7: it replaced a pool of 8 buffers of 1408 bytes,
+	/// 11 264 B): at least two messages of the largest size, many small ones.
+	static constexpr size_t kSendRingBytes = 4096;
 	static constexpr size_t kResponseBuffer = 8192;
 	/// Largest WebSocket message accepted from a client.
 	static constexpr size_t kMaxIncoming = 1024;
@@ -139,11 +144,14 @@ public:
 
 	// WsTransport
 	bool ws_send(uint32_t client, const char* text, size_t length) override;
+	bool ws_send_bulk(uint32_t client, const char* text, size_t length) override;
 	void ws_close(uint32_t client, uint16_t code, const char* reason) override;
+	char* ws_claim(bool bulk) override;
+	void ws_commit(const uint32_t* clients, size_t count, size_t length) override;
+	void ws_abandon() override { ring_.abandon(); }
 
 private:
 	struct Job;
-	struct SendBuffer;
 
 	static esp_err_t api_handler(httpd_req_t* req);
 	static esp_err_t ws_handler(httpd_req_t* req);
@@ -164,6 +172,9 @@ private:
 	esp_err_t handle_file(httpd_req_t* req);
 	void handle_close(int fd);
 	void drain();
+	/// Starts a drain on the httpd task unless one is queued; `refused`: a send did not fit, the
+	/// drain posts writable() afterwards.
+	void kick(bool refused);
 	bool run_on_loop();
 	/// Removes the UI directory an older firmware left in the storage partition (kLegacyUiDir).
 	void remove_legacy_ui();
@@ -204,14 +215,8 @@ private:
 	uint16_t next_generation_ = 1;
 	WsSlot* ws_find(int fd);
 
-	/// The send pool: indices of free buffers and of buffers to send (FIFO).
-	SendBuffer* buffers_;
-	QueueHandle_t free_ = nullptr;
-	QueueHandle_t outgoing_ = nullptr;
-	StaticQueue_t free_control_;
-	StaticQueue_t outgoing_control_;
-	uint8_t free_storage_[kSendBuffers];
-	uint8_t outgoing_storage_[kSendBuffers];
+	/// The send ring (writer: the loop, reader: the httpd task's drain).
+	WsSendRing ring_;
 	std::atomic<bool> drain_queued_{false};
 	std::atomic<bool> starved_{false};
 

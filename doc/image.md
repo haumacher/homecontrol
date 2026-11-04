@@ -192,8 +192,24 @@ load composes the providers itself and drops a pending reload.
 
 Without an image the model holds the providers' datapoints alone: at start when nothing is stored,
 after `DELETE /api/image` (their values kept), after an apply failure without a stored image. The
-first pairing on a fresh device works before E-Home deploys anything. A provider registered while
-an image runs whose plan was not kept (no provider when it was applied) joins with the next load.
+first pairing on a fresh device works before E-Home deploys anything.
+
+**The reload's tables** (issue #45 item 9). A reload needs the image's tables (the datapoints and
+their bindings, the KNX mapping, the time master, the schedules, the history, the external member),
+which the components hold in their own form. The service does not keep the plan for it: a reload
+parses the loaded image's text again, the received text while it is still being stored off the
+loop, otherwise the stored image, read into the stored staging in place as the boot load does
+(#71), and frees the plan when the reload is done. The text is checked against the loaded one
+(its length and CRC-32, taken at the load). Only an image whose text cannot be read back keeps its
+plan, as before: one loaded without storing (a test, `homecontrol --image` stores), or one whose
+store failed (the plan is then parsed from the text before it is released). A reload refuses, with
+the reason in `dynamic_refusal()` and the log, when the stored image is not the loaded one (its store
+failed after the plan could not be kept, or it was replaced behind the service); the providers'
+datapoints then join with the next load. Measured on the host (64-bit, `example.json` with two
+blocks): the kept plan was 5.2 KB of the steady state; a reload's peak is 9.3 KB above the steady
+state instead of 4.1 KB, so the lowest free heap at a Zigbee join stays where it was and the 5.2 KB
+are free the rest of the time; the reload's largest allocation is 2.3 KB (`Swap memory: a provider
+reload parses the stored image again, keeps nothing and takes no large block`).
 
 **LED.** `Controller::led_status()`: pairing, then connecting (network down), then `setup` when no
 image is loaded, `degraded` when the image has KNX datapoints (or a time master) and the KNX tunnel
@@ -220,9 +236,10 @@ The image store, the value store and the history are tested against the contract
 
 ## Memory
 
-With a provider registered (the ESP32-C6 with Zigbee) the service keeps the applied plan, the
-"load tables" the log names for each load ("kept for the providers' reloads"), until the next load
-or unload; a reload allocates the composed spec table and the providers' tables for its duration.
+With a provider registered (the ESP32-C6 with Zigbee) a reload parses the stored image again
+("The reload's tables" above): the plan, the composed spec table and the providers' tables exist
+for its duration only. The applied plan (the "load tables" the log names for each load, "kept for
+the providers' reloads") is kept only for an image that cannot be read back.
 
 On the ESP32-C6 the image service and its components are static (part of the 8.6 KB the `.bss`
 grew); the rules engine, scheduler, value store and history are linked for the first time (flash
@@ -235,7 +252,8 @@ event-loop task's stack (12 KB on the ESP; `image status` prints the reserve lef
 
 A load builds the new image beside the old one, which stays whole until the step that replaces its
 part: the old model goes at `model`, the old rules at `engine`, the old blocks at `block runtime`,
-the kept plan of the old image at `start`, the new image's plan at `release`. The lowest free heap of
+the kept plan of the old image at `start` (only for an image that cannot be read back, issue #45
+item 9), the new image's plan at `release`. The lowest free heap of
 a deploy is therefore the old image's steady state minus the swap's peak above it, minus what other
 tasks take meanwhile (below). The phases, as `ImageService` and the `Loader` report them to a
 `LoadProbe` (`hc/image/load_probe.h`), each named at its end:
@@ -253,8 +271,8 @@ tasks take meanwhile (below). The phases, as `ImageService` and the `Loader` rep
 | `engine` | + the rules' runtime; - the old rules |
 | `block runtime` | + the instances' runtime, the mirrors bound; - the old runtime and set (`BlockRuntime::adopt`) |
 | `technologies` | KNX mapping, time master, schedules, external values, the providers |
-| `start` | the rules and blocks started; - the old image's kept plan (with a provider) |
-| `release` | - the new plan (kept instead with a provider) |
+| `start` | the rules and blocks started; - the old image's kept plan (with a provider, only one that cannot be read back) |
+| `release` | - the new plan (kept instead with a provider when it cannot be read back) |
 | `mqtt`, `view`, `store` | the MQTT member, the UI model, the store (off the loop since #68) |
 
 **What the board showed** (4217c3c, revision 15 of the test system over revision 14, two blocks,

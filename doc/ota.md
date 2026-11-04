@@ -194,8 +194,9 @@ metadata does not count). `-dev` (pre-release) builds update to any newer releas
   (the running version is X) or `update to X abandoned after N attempt(s)` (the updater booted the
   previous image) and erased.
 - **Check.** 15 minutes after start and then every 24 hours, if `update.url` is set and the network
-  is up (otherwise skipped with a log line), and on the console. The manifest is fetched in a
-  short-lived task (8 KB stack, HTTPS verified against the IDF certificate bundle's common CAs, plain
+  is up (otherwise skipped with a log line), and on the console. The manifest and its signature are
+  fetched on the `update` lane of the one fetch worker (doc/external.md "One fetch worker": second
+  after the console's image download, 15 s timeout; the worker's task `hc_fetch` has an 8 KB stack; HTTPS verified against the IDF certificate bundle's common CAs, plain
   HTTP accepted), the decision runs on the event loop. For an applicable update the application
   checks that the image fits ota_0, stores the instruction, makes the updater the boot partition
   (`esp_ota_set_boot_partition(factory)`, which erases otadata) and restarts 2 s later, after the

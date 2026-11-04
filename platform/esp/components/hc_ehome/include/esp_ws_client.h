@@ -76,6 +76,11 @@ public:
 	bool send_ping() override;
 	size_t send_room() override;
 	void want_writable() override;
+	/// A claim never wraps around the queue's end: the rest before it becomes a skip entry the
+	/// sender passes over.
+	char* claim_text(size_t max) override;
+	void commit_text(size_t length) override;
+	void abandon_text() override;
 	void close(uint16_t code, const char* reason) override;
 
 	/// Stack high-water mark of the current session's client task in bytes (0 without one), for

@@ -7,12 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
-#include "esp_crt_bundle.h"
-#endif
 #include "hc/log.h"
 #include "hc/signature.h"
 
@@ -21,7 +17,6 @@ namespace esp {
 
 namespace {
 constexpr const char* kTag = "hc.image";
-constexpr UBaseType_t kTaskPriority = 4;
 } // namespace
 
 int ImageConsole::command(int argc, char** argv) {
@@ -106,12 +101,14 @@ int ImageConsole::load(const char* url, const char* signature) {
 	buffer_ = nullptr;
 	length_ = 0;
 	error_[0] = '\0';
-	if (xTaskCreate(&ImageConsole::download_task, "hc_image_get", kTaskStack, this, kTaskPriority, nullptr) != pdPASS) {
+	capacity_ = 0;
+	const char* error = nullptr;
+	if (!fetcher_.fetch(url_, *this, &error)) {
 		busy_.store(false);
-		std::printf("refused: cannot create the download task (memory)\n");
+		std::printf("refused: %s\n", error);
 		return 1;
 	}
-	std::printf("downloading %s; the log reports the outcome\n", url_);
+	std::printf("downloading %s on the fetch worker; the log reports the outcome\n", url_);
 	return 0;
 }
 
@@ -125,76 +122,53 @@ int ImageConsole::clear() {
 	return 0;
 }
 
-void ImageConsole::download_task(void* context) {
-	ImageConsole* self = static_cast<ImageConsole*>(context);
-	self->download();
-	if (!self->queue_.post(&ImageConsole::downloaded, self, 0, nullptr, "image download")) {
-		std::free(self->buffer_);
-		self->buffer_ = nullptr;
-		self->busy_.store(false);
+bool ImageConsole::fetch_begin(int http_status, size_t content_length) {
+	if (http_status != 200) {
+		std::snprintf(error_, sizeof(error_), "HTTP status %d", http_status);
+		return false;
 	}
-	vTaskDelete(nullptr);
+	bool announced = content_length != FetchReceiver::kUnknownLength;
+	if (announced && content_length > image::kMaxImageBytes) {
+		std::snprintf(error_, sizeof(error_), "the image has %u bytes, the limit is %u",
+			static_cast<unsigned>(content_length), static_cast<unsigned>(image::kMaxImageBytes));
+		return false;
+	}
+	capacity_ = announced && content_length > 0 ? content_length : kGrowth;
+	buffer_ = static_cast<char*>(std::malloc(capacity_));
+	if (buffer_ == nullptr) {
+		std::snprintf(error_, sizeof(error_), "no memory for %u bytes", static_cast<unsigned>(capacity_));
+		return false;
+	}
+	announced_ = announced;
+	return true;
 }
 
-void ImageConsole::download() {
-	esp_http_client_config_t config = {};
-	config.url = url_;
-	config.timeout_ms = kHttpTimeoutMs;
-#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
-	config.crt_bundle_attach = esp_crt_bundle_attach;
-#endif
-	esp_http_client_handle_t client = esp_http_client_init(&config);
-	if (client == nullptr) {
-		std::snprintf(error_, sizeof(error_), "HTTP client not created");
-		return;
-	}
-	esp_err_t err = esp_http_client_open(client, 0);
-	if (err != ESP_OK) {
-		std::snprintf(error_, sizeof(error_), "cannot connect: %s", esp_err_to_name(err));
-	} else {
-		int64_t announced = esp_http_client_fetch_headers(client);
-		int status = esp_http_client_get_status_code(client);
-		size_t capacity = announced > 0 ? static_cast<size_t>(announced) : kGrowth;
-		if (status != 200) {
-			std::snprintf(error_, sizeof(error_), "HTTP status %d", status);
-		} else if (announced > static_cast<int64_t>(image::kMaxImageBytes)) {
-			std::snprintf(error_, sizeof(error_), "the image has %lld bytes, the limit is %u",
-				static_cast<long long>(announced), static_cast<unsigned>(image::kMaxImageBytes));
-		} else if ((buffer_ = static_cast<char*>(std::malloc(capacity))) == nullptr) {
-			std::snprintf(error_, sizeof(error_), "no memory for %u bytes", static_cast<unsigned>(capacity));
-		} else {
-			for (;;) {
-				if (length_ == capacity) {
-					if (announced > 0 || capacity >= image::kMaxImageBytes) {
-						break; // all announced bytes, or the limit: the loader refuses what is too long
-					}
-					size_t grown = capacity + kGrowth;
-					char* bigger = static_cast<char*>(std::realloc(buffer_, grown));
-					if (bigger == nullptr) {
-						std::snprintf(error_, sizeof(error_), "no memory for %u bytes", static_cast<unsigned>(grown));
-						break;
-					}
-					buffer_ = bigger;
-					capacity = grown;
-				}
-				int n = esp_http_client_read(client, buffer_ + length_, static_cast<int>(capacity - length_));
-				if (n < 0) {
-					std::snprintf(error_, sizeof(error_), "read error after %u bytes", static_cast<unsigned>(length_));
-					break;
-				}
-				if (n == 0) {
-					break;
-				}
-				length_ += static_cast<size_t>(n);
-			}
+bool ImageConsole::fetch_chunk(const char* data, size_t size) {
+	if (length_ + size > capacity_) {
+		size_t grown = capacity_ + (size > kGrowth ? size : kGrowth);
+		if (announced_ || grown > image::kMaxImageBytes) {
+			std::snprintf(error_, sizeof(error_), "the image is longer than %s",
+				announced_ ? "announced" : "the limit");
+			return false;
 		}
+		char* bigger = static_cast<char*>(std::realloc(buffer_, grown));
+		if (bigger == nullptr) {
+			std::snprintf(error_, sizeof(error_), "no memory for %u bytes", static_cast<unsigned>(grown));
+			return false;
+		}
+		buffer_ = bigger;
+		capacity_ = grown;
 	}
-	esp_http_client_close(client);
-	esp_http_client_cleanup(client);
+	std::memcpy(buffer_ + length_, data, size);
+	length_ += size;
+	return true;
 }
 
-void ImageConsole::downloaded(void* context, const LoopMessage&) {
-	static_cast<ImageConsole*>(context)->finish();
+void ImageConsole::fetch_end(const FetchResult& result) {
+	if (error_[0] == '\0' && !result.ok) {
+		std::snprintf(error_, sizeof(error_), "%s", result.error);
+	}
+	finish();
 }
 
 void ImageConsole::finish() {

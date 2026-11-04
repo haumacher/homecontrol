@@ -63,6 +63,9 @@ public:
 	}
 	void model_cleared() override {}
 
+	/// A device joined or left (its datapoints are none here): the service reloads the model.
+	void changed() { notify_specs_changed(); }
+
 	void fail_next(hc::DatapointModel& model, const char* victim) {
 		model_ = &model;
 		victim_ = victim;
@@ -930,4 +933,78 @@ TEST_CASE("Swap memory: an image whose external member the device refuses return
 	CHECK(stored.fake.begins == 1);
 	CHECK(rig.sink.sink.count("loading the stored image again") == 1);
 	rig.service.set_external(nullptr);
+}
+
+TEST_CASE("Swap memory: a provider reload parses the stored image again, keeps nothing and takes no large block "
+	"(#45 item 9)") {
+	// With the Zigbee adapter registered the service kept the applied plan for the providers' reloads
+	// (4 KB on the C6 for the test system, growing with the image). Now a reload (a device joins)
+	// reads the stored image into the stored staging and parses it again, as the boot load does.
+	std::string base = fixture_text("example.json");
+	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
+	std::string image = with_blocks(base, 1, 2, "living.temperature", outputs);
+
+	// The steady state with the plan kept (an image loaded without storing still keeps it) and without.
+	long kept = 0;
+	long kept_peak = 0;
+	{
+		SwapRig rig;
+		rig.load(image, false);
+		REQUIRE(rig.service.keeps_plan());
+		rig.clock.now_ms += ImageService::kReloadSpacingMs;
+		rig.settle();
+		kept = rig.held();
+		hc_test::heap_mark();
+		size_t at = hc_test::heap_live();
+		rig.zigbee.changed();
+		rig.settle();
+		kept_peak = static_cast<long>(hc_test::heap_peak()) - static_cast<long>(at);
+	}
+	SwapRig rig;
+	FlashStaging received;
+	FlashStaging stored;
+	rig.service.set_staging(&received);
+	rig.service.set_stored_staging(&stored);
+	REQUIRE(rig.service.load(image.data(), image.size(), Source::api, true));
+	REQUIRE(rig.service.stored_ok());
+	CHECK_FALSE(rig.service.keeps_plan());
+	rig.clock.now_ms += ImageService::kReloadSpacingMs;
+	rig.settle();
+	long held = rig.held();
+	CHECK(held < kept);
+	size_t datapoints = rig.model.size();
+	size_t mappings = rig.adapter.size();
+	uint32_t reloads = rig.service.dynamic_reloads();
+
+	size_t refused = 0;
+	size_t peak = 0;
+	size_t largest = 0;
+	size_t start = 0;
+	{
+		// No doctest call in here: a failed check allocates its message.
+		hc_test::BlockLimit limit(kFragmentedLimit);
+		hc_test::heap_mark();
+		start = hc_test::heap_live();
+		rig.zigbee.changed();
+		rig.settle();
+		peak = hc_test::heap_peak();
+		largest = hc_test::heap_largest();
+		refused = limit.refused();
+	}
+	CHECK(rig.service.dynamic_reloads() == reloads + 1);
+	CHECK(rig.service.dynamic_refusal() == nullptr);
+	CHECK(refused == 0);
+	CHECK(static_cast<long>(largest) <= kStoredLoadLargest);
+	CHECK(stored.fake.begins == 1);
+	CHECK(stored.fake.ends == 1);
+	CHECK_FALSE(rig.service.keeps_plan());
+	CHECK(rig.model.size() == datapoints);
+	CHECK(rig.adapter.size() == mappings);
+	CHECK(rig.service.engine().loaded());
+	CHECK(rig.service.blocks().size() == 2);
+	// Nothing of the reload stays.
+	CHECK(rig.held() <= held);
+	MESSAGE("the kept plan: " << kept - held << " B of the steady state; a reload's peak "
+		<< static_cast<long>(peak) - static_cast<long>(start) << " B above it (" << kept_peak
+		<< " B with the plan kept), largest allocation " << largest << " B");
 }

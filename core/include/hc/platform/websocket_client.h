@@ -77,6 +77,14 @@ public:
 	/// Sends a ping frame; ws_client_pong() reports the answer.
 	virtual bool send_ping() = 0;
 
+	/// Room for one text message of at most `max` bytes (contiguous) in the send queue, to format it
+	/// in place (the live feed, issue #45 item 7), or nullptr when the queue cannot take one now. One
+	/// claim at a time: commit_text() sends its first `length` bytes as one message, abandon_text()
+	/// drops it; no other send comes between.
+	virtual char* claim_text(size_t max) = 0;
+	virtual void commit_text(size_t length) = 0;
+	virtual void abandon_text() = 0;
+
 	/// The longest message a send takes now (0: none; SIZE_MAX: the platform sends synchronously).
 	virtual size_t send_room() = 0;
 

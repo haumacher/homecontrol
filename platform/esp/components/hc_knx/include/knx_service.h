@@ -12,6 +12,7 @@
 #include "hc/dpt.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/telegram_log.h"
+#include "hc/monitor_feed.h"
 #include "hc/knx/tunnel.h"
 #include "loop_queue.h"
 
@@ -60,6 +61,10 @@ public:
 	knx::KnxTunnel& tunnel() { return tunnel_; }
 	knx::KnxAdapter& adapter() { return adapter_; }
 	knx::TelegramLog& telegrams() { return telegrams_; }
+	/// The monitor stream that keeps the telegrams (`knx log` reads them there, issue #45 item 10);
+	/// nullptr until the web server's live feed is set.
+	void set_monitor(const MonitorFeed* monitor) { monitor_ = monitor; }
+	const MonitorFeed* monitor() const { return monitor_; }
 	const DatapointModel& model() const { return model_; }
 	const EspUdpSocket& socket() const { return socket_; }
 	uint64_t now_ms() const { return controller_.clock().monotonic_ms(); }
@@ -76,6 +81,7 @@ private:
 	DatapointModel& model_;
 	EspUdpSocket socket_;
 	knx::TelegramLog telegrams_;
+	const MonitorFeed* monitor_ = nullptr;
 	knx::KnxTunnel tunnel_;
 	knx::KnxAdapter adapter_;
 	uint32_t write_token_ = 0;

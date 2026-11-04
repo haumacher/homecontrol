@@ -180,6 +180,7 @@ void LanguagePacks::timer_due() {
 			phase_ = Phase::idle;
 			restart_ = false;
 			drop_transfer();
+			fetcher_.cancel(); // a request still waiting for the fetch worker does not run any more
 			fail("no answer to the fetch of %s within %u s", url_, static_cast<unsigned>(kFetchTimeoutMs / 1000));
 		} else {
 			arm(deadline_);

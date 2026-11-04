@@ -31,6 +31,8 @@ public:
 
 	bool fetch(const char* url, FetchReceiver& receiver, const char** error) override;
 	bool post(const char* url, const char* body, size_t length, FetchReceiver& receiver, const char** error) override;
+	bool request(const char* url, const char* body, size_t length, uint32_t timeout_ms, FetchReceiver& receiver,
+		const char** error) override;
 	bool busy() const override { return impl_ != nullptr && impl_->busy(); }
 
 	/// Whether the fetcher is allocated (for `lang status`, `external status`).

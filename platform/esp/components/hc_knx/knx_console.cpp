@@ -50,32 +50,33 @@ int status(KnxService& service) {
 	}
 	std::printf("datapoints %u mapped, %u reads pending\n", static_cast<unsigned>(service.adapter().size()),
 		static_cast<unsigned>(service.adapter().reads_pending()));
-	std::printf("telegrams %llu seen (last %u kept: knx log), %u datagrams dropped (ring full), %u too long\n",
-		static_cast<unsigned long long>(service.telegrams().total()), static_cast<unsigned>(service.telegrams().size()),
+	size_t kept = service.monitor() != nullptr ? service.monitor()->count(MonitorEvent::Kind::knx) : 0;
+	std::printf("telegrams %llu seen (%u kept in the monitor: knx log), %u datagrams dropped (ring full), %u too long\n",
+		static_cast<unsigned long long>(service.telegrams().total()), static_cast<unsigned>(kept),
 		static_cast<unsigned>(service.socket().dropped()), static_cast<unsigned>(service.socket().oversized()));
 	return 0;
 }
 
+void print_line(void*, const char* line) {
+	std::printf("%s\n", line);
+}
+
 int log(KnxService& service, int argc, char** argv) {
-	knx::TelegramLog& telegrams = service.telegrams();
-	size_t count = telegrams.size();
+	size_t count = MonitorFeed::kCapacity;
 	if (argc == 3) {
 		char* end = nullptr;
 		long n = std::strtol(argv[2], &end, 10);
 		if (end == argv[2] || *end != '\0' || n <= 0) {
 			return refused("count must be a positive number");
 		}
-		if (static_cast<size_t>(n) < count) {
-			count = static_cast<size_t>(n);
-		}
+		count = static_cast<size_t>(n);
 	}
-	if (telegrams.size() == 0) {
-		std::printf("no group telegrams yet\n");
-		return 0;
+	const MonitorFeed* monitor = service.monitor();
+	if (monitor == nullptr) {
+		return refused("the telegrams are kept by the monitor stream of the web server, which does not run");
 	}
-	char line[knx::TelegramLog::kMaxLine];
-	for (size_t i = telegrams.size() - count; i < telegrams.size(); ++i) {
-		std::printf("%s\n", knx::TelegramLog::format(*telegrams.at(i), &service.model(), line, sizeof(line)));
+	if (monitor->write_knx_log(count, &print_line, nullptr) == 0) {
+		std::printf("no group telegrams among the monitor's last %u events\n", static_cast<unsigned>(MonitorFeed::kCapacity));
 	}
 	return 0;
 }

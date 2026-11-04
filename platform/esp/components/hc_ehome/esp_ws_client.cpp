@@ -43,6 +43,10 @@ constexpr TickType_t kHandoverSlice = pdMS_TO_TICKS(1000);
 
 enum class Kind : uint8_t { opened, text, binary, pong };
 
+/// The opcode of a queue entry the sender passes over: the rest of the queue before a claim that
+/// would have wrapped around its end (claim_text()).
+constexpr uint8_t kSkipEntry = 0xFF;
+
 // The queue takes one snapshot chunk beside the reserve EhomeLink keeps free of the live feed's bulk
 // messages, and the largest single message (a response) whole.
 static_assert(EspWebSocketClient::kSendQueueBytes >=
@@ -97,6 +101,8 @@ struct EspWebSocketClient::Session {
 	uint32_t sent_seen = 0;             ///< Loop only: `sent` at the last room check.
 	std::atomic<bool> writable_wanted{false};
 	bool failed = false;                ///< Sender only: a write failed, the session ends.
+	bool claimed = false;               ///< Loop only: a claim_text() is open at `in`.
+	uint32_t claim_max = 0;             ///< Loop only: its largest length.
 
 	bool deliver(Kind what);
 	void post_closed();
@@ -292,7 +298,7 @@ void EspWebSocketClient::sender(void* context) {
 		}
 		uint32_t length = static_cast<uint32_t>(header[2]) | static_cast<uint32_t>(header[3]) << 8;
 		uint32_t at = static_cast<uint32_t>((s->out + kQueueHeader) % kSendQueueBytes);
-		if (!s->failed && esp_websocket_client_is_connected(s->client)) {
+		if (header[0] != kSkipEntry && !s->failed && esp_websocket_client_is_connected(s->client)) {
 			// A failed write aborts the connection here; its DISCONNECTED event reports the end.
 			s->failed = !s->transmit(header[0], at, length);
 		}
@@ -507,6 +513,59 @@ void EspWebSocketClient::want_writable() {
 			"E-Home socket writable")) {
 			s->writable_wanted.store(true);
 		}
+	}
+}
+
+char* EspWebSocketClient::claim_text(size_t max) {
+	Session* s = session_;
+	if (s == nullptr || s->claimed || !esp_websocket_client_is_connected(s->client) || max > 0xFFFF) {
+		return nullptr;
+	}
+	size_t free = queue_free(*s);
+	uint32_t at = static_cast<uint32_t>((s->in + kQueueHeader) % kSendQueueBytes);
+	if (at + max > kSendQueueBytes) {
+		// The text would wrap around the end (the header does not: then `at` would be at the
+		// front): a skip entry takes the rest, the claim starts at the front.
+		uint32_t rest = static_cast<uint32_t>(kSendQueueBytes - at);
+		if (free < 2 * kQueueHeader + rest + max) {
+			return nullptr;
+		}
+		uint8_t header[kQueueHeader] = {kSkipEntry, 0, static_cast<uint8_t>(rest & 0xFF), static_cast<uint8_t>(rest >> 8)};
+		std::memcpy(s->queue + s->in, header, kQueueHeader);
+		s->in = 0;
+		s->used.fetch_add(kQueueHeader + rest, std::memory_order_release);
+		xTaskNotifyGive(s->sender);
+		at = kQueueHeader;
+	} else if (free < kQueueHeader + max) {
+		return nullptr;
+	}
+	s->claimed = true;
+	s->claim_max = static_cast<uint32_t>(max);
+	return reinterpret_cast<char*>(s->queue + at);
+}
+
+void EspWebSocketClient::commit_text(size_t length) {
+	Session* s = session_;
+	if (s == nullptr || !s->claimed) {
+		return;
+	}
+	s->claimed = false;
+	if (length > s->claim_max) {
+		return;
+	}
+	uint8_t header[kQueueHeader] = {static_cast<uint8_t>(WS_TRANSPORT_OPCODES_TEXT), 0,
+		static_cast<uint8_t>(length & 0xFF), static_cast<uint8_t>(length >> 8)};
+	for (size_t i = 0; i < kQueueHeader; ++i) {
+		s->queue[(s->in + i) % kSendQueueBytes] = header[i];
+	}
+	s->in = static_cast<uint32_t>((s->in + kQueueHeader + length) % kSendQueueBytes);
+	s->used.fetch_add(static_cast<uint32_t>(kQueueHeader + length), std::memory_order_release);
+	xTaskNotifyGive(s->sender);
+}
+
+void EspWebSocketClient::abandon_text() {
+	if (session_ != nullptr) {
+		session_->claimed = false;
 	}
 }
 

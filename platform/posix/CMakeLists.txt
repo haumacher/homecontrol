@@ -85,6 +85,7 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/web_system_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/web_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/live_feed_test.cpp"
+	"${HC_REPO_DIR}/core/test/ws_send_ring_test.cpp"
 	"${HC_REPO_DIR}/core/test/monitor_feed_test.cpp"
 	"${HC_REPO_DIR}/core/test/monitor_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/astro_test.cpp"
@@ -182,6 +183,7 @@ target_sources(hc_tests PRIVATE test/blob_store_probe_test.cpp)
 # files; without them the fetcher speaks plain HTTP and refuses https:// with that reason.
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/external_values_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/external_probe_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/fetch_queue_test.cpp")
 target_sources(hc_posix_web PRIVATE src/httplib_fetcher.cpp)
 find_package(OpenSSL 3.0 QUIET)
 if(OPENSSL_FOUND)

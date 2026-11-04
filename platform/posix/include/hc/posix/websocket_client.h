@@ -47,6 +47,13 @@ public:
 	/// Writes are synchronous (the kernel's socket buffer is the queue): never short of room.
 	size_t send_room() override { return SIZE_MAX; }
 	void want_writable() override {}
+	/// The claim is a buffer of the loop thread; the commit sends it synchronously.
+	char* claim_text(size_t max) override {
+		claim_.resize(max);
+		return claim_.data();
+	}
+	void commit_text(size_t length) override { send_text(claim_.data(), length); }
+	void abandon_text() override {}
 	void close(uint16_t code, const char* reason) override;
 
 	// Implementation: the state shared with the reader thread (websocket_client.cpp).
@@ -60,6 +67,7 @@ private:
 	void reap(bool all);
 
 	LoopExecutor& executor_;
+	std::vector<char> claim_;
 	std::shared_ptr<Shared> shared_;
 	std::shared_ptr<Session> session_;
 	struct Worker {

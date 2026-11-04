@@ -9,7 +9,6 @@
 
 #include "sdkconfig.h"
 
-#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
@@ -18,9 +17,6 @@
 #include "freertos/task.h"
 #include "hc/signature.h"
 #include "hc/version.h"
-#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
-#include "esp_crt_bundle.h"
-#endif
 
 namespace hc {
 namespace esp {
@@ -28,11 +24,6 @@ namespace esp {
 namespace {
 
 constexpr const char* kTag = "hc.ota";
-
-/// The fetch task: TLS handshake and the HTTP client.
-constexpr uint32_t kFetchStack = 8192;
-constexpr UBaseType_t kFetchPriority = 4;
-constexpr int kHttpTimeoutMs = 15000;
 
 const char* ota_state_name(esp_ota_img_states_t state) {
 	switch (state) {
@@ -230,94 +221,77 @@ bool OtaService::check(bool force, const char* base, const char** error) {
 	force_ = force;
 	response_length_ = 0;
 	fetch_error_[0] = '\0';
+	if (fetcher_ == nullptr) {
+		*error = "no HTTP fetcher";
+		return false;
+	}
 	busy_.store(true);
+	stage_ = Stage::manifest;
+	status_ = 0;
 	ESP_LOGI(kTag, "%s %s", force ? "forced update from" : "checking", manifest_url_);
-	if (xTaskCreate(&OtaService::fetch_task, "hc_ota_fetch", kFetchStack, this, kFetchPriority, nullptr) != pdPASS) {
+	if (!fetcher_->fetch(manifest_url_, *this, error)) {
 		busy_.store(false);
-		*error = "cannot create the fetch task (memory)";
 		return false;
 	}
 	return true;
 }
 
-namespace {
+bool OtaService::fetch_begin(int http_status, size_t) {
+	status_ = http_status;
+	full_ = false;
+	return http_status == 200; // another status is an answer: the end decides
+}
 
-/// GETs `url` into `buffer` (at most `capacity` bytes; more is cut, and the parser refuses it). The
-/// HTTP status into `status` (0: no answer); false with the reason in `error` when there is no
-/// usable answer (a status other than 200 is an answer: the caller decides).
-bool fetch_document(const char* url, char* buffer, size_t capacity, size_t& length, int& status, char* error,
-	size_t error_size) {
-	length = 0;
-	status = 0;
-	esp_http_client_config_t config = {};
-	config.url = url;
-	config.timeout_ms = kHttpTimeoutMs;
-#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
-	config.crt_bundle_attach = esp_crt_bundle_attach;
-#endif
-	esp_http_client_handle_t client = esp_http_client_init(&config);
-	if (client == nullptr) {
-		std::snprintf(error, error_size, "HTTP client not created");
+bool OtaService::fetch_chunk(const char* data, size_t size) {
+	char* buffer = stage_ == Stage::manifest ? response_ : signature_;
+	size_t capacity = stage_ == Stage::manifest ? sizeof(response_) : sizeof(signature_);
+	size_t& length = stage_ == Stage::manifest ? response_length_ : signature_length_;
+	size_t n = size < capacity - length ? size : capacity - length;
+	std::memcpy(buffer + length, data, n);
+	length += n;
+	if (length == capacity) {
+		full_ = true; // more is cut, and the parser refuses it
 		return false;
 	}
-	bool ok = true;
-	esp_err_t err = esp_http_client_open(client, 0);
-	if (err != ESP_OK) {
-		std::snprintf(error, error_size, "cannot connect: %s", esp_err_to_name(err));
-		ok = false;
-	} else {
-		esp_http_client_fetch_headers(client);
-		status = esp_http_client_get_status_code(client);
-		while (status == 200 && length < capacity) {
-			int n = esp_http_client_read(client, buffer + length, static_cast<int>(capacity - length));
-			if (n < 0) {
-				std::snprintf(error, error_size, "read error");
-				ok = false;
-				break;
-			}
-			if (n == 0) {
-				break;
-			}
-			length += static_cast<size_t>(n);
-		}
-	}
-	esp_http_client_close(client);
-	esp_http_client_cleanup(client);
-	return ok;
+	return true;
 }
 
-} // namespace
-
-void OtaService::fetch_task(void* context) {
-	OtaService* self = static_cast<OtaService*>(context);
-	int status = 0;
-	if (fetch_document(self->manifest_url_, self->response_, sizeof(self->response_), self->response_length_, status,
-			self->fetch_error_, sizeof(self->fetch_error_)) &&
-		status != 200) {
-		std::snprintf(self->fetch_error_, sizeof(self->fetch_error_), "HTTP status %d", status);
-	}
-	// The manifest's detached signature beside it (doc/ota.md "Manifest signature"): 404 is "not
-	// signed", which the check refuses with that reason; another failure fails the check.
-	self->signature_length_ = 0;
-	self->signature_missing_ = false;
-	if (self->fetch_error_[0] == '\0') {
-		if (fetch_document(self->signature_url_, self->signature_, sizeof(self->signature_), self->signature_length_,
-				status, self->fetch_error_, sizeof(self->fetch_error_))) {
-			if (status == 404) {
-				self->signature_missing_ = true;
-			} else if (status != 200) {
-				std::snprintf(self->fetch_error_, sizeof(self->fetch_error_), "manifest.sig: HTTP status %d", status);
-			}
+void OtaService::fetch_end(const FetchResult& result) {
+	// A cut document is an answer (the parser refuses it), not a transport failure.
+	bool transported = result.ok || full_ || (status_ != 0 && status_ != 200);
+	if (stage_ == Stage::manifest) {
+		if (!transported) {
+			std::snprintf(fetch_error_, sizeof(fetch_error_), "%s", result.error);
+		} else if (status_ != 200) {
+			std::snprintf(fetch_error_, sizeof(fetch_error_), "HTTP status %d", status_);
 		}
+		if (fetch_error_[0] != '\0') {
+			finish_check();
+			return;
+		}
+		// The manifest's detached signature beside it (doc/ota.md "Manifest signature"): 404 is "not
+		// signed", which the check refuses with that reason; another failure fails the check. It waits
+		// for the fetch worker behind nothing of lower priority (FetchService).
+		stage_ = Stage::signature;
+		signature_length_ = 0;
+		signature_missing_ = false;
+		status_ = 0;
+		const char* error = nullptr;
+		if (fetcher_ == nullptr || !fetcher_->fetch(signature_url_, *this, &error)) {
+			std::snprintf(fetch_error_, sizeof(fetch_error_), "manifest.sig: %s",
+				error != nullptr ? error : "no HTTP fetcher");
+			finish_check();
+		}
+		return;
 	}
-	if (!self->queue_.post(&OtaService::handle_fetched, self, 0, nullptr, "update check result")) {
-		self->busy_.store(false);
+	if (status_ == 404) {
+		signature_missing_ = true;
+	} else if (!transported) {
+		std::snprintf(fetch_error_, sizeof(fetch_error_), "%s", result.error);
+	} else if (status_ != 200) {
+		std::snprintf(fetch_error_, sizeof(fetch_error_), "manifest.sig: HTTP status %d", status_);
 	}
-	vTaskDelete(nullptr);
-}
-
-void OtaService::handle_fetched(void* context, const LoopMessage&) {
-	static_cast<OtaService*>(context)->finish_check();
+	finish_check();
 }
 
 void OtaService::finish_check() {

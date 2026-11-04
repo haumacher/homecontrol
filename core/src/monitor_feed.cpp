@@ -4,6 +4,7 @@
 #include "hc/monitor_feed.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include "hc/dpt.h"
@@ -249,6 +250,57 @@ const MonitorEvent* MonitorFeed::find(uint32_t sequence) const {
 		return nullptr;
 	}
 	return &events_[(head_ + (sequence - first())) % kCapacity];
+}
+
+size_t MonitorFeed::count(MonitorEvent::Kind kind) const {
+	size_t n = 0;
+	for (size_t i = 0; i < count_; ++i) {
+		n += events_[(head_ + i) % kCapacity].kind == kind ? 1 : 0;
+	}
+	return n;
+}
+
+const char* MonitorFeed::format_knx(const MonitorEvent& event, char* buffer, size_t size) const {
+	char source[knx::IndividualAddress::kMaxText];
+	char destination[knx::GroupAddress::kMaxText];
+	char hex[knx::GroupData::kMaxData * 3 + 1];
+	const char* name = nullptr;
+	if (event.datapoint != MonitorEvent::kNoDatapoint && is_current(event)) {
+		const Datapoint* dp = model_.get(event.datapoint);
+		if (dp != nullptr) {
+			name = dp->name();
+		}
+	}
+	uint64_t ms = event.ms();
+	size_t length = event.knx.length <= sizeof(event.knx.data) ? event.knx.length : sizeof(event.knx.data);
+	std::snprintf(buffer, size, "%llu.%03u %s %s -> %s %s%s%s%s%s%s%s", static_cast<unsigned long long>(ms / 1000),
+		static_cast<unsigned>(ms % 1000), event.sub == static_cast<uint8_t>(MonitorEvent::KnxDirection::tx) ? "tx" : "rx",
+		knx::IndividualAddress{event.knx.source}.format(source, sizeof(source)),
+		knx::GroupAddress{event.knx.destination}.format(destination, sizeof(destination)),
+		knx::group_service_name(static_cast<knx::GroupService>(event.knx.service)), length > 0 ? " " : "",
+		knx::format_hex(event.knx.data, length, hex, sizeof(hex)), (event.flags & MonitorEvent::kRepeated) != 0 ? " (repeated)" : "",
+		name != nullptr ? " [" : "", name != nullptr ? name : "", name != nullptr ? "]" : "");
+	return buffer;
+}
+
+size_t MonitorFeed::write_knx_log(size_t count, void (*print)(void* context, const char* line), void* context) const {
+	size_t held = this->count(MonitorEvent::Kind::knx);
+	size_t skip = held > count ? held - count : 0;
+	size_t printed = 0;
+	char line[kMaxKnxLine];
+	for (size_t i = 0; i < count_; ++i) {
+		const MonitorEvent& event = events_[(head_ + i) % kCapacity];
+		if (event.kind != MonitorEvent::Kind::knx) {
+			continue;
+		}
+		if (skip > 0) {
+			--skip;
+			continue;
+		}
+		print(context, format_knx(event, line, sizeof(line)));
+		++printed;
+	}
+	return printed;
 }
 
 uint32_t MonitorFeed::start_of(uint32_t since, bool& reset) const {

@@ -577,6 +577,12 @@ bool WebServer::ws_send(uint32_t client, const char* text, size_t length) {
 		length);
 }
 
+void WebServer::ws_commit(const uint32_t* clients, size_t count, size_t length) {
+	for (size_t i = 0; i < count; ++i) {
+		ws_send(clients[i], claim_, length); // a client that is gone reports its close by itself
+	}
+}
+
 void WebServer::ws_close(uint32_t client, uint16_t code, const char* reason) {
 	std::shared_ptr<Connection> connection = find(client);
 	if (connection == nullptr || connection->closing.exchange(true)) {

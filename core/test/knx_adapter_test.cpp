@@ -39,6 +39,7 @@ constexpr uint8_t kReadWrite = DatapointFlags::kWritable | DatapointFlags::kTran
 struct AdapterFixture : hc_test::TunnelFixture {
 	hc::DatapointModel model{clock};
 	TelegramLog log{clock};
+	hc_test::TelegramRecorder recorded;
 	KnxAdapter adapter{loop, clock, model, tunnel, &log};
 	GroupAddress light_status[1] = {GroupAddress::of(1, 0, 2)};
 	GroupAddress temperature_listen[1] = {GroupAddress::of(1, 2, 3)};
@@ -46,6 +47,7 @@ struct AdapterFixture : hc_test::TunnelFixture {
 	GroupAddress setpoint_listen[2] = {GroupAddress::of(2, 0, 1), GroupAddress::of(2, 0, 2)};
 
 	AdapterFixture() {
+		log.set_listener(&recorded);
 		DatapointSpec specs[] = {
 			{"light", ValueType::boolean, kReadWrite},
 			{"temperature", ValueType::real, DatapointFlags::kReadOnStart},
@@ -171,11 +173,11 @@ TEST_CASE("KnxAdapter.WritesAndResponsesReport") {
 	CHECK(f.dp(3).quality() == Quality::good);
 	CHECK_FALSE(f.dp(3).value().as_bool());
 	f.receive(0x0F0F, "00 81"); // unmapped: logged only
-	CHECK(f.log.size() == 5);
-	CHECK(f.log.at(4)->datapoint == TelegramRecord::kNoDatapoint);
-	CHECK(f.log.at(0)->datapoint == 1);
-	CHECK(f.log.at(0)->direction == TelegramRecord::Direction::received);
-	CHECK(f.log.at(0)->source.raw == 0x110A);
+	CHECK(f.recorded.size() == 5);
+	CHECK(f.recorded.at(4)->datapoint == TelegramRecord::kNoDatapoint);
+	CHECK(f.recorded.at(0)->datapoint == 1);
+	CHECK(f.recorded.at(0)->direction == TelegramRecord::Direction::received);
+	CHECK(f.recorded.at(0)->source.raw == 0x110A);
 }
 
 TEST_CASE("KnxAdapter.DecodingRefusalKeepsTheValue") {
@@ -216,8 +218,8 @@ TEST_CASE("KnxAdapter.CommandSendsAGroupWrite") {
 	f.confirm_last();
 	// The other datapoint on the address takes the value; the sender is not reported again.
 	CHECK(f.dp(3).value().as_bool());
-	CHECK(f.log.at(f.log.size() - 1)->direction == TelegramRecord::Direction::sent);
-	CHECK(f.log.at(f.log.size() - 1)->source.raw == 0x11FA);
+	CHECK(f.recorded.at(f.recorded.size() - 1)->direction == TelegramRecord::Direction::sent);
+	CHECK(f.recorded.at(f.recorded.size() - 1)->source.raw == 0x11FA);
 
 	CHECK(f.model.command(2, Value::of_real(50.0)) == DatapointStatus::ok);
 	CHECK(f.last_telegram() == "09 01 02 00 80 80");
@@ -373,7 +375,7 @@ TEST_CASE("KnxAdapter.TransmitOnlyPublishSendsAndAnswersReads") {
 	CHECK(f.dp(1).quality() == Quality::unknown);
 	f.confirm_last();
 	CHECK(f.dp(1).value().as_time() == kNoon); // the display on the address takes it, like the bus devices
-	CHECK(f.log.at(f.log.size() - 1)->datapoint == 0);
+	CHECK(f.recorded.at(f.recorded.size() - 1)->datapoint == 0);
 
 	// A read of the address is answered from the published value.
 	size_t base = f.socket.count(ip::Service::tunneling_request);

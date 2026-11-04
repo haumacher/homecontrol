@@ -18,6 +18,7 @@
 #include "esp_status_light.h"
 #include "hc/controller.h"
 #include "external_service.h"
+#include "fetch_service.h"
 #include "ehome_service.h"
 #include "i18n_service.h"
 #include "mqtt_service.h"
@@ -128,16 +129,21 @@ int zigbee_console(void*, int argc, char** argv) {
 }
 // ---- end Zigbee ----
 
+// ---- the one fetch worker (issue #45 item 13): every HTTP(S) request, one at a time by priority ----
+hc::esp::FetchService& fetches() {
+	return hc::esp::fetch_service(controller(), g_queue);
+}
+
 // ---- external values (issue #17): weather and other HTTP JSON sources as datapoints ----
 hc::esp::ExternalService& external() {
-	static hc::esp::ExternalService instance(controller(), g_queue, g_model);
+	static hc::esp::ExternalService instance(controller(), g_model, fetches().external());
 	return instance;
 }
 // ---- end external values ----
 
 // ---- language packs (issue #24): the release's pack of ui.lang from the update server ----
 hc::esp::I18nService& i18n() {
-	static hc::esp::I18nService instance(controller(), g_queue, g_blobs);
+	static hc::esp::I18nService instance(controller(), fetches().language(), g_blobs);
 	return instance;
 }
 // ---- end language packs ----
@@ -159,7 +165,7 @@ hc::esp::EspWorker g_worker(g_queue);
 hc::esp::EspLoadProbe g_load_probe(g_queue);
 
 hc::esp::ImageConsole& image_console() {
-	static hc::esp::ImageConsole instance(image(), g_queue);
+	static hc::esp::ImageConsole instance(image(), fetches().image());
 	return instance;
 }
 // ---- end runtime image ----
@@ -169,6 +175,7 @@ void loop_task(void*) {
 	g_queue.set_loop(&ctl.loop()); // the messages' run time counts as loop turns (the System page)
 	g_wifi.init(ctl.connectivity());
 	g_services.init(ctl.connectivity(), g_wifi.hostname());
+	g_ota.set_fetcher(&fetches().update());
 	g_ota.init(ctl);
 	bool serial_ready = g_serial.init();
 	ctl.start(); // opens the Improv window
@@ -211,10 +218,11 @@ void loop_task(void*) {
 	web.set_blob_store(&g_blobs);
 	web.set_diagnostics(&g_diag);
 	web.start();
+	knx().set_monitor(&web.feed().monitor()); // `knx log` reads the monitor's ring (issue #45)
 	// ---- end web server ----
 	// ---- E-Home connection (issue #41, doc/ehome.md): outbound to the owner's E-Home, switched on
 	// in the Settings ----
-	static hc::esp::EhomeService ehome(ctl, g_queue, web);
+	static hc::esp::EhomeService ehome(g_queue, web, fetches().enrollment());
 	ehome.start();
 	// ---- end E-Home connection ----
 	if (serial_ready) {

@@ -275,20 +275,27 @@ service's four listener slots); nothing is allocated.
 
 ## The telegram log
 
-`TelegramLog` keeps the last 64 group telegrams (`kCapacity`) in a ring inside the object (no heap):
-time (monotonic and wall clock with its synchronized flag), direction (received, or sent and
-confirmed), source, destination, service, priority, repetition, hop count, the data (one octet for a
-short telegram, none for a read) and the mapped datapoint. Every record has a sequence number, so a
-reader (the console) can ask for what it has not seen (`first_sequence()`, `total()`, `find()`). A
-new mapping clears the datapoint references (the ids may mean other datapoints). Its one
-`TelegramListener` is told about every record as it is stored: the monitor stream (`MonitorFeed`,
-issue #19, spec/api.md "Monitor") is that listener, so nothing polls the log; it adds the decoded
-value of the mapped datapoint and keeps its own ring with KNX, Zigbee and the controller's actions
-for E-Home's group monitor. The console prints a record as
+`TelegramLog` is the tap of the group telegrams: the adapter appends every telegram it saw, the log
+stamps it with the time (monotonic and wall clock with its synchronized flag), counts it (`total()`,
+the `telegrams` of the status) and hands it to its one `TelegramListener`: the monitor stream
+(`MonitorFeed`, issue #19, spec/api.md "Monitor"), which keeps it in its ring of the last 128 events
+with the direction (received, or sent and confirmed), source, destination, service, priority,
+repetition, hop count, the data (one octet for a short telegram, none for a read), the mapped
+datapoint and its decoded value, beside the Zigbee events and the controller's actions for E-Home's
+group monitor. The log keeps no records of its own (issue #45 item 10: its ring of 64 records,
+3 KB, held the same telegrams a second time); the console's `knx log` reads the KNX events of the
+monitor's ring (`MonitorFeed::write_knx_log()`) and prints each as before:
 
 ```
 12.345 rx 1.1.10 -> 1/2/3 write 0C 1A [living.temperature]
 ```
+
+What changed with the shared ring: `knx log` shows the KNX telegrams among the monitor's last 128
+events, so up to 128 on a quiet installation and fewer when rules, commands and Zigbee interleave
+(before: always the last 64 telegrams); the datapoint's name is left out once the model changed
+since the telegram (the event's model generation, as in the monitor stream), where the log used to
+drop it when the KNX mapping was replaced; the monitor runs with the web server's live feed, so
+without the web server `knx log` refuses with that reason.
 
 ## Settings
 
@@ -331,7 +338,7 @@ bsd_udp.cpp`, compiled by both builds.
 | `knx gateway set <host[:port]>` | stores `knx.gateway` and connects to it |
 | `knx gateway clear` | erases `knx.gateway`, closes the tunnel |
 | `knx nat on\|off` | stores `knx.nat` and reconnects in that mode |
-| `knx log [<n>]` | the last n (all 64) group telegrams |
+| `knx log [<n>]` | the last n group telegrams among the monitor's last 128 events |
 | `knx write <ga> <dpt> <value>` | one group write; the confirmation follows in the log |
 | `knx read <ga> <dpt>` | one group read; the decoded response (or "no response within 5 s") follows in the log |
 

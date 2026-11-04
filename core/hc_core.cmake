@@ -30,6 +30,7 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/demo.cpp"
 	"${HC_CORE_DIR}/src/json.cpp"
 	"${HC_CORE_DIR}/src/live_feed.cpp"
+	"${HC_CORE_DIR}/src/ws_send_ring.cpp"
 	"${HC_CORE_DIR}/src/monitor_feed.cpp"
 	"${HC_CORE_DIR}/src/log_ring.cpp"
 	"${HC_CORE_DIR}/src/output_ring.cpp"
@@ -126,6 +127,8 @@ list(APPEND HC_CORE_SOURCES
 # External values: HTTP JSON sources as datapoints, Open-Meteo as the first (issue #17, doc/external.md).
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/external_values.cpp")
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/fetch_body.cpp")
+# One fetch worker for every HTTP request (issue #45 item 13, doc/external.md).
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/fetch_queue.cpp")
 # The Zigbee coordinator's portable half: device database, cluster mapping, adapter (issue #15, doc/zigbee.md).
 list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/zigbee/zcl.cpp"

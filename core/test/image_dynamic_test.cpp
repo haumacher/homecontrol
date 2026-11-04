@@ -905,3 +905,125 @@ TEST_CASE("Image.ZigbeeReportingProbeMixedPeriodicAndOnChangeStaleRule") {
 	CHECK(export_json(f.zigbee, 0).find("\"reporting\":{\"min\":30,\"max\":0,\"change\":2},\"datapoint\":\"bath.humidity\"") !=
 		std::string::npos);
 }
+
+// ---- Reloads without a kept plan (issue #45 item 9) ---------------------------------------------
+
+namespace {
+
+/// What a reload must reproduce of the image's part of the model: per datapoint its name, type,
+/// flags, technology, value and quality.
+struct ModelShape {
+	struct Entry {
+		std::string name;
+		ValueType type;
+		uint16_t flags;
+		const hc::Technology* technology;
+		Value value;
+		hc::Quality quality;
+	};
+	std::vector<Entry> entries;
+	size_t mappings = 0;
+	size_t schedules = 0;
+	size_t history = 0;
+
+	static ModelShape of(DynamicFixture& f, size_t count) {
+		ModelShape shape;
+		for (uint16_t id = 0; id < count; ++id) {
+			const hc::Datapoint& dp = *f.model.get(id);
+			shape.entries.push_back({dp.name(), dp.type(), dp.flags(), dp.technology(), dp.value(), dp.quality()});
+		}
+		shape.mappings = f.adapter.size();
+		shape.schedules = f.service.scheduler().size();
+		shape.history = f.service.history().size();
+		return shape;
+	}
+};
+
+void check_same(const ModelShape& before, const ModelShape& after) {
+	REQUIRE(before.entries.size() == after.entries.size());
+	for (size_t i = 0; i < before.entries.size(); ++i) {
+		const ModelShape::Entry& a = before.entries[i];
+		const ModelShape::Entry& b = after.entries[i];
+		CHECK_MESSAGE(a.name == b.name, "datapoint " << i);
+		CHECK_MESSAGE(a.type == b.type, a.name);
+		CHECK_MESSAGE(a.flags == b.flags, a.name);
+		CHECK_MESSAGE(a.technology == b.technology, a.name);
+		CHECK_MESSAGE(a.value == b.value, a.name);
+		CHECK_MESSAGE(a.quality == b.quality, a.name);
+	}
+	CHECK(before.mappings == after.mappings);
+	CHECK(before.schedules == after.schedules);
+	CHECK(before.history == after.history);
+}
+
+} // namespace
+
+TEST_CASE("Image.ReloadParsesTheStoredImageAgainAndKeepsNoPlan") {
+	DynamicFixture f;
+	f.connect();
+	REQUIRE_MESSAGE(f.load(fixture("example.json")), describe(f.service.report()));
+	f.pump();
+	CHECK_FALSE(f.service.keeps_plan());
+	CHECK(f.service.stored_ok());
+	f.receive(0x0902, "00 81"); // living.light.state on
+	ModelShape before = ModelShape::of(f, f.model.size());
+	REQUIRE(before.entries.size() == 21);
+	CHECK(before.mappings > 0);
+	CHECK(before.schedules > 0);
+	f.provider.set({"fake.a"});
+	f.run_for(2000);
+	REQUIRE(f.model.size() == 22);
+	CHECK(f.service.dynamic_refusal() == nullptr);
+	check_same(before, ModelShape::of(f, 21));
+	CHECK_FALSE(f.service.keeps_plan());
+	// And the same once more (a device leaves): the stored image is read again each time.
+	f.provider.set({});
+	f.run_for(2000);
+	REQUIRE(f.model.size() == 21);
+	check_same(before, ModelShape::of(f, 21));
+	CHECK_FALSE(f.service.keeps_plan());
+}
+
+TEST_CASE("Image.ReloadKeepsThePlanOnlyForAnImageThatCannotBeReadBack") {
+	SUBCASE("loaded without storing: the plan is kept, the reload uses it") {
+		DynamicFixture f;
+		std::string text = fixture("example.json");
+		REQUIRE(f.service.load(text.data(), text.size(), Source::api, false));
+		CHECK(f.service.keeps_plan());
+		ModelShape before = ModelShape::of(f, f.model.size());
+		f.provider.set({"fake.a"});
+		f.run_for(2000);
+		REQUIRE(f.model.size() == 22);
+		check_same(before, ModelShape::of(f, 21));
+	}
+	SUBCASE("its store failed: the plan is kept from the text before it goes") {
+		DynamicFixture f;
+		f.blobs.fail_writes = true;
+		REQUIRE(f.load(fixture("example.json")));
+		CHECK_FALSE(f.service.stored_ok());
+		CHECK(f.service.keeps_plan());
+		CHECK(f.p.sink.contains("kept for the providers' reloads"));
+		ModelShape before = ModelShape::of(f, f.model.size());
+		f.blobs.fail_writes = false;
+		f.provider.set({"fake.a"});
+		f.run_for(2000);
+		REQUIRE(f.model.size() == 22);
+		check_same(before, ModelShape::of(f, 21));
+	}
+	SUBCASE("the stored image changed behind the loaded one: the reload refuses, saying why") {
+		DynamicFixture f;
+		REQUIRE(f.load(fixture("example.json")));
+		CHECK_FALSE(f.service.keeps_plan());
+		std::string other = image_with(R"({"id": "x", "type": "boolean"})");
+		hc::image::ImageStore store(f.blobs);
+		const char* error = nullptr;
+		REQUIRE(store.write(other.data(), other.size(), &error));
+		f.provider.set({"fake.a"});
+		f.run_for(2000);
+		CHECK(f.model.size() == 21);
+		REQUIRE(f.service.dynamic_refusal() != nullptr);
+		CHECK(std::string(f.service.dynamic_refusal()->reason).find("not the loaded one") != std::string::npos);
+		CHECK(f.p.sink.contains("model not reloaded"));
+		CHECK(f.service.loaded());
+	}
+}

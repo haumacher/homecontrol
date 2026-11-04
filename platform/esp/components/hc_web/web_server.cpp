@@ -263,18 +263,14 @@ struct WebServer::Job {
 	size_t text_length = 0;
 };
 
-struct WebServer::SendBuffer {
-	uint32_t handle = 0;
-	bool close = false;
-	uint16_t length = 0;
-	char data[LiveFeed::kMessageSize] = {};
-};
-
 namespace {
 
-/// Static storage: the job, the API's response body and the send pool live in .bss, not on the heap
+/// Static storage: the job, the API's response body and the send ring live in .bss, not on the heap
 /// (doc/core.md: no heap in steady state).
 char g_response[WebServer::kResponseBuffer];
+alignas(4) uint8_t g_send_ring[WebServer::kSendRingBytes];
+static_assert(LiveFeed::kMessageSize == WsSendRing::kMaxMessage && LiveFeed::kMaxClients == WsSendRing::kMaxRecipients,
+	"the send ring holds the live feed's messages");
 /// The chunk a file is sent in: the front of g_response. The httpd task serves one request at a
 /// time, and handle_file() first waits for a job of an earlier request that timed out and may still
 /// write g_response on the loop (wait_job()); the WebSocket feed sends from its own buffers.
@@ -297,14 +293,13 @@ WebServer::WebServer(Controller& controller, DatapointModel& model, LoopQueue& q
 	  api_(controller, model, auth_, *this),
 	  feed_(api_, controller.loop(), *this),
 	  demo_(model, controller.loop(), controller.clock()),
+	  ring_(g_send_ring, sizeof(g_send_ring)),
 	  console_command_{"web", "status | token create <name> | token list | token revoke <name> | session clear | password clear | demo",
 		  "Web server (doc/web.md): state, API tokens for machines (shown once, stored hashed), log out everywhere, reset the device "
 		  "password (onboarding opens again), load the demo datapoints until the next restart",
 		  &WebServer::console_web, this} {
 	static Job job;
 	job_ = &job;
-	static SendBuffer buffers[kSendBuffers];
-	buffers_ = buffers;
 }
 
 bool WebServer::mdns_announced() const {
@@ -505,11 +500,6 @@ bool WebServer::start() {
 	g_server = this;
 	log_heap("before the web server");
 	job_done_ = xSemaphoreCreateBinaryStatic(&job_done_storage_);
-	free_ = xQueueCreateStatic(kSendBuffers, 1, free_storage_, &free_control_);
-	outgoing_ = xQueueCreateStatic(kSendBuffers, 1, outgoing_storage_, &outgoing_control_);
-	for (uint8_t i = 0; i < kSendBuffers; ++i) {
-		xQueueSend(free_, &i, 0);
-	}
 	remove_legacy_ui();
 	Log::info(kTag, "web UI %s, %u files in the firmware", ui::kVersion, static_cast<unsigned>(ui::kFileCount));
 	auth_.start();
@@ -973,55 +963,66 @@ void WebServer::handle_close(int fd) {
 	log_heap("WebSocket client disconnected");
 }
 
-bool WebServer::ws_send(uint32_t client, const char* text, size_t length) {
-	if (server_ == nullptr || length > LiveFeed::kMessageSize) {
-		return false;
-	}
-	uint8_t index = 0;
-	if (xQueueReceive(free_, &index, 0) != pdTRUE) {
-		// Set before the second look: a drain that frees a buffer afterwards sees the flag and posts
+void WebServer::kick(bool refused) {
+	if (refused) {
+		// Set before the drain looks: a drain that frees room afterwards sees the flag and posts
 		// writable().
 		starved_.store(true);
-		if (xQueueReceive(free_, &index, 0) != pdTRUE) {
-			return false;
-		}
 	}
-	SendBuffer& buffer = buffers_[index];
-	buffer.handle = client;
-	buffer.close = false;
-	buffer.length = static_cast<uint16_t>(length);
-	std::memcpy(buffer.data, text, length);
-	xQueueSend(outgoing_, &index, 0);
-	if (!drain_queued_.exchange(true)) {
+	if (server_ != nullptr && !drain_queued_.exchange(true)) {
 		if (httpd_queue_work(server_, &WebServer::drain_work, this) != ESP_OK) {
 			// Sent with the next message (the status heartbeat at the latest).
 			drain_queued_.store(false);
 		}
 	}
-	return true;
+}
+
+char* WebServer::ws_claim(bool bulk) {
+	if (server_ == nullptr) {
+		return nullptr;
+	}
+	char* claim = ring_.claim(LiveFeed::kMessageSize, bulk);
+	if (claim == nullptr) {
+		kick(true);
+	}
+	return claim;
+}
+
+void WebServer::ws_commit(const uint32_t* clients, size_t count, size_t length) {
+	ring_.commit(clients, count, length);
+	kick(false);
+}
+
+bool WebServer::ws_send(uint32_t client, const char* text, size_t length) {
+	if (server_ == nullptr || length > LiveFeed::kMessageSize) {
+		return false;
+	}
+	bool ok = ring_.push(&client, 1, text, length, false, false);
+	kick(!ok);
+	return ok;
+}
+
+bool WebServer::ws_send_bulk(uint32_t client, const char* text, size_t length) {
+	if (server_ == nullptr || length > LiveFeed::kMessageSize) {
+		return false;
+	}
+	bool ok = ring_.push(&client, 1, text, length, false, true);
+	kick(!ok);
+	return ok;
 }
 
 void WebServer::ws_close(uint32_t client, uint16_t code, const char* reason) {
 	if (server_ == nullptr) {
 		return;
 	}
-	uint8_t index = 0;
-	if (xQueueReceive(free_, &index, 0) != pdTRUE) {
-		// No buffer for the close frame: close without one.
+	uint8_t frame[websocket::kMaxControlPayload];
+	size_t length = websocket::encode_close(frame, code, reason != nullptr ? reason : "");
+	if (!ring_.push(&client, 1, reinterpret_cast<const char*>(frame), length, true, false)) {
+		// No room for the close frame: close without one.
 		httpd_sess_trigger_close(server_, handle_fd(client));
 		return;
 	}
-	SendBuffer& buffer = buffers_[index];
-	buffer.handle = client;
-	buffer.close = true;
-	buffer.length = static_cast<uint16_t>(websocket::encode_close(reinterpret_cast<uint8_t*>(buffer.data), code,
-		reason != nullptr ? reason : ""));
-	xQueueSend(outgoing_, &index, 0);
-	if (!drain_queued_.exchange(true)) {
-		if (httpd_queue_work(server_, &WebServer::drain_work, this) != ESP_OK) {
-			drain_queued_.store(false);
-		}
-	}
+	kick(false);
 }
 
 void WebServer::drain_work(void* arg) {
@@ -1030,21 +1031,24 @@ void WebServer::drain_work(void* arg) {
 
 void WebServer::drain() {
 	drain_queued_.store(false);
-	uint8_t index = 0;
-	while (xQueueReceive(outgoing_, &index, 0) == pdTRUE) {
-		SendBuffer& buffer = buffers_[index];
-		int fd = handle_fd(buffer.handle);
-		WsSlot* slot = ws_find(fd);
-		bool live = slot != nullptr && slot->generation == handle_generation(buffer.handle) && !slot->dead &&
-			httpd_ws_get_fd_info(server_, fd) == HTTPD_WS_CLIENT_WEBSOCKET;
-		if (live) {
+	WsSendRing::Entry entry;
+	while (ring_.front(entry)) {
+		for (size_t i = 0; i < entry.count; ++i) {
+			uint32_t handle = entry.clients[i];
+			int fd = handle_fd(handle);
+			WsSlot* slot = ws_find(fd);
+			bool live = slot != nullptr && slot->generation == handle_generation(handle) && !slot->dead &&
+				httpd_ws_get_fd_info(server_, fd) == HTTPD_WS_CLIENT_WEBSOCKET;
+			if (!live) {
+				continue;
+			}
 			httpd_ws_frame_t frame = {};
 			frame.final = true;
-			frame.type = buffer.close ? HTTPD_WS_TYPE_CLOSE : HTTPD_WS_TYPE_TEXT;
-			frame.payload = reinterpret_cast<uint8_t*>(buffer.data);
-			frame.len = buffer.length;
+			frame.type = entry.close ? HTTPD_WS_TYPE_CLOSE : HTTPD_WS_TYPE_TEXT;
+			frame.payload = reinterpret_cast<uint8_t*>(const_cast<char*>(entry.data));
+			frame.len = entry.length;
 			esp_err_t err = httpd_ws_send_frame_async(server_, fd, &frame);
-			if (buffer.close || err != ESP_OK) {
+			if (entry.close || err != ESP_OK) {
 				if (err != ESP_OK) {
 					Log::warn(kTag, "WebSocket client on socket %d not writable (%s): closing it", fd,
 						esp_err_to_name(err));
@@ -1053,7 +1057,7 @@ void WebServer::drain() {
 				httpd_sess_trigger_close(server_, fd);
 			}
 		}
-		xQueueSend(free_, &index, 0);
+		ring_.pop();
 	}
 	if (starved_.exchange(false)) {
 		queue_.post(&WebServer::post_writable, this, 0, nullptr, "WebSocket writable");
@@ -1199,6 +1203,8 @@ int WebServer::web_command(int argc, char** argv) {
 			static_cast<unsigned>(Auth::kMaxTokens));
 		std::printf("live      %u of %u WebSocket clients\n", static_cast<unsigned>(feed_.client_count()),
 			static_cast<unsigned>(LiveFeed::kMaxClients));
+		std::printf("send ring %u of %u B free (lowest %u B)\n", static_cast<unsigned>(ring_.free_bytes()),
+			static_cast<unsigned>(ring_.capacity()), static_cast<unsigned>(ring_.lowest_free()));
 		std::printf("ui        %s, %u files in the firmware\n", ui::kVersion, static_cast<unsigned>(ui::kFileCount));
 		std::printf("heap      %u B free (min %u B)\n", static_cast<unsigned>(esp_get_free_heap_size()),
 			static_cast<unsigned>(esp_get_minimum_free_heap_size()));

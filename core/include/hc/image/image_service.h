@@ -82,8 +82,13 @@ namespace image {
 /// kReloadSpacingMs, and every component is bound again as in a swap (KNX mapping, time master,
 /// value store, history, schedules, external values, the providers); the rules continue: the
 /// image's datapoints keep their ids, the providers' follow them. Without an image the model
-/// holds the providers' datapoints alone. With a provider registered the service keeps the
-/// applied plan's tables (the "load tables" of the log) for these reloads.
+/// holds the providers' datapoints alone. A reload parses the loaded image's text again (issue #45
+/// item 9: its plan duplicates tables that live in the model, the adapters and the scheduler, and
+/// was kept for the reloads, 4 KB and more): the stored image, read into the stored staging as at
+/// boot, or the received text while it is being stored, checked against the loaded text's length
+/// and CRC-32. The plan is kept only for an image that cannot be read back (loaded without
+/// storing, or its store failed); a reload refuses with the reason when the stored image is no
+/// longer the loaded one.
 ///
 /// Threading: everything on the event loop's thread, except store_pending() (any thread) and the
 /// store's job, which runs on the worker's thread and touches only the held body and the ImageStore.
@@ -247,6 +252,9 @@ public:
 	size_t dynamic_datapoints() const { return dynamic_count_; }
 	/// Model reloads done for provider changes since start.
 	uint32_t dynamic_reloads() const { return dynamic_reloads_; }
+	/// Whether the loaded image's plan is kept for the providers' reloads (only when its text cannot
+	/// be read back; otherwise a reload parses it again, issue #45 item 9).
+	bool keeps_plan() const { return plan_ != nullptr; }
 	/// Whether a reload for a provider change is scheduled.
 	bool reload_pending() const { return reload_pending_; }
 	/// Why the last reload for a provider change was refused (its first refusal: the path of the
@@ -283,7 +291,9 @@ private:
 
 	bool load_steps(const char* text, size_t length, Source source, bool store, const uint8_t* signature,
 		ImageBody* holder, Callback stored);
-	bool apply(Plan& plan, Source source);
+	/// `readable`: the text can be read back for a provider reload (stored, being stored, or the
+	/// stored one), so the plan is not kept.
+	bool apply(Plan& plan, Source source, bool readable);
 	/// Tells the probe the outer load ended (once).
 	void end_probe(bool ok);
 	void phase(const char* name) {
@@ -311,6 +321,15 @@ private:
 	bool bind_persistence(const Plan& plan, Source source);
 	bool bind_technologies(const Plan& plan, Source source);
 	bool reload_dynamic(const char* why);
+	/// The loaded image's plan for a reload, parsed again from its text (the received text while it is
+	/// being stored, else the stored image read into `body`); nullptr with the refusal recorded
+	/// (refuse_dynamic()) when the text is not the loaded one or does not parse.
+	Plan* reparse(ImageBody& body, const char* why);
+	/// Keeps a plan of `text` (the loaded image, which cannot be read back: its store failed) for the
+	/// providers' reloads.
+	void keep_plan_of(const char* text, size_t length);
+	/// The Loader as a load runs it (language, the history's caps).
+	bool parse_plan(const char* text, size_t length, Plan& plan, Report& report, LoadProbe* probe);
 	void reload_due();
 	void drop_plan();
 	ImageBindings bindings_of(const Plan* plan) const;
@@ -383,8 +402,12 @@ private:
 	ModelView view_;
 	DynamicSpecProvider* providers_[kMaxProviders] = {};
 	size_t provider_count_ = 0;
-	/// The applied image's plan, kept for provider reloads (only with a provider registered).
+	/// The applied image's plan, kept for provider reloads only when its text cannot be read back
+	/// (with a provider registered; see reparse()).
 	Plan* plan_ = nullptr;
+	/// The loaded image's text: its length and CRC-32, which a reparse() checks.
+	size_t loaded_length_ = 0;
+	uint32_t loaded_crc_ = 0;
 	size_t dynamic_count_ = 0;
 	uint32_t dynamic_reloads_ = 0;
 	bool reload_pending_ = false;

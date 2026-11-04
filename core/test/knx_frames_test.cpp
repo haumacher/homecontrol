@@ -523,51 +523,25 @@ TEST_CASE("KnxGroupValue.TextForms") {
 
 // ---- Telegram log -------------------------------------------------------------------------------
 
-TEST_CASE("KnxTelegramLog.RingWrapsAround") {
+TEST_CASE("KnxTelegramLog.StampsCountsAndHandsOn") {
 	hc_test::FakeClock clock;
 	TelegramLog log(clock);
-	CHECK(log.size() == 0);
-	CHECK(log.at(0) == nullptr);
-	for (uint16_t i = 0; i < TelegramLog::kCapacity + 6; ++i) {
+	hc_test::TelegramRecorder recorded;
+	log.append(TelegramRecord{}); // without a listener: counted only
+	log.set_listener(&recorded);
+	for (uint16_t i = 0; i < 70; ++i) {
 		TelegramRecord record;
 		record.destination = GroupAddress{i};
+		record.monotonic_ms = 1; // the log stamps its own time
 		clock.advance(10);
 		log.append(record);
 	}
-	CHECK(log.size() == TelegramLog::kCapacity);
-	CHECK(log.total() == TelegramLog::kCapacity + 6);
-	CHECK(log.first_sequence() == 6);
-	CHECK(log.at(0)->destination.raw == 6);
-	CHECK(log.at(TelegramLog::kCapacity - 1)->destination.raw == TelegramLog::kCapacity + 5);
-	CHECK(log.at(TelegramLog::kCapacity) == nullptr);
-	CHECK(log.find(5) == nullptr);
-	CHECK(log.find(6)->destination.raw == 6);
-	CHECK(log.find(TelegramLog::kCapacity + 6) == nullptr);
-	CHECK(log.at(0)->monotonic_ms == 1000 + 7 * 10);
+	CHECK(log.total() == 71);
+	REQUIRE(recorded.size() == 70);
+	CHECK(recorded.at(0)->destination.raw == 0);
+	CHECK(recorded.at(0)->monotonic_ms == 1000 + 10);
+	CHECK(recorded.at(69)->destination.raw == 69);
+	CHECK(recorded.at(69)->monotonic_ms == 1000 + 700);
 	log.clear();
-	CHECK(log.size() == 0);
 	CHECK(log.total() == 0);
-}
-
-TEST_CASE("KnxTelegramLog.FormatsWithTheDatapointName") {
-	hc_test::FakeClock clock;
-	clock.now_ms = 12345;
-	TelegramLog log(clock);
-	hc::DatapointModel model(clock);
-	hc::DatapointSpec specs[] = {{"living.temperature", hc::ValueType::real, 0}};
-	REQUIRE(model.load(specs, 1) == hc::DatapointStatus::ok);
-	TelegramRecord record;
-	record.source = IndividualAddress::of(1, 1, 10);
-	record.destination = GroupAddress::of(1, 2, 3);
-	record.service = GroupService::write;
-	record.data[0] = 0x0C;
-	record.data[1] = 0x1A;
-	record.length = 2;
-	record.datapoint = 0;
-	log.append(record);
-	char line[TelegramLog::kMaxLine];
-	CHECK(std::string(TelegramLog::format(*log.at(0), &model, line, sizeof(line))) ==
-		"12.345 rx 1.1.10 -> 1/2/3 write 0C 1A [living.temperature]");
-	log.forget_datapoints();
-	CHECK(std::string(TelegramLog::format(*log.at(0), &model, line, sizeof(line))) == "12.345 rx 1.1.10 -> 1/2/3 write 0C 1A");
 }

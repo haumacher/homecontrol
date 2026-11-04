@@ -34,6 +34,19 @@ public:
 	/// LiveFeed::closed() afterwards as for any other close.
 	virtual void ws_close(uint32_t client, uint16_t code, const char* reason) = 0;
 
+	/// Room of LiveFeed::kMessageSize bytes to format the next message into, in the transport's own
+	/// send queue (no copy; issue #45 item 7), or nullptr when it cannot take a message now (`bulk`:
+	/// as ws_send_bulk() refuses). One claim at a time; the feed ends it with ws_commit() or
+	/// ws_abandon() before it calls the transport again.
+	virtual char* ws_claim(bool bulk) = 0;
+
+	/// Queues the claim's first `length` bytes as one message to each of `clients` (1 to
+	/// LiveFeed::kMaxClients). The claim held the room: it cannot fail.
+	virtual void ws_commit(const uint32_t* clients, size_t count, size_t length) = 0;
+
+	/// Ends the claim without sending it.
+	virtual void ws_abandon() = 0;
+
 protected:
 	~WsTransport() = default;
 };
@@ -52,6 +65,9 @@ protected:
 /// event-loop turn into messages of at most kMessageSize; a client that falls behind the ring gets a
 /// gap marker, never a queue. Monitor messages that cannot be sent wait for writable() or the next
 /// tick (they do not trigger a datapoint resync).
+///
+/// Messages are formatted straight into a claim of the transport's send queue (ws_claim()), so the
+/// feed holds no message buffer of its own; a message to several clients is formatted once.
 ///
 /// Threading: the event loop's thread; the platform calls open/message/closed/writable there.
 class LiveFeed : public DatapointListener {
@@ -146,6 +162,20 @@ private:
 	Client* find(uint32_t handle);
 	void handle_message(Client& client, const char* text, size_t length);
 	void send(Client& client, const char* text, size_t length);
+	/// Formats one message by `format(JsonWriter&)` (false: nothing to send) into a claim of the
+	/// first of `targets`' transports that has room, and sends it to all of them: the clients of that
+	/// transport take the claim itself, the others a copy. A client it cannot reach is marked as
+	/// send() marks it (`bulk`: not marked, the stream resumes). Returns whether every target took it.
+	template <typename Format>
+	bool deliver(Client* const* targets, size_t count, bool bulk, Format&& format);
+	template <typename Format>
+	bool deliver_to(Client& client, Format&& format) {
+		Client* target = &client;
+		return deliver(&target, 1, false, format);
+	}
+	/// Every subscribed client (the broadcast's targets); returns their count.
+	size_t subscribed(Client** targets);
+	void missed(Client& client);
 	void send_error(Client& client, const char* code, const char* text);
 	void refuse_and_close(Client& client, uint16_t ws_code, const char* code, const char* text);
 	void authenticate_token(Client& client, const JsonSpan& message);
@@ -195,7 +225,6 @@ private:
 	bool pump_posted_ = false;
 	StatusSignature last_signature_;
 	uint64_t last_status_ms_ = 0;
-	char out_[kMessageSize] = {};
 	MonitorFeed monitor_;
 	bool monitor_posted_ = false;
 };

@@ -73,6 +73,18 @@ bool OnDemandFetcher::post(const char* url, const char* body, size_t length, Fet
 	return true;
 }
 
+bool OnDemandFetcher::request(const char* url, const char* body, size_t length, uint32_t timeout_ms,
+	FetchReceiver& receiver, const char** error) {
+	if (!prepare(receiver, error)) {
+		return false;
+	}
+	if (!impl_->request(url, body, length, timeout_ms, *this, error)) {
+		receiver_ = nullptr;
+		return false;
+	}
+	return true;
+}
+
 bool OnDemandFetcher::fetch_begin(int http_status, size_t content_length) {
 	return receiver_ != nullptr && receiver_->fetch_begin(http_status, content_length);
 }

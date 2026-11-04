@@ -5,7 +5,7 @@
 #define HC_ESP_I18N_SERVICE_H
 
 #include "console.h"
-#include "on_demand_fetcher.h"
+#include "hc/platform/http_fetcher.h"
 #include "hc/controller.h"
 #include "hc/language_packs.h"
 #include "hc/platform/blob_store.h"
@@ -14,12 +14,12 @@
 namespace hc {
 namespace esp {
 
-/// The language packs on the device (doc/i18n.md): LanguagePacks over the OnDemandFetcher (HTTPS
-/// with the certificate bundle) and the LittleFS blob store (`/storage/state/i18n.<lang>.json.gz`,
+/// The language packs on the device (doc/i18n.md): LanguagePacks over its lane of the one fetch worker
+/// (FetchService, issue #45 item 13; HTTPS with the certificate bundle) and the LittleFS blob store (`/storage/state/i18n.<lang>.json.gz`,
 /// served by the web server at `/i18n/<lang>.json`), and the console command `lang`.
 class I18nService {
 public:
-	I18nService(Controller& controller, LoopQueue& queue, BlobStore& store);
+	I18nService(Controller& controller, HttpFetcher& fetcher, BlobStore& store);
 
 	I18nService(const I18nService&) = delete;
 	I18nService& operator=(const I18nService&) = delete;
@@ -41,7 +41,7 @@ private:
 	void print_status() const;
 
 	Controller& controller_;
-	OnDemandFetcher fetcher_;
+	HttpFetcher& fetcher_;
 	LanguagePacks packs_;
 	ConsoleCommand console_command_;
 };

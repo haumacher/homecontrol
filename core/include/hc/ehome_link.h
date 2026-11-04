@@ -189,6 +189,11 @@ public:
 	bool ws_send(uint32_t client, const char* text, size_t length) override;
 	bool ws_send_bulk(uint32_t client, const char* text, size_t length) override;
 	void ws_close(uint32_t client, uint16_t code, const char* reason) override;
+	/// A claim in the socket's send queue (WebSocketClient::claim_text()), refused as ws_send() and
+	/// ws_send_bulk() refuse.
+	char* ws_claim(bool bulk) override;
+	void ws_commit(const uint32_t* clients, size_t count, size_t length) override;
+	void ws_abandon() override;
 
 	// FetchReceiver: E-Home's answer to the enrollment
 	bool fetch_begin(int http_status, size_t content_length) override;

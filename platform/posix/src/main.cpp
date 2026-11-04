@@ -32,6 +32,7 @@
 #include "hc/demo.h"
 #include "hc/ehome_link.h"
 #include "hc/external_values.h"
+#include "hc/fetch_queue.h"
 #include "hc/image/image_service.h"
 #include "hc/posix/thread_worker.h"
 #include "hc/language_packs.h"
@@ -293,11 +294,17 @@ int main(int argc, char** argv) {
 	// The image's store off the loop (#68); declared after the service, so it ends first.
 	hc::posix::ThreadWorker store_worker(executor);
 	image.set_worker(&store_worker);
+	// One HTTP client for every request, queued by priority (issue #45 item 13, as on the device).
 	hc::posix::HttplibFetcher fetcher(executor);
-	hc::ExternalValues external(controller.loop(), controller.time(), settings, controller.connectivity(), model, fetcher);
+	hc::FetchQueue fetches(controller.loop(), clock, fetcher);
+	hc::FetchQueue::Lane enrollment_lane(fetches, "enrollment", 2);
+	hc::FetchQueue::Lane external_lane(fetches, "external", 3);
+	hc::FetchQueue::Lane language_lane(fetches, "language", 4);
+	hc::ExternalValues external(controller.loop(), controller.time(), settings, controller.connectivity(), model,
+		external_lane);
 	image.set_external(&external);
 	// The web UI's language pack for ui.lang, fetched from the update server (doc/i18n.md).
-	hc::LanguagePacks packs(controller.loop(), controller.time(), settings, controller.connectivity(), fetcher, blobs,
+	hc::LanguagePacks packs(controller.loop(), controller.time(), settings, controller.connectivity(), language_lane, blobs,
 		hc::kVersion);
 	// MQTT (doc/mqtt.md): the node id is "homecontrol-<host name>" as the device's is "homecontrol-<MAC>".
 	char node_id[hc::Mqtt::kMaxNodeId + 1];
@@ -383,15 +390,13 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 	}
-	// The E-Home connection (doc/ehome.md): the enrollment over its own HTTP client, the socket over
-	// plain ws:// (the POSIX client has no TLS). It joins the web server's API and live feed.
+	// The E-Home connection (doc/ehome.md): the enrollment on its lane of the HTTP client, the socket
+	// over plain ws:// (the POSIX client has no TLS). It joins the web server's API and live feed.
 	std::unique_ptr<hc::posix::PosixWebSocketClient> ehome_client;
-	std::unique_ptr<hc::posix::HttplibFetcher> ehome_fetcher;
 	std::unique_ptr<hc::EhomeLink> ehome;
 	if (web) {
 		ehome_client.reset(new hc::posix::PosixWebSocketClient(executor));
-		ehome_fetcher.reset(new hc::posix::HttplibFetcher(executor));
-		ehome.reset(new hc::EhomeLink(web->api(), web->feed(), *ehome_client, *ehome_fetcher));
+		ehome.reset(new hc::EhomeLink(web->api(), web->feed(), *ehome_client, enrollment_lane));
 		ehome->start();
 	}
 	tunnel.start();

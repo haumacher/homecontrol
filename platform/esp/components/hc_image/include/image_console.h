@@ -8,8 +8,8 @@
 #include <cstddef>
 
 #include "hc/image/image_service.h"
+#include "hc/platform/http_fetcher.h"
 #include "hc/signature.h"
-#include "loop_queue.h"
 
 namespace hc {
 namespace esp {
@@ -20,17 +20,17 @@ namespace esp {
 ///   image load <url>    downloads an image (http or https) and loads it like PUT /api/image
 ///   image clear         unloads the image and removes it with its persisted state (DELETE /api/image)
 ///
-/// The download runs in a task of its own into a heap buffer of the announced length (at most
-/// image::kMaxImageBytes); the event loop then loads it and frees the buffer. One at a time.
-class ImageConsole {
+/// The download runs on its lane of the one fetch worker (FetchService, issue #45 item 13: first in
+/// line) into a heap buffer of the announced length (at most image::kMaxImageBytes, grown in
+/// kGrowth steps without one); the event loop then loads it and frees the buffer. One at a time.
+class ImageConsole : private FetchReceiver {
 public:
-	static constexpr uint32_t kTaskStack = 6144;
-	static constexpr uint32_t kHttpTimeoutMs = 10000;
 	/// Buffer growth when the server sends no Content-Length.
 	static constexpr size_t kGrowth = 16384;
 	static constexpr size_t kMaxUrl = 160;
 
-	ImageConsole(image::ImageService& service, LoopQueue& queue) : service_(service), queue_(queue) {}
+	/// `fetcher`: the `image` lane of the FetchService (its timeout 10 s).
+	ImageConsole(image::ImageService& service, HttpFetcher& fetcher) : service_(service), fetcher_(fetcher) {}
 
 	ImageConsole(const ImageConsole&) = delete;
 	ImageConsole& operator=(const ImageConsole&) = delete;
@@ -47,17 +47,20 @@ private:
 	int load(const char* url, const char* signature);
 	int clear();
 
-	static void download_task(void* context);
-	static void downloaded(void* context, const LoopMessage& message);
-	void download();
+	// FetchReceiver
+	bool fetch_begin(int http_status, size_t content_length) override;
+	bool fetch_chunk(const char* data, size_t size) override;
+	void fetch_end(const FetchResult& result) override;
 	void finish();
 
 	image::ImageService& service_;
-	LoopQueue& queue_;
+	HttpFetcher& fetcher_;
 	std::atomic<bool> busy_{false};
 	char url_[kMaxUrl + 1] = {};
 	char* buffer_ = nullptr;
 	size_t length_ = 0;
+	size_t capacity_ = 0;
+	bool announced_ = false;
 	/// The image's signature from the command line (spec/api.md "Signed runtime images").
 	uint8_t signature_[kEd25519SignatureSize] = {};
 	bool has_signature_ = false;

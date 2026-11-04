@@ -174,9 +174,6 @@ bool KnxAdapter::configure(const KnxMapping* mappings, size_t count, const char*
 	pending_count_ = 0;
 	read_cursor_ = count_;
 	held_cursor_ = 0;
-	if (log_ != nullptr) {
-		log_->forget_datapoints();
-	}
 	// A command held across an image swap (the model kept its mark by name) is sent only if the new
 	// mapping sends the datapoint.
 	for (size_t i = 0; i < count_; ++i) {
@@ -215,9 +212,6 @@ void KnxAdapter::clear() {
 	pending_count_ = 0;
 	read_cursor_ = 0;
 	held_cursor_ = 0;
-	if (log_ != nullptr) {
-		log_->forget_datapoints();
-	}
 }
 
 size_t KnxAdapter::commands_held() const {

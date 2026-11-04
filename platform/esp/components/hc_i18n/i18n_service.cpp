@@ -26,9 +26,9 @@ constexpr const char* kHelp =
 
 // ---- I18nService ------------------------------------------------------------------------------
 
-I18nService::I18nService(Controller& controller, LoopQueue& queue, BlobStore& store)
+I18nService::I18nService(Controller& controller, HttpFetcher& fetcher, BlobStore& store)
 	: controller_(controller),
-	  fetcher_(controller.loop(), controller.clock(), queue),
+	  fetcher_(fetcher),
 	  packs_(controller.loop(), controller.time(), controller.settings(), controller.connectivity(), fetcher_, store,
 		  kVersion),
 	  console_command_{"lang", kHint, kHelp, &I18nService::console_entry, this} {}
@@ -77,7 +77,7 @@ void I18nService::print_status() const {
 	for (size_t i = 0; i < packs_.offer_count(); ++i) {
 		std::printf("%s%s (%s)", i > 0 ? ", " : "", packs_.offer(i).code, packs_.offer(i).name);
 	}
-	std::printf("\nfetcher   %s\n", fetcher_.allocated() ? "allocated" : "free");
+	std::printf("\nfetch     %s\n", fetcher_.busy() ? "waiting or running on the fetch worker" : "idle");
 }
 
 } // namespace esp

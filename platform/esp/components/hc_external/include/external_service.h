@@ -9,13 +9,13 @@
 #include "hc/datapoint.h"
 #include "hc/external_values.h"
 #include "loop_queue.h"
-#include "on_demand_fetcher.h"
+#include "hc/platform/http_fetcher.h"
 
 namespace hc {
 namespace esp {
 
-/// External values on the device (issue #17, doc/external.md): the core's ExternalValues over an
-/// OnDemandFetcher (the HTTP client exists only while a fetch runs, issue #44), wired to the
+/// External values on the device (issue #17, doc/external.md): the core's ExternalValues over its lane
+/// of the one fetch worker (FetchService, issue #45 item 13), wired to the
 /// controller's loop, time service, settings (location.lat/lon) and network. Configured by the
 /// runtime image's `external` member (issue #8: values().configure_json()); without a configuration
 /// it does nothing and holds no fetcher.
@@ -24,7 +24,7 @@ namespace esp {
 /// table).
 class ExternalService {
 public:
-	ExternalService(Controller& controller, LoopQueue& queue, DatapointModel& model);
+	ExternalService(Controller& controller, DatapointModel& model, HttpFetcher& fetcher);
 
 	ExternalService(const ExternalService&) = delete;
 	ExternalService& operator=(const ExternalService&) = delete;
@@ -45,7 +45,7 @@ private:
 
 	Controller& controller_;
 	DatapointModel& model_;
-	OnDemandFetcher fetcher_;
+	HttpFetcher& fetcher_;
 	ExternalValues values_;
 	ConsoleCommand console_command_;
 };

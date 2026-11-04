@@ -138,9 +138,14 @@ public:
 	// WsTransport (loop thread)
 	bool ws_send(uint32_t client, const char* text, size_t length) override;
 	void ws_close(uint32_t client, uint16_t code, const char* reason) override;
+	/// The claim is one buffer of the loop thread; a commit sends it synchronously to each client.
+	char* ws_claim(bool) override { return claim_; }
+	void ws_commit(const uint32_t* clients, size_t count, size_t length) override;
+	void ws_abandon() override {}
 
 private:
 	struct Connection;
+	char claim_[LiveFeed::kMessageSize] = {};
 
 	void http_thread();
 	void ws_accept_thread();

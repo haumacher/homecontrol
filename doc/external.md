@@ -14,7 +14,8 @@ on `weather.temperature`.
 | core: `ExternalValues` | The sources and bindings, when to fetch, the conditions, the backoff, parsing (`json_parse`, `JsonSpan`), extraction, conversion, reporting, the stale rule, the refusals. |
 | platform: `hc::HttpFetcher` (`core/include/hc/platform/http_fetcher.h`) | One GET (or POST) at a time: `fetch(url, receiver, error)`. The response streams to the `FetchReceiver` on the event loop's thread, never from within `fetch()` (issue #43): `fetch_begin(status, content_length or kUnknownLength)`, `fetch_chunk(data, size)` per piece of the body, then always one `fetch_end(FetchResult)` (ok, complete, HTTP status, length, aborted, reason); `false` from begin or a chunk aborts. The platform holds no body: every limit is the receiver's. |
 | core: `FetchBody` (`core/include/hc/fetch_body.h`) | The JSON consumers' accumulator over a buffer of their own size: refuses an announced or delivered body above it with a reason that names the limit ("the response is larger than 8192 bytes"). |
-| ESP: `hc::esp::EspHttpFetcher` (component `hc_external`) | esp_http_client with the IDF certificate bundle, a short-lived worker task per fetch (8 KB stack, the OTA update check's pattern). The task reads at most 2 KB into its piece buffer, posts the piece through the `LoopQueue` and waits on a semaphore until the loop ran the receiver (the hand-over of `hc_ehome`'s WebSocket client); the receiver's answer decides whether it reads on. About 3 KB, created on the heap by `OnDemandFetcher` for a fetch and freed 2 s after the end. |
+| core: `FetchQueue` (`core/include/hc/fetch_queue.h`) | One fetch worker for every request (issue #45 item 13, "One fetch worker" below): a `Lane` per consumer, each an `HttpFetcher`, whose requests run one at a time on the platform's fetcher, by priority, each with its own timeout. |
+| ESP: `hc::esp::EspHttpFetcher` (component `hc_external`) | esp_http_client with the IDF certificate bundle, a short-lived worker task `hc_fetch` per request (8 KB stack; the timeout the lane gives, `HttpFetcher::request()`). The task reads at most 2 KB into its piece buffer, posts the piece through the `LoopQueue` and waits on a semaphore until the loop ran the receiver (the hand-over of `hc_ehome`'s WebSocket client); the receiver's answer decides whether it reads on. About 3 KB, created on the heap by `OnDemandFetcher` for a fetch and freed 2 s after the end. |
 | POSIX: `hc::posix::HttplibFetcher` | cpp-httplib's client on a worker thread; its response handler and content receiver run each receiver call through the web server's `LoopExecutor` (which waits for the loop). HTTPS only when the build finds OpenSSL's development files (CMake prints which); otherwise `https://` is refused with that reason and `http://` works. |
 | tests: `FakeFetcher` (`core/test/external_values_test.cpp`), `respond()` (`core/test/fake_fetch.h`) | Records the requests; the test answers them in pieces as the platforms do. |
 
@@ -84,21 +85,57 @@ stay limits and cap the table at the 11 KB it used to take always. The previous 
 (during a reconfiguration both exist). Each fetch takes a `kMaxBody` (8 KB) buffer on the heap for
 the response while it is in flight (the JSON is parsed as a whole) and frees it at the end. The
 `ExternalValues` object itself is about 700 bytes; it uses one event-loop timer. On the device the
-service holds an `OnDemandFetcher`: no fetcher exists without a fetch, so an installation without
-sources pays nothing (the static `EspHttpFetcher` with its 12 KB body buffer, 12.5 KB of .bss, is
-gone); each fetch creates the fetcher (3 KB) and a worker task (8 KB stack), and esp_http_client
-with mbedTLS allocates its TLS buffers for the duration of the request, as the OTA update check
-does.
+service fetches on its lane of the one fetch worker (below): no fetcher exists without a fetch, so
+an installation without sources pays nothing; a fetch creates the fetcher (3 KB) and the worker
+task (8 KB stack), and esp_http_client with mbedTLS allocates its TLS buffers for the duration of
+the request.
+
+## One fetch worker
+
+Every HTTP(S) request of the device runs on one worker (issue #45 item 13): `hc::esp::FetchService`
+(component `hc_external`) holds one `OnDemandFetcher` and the core's `FetchQueue` over it, and a
+lane per consumer, in this order of priority:
+
+| Lane | Consumer | Timeout |
+|---|---|---|
+| `image` | the console's `image load <url>` (hc_image) | 10 s |
+| `update` | the OTA update check, the manifest and its signature (hc_ota) | 15 s |
+| `enrollment` | the E-Home enrollment's POST (hc_ehome) | 15 s |
+| `external` | the external values (this document) | 15 s |
+| `language` | the language packs (hc_i18n) | 15 s |
+
+A request starts at once when the worker is free and nothing waits (a refusal of the worker, such
+as no memory for its task, is then the consumer's refusal as before). Otherwise it waits with a copy
+of its URL and body on the heap, and when the worker is free the waiting request of the highest
+priority runs, in the order of arrival among equals; each keeps its own timeout on the worker. A
+request waits at most 120 s (`FetchQueue::kDefaultWaitMs`; the others' timeouts bound the wait
+anyway) and then ends without having run ("waited 120 s for the fetch worker (busy with ...)").
+`HttpFetcher::cancel()` (a lane's) drops a waiting request or aborts a running one at its next
+piece (the enrollment and the language packs call it when their own timeout gives a request up, so a
+request that still waits does not run late); a receiver's
+`false` aborts as with any fetcher; every request ends with exactly one `fetch_end()`. Before, each
+consumer had its own task (8 KB, the image download's 6 KB) and TLS session, and up to five could
+run at once; now the peak is one task stack and one TLS session. The log (tag `hc.fetch`):
+
+```
+fetch 'external' waits for the worker (running: 'language'; 1 waiting)
+fetch 'external' runs after 840 ms waiting
+fetch 'external' not run: waited 120 s for the fetch worker (busy with 'language')
+```
+
+The worker's task is `hc_fetch` (the System page's tasks and `/api/system/diagnostics` list it while
+a request runs). POSIX runs the same queue over its one `HttplibFetcher` (lanes `enrollment`,
+`external`, `language`).
 
 ## Device wiring and console
 
-`hc::esp::ExternalService` (component `hc_external`) owns the `OnDemandFetcher` and the `ExternalValues`, wired
+`hc::esp::ExternalService` (component `hc_external`) owns the `ExternalValues` over the `external` lane, wired
 to the controller's loop, time service, settings and connectivity and to the datapoint model; the
 image loader (issue #8) calls `values().configure_json()`. Console:
 
 ```
 hc> external status
-table <bytes> B, fetcher free
+table <bytes> B, fetch idle
 weather: preset open-meteo every 900 s, 12 fetch(es), 0 failure(s) in a row
   url   https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m&...
   last  ok 312 s ago

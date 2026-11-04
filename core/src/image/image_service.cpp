@@ -275,12 +275,7 @@ bool ImageService::load_steps(const char* text, size_t length, Source source, bo
 		Log::error(kTag, "image (%s) not loaded: no memory", source_name(source));
 		return false;
 	}
-	char language[setting::kMaxUiLangLength + 1];
-	read_ui_lang(controller_.settings(), language, kTag); // as the engine reads it: the rules compile once
-	Loader loader(controller_.clock(), history_limits_.cap_bytes, language);
-	loader.set_archive_cap(history_limits_.archive_cap_bytes);
-	loader.set_probe(probe_);
-	if (!loader.parse(text, length, *plan, report_)) {
+	if (!parse_plan(text, length, *plan, report_, probe_)) {
 		Log::warn(kTag, "image from %s refused (%s): %u problem%s; the %s", source_name(source),
 			report_kind_name(report_.kind), static_cast<unsigned>(report_.total), report_.total == 1 ? "" : "s",
 			loaded_ ? "loaded image stays" : "device keeps no image");
@@ -294,13 +289,18 @@ bool ImageService::load_steps(const char* text, size_t length, Source source, bo
 	size_t arena = plan->arena.bytes();
 	size_t arena_used = plan->arena.used();
 	uint64_t t_parse = clock.monotonic_ms();
-	bool ok = apply(*plan, source);
+	// A provider reload parses the text again (issue #45 item 9) when it can be read back: stored now
+	// or off the loop, or the stored image itself.
+	bool readable = store || source == Source::boot || source == Source::restore;
+	bool ok = apply(*plan, source, readable);
 	if (plan != plan_) {
 		delete plan; // not kept for the providers' reloads
 	}
 	if (!ok) {
 		return false;
 	}
+	loaded_length_ = length;
+	loaded_crc_ = persist::crc32(0, text, length);
 	phase("release");
 	uint64_t t_apply = clock.monotonic_ms();
 	// 7c: the MQTT client, from the applied text (its datapoints are resolved by name against the
@@ -331,6 +331,7 @@ bool ImageService::load_steps(const char* text, size_t length, Source source, bo
 		if (!stored_ok_) {
 			stored_beyond(length, store_error_, sizeof(store_error_));
 			Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", store_error_);
+			keep_plan_of(text, length);
 		} else {
 			warn_storable(length);
 		}
@@ -439,6 +440,7 @@ void ImageService::store_done() {
 		warn_storable(pending_length_);
 	} else {
 		Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", store_error_);
+		keep_plan_of(pending_text_, pending_length_);
 	}
 	pending_text_ = nullptr;
 	pending_length_ = 0;
@@ -701,11 +703,12 @@ bool ImageService::bind_technologies(const Plan& plan, Source source) {
 	return true;
 }
 
-bool ImageService::apply(Plan& plan, Source source) {
+bool ImageService::apply(Plan& plan, Source source, bool readable) {
 	report_.clear();
-	// With providers the plan is kept for their reloads: the `external` text must not point into the
-	// image text, which is freed after the load (the rules are not loaded again).
-	if (provider_count_ > 0 && plan.has_external) {
+	bool keep = provider_count_ > 0 && !readable;
+	// A plan kept for the reloads: the `external` text must not point into the image text, which is
+	// freed after the load (the rules are not loaded again).
+	if (keep && plan.has_external) {
 		char* copy = plan.arena.copy(plan.external.data, plan.external.length);
 		if (copy == nullptr) {
 			report_.add(Report::Kind::no_memory, "external", "no memory to keep the external sources");
@@ -817,14 +820,113 @@ bool ImageService::apply(Plan& plan, Source source) {
 		Log::info(kTag, "image swapped; rules started (%s)", rules::start_reason_name(reason));
 	}
 	phase("start");
-	// Kept for the providers' reloads; the rules' text is gone with the image text.
+	// Kept for the providers' reloads only when the text cannot be read back; the rules' text is
+	// gone with the image text.
 	drop_plan();
-	if (provider_count_ > 0) {
+	if (keep) {
 		plan.has_rules = false;
 		plan.rules = JsonSpan{};
 		plan_ = &plan;
 	}
 	return true;
+}
+
+bool ImageService::parse_plan(const char* text, size_t length, Plan& plan, Report& report, LoadProbe* probe) {
+	char language[setting::kMaxUiLangLength + 1];
+	read_ui_lang(controller_.settings(), language, kTag); // as the engine reads it: the rules compile once
+	Loader loader(controller_.clock(), history_limits_.cap_bytes, language);
+	loader.set_archive_cap(history_limits_.archive_cap_bytes);
+	loader.set_probe(probe);
+	return loader.parse(text, length, plan, report);
+}
+
+void ImageService::keep_plan_of(const char* text, size_t length) {
+	if (provider_count_ == 0 || !loaded_ || plan_ != nullptr || text == nullptr || length != loaded_length_ ||
+		persist::crc32(0, text, length) != loaded_crc_) {
+		return;
+	}
+	Plan* plan = new (std::nothrow) Plan();
+	Report* report = plan != nullptr ? new (std::nothrow) Report() : nullptr;
+	bool ok = report != nullptr && parse_plan(text, length, *plan, *report, nullptr);
+	if (ok && plan->has_external) {
+		char* copy = plan->arena.copy(plan->external.data, plan->external.length);
+		ok = copy != nullptr;
+		plan->external.data = copy;
+	}
+	delete report;
+	if (!ok) {
+		delete plan;
+		Log::warn(kTag, "the image's tables are not kept for the providers' reloads (no memory): a Zigbee device "
+			"that joins appears with the next image load");
+		return;
+	}
+	plan->has_rules = false;
+	plan->rules = JsonSpan{};
+	plan->has_mqtt = false;
+	plan->mqtt = JsonSpan{};
+	plan->rule_set = rules::RuleSet();
+	plan->rules_compiled = false;
+	plan->block_set = blocks::BlockSet();
+	plan->blocks_compiled = false;
+	plan_ = plan;
+	Log::info(kTag, "the image's tables are kept for the providers' reloads (%u bytes): it cannot be read back",
+		static_cast<unsigned>(plan->arena.bytes()));
+}
+
+Plan* ImageService::reparse(ImageBody& body, const char* why) {
+	const char* text = nullptr;
+	size_t length = 0;
+	if (store_pending()) {
+		text = pending_text_; // the received text, held while it is stored (the loaded image)
+		length = pending_length_;
+	} else {
+		size_t bytes = 0;
+		if (!store_.stored(bytes)) {
+			refuse_dynamic("", "the loaded image is not stored: the providers' datapoints join with the next image load");
+			Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
+			return nullptr;
+		}
+		const char* refusal = nullptr;
+		bool missing = false;
+		const char* error = nullptr;
+		if (!body.begin(bytes, stored_staging_, &refusal) || !store_.read(body, missing, &error)) {
+			refuse_dynamic("", "the stored image cannot be read for the reload (%u bytes): %s",
+				static_cast<unsigned>(bytes), error != nullptr ? error : "no memory");
+			Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
+			return nullptr;
+		}
+		text = body.text();
+		length = body.size();
+	}
+	if (text == nullptr || length != loaded_length_ || persist::crc32(0, text, length) != loaded_crc_) {
+		refuse_dynamic("", "the stored image is not the loaded one (its store failed or it changed): the providers' "
+			"datapoints join with the next image load");
+		Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
+		return nullptr;
+	}
+	Plan* plan = new (std::nothrow) Plan();
+	Report* report = plan != nullptr ? new (std::nothrow) Report() : nullptr;
+	if (report == nullptr) {
+		delete plan;
+		refuse_dynamic("", "no memory to read the loaded image again for the reload");
+		Log::error(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
+		return nullptr;
+	}
+	bool ok = parse_plan(text, length, *plan, *report, nullptr);
+	if (!ok) {
+		refuse_dynamic(report->count > 0 ? report->refusals[0].path : "", "the loaded image does not parse again: %s",
+			report->count > 0 ? report->refusals[0].reason : "?");
+		Log::error(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
+		delete report;
+		delete plan;
+		return nullptr;
+	}
+	delete report;
+	// What the reload uses: the tables of the datapoints, the bindings, the history, the schedules
+	// and the KNX mapping; the rules and blocks the check compiled go (the engine keeps its own).
+	plan->rule_set = rules::RuleSet();
+	plan->block_set = blocks::BlockSet();
+	return plan;
 }
 
 void ImageService::drop_plan() {
@@ -866,12 +968,23 @@ bool ImageService::reload_dynamic(const char* why) {
 		Log::error(kTag, "model reload (%s) refused from a datapoint listener", why);
 		return false;
 	}
+	// The loaded image's tables: parsed again from its text for this reload (issue #45 item 9), freed
+	// with the reload; or the plan kept for an image that cannot be read back.
+	struct Reparsed {
+		ImageBody body;
+		Plan* plan = nullptr;
+		~Reparsed() {
+			delete plan;
+			body.release();
+		}
+	} reparsed;
 	const Plan* plan = loaded_ ? plan_ : nullptr;
 	if (loaded_ && plan == nullptr) {
-		refuse_dynamic("", "the loaded image's tables were not kept (no provider when it was applied): the providers' "
-			"datapoints join with the next image load");
-		Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
-		return false;
+		reparsed.plan = reparse(reparsed.body, why);
+		if (reparsed.plan == nullptr) {
+			return false;
+		}
+		plan = reparsed.plan;
 	}
 	Report* report = new (std::nothrow) Report();
 	if (report == nullptr) {

@@ -661,6 +661,35 @@ bool EhomeLink::ws_send_bulk(uint32_t client, const char* text, size_t length) {
 	return send_text(text, length);
 }
 
+char* EhomeLink::ws_claim(bool bulk) {
+	if (phase_ != Phase::connected || !socket_) {
+		return nullptr;
+	}
+	size_t room = client_.send_room();
+	if (held_ != nullptr || room < LiveFeed::kMessageSize || (bulk && room - LiveFeed::kMessageSize < kBulkReserve)) {
+		client_.want_writable(); // the held answer goes first; a full queue retries on ws_client_writable()
+		return nullptr;
+	}
+	char* claim = client_.claim_text(LiveFeed::kMessageSize);
+	if (claim == nullptr) {
+		client_.want_writable();
+	}
+	return claim;
+}
+
+void EhomeLink::ws_commit(const uint32_t* clients, size_t count, size_t length) {
+	(void)clients;
+	if (count == 0) {
+		client_.abandon_text();
+		return;
+	}
+	client_.commit_text(length);
+}
+
+void EhomeLink::ws_abandon() {
+	client_.abandon_text();
+}
+
 void EhomeLink::ws_close(uint32_t client, uint16_t code, const char* reason) {
 	(void)client;
 	(void)code;
@@ -1197,6 +1226,7 @@ void EhomeLink::enroll_timeout() {
 	char text[96];
 	std::snprintf(text, sizeof(text), "no answer from E-Home within %u s", static_cast<unsigned>(kEnrollTimeoutMs / 1000));
 	free_answer();
+	fetcher_.cancel(); // a request still waiting for the fetch worker does not run any more
 	Log::warn(kTag, "enrollment with %s failed: %s", enroll_url_, text);
 	finish_enroll(502, "ehome.unreachable", text);
 }

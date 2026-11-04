@@ -93,6 +93,22 @@ public:
 		return false;
 	}
 
+	/// A GET (`body` nullptr) or a POST of `body` like fetch() and post(), bounded by `timeout_ms` (the
+	/// connect and each read; 0: the platform's own timeout): the request of a FetchQueue lane, which
+	/// keeps each consumer's timeout on the one worker (issue #45 item 13). The default ignores the
+	/// timeout.
+	virtual bool request(const char* url, const char* body, size_t length, uint32_t timeout_ms, FetchReceiver& receiver,
+		const char** error) {
+		(void)timeout_ms;
+		return body != nullptr ? post(url, body, length, receiver, error) : fetch(url, receiver, error);
+	}
+
+	/// Gives up the request in flight (its consumer timed out): a FetchQueue lane drops a waiting one
+	/// and aborts a running one at its next piece; its fetch_end() still follows, never from within
+	/// this call. False when there is none or the fetcher cannot (the default: the request runs to its
+	/// end, the receiver's false aborts it).
+	virtual bool cancel() { return false; }
+
 	/// Whether a fetch is in flight (its fetch_end() not yet returned).
 	virtual bool busy() const = 0;
 

@@ -18,9 +18,9 @@ constexpr const char* kHelp =
 
 } // namespace
 
-EhomeService::EhomeService(Controller& controller, LoopQueue& queue, WebServer& web)
+EhomeService::EhomeService(LoopQueue& queue, WebServer& web, HttpFetcher& fetcher)
 	: client_(queue),
-	  fetcher_(controller.loop(), controller.clock(), queue),
+	  fetcher_(fetcher),
 	  link_(web.api(), web.feed(), client_, fetcher_),
 	  console_command_{"ehome", kHint, kHelp, &EhomeService::console_entry, this} {}
 

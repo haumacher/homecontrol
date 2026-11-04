@@ -9,6 +9,7 @@
 #include <cstdint>
 
 #include "hc/controller.h"
+#include "hc/platform/http_fetcher.h"
 #include "hc/update_check.h"
 #include "loop_queue.h"
 
@@ -23,13 +24,15 @@ namespace esp {
 ///   instruction (the update completed, or the updater gave up and booted this image).
 /// - Checks the update source (setting update.url) kFirstCheckMs after start and every
 ///   kCheckPeriodMs, and on request (console `update check`, `update now`): fetches
-///   `<update.url>/manifest.json` and its signature `manifest.sig` in a short-lived task, refuses a
+///   `<update.url>/manifest.json` and its signature `manifest.sig` on its lane of the one fetch
+///   worker (set_fetcher(); FetchService, issue #45 item 13: second in line after the console's image
+///   download), refuses a
 ///   manifest the release key did not sign (hc::verify_manifest_signature), decides with
 ///   hc::check_update(), and for an applicable update stores the instruction for the updater, makes
 ///   the updater (the factory partition) the boot partition and restarts after kRestartGraceMs.
 ///
 /// Everything except the HTTP fetch runs on the event loop.
-class OtaService : public ConnectivityListener {
+class OtaService : public ConnectivityListener, private FetchReceiver {
 public:
 	static constexpr uint32_t kConfirmAfterMs = 60000;
 	static constexpr uint32_t kFirstCheckMs = 15u * 60u * 1000u;
@@ -37,6 +40,8 @@ public:
 	static constexpr uint32_t kRestartGraceMs = 2000;
 
 	explicit OtaService(LoopQueue& queue);
+	/// The fetcher of the update check (the `update` lane of the FetchService; before init()).
+	void set_fetcher(HttpFetcher* fetcher) { fetcher_ = fetcher; }
 
 	/// Registers with the controller's connectivity and loop, logs the partition the application
 	/// runs from. Call on the event loop before Controller::start().
@@ -73,8 +78,10 @@ public:
 	uint64_t next_check_ms() const { return next_check_ms_; }
 
 private:
-	static void fetch_task(void* context);
-	static void handle_fetched(void* context, const LoopMessage& message);
+	// FetchReceiver: the manifest, then its signature.
+	bool fetch_begin(int http_status, size_t content_length) override;
+	bool fetch_chunk(const char* data, size_t size) override;
+	void fetch_end(const FetchResult& result) override;
 	void periodic_check();
 	void confirm();
 	void confirm_timeout();
@@ -90,8 +97,13 @@ private:
 	bool confirmed_ = false;
 	bool restart_pending_ = false;
 
-	/// The check in flight; the fetch task owns the buffers while busy_ is set.
+	/// The check in flight (both documents).
 	std::atomic<bool> busy_{false};
+	HttpFetcher* fetcher_ = nullptr;
+	enum class Stage : uint8_t { manifest, signature };
+	Stage stage_ = Stage::manifest;
+	int status_ = 0;    ///< The HTTP status of the document being fetched (0: none yet).
+	bool full_ = false; ///< The document filled its buffer (the rest is cut).
 	bool force_ = false;
 	char base_[Settings::kMaxStringLength + 1] = {};
 	char manifest_url_[Settings::kMaxStringLength + 16] = {};

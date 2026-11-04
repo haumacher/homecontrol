@@ -35,19 +35,27 @@ EspHttpFetcher::~EspHttpFetcher() {
 }
 
 bool EspHttpFetcher::fetch(const char* url, FetchReceiver& receiver, const char** error) {
-	if (busy_.load()) {
-		*error = "busy: a fetch is in flight";
-		return false;
-	}
-	post_length_ = 0;
-	return start(url, receiver, error);
+	return request(url, nullptr, 0, 0, receiver, error);
 }
 
 bool EspHttpFetcher::post(const char* url, const char* body, size_t length, FetchReceiver& receiver,
 	const char** error) {
+	if (body == nullptr) {
+		*error = "a POST needs a body";
+		return false;
+	}
+	return request(url, body, length, 0, receiver, error);
+}
+
+bool EspHttpFetcher::request(const char* url, const char* body, size_t length, uint32_t timeout_ms,
+	FetchReceiver& receiver, const char** error) {
 	if (busy_.load()) {
 		*error = "busy: a fetch is in flight";
 		return false;
+	}
+	if (body == nullptr) {
+		post_length_ = 0;
+		return start(url, timeout_ms, receiver, error);
 	}
 	if (length == 0 || length > kMaxPostBody) {
 		*error = "the request body is empty or longer than 384 bytes";
@@ -55,10 +63,10 @@ bool EspHttpFetcher::post(const char* url, const char* body, size_t length, Fetc
 	}
 	std::memcpy(post_body_, body, length);
 	post_length_ = length;
-	return start(url, receiver, error);
+	return start(url, timeout_ms, receiver, error);
 }
 
-bool EspHttpFetcher::start(const char* url, FetchReceiver& receiver, const char** error) {
+bool EspHttpFetcher::start(const char* url, uint32_t timeout_ms, FetchReceiver& receiver, const char** error) {
 	if (busy_.load()) {
 		*error = "busy: a fetch is in flight";
 		return false;
@@ -83,6 +91,7 @@ bool EspHttpFetcher::start(const char* url, FetchReceiver& receiver, const char*
 		return false;
 	}
 	std::memcpy(url_, url, length + 1);
+	timeout_ms_ = timeout_ms != 0 ? timeout_ms : kTimeoutMs;
 	receiver_ = &receiver;
 	status_ = 0;
 	announced_ = FetchReceiver::kUnknownLength;
@@ -95,7 +104,7 @@ bool EspHttpFetcher::start(const char* url, FetchReceiver& receiver, const char*
 	error_[0] = '\0';
 	xSemaphoreTake(consumed_, 0); // no stale token from an earlier fetch
 	busy_.store(true);
-	if (xTaskCreate(&EspHttpFetcher::task, "hc_ext_fetch", kTaskStack, this, kTaskPriority, nullptr) != pdPASS) {
+	if (xTaskCreate(&EspHttpFetcher::task, "hc_fetch", kTaskStack, this, kTaskPriority, nullptr) != pdPASS) {
 		busy_.store(false);
 		*error = "cannot create the fetch task (memory)";
 		return false;
@@ -143,7 +152,7 @@ void EspHttpFetcher::on_event(void* context, const LoopMessage& message) {
 void EspHttpFetcher::run() {
 	esp_http_client_config_t config = {};
 	config.url = url_;
-	config.timeout_ms = kTimeoutMs;
+	config.timeout_ms = static_cast<int>(timeout_ms_);
 	config.buffer_size = 1024;
 #if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
 	config.crt_bundle_attach = esp_crt_bundle_attach;

@@ -6,7 +6,7 @@
 # the core's ExternalValues, and the console command `external`.
 
 idf_component_register(
-	SRCS "esp_http_fetcher.cpp" "external_service.cpp" "on_demand_fetcher.cpp"
+	SRCS "esp_http_fetcher.cpp" "external_service.cpp" "on_demand_fetcher.cpp" "fetch_service.cpp"
 	INCLUDE_DIRS "include"
 	REQUIRES hc_core hc_platform hc_console
 	PRIV_REQUIRES esp_http_client mbedtls freertos log)

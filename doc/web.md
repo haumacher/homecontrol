@@ -18,7 +18,7 @@ history database, no frameworks. The API contract is `spec/api.md`.
 | `core/` `JsonWriter`, `json_parse`, `value_json` | JSON without allocation; datapoint values in JSON |
 | `core/` `LogRing` | the last ~4 KB of log lines for `GET /api/log` |
 | `core/` `DemoTechnology` | eight simulated datapoints for UI development (POSIX `--demo`, console `web demo`) |
-| `platform/esp/components/hc_web` | esp_http_server, the job hand-over to the loop, the WebSocket send pool, LittleFS, the `web` console command |
+| `platform/esp/components/hc_web` | esp_http_server, the job hand-over to the loop, the WebSocket send ring, LittleFS, the `web` console command |
 | `platform/posix/` `WebServer` | cpp-httplib for HTTP, the core codec on a raw socket for the WebSocket |
 | `web/ui/dist/` | the UI: plain ES modules, one stylesheet, no build step |
 | `platform/esp/tools/gen_ui_files.py` | gzip, content hash and the C++ table of the UI compiled into the firmware |
@@ -440,14 +440,25 @@ When the heap is exhausted the image still runs and `GET /api/model` refuses wit
   wildcard URI matching. `CONFIG_HTTPD_WS_SUPPORT`, request headers up to 1 KB
   (`CONFIG_HTTPD_MAX_REQ_HDR_LEN`; browsers exceed the default 512 B), `CONFIG_LWIP_MAX_SOCKETS=16`.
 - The httpd task never touches the core: requests, WebSocket opens and messages go through a static
-  job slot to the event loop; closes and "writable again" are posted. Outgoing WebSocket messages are
-  copied into a pool of 8 buffers of 1400 bytes and sent by work queued to the httpd task
-  (`httpd_queue_work`); a send checks that the socket still belongs to the same connection (socket
-  number plus a generation), a failed send closes the connection. The loop never blocks on a socket.
+  job slot to the event loop; closes and "writable again" are posted. Outgoing WebSocket messages go
+  into one send ring of 4 KB (`hc::WsSendRing`, issue #45 item 7; it replaced a pool of 8 buffers
+  of 1408 bytes, 11 KB) and are sent by work queued to the httpd task (`httpd_queue_work`). The live
+  feed formats a message straight into a claim of the ring (`WsTransport::ws_claim()`, so it has no
+  message buffer of its own any more), and a message to several clients (the status, a batch of
+  updates, a Zigbee event) is one entry naming them all, not a copy per client. A message never
+  straddles the ring's end and is visible to the sender only when complete, so none is torn; a claim
+  that does not fit is refused like a full pool before: the client gets a fresh snapshot (single
+  messages) or the stream resumes on "writable" (snapshot chunks and monitor batches, which keep one
+  largest message of room free for the single ones). The ring holds two messages of the largest size
+  and many small ones (a result or a batch of a few updates is 100 to 300 bytes); `web status`
+  prints its free space and its lowest. A send checks that the socket still belongs to the same
+  connection (socket number plus a generation); a failed send (a slow client whose socket's send
+  timed out) closes that connection, the others of the entry are sent. The loop never blocks on a
+  socket.
 - The `web` console command: `web status`, `web token create|list|revoke`, `web session clear` (log
   out everywhere), `web password clear`, `web demo` (the demo datapoints until the next restart).
 - Static RAM of this package on the C6 (`idf.py size`, .bss): +38 KB, of which the web server object
-  (API, feed, auth) 3.6 KB, the send pool 11 KB, the response buffer 8 KB (files are sent in
+  (API, feed, auth) 2.2 KB, the send ring 4 KB (the send pool 11 KB before issue #45), the response buffer 8 KB (files are sent in
   chunks from its front), the job slot 2.3 KB (the API body and the WebSocket text share it), the
   controller's log ring 4 KB. `GET /api/log` reads that ring in place under its busy flag (no copy;
   lines other tasks log meanwhile are dropped and counted in `dropped`); issue #44. The heap the server takes

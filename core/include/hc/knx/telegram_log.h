@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "hc/datapoint.h"
 #include "hc/knx/address.h"
 #include "hc/knx/cemi.h"
 #include "hc/platform/clock.h"
@@ -54,57 +53,32 @@ protected:
 	~TelegramListener() = default;
 };
 
-/// The last kCapacity group telegrams, for the console (`knx log`) and E-Home's monitor (issue #19).
-/// A fixed ring inside the object: no heap. Every record gets a sequence number (0, 1, 2, ...), so
-/// a reader can ask for what it has not seen yet.
+/// The tap of the group telegrams (issue #19): the KNX adapter appends every telegram it saw
+/// (received, and sent once confirmed), the log stamps it with the monotonic and wall time, counts
+/// it and hands it to its listener, the monitor stream (hc::MonitorFeed), whose ring is where they
+/// are kept: the console's `knx log` reads them there (issue #45 item 10: the log's own ring of 64
+/// records, 3 KB, held the same telegrams a second time). Every record gets a sequence number (0,
+/// 1, 2, ...).
 ///
 /// Threading: called on the event loop's thread.
 class TelegramLog {
 public:
-	static constexpr size_t kCapacity = 64;
-
 	explicit TelegramLog(const Clock& clock) : clock_(clock) {}
 
-	/// Stores a record, stamping the current monotonic and wall time; the oldest is overwritten
-	/// when the ring is full.
+	/// Stamps `record` with the current monotonic and wall time and hands it to the listener.
 	void append(const TelegramRecord& record);
-
-	/// Records held (at most kCapacity).
-	size_t size() const { return count_; }
 
 	/// Records appended since construction (or clear()): the sequence number the next one gets.
 	uint64_t total() const { return total_; }
 
-	/// The sequence number of the oldest record held.
-	uint64_t first_sequence() const { return total_ - count_; }
-
-	/// The record at `index`, 0 the oldest; nullptr outside 0..size()-1.
-	const TelegramRecord* at(size_t index) const;
-
-	/// The record with sequence number `sequence`; nullptr if it was overwritten or not written yet.
-	const TelegramRecord* find(uint64_t sequence) const;
-
-	/// Removes the datapoint references (a new mapping or model: the ids mean other datapoints).
-	void forget_datapoints();
-
-	void clear();
+	void clear() { total_ = 0; }
 
 	/// The one listener (nullptr: none); it must outlive the log or be removed first.
 	void set_listener(TelegramListener* listener) { listener_ = listener; }
 	TelegramListener* listener() const { return listener_; }
 
-	/// Longest line format() writes including the NUL.
-	static constexpr size_t kMaxLine = 192;
-
-	/// Writes "<uptime s> rx 1.1.5 -> 1/2/3 write 0C 1A [name]" (the name from `model` if the record
-	/// has a datapoint and `model` is given). Returns `buffer`.
-	static const char* format(const TelegramRecord& record, const DatapointModel* model, char* buffer, size_t size);
-
 private:
 	const Clock& clock_;
-	TelegramRecord records_[kCapacity];
-	size_t head_ = 0; ///< Index of the oldest record.
-	size_t count_ = 0;
 	uint64_t total_ = 0;
 	TelegramListener* listener_ = nullptr;
 };
