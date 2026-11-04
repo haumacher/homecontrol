@@ -480,7 +480,12 @@ alone into `build-release/<version>/site/`. `--dry-run` also prints the tag comm
 
 **The Pages site** (`.github/workflows/pages.yml`, source "GitHub Actions"; called by the release
 workflow, and run when a release is published by hand, when `web/flasher/` or the site script
-change on master, and by hand; the `github-pages` environment admits `master` and tags `v*`). It downloads
+change on master, and by hand; the `github-pages` environment admits `master` and tags `v*`). The
+deploying job holds the concurrency group `pages` in every workflow that runs it, so two deployments
+never run at once. GitHub Pages takes only the first deployment of a commit (a later one of the same
+SHA reports success and changes nothing): when the tagged commit itself changed `web/flasher/`, the
+master run has deployed that commit before the release existed, and the release's deployment is
+ignored; then run `gh workflow run pages.yml` after the next commit on master. It downloads
 the GitHub releases with `gh`: the newest five completely, the older ones only their language
 packs. The releases are the store; nothing is fetched from the live site, so a deployment is
 reproducible from the releases alone (deleting a GitHub release takes it off the site at the next

@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # The environment holds the release key and admits only tags v*; a dry run uses none.
-    environment: ${{ needs.build.outputs.dry_run == 'true' && '' || 'release' }}
+    environment: ${{ needs.build.outputs.dry_run != 'true' && 'release' || '' }}
     steps:
       - uses: actions/checkout@v4
 
