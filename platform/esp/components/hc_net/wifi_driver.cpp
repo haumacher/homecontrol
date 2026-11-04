@@ -401,7 +401,11 @@ void WifiDriver::handle_disconnected(void* context, const LoopMessage& message) 
 	}
 	if (self->own_disconnect_pending_) {
 		self->own_disconnect_pending_ = false;
-		if (message.number == WIFI_REASON_ASSOC_LEAVE) {
+		// Our own esp_wifi_disconnect(): ASSOC_LEAVE when it left an association, STA_LEAVING when
+		// it cancelled an attempt still scanning or authenticating (a reconnect after a failure).
+		// Counting the latter as a failure made the backoff's next connect cancel the attempt again:
+		// reason 36 on every attempt until one happened to finish in between (14 to 43 s to the network).
+		if (message.number == WIFI_REASON_ASSOC_LEAVE || message.number == WIFI_REASON_STA_LEAVING) {
 			ESP_LOGI(kTag, "disconnected as requested");
 			return;
 		}
