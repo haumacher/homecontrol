@@ -497,7 +497,7 @@ struct ImageService::Composed {
 	};
 
 	Arena arena;
-	DatapointSpec* specs = nullptr;
+	const DatapointSpec* specs = nullptr; ///< The plan's own table when the providers add none.
 	size_t count = 0;
 	size_t image_count = 0;
 	Part parts[kMaxProviders] = {};
@@ -535,20 +535,28 @@ bool ImageService::compose(const Plan* plan, Composed& out, Report& report) {
 			static_cast<unsigned>(total));
 		return false;
 	}
-	out.specs = out.arena.array<DatapointSpec>(total);
+	if (total == out.image_count) {
+		// The providers add nothing: the plan's table as it is (its names are unique, the loader
+		// checked them), no copy beside the old image (homecontrol #70).
+		out.specs = out.image_count > 0 ? plan->datapoints : nullptr;
+		out.count = total;
+		return true;
+	}
+	DatapointSpec* composed = out.arena.array<DatapointSpec>(total);
 	uint32_t* order = out.arena.array<uint32_t>(total);
-	if (total > 0 && (out.specs == nullptr || order == nullptr)) {
+	if (total > 0 && (composed == nullptr || order == nullptr)) {
 		report.add(Report::Kind::no_memory, "", "no memory to compose %u datapoints", static_cast<unsigned>(total));
 		return false;
 	}
+	out.specs = composed;
 	for (size_t i = 0; i < out.image_count; ++i) {
-		out.specs[i] = plan->datapoints[i];
+		composed[i] = plan->datapoints[i];
 	}
 	bool ok = true;
 	for (size_t p = 0; p < out.part_count; ++p) {
 		const Composed::Part& part = out.parts[p];
 		for (size_t k = 0; k < part.count; ++k) {
-			out.specs[part.first + k] = part.specs[k].spec;
+			composed[part.first + k] = part.specs[k].spec;
 			if (part.specs[k].spec.name == nullptr) {
 				report.add(Report::Kind::invalid, "", "the provider '%s' gave a datapoint without a name",
 					part.provider->provider_name());
@@ -701,8 +709,14 @@ bool ImageService::apply(Plan& plan, Source source) {
 		}
 		return false;
 	}
-	// Where each datapoint of the new model was in the old one (the rules follow it by that).
-	uint16_t* previous = composed.arena.array<uint16_t>(composed.count);
+	// Where each datapoint of the new model was in the old one (the rules follow it by that); its own
+	// allocation of two bytes per datapoint, not an arena block (homecontrol #70).
+	struct Previous {
+		uint16_t* ids = nullptr;
+		~Previous() { delete[] ids; }
+	} previous_table;
+	previous_table.ids = composed.count > 0 ? new (std::nothrow) uint16_t[composed.count] : nullptr;
+	uint16_t* previous = previous_table.ids;
 	if (composed.count > 0 && previous == nullptr) {
 		report_.add(Report::Kind::no_memory, "", "no memory for the swap table");
 		return false;

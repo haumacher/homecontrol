@@ -1387,7 +1387,10 @@ TEST_CASE("RulesEngine memory accounting of a 50-rule image") {
 		e.per_timer * set.timer_count() + e.per_node * set.node_count() + e.per_tracked * set.tracked_count() +
 		e.per_silence * set.silence_count() + e.per_action * set.action_count();
 	CHECK(e.runtime >= runtime);
-	CHECK(e.runtime <= runtime + 64 + bench.model.size() / 8 + 8 * 8 + 2 * set.match_count() + 64);
+	// Beside the tables: the runtime object with its list of parts, the chunk lists of the per-rule
+	// and per-parameter tables (one pointer per 16, homecontrol #70), the interest bitmap.
+	size_t chunk_lists = sizeof(void*) * ((set.rule_count() + 15) / 16 + (set.parameter_count() + 15) / 16);
+	CHECK(e.runtime <= runtime + 256 + chunk_lists + bench.model.size() / 8 + 8 * 8 + 2 * set.match_count() + 64);
 	MESSAGE("50 rules, " << set.node_count() << " nodes, " << set.parameter_count() << " parameters, "
 		<< set.timer_count() << " timers: rule set block " << m.block << " bytes (nodes " << m.nodes << ", strings "
 		<< m.strings << ", constants " << m.constants << "), runtime block " << e.runtime << " bytes, engine object "

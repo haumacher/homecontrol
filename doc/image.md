@@ -192,74 +192,115 @@ event-loop task's stack (12 KB on the ESP; `image status` prints the reserve lef
 A load builds the new image beside the old one, which stays whole until the step that replaces its
 part: the old model goes at `model`, the old rules at `engine`, the old blocks at `block runtime`,
 the kept plan of the old image at `start`, the new image's plan at `release`. The lowest free heap of
-a deploy is therefore the old image's steady state minus the swap's peak above it. The phases, as
-`ImageService` and the `Loader` report them to a `LoadProbe` (`hc/image/load_probe.h`), each named
-at its end:
+a deploy is therefore the old image's steady state minus the swap's peak above it, minus what other
+tasks take meanwhile (below). The phases, as `ImageService` and the `Loader` report them to a
+`LoadProbe` (`hc/image/load_probe.h`), each named at its end:
 
 | Phase | What it allocates (+) or frees (-) |
 |---|---|
-| `signature` | the signature check (nothing on the heap) |
+| `signature` | the signature check (Monocypher: the stack only, nothing on the heap) |
 | `json` | + the plan (the `Plan` object) |
-| `datapoints` | + the datapoint tables, the KNX mapping, the index by name; - their scratch (the blocks' implied datapoints) |
+| `datapoints` | + the datapoint tables, the KNX mapping, the index by name; - their scratch (the KNX, Zigbee and history drafts) |
 | `schedules`, `history`, `ui` | + locations, functions, schedules, history specs; the UI is checked, not kept |
-| `rules scratch`, `rules` | + a scratch `DatapointModel` of the image's datapoints, + the compiled rule set (kept), - the scratch and the compiler's work |
-| `blocks scratch`, `blocks` | + a second scratch model, + the compiled `BlockSet` (kept), - the scratch |
-| `compose`, `model` | + the composed spec table, + the new model; - the old model |
+| `rules` | + the compiled rule set (kept), - the compiler's work |
+| `blocks` | + the compiled `BlockSet` (kept) |
+| `compose`, `model` | + the composed spec table (only when a provider adds datapoints), + the new model; - the old model |
 | `persistence` | the value store and the history bound and restored (their tables for the new image) |
-| `engine` | the rule set adopted; - the old rules |
+| `engine` | + the rules' runtime; - the old rules |
 | `block runtime` | + the instances' runtime, the mirrors bound; - the old runtime and set (`BlockRuntime::adopt`) |
 | `technologies` | KNX mapping, time master, schedules, external values, the providers |
 | `start` | the rules and blocks started; - the old image's kept plan (with a provider) |
 | `release` | - the new plan (kept instead with a provider) |
 | `mqtt`, `view`, `store` | the MQTT member, the UI model, the store (off the loop since #68) |
 
-Measured with the C6's sizes (`scripts/c6-model`, below) on E-Home's revision 11 of the KNX test
-system (23 482 bytes, 58 datapoints, 10 rules, 6 schedules, one history with archives, a provider
-registered as the Zigbee adapter is), with k blocks added as E-Home's revision 13 adds them (a room
-controller on the room temperature switching an LED, a heating demand over its valve requesting on
-another; k = 4 is two such pairs). Bytes above the start of the load, as the C6's heap charges them
-(TLSF: each block at least 12 bytes, rounded up to 4, plus a 4-byte header); "k over j" deploys the
-image with k blocks over the one with j:
+**What the board showed** (4217c3c, revision 15 of the test system over revision 14, two blocks,
+right after the E-Home link had served a GET of the stored image): free 54 896 B at the start; the
+deploy failed with 507 in `rules`: "no memory for the rules (7104 bytes)" with 9 780 B free. Two
+causes, both fixed generally:
 
-| Phase peak | 0 over 0 | 1 over 0 | 1 over 1 | 2 over 1 | 2 over 2 | 4 over 3 | 4 over 4 |
-|---|---|---|---|---|---|---|---|
-| `json` | 884 | 884 | 884 | 884 | 884 | 884 | 884 |
-| `datapoints` | 14 040 | 14 160 | 14 160 | 15 692 | 15 692 | 18 360 | 18 360 |
-| `ui` | 8 560 | 9 724 | 9 724 | 9 304 | 9 304 | 10 524 | 10 524 |
-| `rules scratch` | 14 628 | 17 132 | 17 132 | 17 360 | 17 360 | 20 588 | 20 588 |
-| `rules` | **27 324** | **29 828** | **29 828** | **30 056** | **30 056** | **33 284** | **33 284** |
-| `blocks scratch` | 21 704 | 24 208 | 24 208 | 24 436 | 24 436 | 27 664 | 27 664 |
-| `blocks` | 21 704 | 24 940 | 24 940 | 25 568 | 25 568 | 29 920 | 29 920 |
-| `model` | 23 724 | 26 924 | 26 924 | 27 536 | 27 536 | 31 840 | 31 840 |
-| `persistence` | 17 656 | 20 856 | 19 516 | 20 128 | 19 480 | 22 428 | 21 776 |
-| `engine` | 20 060 | 23 260 | 21 920 | 22 532 | 21 884 | 24 832 | 24 180 |
-| `block runtime` | 10 624 | 14 936 | 13 596 | 14 928 | 14 280 | 19 060 | 18 408 |
-| `technologies` | 11 672 | 15 984 | 13 020 | 14 352 | 12 680 | 15 840 | 14 164 |
-| `start`, `release` | 10 580 | 14 892 | 11 928 | 13 260 | 11 588 | 14 748 | 13 072 |
-| after the load | 0 | 4 312 | 0 | 1 332 | 0 | 2 380 | 0 |
-| the old image held | 35 156 | 35 140 | 39 452 | 39 452 | 40 784 | 44 540 | 46 920 |
-| old image + peak | 62 480 | 64 968 | 69 280 | 69 508 | 70 840 | 77 824 | 80 204 |
+1. *One large block.* The compiled rule set was one allocation of all its tables (7 104 B), and a
+   fragmented heap had no such block. Since #70 no table of the swap takes one block of everything:
+   the rule set takes one allocation per table, the rules' runtime too and its per-rule and
+   per-parameter tables in chunks of 16, the model its datapoints in chunks of 32 (2 KB on the C6),
+   the block runtime one allocation per instance, the loader its per-datapoint drafts in chunks of
+   16 and the implied datapoints of the rules and blocks in batches from the stack. The largest
+   single allocation of the test system's swap went from 7 104 to 2 248 bytes. The tables still
+   in one piece grow with the image by a few bytes per entry: the plan's spec table (8 B per
+   datapoint), the KNX mapping, the model's names and index, the rule set's nodes (16 B each),
+   strings and constants, the history's and the value store's tables.
+2. *The swap's own peak.* The rules and the blocks were checked against a scratch `DatapointModel`
+   of the plan (8 KB on the board, beside the old image); they now look datapoints up in the plan's
+   own tables (`DatapointDirectory`, `PlanDirectory` in the loader; the checks the model would make
+   are made without building one). The rule compiler's table of 128 rule ids (4.2 KB) is sized by
+   the image's rules. The loader's KNX drafts and rule-parameter list left the plan (they are
+   scratch), which also shrinks the plan the service keeps with a provider (2.6 KB less in the
+   steady state). The composed spec table is not copied when no provider adds datapoints; the swap
+   table of the ids takes its own allocation, not a 1 KB arena block.
 
-The peak is the rules' compilation (the plan, a scratch model and the compiler's work beside the
-whole old image) and grows about 1.5 KB per block; the `model` step grows about 2 KB per block and
-becomes the peak from about seven blocks. A block's steady cost here is 4.3 KB for the room
-controller (16 mirror datapoints) and 1.3 to 2.4 KB for the heating demand: at the peak a block
-costs its steady size in the old image plus at most its steady size in the new one, nothing more.
-Measured on the C6, revision 12 (one block, over revision 11 without blocks) and revision 13 (two
-blocks, over revision 12) differ by about 4.5 KB at the lowest point: the room controller is in
-both images of the second swap (4.3 KB held by the old one) and the heating demand adds 0.2 KB to
-the peak. (The board's 7.6 KB came from two firmware builds; its steady figures put the room
-controller at 0.6 KB, so they do not resolve 4 KB either.)
+Measured with the C6's sizes (`scripts/c6-model`, below) on E-Home's revision 11 of the test system
+(23 482 bytes, 58 datapoints, 10 rules, 6 schedules, one history with archives, a provider registered
+as the Zigbee adapter is), with k blocks added as revision 13 adds them (a room controller and a
+heating demand per pair). Peak of each phase above the start of the load, as the C6's heap charges it
+(TLSF: each block at least 12 bytes, rounded up to 4, plus a 4-byte header), and the largest single
+allocation of the phase; "k over j" deploys the image with k blocks over the one with j:
 
-`Swap memory: a block costs at the peak at most its steady size; the swap stays within its budget`
-pins this on the host (64-bit, `example.json` with 0 to 4 blocks, over the same image and over one
-block fewer): the peak above the old image is at most **16 KB** (the swap's budget for that image
-without blocks; measured 13.2 KB on the host, 12.0 KB with the C6's sizes) plus k times a block's
-steady cost, a block adds to the peak at most its steady cost, a redeploy holds what the first
-deploy held, and nothing of the load is held at `release` beyond the new image. The probe and the
-whole-heap counter are in the test (`core/test/swap_memory_test.cpp`; the counter's
-`hc_test::heap_mark()`, `HeapExclusion` for the fakes of flash, NVS and the log ring); the table
-above is its measurement case, run with `HC_SWAP_IMAGE=<image without blocks>`.
+| Phase: peak / largest block | 0 over 0 | 1 over 1 | 2 over 1 | 2 over 2 | 4 over 4 |
+|---|---|---|---|---|---|
+| `json` | 948 / 944 | 948 / 944 | 948 / 944 | 948 / 944 | 948 / 944 |
+| `datapoints` | 14 004 / 1 312 | 14 124 / 1 312 | 15 224 / 1 312 | 15 224 / 1 312 | 15 400 / 1 312 |
+| `schedules` .. `ui` | 6 516 / 1 040 | 7 204 / 1 040 | 6 692 / 472 | 6 692 / 472 | 8 480 / 1 040 |
+| `rules` | 15 256 / 2 061 | 15 944 / 2 061 | 15 432 / 2 061 | 15 432 / 2 061 | 17 220 / 2 061 |
+| `blocks` | 13 636 / 0 | 15 056 / 216 | 14 944 / 312 | 14 944 / 312 | 17 856 / 624 |
+| **`model`** | **19 888** / 2 048 | **22 460** / 2 048 | **22 920** / 2 048 | **22 920** / 2 048 | **27 572** / 2 248 |
+| `persistence` | 13 796 / 776 | 15 028 / 776 | 15 488 / 776 | 14 832 / 776 | 17 476 / 776 |
+| `engine` | 16 300 / 1 200 | 17 532 / 1 200 | 17 996 / 1 200 | 17 340 / 1 200 | 19 984 / 1 200 |
+| `block runtime` | 6 720 / 40 | 9 076 / 1 112 | 10 264 / 1 112 | 9 604 / 1 112 | 14 096 / 1 112 |
+| `technologies` | 7 768 / 864 | 8 488 / 864 | 9 676 / 864 | 7 988 / 864 | 9 820 / 864 |
+| the old image held | 33 280 | 37 112 | 37 112 | 38 368 | 45 088 |
+| old image + peak | 53 168 | 59 572 | 60 032 | 61 288 | 72 660 |
+| before #70 (old + peak) | 62 480 | 69 280 | 69 508 | 70 840 | 80 204 |
+
+Before #70 the peak was in `rules` (30 056 B above the old image for two blocks, a scratch model
+and the compiler's 5.6 KB beside it); it is now the `model` step (22 920 B: the plan, the new rule
+and block sets and the new model beside the old image), and each block in both images lowers the
+deploy's lowest free heap by about its steady size plus 2 KB (doc/blocks.md "Memory").
+
+**Model and board.** The 32-bit model reproduces the board's figures of the core: in the phases
+where nothing else happened the board's growth equals the model's within 30 bytes (`schedules`
++1 044 against +1 072, the rules' scratch model +8 068 against +8 056 before #70). What the model
+leaves out is the heap of the other tasks during the load: on the board about 20 KB were taken in
+the first 170 ms of the load (`signature` 10 KB, `json` 3.9 KB, `datapoints` 6 KB) and still held
+at its end, and the heap fell by another 28 KB after it (the lowest since boot 7 304 B). The load
+holds the event loop (priority 5) for several hundred milliseconds; the tasks below it (the KNX
+socket's reader, mDNS, the E-Home sender and receiver, the console writer, a running HTTP fetch)
+cannot take what the network delivers to them meanwhile, and every packet waiting for them holds a
+WiFi receive buffer of the heap (up to `CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM` = 16 of about 1.6 KB).
+Since #70 the loop sleeps one tick at the end of each phase (`CONFIG_HC_IMAGE_LOAD_YIELD`, default
+on; about 20 ticks of at most 10 ms), so they drain what arrived. Which tasks held the 20 KB is for
+the board to show (below, `CONFIG_HC_IMAGE_HEAP_BY_TASK`).
+
+**The budget.** `Swap memory: a block costs at the peak at most its steady size; the swap stays
+within its budget and takes no large block` pins the core on the host (64-bit, `example.json` with 0
+to 4 blocks, over the same image and over one block fewer): the peak above the old image is at most
+**9 KB** (the swap's budget for that image without blocks; measured 6.9 KB on the host, 5.9 KB with
+the C6's sizes; 13.2 KB before #70) plus k times a block's steady cost, a block adds to the peak at
+most its steady cost, no single allocation of the swap exceeds **3 KB**, a redeploy holds what the
+first deploy held, and nothing of the load is held at `release` beyond the new image. `Swap memory:
+a large image swaps while no block above 3.5 KB can be had (6 KB on the 64-bit host)` deploys `example.json` with 100 more datapoints, 50 more
+rules and 4 blocks (215 datapoints) while every allocation above the limit fails
+(`hc_test::BlockLimit`); on the C6's sizes its largest allocation is 3 116 B. The board's allowance
+for the other tasks is not part of the host budget; the deploy's margin on the C6 is
+
+    lowest free = free before the deploy - (the swap's peak, C6 model) - (the other tasks' heap during the load)
+
+with the other tasks' heap 20 KB as measured on 4217c3c (without the phase yield), a margin of at
+least 8 KB required, and the largest free block during the load at least the swap's largest
+allocation (2.3 KB for the test system). The probe's lines give all three terms.
+
+The probe and the whole-heap counter are in the test (`core/test/swap_memory_test.cpp`; the counter's
+`hc_test::heap_mark()`, `heap_largest()`, `HeapExclusion` for the fakes of flash, NVS and the log
+ring, `BlockLimit`); the table above is its measurement case, run with `HC_SWAP_IMAGE=<image without
+blocks>`.
 
 **The 32-bit model** (`scripts/c6-model`): the core and that test compiled by the ESP-IDF's
 RISC-V compiler, with the C6's sizes (4-byte pointers; a `Datapoint` is 64 bytes, a block
@@ -275,20 +316,28 @@ cmake --build build-c6model && qemu-riscv32-static build-c6model/swap_c6
 
 **On the board** (`hc::esp::EspLoadProbe`, component `hc_image`): `log level hc.image debug` on the
 console, or `CONFIG_HC_IMAGE_HEAP_PHASES=y` (menu "HomeControl runtime image", default off) for info
-level, logs every load's phases:
+level, logs every load's phases, and 3 s and 10 s after the load what the store, the answer and the
+tasks the load held back took:
 
 ```
-swap heap: begin: free <F> B, lowest since boot <M> B
-swap heap: json           free <f> B, lowest in the phase <l> B (<F - l> B below the start)
-...                       (one line per phase of the table above)
-swap heap: end (loaded): free <f> B, lowest of the load <L> B (<F - L> B below the start), lowest since boot <M'> B
+swap heap: begin: free <F> B, largest block <B> B, lowest since boot <M> B
+swap heap: json          free <f> B, largest <b> B, lowest in the phase <l> B (<F - l> below the start)
+...                      (one line per phase of the table above)
+swap heap: end (loaded): free <f> B, largest block <b> B, lowest of the load <L> B (<F - L> below the start), lowest since boot <M'> B
+swap heap: 3 s after the load: free <f> B, largest block <b> B, lowest since boot <M''> B
+swap heap: 10 s after the load: ...
 ```
+
+With `CONFIG_HC_IMAGE_HEAP_BY_TASK=y` (it turns on the IDF's heap task tracking: a few bytes per
+allocation, for measurements) the `end` and the after lines add every task whose heap changed by
+256 B or more since the load began (`swap heap: end: task <name> holds <n> B (<+d> B since the load
+began)`).
 
 The phase's lowest is `heap_caps_get_minimum_free_size()` over the IDF's local minimum, restarted at
 each phase (`heap_caps_monitor_local_minimum_free_size_start()`); the probe stops it at the end of
 the load, before the load's summary line, and the IDF then restores the minimum since boot,
-including the load's lows. A heartbeat or System page minimum below the load's lowest means the
-low came after the load (the store off the loop, the deployer's follow-up requests).
+including the load's lows. The largest block is `heap_caps_get_largest_free_block()` at the phase's
+end.
 
 ## Console and command line
 

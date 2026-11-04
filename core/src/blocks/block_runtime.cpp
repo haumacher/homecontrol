@@ -189,6 +189,7 @@ const char* change_status_name(ChangeStatus status) {
 // Runtime structures
 
 struct BlockRuntime::Instance {
+	uint16_t index = 0;            ///< Its position in the set.
 	BlockStatus status = BlockStatus::disabled;
 	bool started = false;          ///< Called since its start: inputs call it.
 	bool enabled = true;
@@ -228,9 +229,16 @@ struct BlockRuntime::Instance {
 	char fault[64] = {};
 };
 
+/// The instances, one allocation each with its tables (homecontrol #70: not one block of all of them,
+/// which grew by about 1 KB per instance and which a fragmented heap refuses during a swap).
+struct BlockRuntime::InstanceTable {
+	Instance** slots = nullptr;
+	Instance& operator[](size_t i) const { return *slots[i]; }
+};
+
 struct BlockRuntime::Runtime {
 	size_t bytes = 0;
-	Instance* instances = nullptr;
+	InstanceTable instances;
 	size_t count = 0;
 	uint8_t* interest = nullptr; ///< Bit per datapoint id: bound to an input.
 	size_t interest_bits = 0;
@@ -384,8 +392,11 @@ void BlockRuntime::release(Runtime* runtime) {
 	if (runtime == nullptr) {
 		return;
 	}
-	for (size_t i = 0; i < runtime->count; ++i) {
-		runtime->instances[i].~Instance();
+	for (size_t i = 0; runtime->instances.slots != nullptr && i < runtime->count; ++i) {
+		if (runtime->instances.slots[i] != nullptr) {
+			runtime->instances.slots[i]->~Instance();
+			::operator delete(static_cast<void*>(runtime->instances.slots[i]), std::nothrow);
+		}
 	}
 	runtime->~Runtime();
 	::operator delete(static_cast<void*>(runtime), std::nothrow);
@@ -772,14 +783,9 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 	auto align = [](size_t n) { return (n + 7) & ~static_cast<size_t>(7); };
 	size_t count = next.size();
 	size_t interest_bits = model_.size();
-	size_t bytes = align(sizeof(Runtime)) + align(count * sizeof(Instance));
-	for (size_t i = 0; i < count; ++i) {
-		const Manifest& m = next.at(i).type->manifest();
-		bytes += align(m.state_count * sizeof(double)) * 2 + align(m.param_count * sizeof(double)) +
-			align(m.param_count * sizeof(uint16_t)) + align(m.port_count * sizeof(uint16_t)) +
-			align(m.port_count * sizeof(double)) + align(m.port_count * sizeof(Quality));
-	}
-	bytes += align((interest_bits + 7) / 8);
+	// The runtime with the instance table and the interest bitmap, then one block per instance.
+	size_t head = align(sizeof(Runtime)) + align(count * sizeof(Instance*));
+	size_t bytes = head + align((interest_bits + 7) / 8);
 	void* block = ::operator new(bytes, std::nothrow);
 	if (block == nullptr) {
 		Log::error(kTag, "blocks refused: no memory for their runtime (%u bytes)", static_cast<unsigned>(bytes));
@@ -788,16 +794,31 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 	std::memset(block, 0, bytes);
 	char* base = static_cast<char*>(block);
 	Runtime* rt = new (block) Runtime();
-	rt->bytes = bytes;
-	size_t offset = align(sizeof(Runtime));
-	rt->instances = reinterpret_cast<Instance*>(base + offset);
-	offset += align(count * sizeof(Instance));
+	rt->instances.slots = reinterpret_cast<Instance**>(base + align(sizeof(Runtime)));
 	rt->count = count;
+	rt->interest = reinterpret_cast<uint8_t*>(base + head);
 	for (size_t i = 0; i < count; ++i) {
-		Instance* in = new (&rt->instances[i]) Instance();
 		const Manifest& m = next.at(i).type->manifest();
+		size_t own = align(sizeof(Instance)) + align(m.state_count * sizeof(double)) * 2 +
+			align(m.param_count * sizeof(double)) + align(m.param_count * sizeof(uint16_t)) +
+			align(m.port_count * sizeof(uint16_t)) + align(m.port_count * sizeof(double)) +
+			align(m.port_count * sizeof(Quality));
+		void* memory = ::operator new(own, std::nothrow);
+		if (memory == nullptr) {
+			Log::error(kTag, "blocks refused: no memory for the runtime of '%s' (%u bytes)", next.at(i).id,
+				static_cast<unsigned>(own));
+			release(rt);
+			return false;
+		}
+		std::memset(memory, 0, own);
+		bytes += own;
+		char* at = static_cast<char*>(memory);
+		Instance* in = new (memory) Instance();
+		in->index = static_cast<uint16_t>(i);
+		rt->instances.slots[i] = in;
+		size_t offset = align(sizeof(Instance));
 		auto take = [&](size_t size) {
-			char* p = base + offset;
+			char* p = at + offset;
 			offset += align(size);
 			return p;
 		};
@@ -809,7 +830,7 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 		in->input_value = reinterpret_cast<double*>(take(m.port_count * sizeof(double)));
 		in->input_quality = reinterpret_cast<Quality*>(take(m.port_count * sizeof(Quality)));
 	}
-	rt->interest = reinterpret_cast<uint8_t*>(base + offset);
+	rt->bytes = bytes;
 	rt->interest_bits = interest_bits;
 
 	Runtime* old = runtime_;
@@ -1072,7 +1093,7 @@ void BlockRuntime::bind() {
 // Inputs and outputs
 
 InputValue BlockRuntime::aggregate(const Instance& instance, size_t port) const {
-	size_t block = static_cast<size_t>(&instance - runtime_->instances);
+	size_t block = instance.index;
 	const BlockSpec& spec = set_.at(block);
 	const PortBinding& binding = spec.ports[port];
 	InputValue v;

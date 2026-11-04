@@ -46,6 +46,21 @@ size_t heap_mark();
 size_t heap_charged();
 /// The most charged at once since the last heap_mark().
 size_t heap_charged_peak();
+/// The largest single block allocated since the last heap_mark() (what needs one contiguous piece).
+size_t heap_largest();
+
+/// While one lives, every counted allocation (not one under a HeapExclusion) larger than `bytes`
+/// fails: a nothrow allocation returns nullptr, a throwing one aborts. The model of a fragmented heap
+/// whose largest free block is `bytes` (homecontrol #70).
+class BlockLimit {
+public:
+	explicit BlockLimit(size_t bytes);
+	~BlockLimit();
+	BlockLimit(const BlockLimit&) = delete;
+	BlockLimit& operator=(const BlockLimit&) = delete;
+	/// The allocations it refused.
+	size_t refused() const;
+};
 
 /// While one lives (they nest), new blocks are left out of the whole-heap figures above: the test
 /// fakes of what the device keeps outside its heap (the blob store's flash, the NVS, the log ring).

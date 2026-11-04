@@ -281,10 +281,20 @@ DatapointModel::DatapointModel(const Clock& clock) : clock_(clock) {}
 
 DatapointModel::~DatapointModel() { free_tables(); }
 
+void DatapointModel::free_chunks(Datapoint** chunks, size_t count) {
+	if (chunks == nullptr) {
+		return;
+	}
+	for (size_t c = 0; c < (count + kChunk - 1) / kChunk; ++c) {
+		delete[] chunks[c];
+	}
+	delete[] chunks;
+}
+
 void DatapointModel::free_tables() {
-	delete[] datapoints_;
+	free_chunks(chunks_, count_);
 	delete[] names_;
-	datapoints_ = nullptr;
+	chunks_ = nullptr;
 	names_ = nullptr;
 	by_name_ = nullptr;
 	count_ = 0;
@@ -336,6 +346,24 @@ bool valid_spec(const DatapointSpec& spec, size_t index, size_t& name_length) {
 
 } // namespace
 
+DatapointStatus DatapointModel::validate(const DatapointSpec* specs, size_t count) {
+	if (count > kMaxDatapoints) {
+		Log::error(kTag, "model refused: %u datapoints exceed the capacity of %u", static_cast<unsigned>(count),
+			static_cast<unsigned>(kMaxDatapoints));
+		return DatapointStatus::capacity;
+	}
+	if (specs == nullptr && count > 0) {
+		return DatapointStatus::invalid_model;
+	}
+	for (size_t i = 0; i < count; ++i) {
+		size_t length = 0;
+		if (!valid_spec(specs[i], i, length)) {
+			return DatapointStatus::invalid_model;
+		}
+	}
+	return DatapointStatus::ok;
+}
+
 DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count, bool keep_values) {
 	if (refuse_busy("load")) {
 		return DatapointStatus::busy;
@@ -361,10 +389,17 @@ DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count, b
 	// One block for the names followed by the sorted index (aligned for uint16_t).
 	size_t index_offset = (names_bytes + 1) & ~static_cast<size_t>(1);
 	size_t block = index_offset + count * sizeof(uint16_t);
-	Datapoint* datapoints = count > 0 ? new (std::nothrow) Datapoint[count] : nullptr;
+	size_t chunk_count = (count + kChunk - 1) / kChunk;
+	Datapoint** chunks = chunk_count > 0 ? new (std::nothrow) Datapoint*[chunk_count]() : nullptr;
+	bool chunked = chunk_count == 0 || chunks != nullptr;
+	for (size_t c = 0; chunked && c < chunk_count; ++c) {
+		size_t n = count - c * kChunk < kChunk ? count - c * kChunk : kChunk;
+		chunks[c] = new (std::nothrow) Datapoint[n];
+		chunked = chunks[c] != nullptr;
+	}
 	char* names = block > 0 ? new (std::nothrow) char[block] : nullptr;
-	if ((count > 0 && datapoints == nullptr) || (block > 0 && names == nullptr)) {
-		delete[] datapoints;
+	if (!chunked || (block > 0 && names == nullptr)) {
+		free_chunks(chunks, count);
 		delete[] names;
 		Log::error(kTag, "model refused: no memory for %u datapoints (%u bytes)", static_cast<unsigned>(count),
 			static_cast<unsigned>(count * sizeof(Datapoint) + block));
@@ -375,7 +410,7 @@ DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count, b
 	for (size_t i = 0; i < count; ++i) {
 		size_t length = std::strlen(specs[i].name);
 		std::memcpy(cursor, specs[i].name, length + 1);
-		Datapoint& dp = datapoints[i];
+		Datapoint& dp = chunks[i >> kChunkShift][i & (kChunk - 1)];
 		dp.name_ = cursor;
 		dp.id_ = static_cast<uint16_t>(i);
 		dp.type_ = specs[i].type;
@@ -383,15 +418,16 @@ DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count, b
 		cursor += length + 1;
 		by_name[i] = static_cast<uint16_t>(i);
 	}
-	std::sort(by_name, by_name + count, [datapoints](uint16_t a, uint16_t b) {
-		return std::strcmp(datapoints[a].name_, datapoints[b].name_) < 0;
+	auto name_of = [chunks](uint16_t id) { return chunks[id >> kChunkShift][id & (kChunk - 1)].name_; };
+	std::sort(by_name, by_name + count, [&name_of](uint16_t a, uint16_t b) {
+		return std::strcmp(name_of(a), name_of(b)) < 0;
 	});
 	for (size_t i = 1; i < count; ++i) {
-		if (std::strcmp(datapoints[by_name[i - 1]].name_, datapoints[by_name[i]].name_) == 0) {
+		if (std::strcmp(name_of(by_name[i - 1]), name_of(by_name[i])) == 0) {
 			Log::error(kTag, "model refused: datapoints %u and %u are both named '%s'",
 				static_cast<unsigned>(std::min(by_name[i - 1], by_name[i])),
-				static_cast<unsigned>(std::max(by_name[i - 1], by_name[i])), datapoints[by_name[i]].name_);
-			delete[] datapoints;
+				static_cast<unsigned>(std::max(by_name[i - 1], by_name[i])), name_of(by_name[i]));
+			free_chunks(chunks, count);
 			delete[] names;
 			return DatapointStatus::invalid_model;
 		}
@@ -400,17 +436,18 @@ DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count, b
 	size_t kept = 0;
 	if (keep_values) {
 		for (size_t i = 0; i < count; ++i) {
-			const Datapoint* previous = find(datapoints[i].name_);
-			if (previous != nullptr && previous->type_ == datapoints[i].type_) {
-				datapoints[i].value_ = previous->value_;
-				datapoints[i].quality_ = previous->quality_;
-				datapoints[i].updated_ms_ = previous->updated_ms_;
+			Datapoint& dp = chunks[i >> kChunkShift][i & (kChunk - 1)];
+			const Datapoint* previous = find(dp.name_);
+			if (previous != nullptr && previous->type_ == dp.type_) {
+				dp.value_ = previous->value_;
+				dp.quality_ = previous->quality_;
+				dp.updated_ms_ = previous->updated_ms_;
 				++kept;
 			}
 		}
 	}
 	free_tables();
-	datapoints_ = datapoints;
+	chunks_ = chunks;
 	names_ = names;
 	by_name_ = by_name;
 	count_ = count;
@@ -424,7 +461,7 @@ DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count, b
 	return DatapointStatus::ok;
 }
 
-const Datapoint* DatapointModel::get(uint16_t id) const { return id < count_ ? &datapoints_[id] : nullptr; }
+const Datapoint* DatapointModel::get(uint16_t id) const { return id < count_ ? &at(id) : nullptr; }
 
 const Datapoint* DatapointModel::find(const char* name) const {
 	if (name == nullptr) {
@@ -433,10 +470,10 @@ const Datapoint* DatapointModel::find(const char* name) const {
 	const uint16_t* begin = by_name_;
 	const uint16_t* end = by_name_ + count_;
 	const uint16_t* it = std::lower_bound(begin, end, name, [this](uint16_t id, const char* key) {
-		return std::strcmp(datapoints_[id].name_, key) < 0;
+		return std::strcmp(at(id).name_, key) < 0;
 	});
-	if (it != end && std::strcmp(datapoints_[*it].name_, name) == 0) {
-		return &datapoints_[*it];
+	if (it != end && std::strcmp(at(*it).name_, name) == 0) {
+		return &at(*it);
 	}
 	return nullptr;
 }
@@ -459,7 +496,7 @@ Datapoint* DatapointModel::lookup(uint16_t id, const char* what) {
 			static_cast<unsigned>(count_));
 		return nullptr;
 	}
-	return &datapoints_[id];
+	return &at(id);
 }
 
 DatapointStatus DatapointModel::bind(uint16_t id, Technology& technology) {

@@ -290,10 +290,11 @@ struct ParameterDatapoint {
 };
 
 /// The parameter datapoints of `rules` (spec 8.6), in rule order, `enabled` first in each rule;
-/// writes up to `capacity` to `out` (which may be nullptr) and returns how many there are. Lenient:
+/// writes up to `capacity` of them from the `first` on to `out` (which may be nullptr; a caller fills
+/// its tables in batches) and returns how many there are. Lenient:
 /// a rule or parameter that is not well-formed (an invalid or repeated id, an unknown type) is
 /// skipped, since RuleSet::load() refuses it with the precise reason.
-size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, size_t capacity);
+size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, size_t capacity, size_t first = 0);
 
 /// The `rules` member of an image, compiled: flat arrays in one allocation, indices instead of
 /// pointers. Built by load(); read-only afterwards. Movable, not copyable.
@@ -313,6 +314,9 @@ public:
 	/// `ui.lang`; spec 2.2). Two parameters (or rule states, spec 8.5) whose storage keys
 	/// (ParameterStore) collide refuse the set (limitExceeded).
 	LoadResult load(const JsonValue& rules, const DatapointModel& model, const ScheduleDirectory* schedules,
+		const char* language = "en");
+	/// The same against a directory of the datapoints (the image loader's tables: no scratch model).
+	LoadResult load(const JsonValue& rules, const DatapointDirectory& datapoints, const ScheduleDirectory* schedules,
 		const char* language = "en");
 
 	void clear();
@@ -372,7 +376,10 @@ public:
 private:
 	friend class Builder;
 
-	void* block_ = nullptr;
+	/// One allocation per table (homecontrol #70: not one block of every table, which a fragmented heap
+	/// refused with enough free bytes); block_size_ is their sum.
+	static constexpr size_t kParts = 16;
+	void* parts_[kParts] = {};
 	size_t block_size_ = 0;
 	Rule* rules_ = nullptr;
 	Reaction* reactions_ = nullptr;

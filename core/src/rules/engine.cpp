@@ -218,10 +218,60 @@ struct Engine::SilenceRuntime {
 	bool refused_logged = false;
 };
 
+namespace {
+
+/// A table of entries in chunks of kPer (homecontrol #70: the per-rule and per-parameter tables grow
+/// by about 100 and 40 bytes per entry; one block of them is what a fragmented heap refuses).
+template <class T>
+struct Chunks {
+	static constexpr size_t kPer = 16;
+	T** slots = nullptr;
+	size_t chunks = 0;
+
+	explicit operator bool() const { return slots != nullptr; }
+	T& operator[](size_t i) const { return slots[i / kPer][i % kPer]; }
+
+	/// Room for `count` entries, zeroed (no objects constructed); false without memory (what it got
+	/// is freed by release()). `bytes` grows by what it took.
+	bool allocate(size_t count, size_t& bytes) {
+		if (count == 0) {
+			return true;
+		}
+		size_t n = (count + kPer - 1) / kPer;
+		slots = new (std::nothrow) T*[n]();
+		if (slots == nullptr) {
+			return false;
+		}
+		chunks = n;
+		bytes += n * sizeof(T*);
+		for (size_t k = 0; k < n; ++k) {
+			size_t size = (count - k * kPer < kPer ? count - k * kPer : kPer) * sizeof(T);
+			void* p = ::operator new(size, std::nothrow);
+			if (p == nullptr) {
+				return false;
+			}
+			std::memset(p, 0, size);
+			slots[k] = static_cast<T*>(p);
+			bytes += size;
+		}
+		return true;
+	}
+	void release() {
+		for (size_t k = 0; slots != nullptr && k < chunks; ++k) {
+			::operator delete(static_cast<void*>(slots[k]), std::nothrow);
+		}
+		delete[] slots;
+		slots = nullptr;
+		chunks = 0;
+	}
+};
+
+} // namespace
+
 struct Engine::Runtime {
 	size_t bytes = 0;
-	RuleRuntime* rules = nullptr;
-	ParamRuntime* params = nullptr;
+	Chunks<RuleRuntime> rules;
+	Chunks<ParamRuntime> params;
 	TimerRuntime* timers = nullptr;
 	uint8_t* node_flags = nullptr;
 	ChangeRecord* changes = nullptr;
@@ -231,6 +281,28 @@ struct Engine::Runtime {
 	SilenceRuntime* silences = nullptr;
 	uint8_t* action_flags = nullptr;
 	size_t rule_count = 0, param_count = 0, timer_count = 0, silence_count = 0;
+	/// One allocation per table (homecontrol #70: not one block of all, which grew with the rules and
+	/// which a fragmented heap refuses during a swap); the destructor frees them (and destroys the
+	/// objects of the counts set).
+	static constexpr size_t kParts = 10;
+	void* parts[kParts] = {};
+
+	Runtime() = default;
+	Runtime(const Runtime&) = delete;
+	Runtime& operator=(const Runtime&) = delete;
+	~Runtime() {
+		for (size_t i = 0; rules && i < rule_count; ++i) {
+			rules[i].~RuleRuntime();
+		}
+		for (size_t i = 0; params && i < param_count; ++i) {
+			params[i].~ParamRuntime();
+		}
+		rules.release();
+		params.release();
+		for (void* part : parts) {
+			::operator delete(part, std::nothrow);
+		}
+	}
 };
 
 struct Engine::Eval {
@@ -270,16 +342,8 @@ Engine::~Engine() {
 	if (listening_) {
 		model_.remove_listener(*this);
 	}
-	if (runtime_) {
-		for (size_t i = 0; i < runtime_->rule_count; ++i) {
-			runtime_->rules[i].~RuleRuntime();
-		}
-		for (size_t i = 0; i < runtime_->param_count; ++i) {
-			runtime_->params[i].~ParamRuntime();
-		}
-		::operator delete(static_cast<void*>(runtime_), std::nothrow);
-		runtime_ = nullptr;
-	}
+	delete runtime_;
+	runtime_ = nullptr;
 }
 
 // ------------------------------------------------------------------------------------------
@@ -383,48 +447,49 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	size_t silences = next.silence_count();
 	size_t actions = next.action_count();
 	size_t interest_bits = model_.size();
-	auto align = [](size_t n) { return (n + 7) & ~static_cast<size_t>(7); };
-	size_t offset = align(sizeof(Runtime));
-	size_t o_rules = offset;
-	offset = align(offset + rules * sizeof(RuleRuntime));
-	size_t o_params = offset;
-	offset = align(offset + params * sizeof(ParamRuntime));
-	size_t o_timers = offset;
-	offset = align(offset + timers * sizeof(TimerRuntime));
-	size_t o_changes = offset;
-	offset = align(offset + tracked * sizeof(ChangeRecord));
-	size_t o_matched = offset;
-	offset = align(offset + matches * sizeof(uint16_t));
-	size_t o_silences = offset;
-	offset = align(offset + silences * sizeof(SilenceRuntime));
-	size_t o_actions = offset;
-	offset = align(offset + actions);
-	size_t o_flags = offset;
-	offset = align(offset + nodes);
-	size_t o_interest = offset;
-	offset = align(offset + (interest_bits + 7) / 8);
-	void* block = ::operator new(offset, std::nothrow);
-	if (block == nullptr) {
+	Runtime* rt = new (std::nothrow) Runtime();
+	size_t bytes = sizeof(Runtime);
+	size_t part = 0;
+	size_t refused = 0;
+	auto table = [&](size_t size) -> void* {
+		if (size == 0 || rt == nullptr || refused > 0) {
+			return nullptr;
+		}
+		void* p = ::operator new(size, std::nothrow);
+		if (p == nullptr) {
+			refused = size;
+			return nullptr;
+		}
+		std::memset(p, 0, size);
+		rt->parts[part++] = p;
+		bytes += size;
+		return p;
+	};
+	if (rt != nullptr) {
+		if (!rt->rules.allocate(rules, bytes)) {
+			refused = rules * sizeof(RuleRuntime);
+		}
+		if (refused == 0 && !rt->params.allocate(params, bytes)) {
+			refused = params * sizeof(ParamRuntime);
+		}
+		rt->timers = static_cast<TimerRuntime*>(table(timers * sizeof(TimerRuntime)));
+		rt->changes = static_cast<ChangeRecord*>(table(tracked * sizeof(ChangeRecord)));
+		rt->matched = static_cast<uint16_t*>(table(matches * sizeof(uint16_t)));
+		rt->silences = static_cast<SilenceRuntime*>(table(silences * sizeof(SilenceRuntime)));
+		rt->action_flags = static_cast<uint8_t*>(table(actions));
+		rt->node_flags = static_cast<uint8_t*>(table(nodes));
+		rt->interest = static_cast<uint8_t*>(table((interest_bits + 7) / 8));
+	}
+	if (rt == nullptr || refused > 0) {
+		delete rt; // no objects in its tables yet (the counts are 0): only the memory goes
 		result.error = LoadError::out_of_memory;
-		std::snprintf(result.text, sizeof(result.text), "no memory for the rule runtime (%u bytes)",
-			static_cast<unsigned>(offset));
+		std::snprintf(result.text, sizeof(result.text), "no memory for the rule runtime (a table of %u bytes in all)",
+			static_cast<unsigned>(rt == nullptr ? sizeof(Runtime) : refused));
 		Log::error(kTag, "rules refused: %s", result.text);
 		return false;
 	}
-	std::memset(block, 0, offset);
-	char* base = static_cast<char*>(block);
-	Runtime* rt = new (block) Runtime();
-	rt->bytes = offset;
-	rt->rules = reinterpret_cast<RuleRuntime*>(base + o_rules);
-	rt->params = reinterpret_cast<ParamRuntime*>(base + o_params);
-	rt->timers = reinterpret_cast<TimerRuntime*>(base + o_timers);
-	rt->changes = reinterpret_cast<ChangeRecord*>(base + o_changes);
-	rt->matched = reinterpret_cast<uint16_t*>(base + o_matched);
-	rt->silences = reinterpret_cast<SilenceRuntime*>(base + o_silences);
-	rt->action_flags = reinterpret_cast<uint8_t*>(base + o_actions);
+	rt->bytes = bytes;
 	rt->silence_count = silences;
-	rt->node_flags = reinterpret_cast<uint8_t*>(base + o_flags);
-	rt->interest = reinterpret_cast<uint8_t*>(base + o_interest);
 	rt->interest_bits = interest_bits;
 	rt->rule_count = rules;
 	rt->param_count = params;
@@ -640,15 +705,7 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	}
 
 	// Swap.
-	if (old) {
-		for (size_t i = 0; i < old->rule_count; ++i) {
-			old->rules[i].~RuleRuntime();
-		}
-		for (size_t i = 0; i < old->param_count; ++i) {
-			old->params[i].~ParamRuntime();
-		}
-		::operator delete(static_cast<void*>(old), std::nothrow);
-	}
+	delete old;
 	set_ = std::move(next);
 	runtime_ = rt;
 	booted_ = true;

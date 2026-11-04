@@ -291,6 +291,31 @@ struct DatapointSpec {
 	uint8_t flags;     ///< DatapointFlags.
 };
 
+/// A datapoint as a compiler of rules and blocks sees it: its id, name, type and flags.
+struct DatapointRef {
+	uint16_t id_ = 0;
+	const char* name_ = "";
+	ValueType type_ = ValueType::none;
+	uint8_t flags_ = 0;
+	uint16_t id() const { return id_; }
+	const char* name() const { return name_; }
+	ValueType type() const { return type_; }
+	uint8_t flags() const { return flags_; }
+	bool writable() const { return (flags_ & DatapointFlags::kWritable) != 0; }
+};
+
+/// Looks datapoints up by name and id for the compilers of rules and blocks (homecontrol #70): the
+/// device's model (ModelDirectory), or the image loader's tables before any model is built, so the
+/// loader needs no scratch model of the image.
+class DatapointDirectory {
+public:
+	virtual bool lookup(const char* name, DatapointRef& out) const = 0;
+	virtual bool lookup(uint16_t id, DatapointRef& out) const = 0;
+
+protected:
+	~DatapointDirectory() = default;
+};
+
 /// Where an update came from.
 enum class UpdateOrigin : uint8_t {
 	report,  ///< The technology reported a value.
@@ -381,6 +406,10 @@ public:
 	/// spec/rules.md 7.6). Nothing is announced to the listeners: the values did not change.
 	DatapointStatus load(const DatapointSpec* specs, size_t count, bool keep_values);
 
+	/// The checks load() makes of each spec (name, type, flags; logged), without the duplicate names
+	/// and without allocating: ok, capacity or invalid_model.
+	static DatapointStatus validate(const DatapointSpec* specs, size_t count);
+
 	/// Removes all datapoints and frees the tables.
 	void clear();
 
@@ -456,8 +485,16 @@ private:
 	void notify(const Datapoint& datapoint, const Value& old_value, Quality old_quality, UpdateOrigin origin);
 	void free_tables();
 
+	/// The datapoints in chunks of kChunk (homecontrol #70: no block of 64 bytes per datapoint in one
+	/// piece, which a fragmented heap refuses during an image swap): datapoint `id` is
+	/// chunks_[id / kChunk][id % kChunk].
+	static constexpr size_t kChunkShift = 5;
+	static constexpr size_t kChunk = size_t{1} << kChunkShift;
+	Datapoint& at(size_t id) const { return chunks_[id >> kChunkShift][id & (kChunk - 1)]; }
+	static void free_chunks(Datapoint** chunks, size_t count);
+
 	const Clock& clock_;
-	Datapoint* datapoints_ = nullptr;
+	Datapoint** chunks_ = nullptr;
 	char* names_ = nullptr;       ///< All names, NUL-separated (one allocation).
 	uint16_t* by_name_ = nullptr; ///< Ids sorted by name (one allocation with names_).
 	size_t count_ = 0;
@@ -465,6 +502,27 @@ private:
 	size_t listener_count_ = 0;
 	bool notifying_ = false;
 	bool commanding_ = false; ///< A Technology::command() call is running.
+};
+
+/// The device's model as a DatapointDirectory.
+class ModelDirectory : public DatapointDirectory {
+public:
+	explicit ModelDirectory(const DatapointModel& model) : model_(model) {}
+	bool lookup(const char* name, DatapointRef& out) const override { return fill(model_.find(name), out); }
+	bool lookup(uint16_t id, DatapointRef& out) const override { return fill(model_.get(id), out); }
+
+private:
+	static bool fill(const Datapoint* dp, DatapointRef& out) {
+		if (dp == nullptr) {
+			return false;
+		}
+		out.id_ = dp->id();
+		out.name_ = dp->name();
+		out.type_ = dp->type();
+		out.flags_ = dp->flags();
+		return true;
+	}
+	const DatapointModel& model_;
 };
 
 } // namespace hc

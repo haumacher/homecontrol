@@ -1024,6 +1024,34 @@ void parse_zigbee(Ctx& c, const JsonSpan& value, const DatapointSpec& spec, Zigb
 }
 
 /// Sorted datapoint ids for lookups by name.
+/// A table of one entry per declared datapoint while parsing, in chunks of kPer entries (homecontrol
+/// #70: not one block of N entries, which a fragmented heap refuses during a swap). Zeroed, in a
+/// scratch arena.
+template <class T>
+struct ScratchTable {
+	static constexpr size_t kPer = 16;
+	T** chunks = nullptr;
+
+	bool init(Arena& arena, size_t count) {
+		if (count == 0) {
+			return true;
+		}
+		size_t n = (count + kPer - 1) / kPer;
+		chunks = arena.array<T*>(n);
+		if (chunks == nullptr) {
+			return false;
+		}
+		for (size_t k = 0; k < n; ++k) {
+			chunks[k] = arena.array<T>(count - k * kPer < kPer ? count - k * kPer : kPer);
+			if (chunks[k] == nullptr) {
+				return false;
+			}
+		}
+		return true;
+	}
+	T& operator[](size_t i) const { return chunks[i / kPer][i % kPer]; }
+};
+
 struct Index {
 	const Plan& plan;
 	uint16_t* order = nullptr;
@@ -1050,7 +1078,7 @@ struct Index {
 };
 
 void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, ZigbeeDraft& zigbee_draft,
-	HistorySpec* history, size_t& history_count) {
+	const ScratchTable<HistorySpec>& history, size_t& history_count) {
 	Plan& plan = c.plan;
 	DatapointSpec& spec = plan.datapoints[i];
 	if (!c.object(dp, "a datapoint")) {
@@ -1425,15 +1453,11 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 	JsonSpan rules_member;
 	JsonSpanDocument rules_document;
 	size_t parameters = 0;
-	rules::ParameterDatapoint* parameter_list = nullptr;
+	// The implied datapoints of the rules and the blocks are counted here and written into the plan
+	// below in batches of kImpliedBatch from the stack (homecontrol #70: no list of 66 bytes per
+	// datapoint in one block).
 	if (c.member(root, "rules", rules_member)) {
 		parameters = rules::parameter_datapoints(rules_document.value(rules_member), nullptr, 0);
-		parameter_list = plan.arena.array<rules::ParameterDatapoint>(parameters);
-		if (parameters > 0 && parameter_list == nullptr) {
-			c.no_memory("the datapoints of the rule parameters");
-			return;
-		}
-		rules::parameter_datapoints(rules_document.value(rules_member), parameter_list, parameters);
 	}
 	// The time datapoints of the schedules (spec/schedules.md 2.2), after the rule parameters'.
 	size_t schedule_times = schedule_time_ids(root, nullptr, 0);
@@ -1447,29 +1471,23 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 	// The blocks' datapoints (spec/blocks.md 6), after the schedules'.
 	JsonSpan blocks_member;
 	size_t block_datapoints = 0;
-	blocks::ImpliedDatapoint* block_list = nullptr;
 	if (c.member(root, "blocks", blocks_member)) {
 		block_datapoints = blocks::implied_datapoints(blocks_member, *c.registry, nullptr, 0);
-		block_list = id_scratch.array<blocks::ImpliedDatapoint>(block_datapoints);
-		if (block_datapoints > 0 && block_list == nullptr) {
-			c.no_memory("the datapoints of the blocks");
-			return;
-		}
-		blocks::implied_datapoints(blocks_member, *c.registry, block_list, block_datapoints);
 	}
 	size_t total = declared + implied + parameters + schedule_times + block_datapoints;
 	plan.datapoints = plan.arena.array<DatapointSpec>(total);
 	plan.bindings = plan.arena.array<Binding>(total);
-	KnxDraft* drafts = plan.arena.array<KnxDraft>(declared);
-	// The Zigbee drafts are needed only here (the bindings are copied into plan.zigbee below): a
-	// scratch arena, freed at the return, keeps them out of the plan the service holds while the
-	// image is loaded.
+	// The KNX and Zigbee drafts are needed only here (the mappings and bindings are copied into
+	// plan.mappings and plan.zigbee below): a scratch arena, freed at the return, keeps them out of the
+	// plan the service holds while the image is loaded.
 	Arena scratch;
-	ZigbeeDraft* zigbee_drafts = scratch.array<ZigbeeDraft>(declared);
+	ScratchTable<KnxDraft> drafts;
+	ScratchTable<ZigbeeDraft> zigbee_drafts;
 	// The specs of every declared datapoint while parsing (scratch), only those with a history in the plan.
-	HistorySpec* history = scratch.array<HistorySpec>(declared);
-	if (total > 0 && (plan.datapoints == nullptr || plan.bindings == nullptr || (declared > 0 && (drafts == nullptr ||
-		zigbee_drafts == nullptr || history == nullptr)))) {
+	ScratchTable<HistorySpec> history;
+	bool tables = drafts.init(scratch, declared) && zigbee_drafts.init(scratch, declared) &&
+		history.init(scratch, declared);
+	if (total > 0 && (plan.datapoints == nullptr || plan.bindings == nullptr || !tables)) {
 		c.no_memory("the datapoint table");
 		return;
 	}
@@ -1508,12 +1526,22 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 			}
 		}
 	}
-	for (size_t i = 0; i < parameters; ++i) {
-		plan.datapoints[at].name = parameter_list[i].name;
-		plan.datapoints[at].type = parameter_list[i].type;
-		plan.datapoints[at].flags = parameter_list[i].flags;
-		plan.bindings[at] = Binding::rule;
-		++at;
+	constexpr size_t kImpliedBatch = 4; // 4 x 66 bytes of the loop's stack
+	for (size_t first = 0; first < parameters; first += kImpliedBatch) {
+		rules::ParameterDatapoint batch[kImpliedBatch];
+		size_t n = parameters - first < kImpliedBatch ? parameters - first : kImpliedBatch;
+		rules::parameter_datapoints(rules_document.value(rules_member), batch, n, first);
+		for (size_t k = 0; k < n; ++k) {
+			plan.datapoints[at].name = plan.arena.copy(batch[k].name, std::strlen(batch[k].name));
+			if (plan.datapoints[at].name == nullptr) {
+				c.no_memory("the datapoints of the rule parameters");
+				return;
+			}
+			plan.datapoints[at].type = batch[k].type;
+			plan.datapoints[at].flags = batch[k].flags;
+			plan.bindings[at] = Binding::rule;
+			++at;
+		}
 	}
 	for (size_t i = 0; i < schedule_times; ++i) {
 		char id[Scheduler::kMaxId + 1];
@@ -1530,16 +1558,21 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 		plan.bindings[at] = Binding::schedule;
 		++at;
 	}
-	for (size_t i = 0; i < block_datapoints; ++i) {
-		plan.datapoints[at].name = plan.arena.copy(block_list[i].name, std::strlen(block_list[i].name));
-		if (plan.datapoints[at].name == nullptr) {
-			c.no_memory("the datapoints of the blocks");
-			return;
+	for (size_t first = 0; first < block_datapoints; first += kImpliedBatch) {
+		blocks::ImpliedDatapoint batch[kImpliedBatch];
+		size_t n = block_datapoints - first < kImpliedBatch ? block_datapoints - first : kImpliedBatch;
+		blocks::implied_datapoints(blocks_member, *c.registry, batch, n, first);
+		for (size_t k = 0; k < n; ++k) {
+			plan.datapoints[at].name = plan.arena.copy(batch[k].name, std::strlen(batch[k].name));
+			if (plan.datapoints[at].name == nullptr) {
+				c.no_memory("the datapoints of the blocks");
+				return;
+			}
+			plan.datapoints[at].type = batch[k].type;
+			plan.datapoints[at].flags = batch[k].flags;
+			plan.bindings[at] = Binding::block;
+			++at;
 		}
-		plan.datapoints[at].type = block_list[i].type;
-		plan.datapoints[at].flags = block_list[i].flags;
-		plan.bindings[at] = Binding::block;
-		++at;
 	}
 	if (c.stopped()) {
 		return;
@@ -1665,7 +1698,9 @@ void parse_datapoints(Ctx& c, const JsonSpan& root) {
 		return;
 	}
 	if (history_count > 0) {
-		std::memcpy(plan.history, history, history_count * sizeof(HistorySpec));
+		for (size_t h = 0; h < history_count; ++h) {
+			plan.history[h] = history[h];
+		}
 	}
 	plan.history_count = history_count;
 	plan.info.history_rings = history_count;
@@ -3162,7 +3197,53 @@ struct PlanSchedules : rules::ScheduleDirectory {
 	const Plan& plan;
 };
 
-void parse_rules(Ctx& c, const JsonSpan& root, const Clock& clock, const char* language) {
+/// The plan's datapoints as the compilers of rules and blocks look them up (homecontrol #70): their
+/// ids are their positions in the plan, which the device's model gives them too (the image's
+/// datapoints come first, the providers' after them). Before, each compiler checked against a
+/// scratch DatapointModel of the plan, about 90 bytes per datapoint beside the old image.
+struct PlanDirectory : DatapointDirectory {
+	explicit PlanDirectory(const Index& i) : index(i) {}
+	bool lookup(const char* name, DatapointRef& out) const override {
+		int i = index.find(name);
+		return i >= 0 && lookup(static_cast<uint16_t>(i), out);
+	}
+	bool lookup(uint16_t id, DatapointRef& out) const override {
+		if (id >= index.plan.datapoint_count || index.plan.datapoints[id].name == nullptr) {
+			return false;
+		}
+		const DatapointSpec& spec = index.plan.datapoints[id];
+		out.id_ = id;
+		out.name_ = spec.name;
+		out.type_ = spec.type;
+		out.flags_ = spec.flags;
+		return true;
+	}
+	const Index& index;
+};
+
+/// What the device's model will refuse of the plan's datapoints (DatapointModel::load()), checked
+/// without building one: the specs, and no name twice. False after a refusal.
+bool model_accepts(Ctx& c, const Index& index) {
+	const Plan& plan = c.plan;
+	DatapointStatus status = DatapointModel::validate(plan.datapoints, plan.datapoint_count);
+	if (status == DatapointStatus::ok && index.count != plan.datapoint_count) {
+		status = DatapointStatus::invalid_model; // a datapoint without a name
+	}
+	for (size_t i = 1; status == DatapointStatus::ok && i < index.count; ++i) {
+		if (std::strcmp(plan.datapoints[index.order[i - 1]].name, plan.datapoints[index.order[i]].name) == 0) {
+			Log::error(kTag, "model refused: two datapoints are named '%s'", plan.datapoints[index.order[i]].name);
+			status = DatapointStatus::invalid_model;
+		}
+	}
+	if (status != DatapointStatus::ok) {
+		Path p(c, "datapoints");
+		c.refuse("the datapoint model refuses the datapoints: %s (the log names it)", datapoint_status_name(status));
+		return false;
+	}
+	return true;
+}
+
+void parse_rules(Ctx& c, const JsonSpan& root, const char* language, const Index& index) {
 	Plan& plan = c.plan;
 	JsonSpan rules_member;
 	if (!c.member(root, "rules", rules_member)) {
@@ -3182,22 +3263,14 @@ void parse_rules(Ctx& c, const JsonSpan& root, const Clock& clock, const char* l
 		// repeat them.
 		return;
 	}
-	DatapointModel scratch(clock);
-	DatapointStatus status = scratch.load(plan.datapoints, plan.datapoint_count);
-	if (status != DatapointStatus::ok) {
-		Path p(c, "datapoints");
-		if (status == DatapointStatus::out_of_memory) {
-			c.no_memory("checking the rules (a scratch datapoint model)");
-		} else {
-			c.refuse("the datapoint model refuses the datapoints: %s (the log names it)", datapoint_status_name(status));
-		}
+	if (!model_accepts(c, index)) {
 		return;
 	}
-	c.phase("rules scratch");
 	JsonSpanDocument document;
 	PlanSchedules schedules(plan);
+	PlanDirectory datapoints(index);
 	// Compiled once: the set goes to the engine at the swap (Plan::rule_set).
-	rules::LoadResult result = plan.rule_set.load(document.value(rules_member), scratch, &schedules, language);
+	rules::LoadResult result = plan.rule_set.load(document.value(rules_member), datapoints, &schedules, language);
 	if (!result.ok()) {
 		Report::Kind kind =
 			result.error == rules::LoadError::out_of_memory ? Report::Kind::no_memory : Report::Kind::invalid;
@@ -3234,7 +3307,7 @@ struct PlanOwners : blocks::BlockDirectory {
 	const Index& index;
 };
 
-void parse_blocks(Ctx& c, const JsonSpan& root, const Clock& clock, const Index& index) {
+void parse_blocks(Ctx& c, const JsonSpan& root, const Index& index) {
 	Plan& plan = c.plan;
 	JsonSpan blocks_member;
 	if (!c.member(root, "blocks", blocks_member)) {
@@ -3251,20 +3324,12 @@ void parse_blocks(Ctx& c, const JsonSpan& root, const Clock& clock, const Index&
 	if (!c.report.ok()) {
 		return; // checked against the datapoints, the schedules and the rules: their refusals first
 	}
-	DatapointModel scratch(clock);
-	DatapointStatus status = scratch.load(plan.datapoints, plan.datapoint_count);
-	if (status != DatapointStatus::ok) {
-		Path p(c, "datapoints");
-		if (status == DatapointStatus::out_of_memory) {
-			c.no_memory("checking the blocks (a scratch datapoint model)");
-		} else {
-			c.refuse("the datapoint model refuses the datapoints: %s (the log names it)", datapoint_status_name(status));
-		}
-		return;
+	if (!plan.has_rules && !model_accepts(c, index)) {
+		return; // checked with the rules otherwise
 	}
-	c.phase("blocks scratch");
 	PlanOwners owners(index);
-	blocks::BlockLoadResult result = plan.block_set.load(blocks_member, scratch, owners, *c.registry);
+	PlanDirectory datapoints(index);
+	blocks::BlockLoadResult result = plan.block_set.load(blocks_member, datapoints, owners, *c.registry);
 	if (!result.ok()) {
 		Report::Kind kind =
 			result.error == blocks::BlockError::out_of_memory ? Report::Kind::no_memory : Report::Kind::invalid;
@@ -3364,11 +3429,11 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 	}
 	c.phase("ui");
 	if (!c.stopped()) {
-		parse_rules(c, root, clock_, language_);
+		parse_rules(c, root, language_, index);
 		c.phase("rules");
 	}
 	if (!c.stopped()) {
-		parse_blocks(c, root, clock_, index);
+		parse_blocks(c, root, index);
 		c.phase("blocks");
 	}
 	if (!report.ok()) {

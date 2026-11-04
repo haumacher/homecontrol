@@ -132,7 +132,6 @@ int compare_ordered(const Val& a, const Val& b) {
 	}
 }
 
-size_t align8(size_t n) { return (n + 7) & ~static_cast<size_t>(7); }
 
 char ascii_lower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
 
@@ -248,7 +247,7 @@ const char* load_error_name(LoadError error) {
 /// counting pass. Both passes allocate in the same order.
 class Builder {
 public:
-	Builder(const DatapointModel& model, const ScheduleDirectory* schedules, const char* language)
+	Builder(const DatapointDirectory& model, const ScheduleDirectory* schedules, const char* language)
 		: model_(model), schedules_(schedules), language_(language != nullptr && language[0] ? language : "en") {}
 
 	/// Runs one pass. `set` nullptr: the counting pass.
@@ -335,7 +334,7 @@ private:
 	bool own_parameter_datapoint(const char* name) const;
 	/// Looks up the datapoint member `name` of an action or trigger (unknownReference, and forbidden
 	/// for the rule's own parameter datapoint); nullptr after a refusal.
-	const Datapoint* datapoint_member(const JsonValue& json, char* name, size_t size);
+	const DatapointRef* datapoint_member(const JsonValue& json, char* name, size_t size, DatapointRef& out);
 	bool expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16_t slot, bool timer_allowed, Type& type,
 		uint16_t& size, Node* out = nullptr);
 	bool folded_negation(const JsonValue& operand, ExprScope& scope, size_t depth, uint16_t slot, Type& type,
@@ -351,15 +350,26 @@ private:
 
 	Node* node_at(uint16_t index) { return set_ ? &set_->nodes_[index] : nullptr; }
 
-	const DatapointModel& model_;
+	const DatapointDirectory& model_;
 	const ScheduleDirectory* schedules_;
 	const char* language_;
 	RuleSet* set_ = nullptr;
 	RuleScope rs_;
 	char path_[sizeof(LoadResult::path)] = {};
+	/// The rules' ids, by prescan(): sized by the image's rules, not by Limits::kRules (homecontrol #70:
+	/// 4.2 KB of the loader's 5.6 KB were the table for 128 rules).
+	struct RuleId {
+		char id[33];
+		bool has_states;
+	};
 	size_t rule_ids_count_ = 0;
-	char rule_ids_[Limits::kRules][33] = {};
-	bool rule_has_states_[Limits::kRules] = {};
+	RuleId* rule_ids_ = nullptr;
+	size_t rule_ids_capacity_ = 0;
+
+public:
+	~Builder() { delete[] rule_ids_; }
+	Builder(const Builder&) = delete;
+	Builder& operator=(const Builder&) = delete;
 };
 
 bool Builder::fail(LoadError error, const char* fmt, ...) {
@@ -367,7 +377,7 @@ bool Builder::fail(LoadError error, const char* fmt, ...) {
 		result.error = error;
 		std::snprintf(result.path, sizeof(result.path), "%s", path_);
 		if (rs_.index < rule_ids_count_) {
-			std::snprintf(result.rule, sizeof(result.rule), "%s", rule_ids_[rs_.index]);
+			std::snprintf(result.rule, sizeof(result.rule), "%s", rule_ids_[rs_.index].id);
 		}
 		va_list args;
 		va_start(args, fmt);
@@ -667,10 +677,25 @@ void Builder::track(uint16_t datapoint) {
 bool Builder::prescan(const JsonValue& rules) {
 	size_t position = 0;
 	JsonValue item;
+	if (rule_ids_ == nullptr) {
+		size_t count = 0;
+		while (rules.next_item(position, item) && count <= Limits::kRules) {
+			++count; // one past the limit is enough to refuse it below
+		}
+		position = 0;
+		rule_ids_capacity_ = count < Limits::kRules ? count : Limits::kRules;
+		if (rule_ids_capacity_ > 0) {
+			rule_ids_ = new (std::nothrow) RuleId[rule_ids_capacity_];
+			if (rule_ids_ == nullptr) {
+				return fail(LoadError::out_of_memory, "no memory for the ids of %u rules",
+					static_cast<unsigned>(rule_ids_capacity_));
+			}
+		}
+	}
 	size_t i = 0;
 	while (rules.next_item(position, item)) {
 		PathScope scope(*this, "rules[%u]", static_cast<unsigned>(i));
-		if (i >= Limits::kRules) {
+		if (i >= Limits::kRules || i >= rule_ids_capacity_) {
 			return fail(LoadError::limit_exceeded, "more than %u rules", static_cast<unsigned>(Limits::kRules));
 		}
 		if (!item.is(JsonKind::object)) {
@@ -686,14 +711,14 @@ bool Builder::prescan(const JsonValue& rules) {
 			return fail(LoadError::malformed, "rule id '%s' is not 1..32 characters of A-Z a-z 0-9 _ -", id);
 		}
 		for (size_t j = 0; j < i; ++j) {
-			if (std::strcmp(rule_ids_[j], id) == 0) {
+			if (std::strcmp(rule_ids_[j].id, id) == 0) {
 				PathScope id_scope(*this, ".id");
 				return fail(LoadError::duplicate_id, "rule id '%s' is used twice", id);
 			}
 		}
-		std::memcpy(rule_ids_[i], id, sizeof(id));
+		std::memcpy(rule_ids_[i].id, id, sizeof(id));
 		JsonValue states;
-		rule_has_states_[i] = item.member("states", states) && states.is(JsonKind::array) && states.size() > 0;
+		rule_ids_[i].has_states = item.member("states", states) && states.is(JsonKind::array) && states.size() > 0;
 		++i;
 	}
 	rule_ids_count_ = i;
@@ -738,7 +763,7 @@ bool Builder::rule(const JsonValue& json) {
 	Rule* r = set_ ? &set_->rules_[index] : nullptr;
 	bool present = false;
 	Rule rule{};
-	rule.id = add_string(rule_ids_[index]);
+	rule.id = add_string(rule_ids_[index].id);
 	if (!label_member(json, "name", rule.name, rule.name_json)) {
 		return false;
 	}
@@ -1225,7 +1250,8 @@ bool Builder::action(const JsonValue& json, Action* out) {
 			return false;
 		}
 		char name[Datapoint::kMaxName + 1];
-		const Datapoint* dp = datapoint_member(json, name, sizeof(name));
+		DatapointRef found;
+		const DatapointRef* dp = datapoint_member(json, name, sizeof(name), found);
 		if (dp == nullptr) {
 			return false;
 		}
@@ -1264,7 +1290,8 @@ bool Builder::action(const JsonValue& json, Action* out) {
 			return false;
 		}
 		char name[Datapoint::kMaxName + 1];
-		const Datapoint* dp = datapoint_member(json, name, sizeof(name));
+		DatapointRef found;
+		const DatapointRef* dp = datapoint_member(json, name, sizeof(name), found);
 		if (dp == nullptr) {
 			return false;
 		}
@@ -1433,7 +1460,8 @@ bool Builder::trigger(const JsonValue& json, Trigger* out) {
 			return false;
 		}
 		char name[Datapoint::kMaxName + 1];
-		const Datapoint* dp = datapoint_member(json, name, sizeof(name));
+		DatapointRef found;
+		const DatapointRef* dp = datapoint_member(json, name, sizeof(name), found);
 		if (dp == nullptr) {
 			return false;
 		}
@@ -1575,7 +1603,8 @@ bool Builder::trigger(const JsonValue& json, Trigger* out) {
 			return false;
 		}
 		char name[Datapoint::kMaxName + 1];
-		const Datapoint* dp = datapoint_member(json, name, sizeof(name));
+		DatapointRef found;
+		const DatapointRef* dp = datapoint_member(json, name, sizeof(name), found);
 		if (dp == nullptr) {
 			return false;
 		}
@@ -1737,19 +1766,18 @@ bool Builder::own_parameter_datapoint(const char* name) const {
 	if (rs_.index >= rule_ids_count_ || std::strncmp(name, kParameterDatapointPrefix, prefix) != 0) {
 		return false;
 	}
-	const char* id = rule_ids_[rs_.index];
+	const char* id = rule_ids_[rs_.index].id;
 	size_t n = std::strlen(id);
 	return std::strncmp(name + prefix, id, n) == 0 && name[prefix + n] == '/';
 }
 
-const Datapoint* Builder::datapoint_member(const JsonValue& json, char* name, size_t size) {
+const DatapointRef* Builder::datapoint_member(const JsonValue& json, char* name, size_t size, DatapointRef& out) {
 	bool present = false;
 	if (!string_member(json, "datapoint", true, name, size, 1, Datapoint::kMaxName, present)) {
 		return nullptr;
 	}
 	PathScope scope(*this, ".datapoint");
-	const Datapoint* dp = model_.find(name);
-	if (dp == nullptr) {
+	if (!model_.lookup(name, out)) {
 		fail(LoadError::unknown_reference, "no datapoint '%s'", name);
 		return nullptr;
 	}
@@ -1757,7 +1785,7 @@ const Datapoint* Builder::datapoint_member(const JsonValue& json, char* name, si
 		fail(LoadError::forbidden, "'%s' is a parameter of this rule: use the parameter (setParameter, $id)", name);
 		return nullptr;
 	}
-	return dp;
+	return &out;
 }
 
 bool Builder::root_of(const JsonValue& json, RootKind kind, uint16_t& index, Type& type, Node* out) {
@@ -1934,7 +1962,8 @@ bool Builder::expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 		if (scope.constant) {
 			return fail(LoadError::forbidden, "a datapoint in a silence duration (it may use the rule's parameters)");
 		}
-		const Datapoint* dp = model_.find(name);
+		DatapointRef found;
+		const DatapointRef* dp = model_.lookup(name, found) ? &found : nullptr;
 		if (dp == nullptr) {
 			PathScope p(*this, ".name");
 			return fail(LoadError::unknown_reference, "no datapoint '%s'", name);
@@ -2292,14 +2321,14 @@ bool Builder::call(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 			}
 			int target = -1;
 			for (size_t i = 0; i < rule_ids_count_; ++i) {
-				if (std::strcmp(rule_ids_[i], id) == 0) {
+				if (std::strcmp(rule_ids_[i].id, id) == 0) {
 					target = static_cast<int>(i);
 				}
 			}
 			if (target < 0) {
 				return fail(LoadError::unknown_reference, "no rule '%s'", id);
 			}
-			if (!rule_has_states_[target]) {
+			if (!rule_ids_[target].has_states) {
 				return fail(LoadError::unknown_reference, "rule '%s' has no states", id);
 			}
 			state_rule = static_cast<uint16_t>(target);
@@ -2568,16 +2597,22 @@ RuleSet& RuleSet::operator=(RuleSet&& other) noexcept {
 }
 
 void RuleSet::clear() {
-	if (block_) {
-		for (size_t i = 0; i < constant_count_; ++i) {
-			constants_[i].~Val();
-		}
-		::operator delete(block_, std::nothrow);
+	for (size_t i = 0; i < constant_count_; ++i) {
+		constants_[i].~Val();
+	}
+	for (void* part : parts_) {
+		::operator delete(part, std::nothrow);
 	}
 	new (this) RuleSet();
 }
 
 LoadResult RuleSet::load(const JsonValue& rules, const DatapointModel& model, const ScheduleDirectory* schedules,
+	const char* language) {
+	ModelDirectory directory(model);
+	return load(rules, directory, schedules, language);
+}
+
+LoadResult RuleSet::load(const JsonValue& rules, const DatapointDirectory& model, const ScheduleDirectory* schedules,
 	const char* language) {
 	Builder* builder = new (std::nothrow) Builder(model, schedules, language);
 	LoadResult result;
@@ -2596,67 +2631,56 @@ LoadResult RuleSet::load(const JsonValue& rules, const DatapointModel& model, co
 		return result;
 	}
 
-	// Lay out the block from the counts of the first pass.
+	// One allocation per table, sized by the counts of the first pass.
 	RuleSet next;
-	struct Section {
-		size_t offset;
-		size_t bytes;
+	size_t total = 0;
+	size_t part = 0;
+	bool refused = false;
+	size_t refused_bytes = 0;
+	auto table = [&](size_t bytes) -> char* {
+		if (bytes == 0 || refused) {
+			return nullptr;
+		}
+		void* p = ::operator new(bytes, std::nothrow);
+		if (p == nullptr) {
+			refused = true;
+			refused_bytes = bytes;
+			return nullptr;
+		}
+		next.parts_[part++] = p;
+		total += bytes;
+		return static_cast<char*>(p);
 	};
-	size_t offset = 0;
-	auto section = [&offset](size_t bytes) {
-		Section s{offset, bytes};
-		offset = align8(offset + bytes);
-		return s;
-	};
-	Section s_rules = section(builder->n_rules * sizeof(Rule));
-	Section s_reactions = section(builder->n_reactions * sizeof(Reaction));
-	Section s_triggers = section(builder->n_triggers * sizeof(Trigger));
-	Section s_actions = section(builder->n_actions * sizeof(Action));
-	Section s_parts = section(builder->n_parts * sizeof(LogPart));
-	Section s_parameters = section(builder->n_parameters * sizeof(Parameter));
-	Section s_choices = section(builder->n_choices * sizeof(Choice));
-	Section s_timers = section(builder->n_timers * sizeof(Timer));
-	Section s_states = section(builder->n_states * sizeof(State));
-	Section s_nodes = section(builder->n_nodes * sizeof(Node));
-	Section s_constants = section(builder->n_constants * sizeof(Val));
-	Section s_schedules = section(builder->n_schedules * sizeof(uint32_t));
-	Section s_tracked = section(builder->n_tracked * sizeof(uint16_t));
-	Section s_matches = section(builder->n_matches * sizeof(MatchRef));
-	Section s_silences = section(builder->n_silences * sizeof(SilenceRef));
-	Section s_strings = section(builder->n_strings);
-	size_t total = offset;
-	void* block = total > 0 ? ::operator new(total, std::nothrow) : nullptr;
-	if (total > 0 && block == nullptr) {
+	next.rules_ = reinterpret_cast<Rule*>(table(builder->n_rules * sizeof(Rule)));
+	next.reactions_ = reinterpret_cast<Reaction*>(table(builder->n_reactions * sizeof(Reaction)));
+	next.triggers_ = reinterpret_cast<Trigger*>(table(builder->n_triggers * sizeof(Trigger)));
+	next.actions_ = reinterpret_cast<Action*>(table(builder->n_actions * sizeof(Action)));
+	next.log_parts_ = reinterpret_cast<LogPart*>(table(builder->n_parts * sizeof(LogPart)));
+	next.parameters_ = reinterpret_cast<Parameter*>(table(builder->n_parameters * sizeof(Parameter)));
+	next.choices_ = reinterpret_cast<Choice*>(table(builder->n_choices * sizeof(Choice)));
+	next.timers_ = reinterpret_cast<Timer*>(table(builder->n_timers * sizeof(Timer)));
+	next.states_ = reinterpret_cast<State*>(table(builder->n_states * sizeof(State)));
+	next.nodes_ = reinterpret_cast<Node*>(table(builder->n_nodes * sizeof(Node)));
+	next.constants_ = reinterpret_cast<Val*>(table(builder->n_constants * sizeof(Val)));
+	next.schedules_ = reinterpret_cast<uint32_t*>(table(builder->n_schedules * sizeof(uint32_t)));
+	next.tracked_ = reinterpret_cast<uint16_t*>(table(builder->n_tracked * sizeof(uint16_t)));
+	next.matches_ = reinterpret_cast<MatchRef*>(table(builder->n_matches * sizeof(MatchRef)));
+	next.silences_ = reinterpret_cast<SilenceRef*>(table(builder->n_silences * sizeof(SilenceRef)));
+	next.strings_ = table(builder->n_strings);
+	static_assert(kParts >= 16, "one part per table");
+	if (refused) {
 		delete builder;
 		result.error = LoadError::out_of_memory;
-		std::snprintf(result.text, sizeof(result.text), "no memory for the rules (%u bytes)", static_cast<unsigned>(total));
+		std::snprintf(result.text, sizeof(result.text), "no memory for the rules (a table of %u bytes, %u in all)",
+			static_cast<unsigned>(refused_bytes), static_cast<unsigned>(total + refused_bytes));
 		Log::error(kTag, "rules refused: %s", result.text);
-		return result;
+		return result; // `next` frees the tables it got
 	}
-	char* base = static_cast<char*>(block);
-	next.block_ = block;
 	next.block_size_ = total;
-	next.rules_ = reinterpret_cast<Rule*>(base + s_rules.offset);
-	next.reactions_ = reinterpret_cast<Reaction*>(base + s_reactions.offset);
-	next.triggers_ = reinterpret_cast<Trigger*>(base + s_triggers.offset);
-	next.actions_ = reinterpret_cast<Action*>(base + s_actions.offset);
-	next.log_parts_ = reinterpret_cast<LogPart*>(base + s_parts.offset);
-	next.parameters_ = reinterpret_cast<Parameter*>(base + s_parameters.offset);
-	next.choices_ = reinterpret_cast<Choice*>(base + s_choices.offset);
-	next.timers_ = reinterpret_cast<Timer*>(base + s_timers.offset);
-	next.states_ = reinterpret_cast<State*>(base + s_states.offset);
-	next.nodes_ = reinterpret_cast<Node*>(base + s_nodes.offset);
-	next.constants_ = reinterpret_cast<Val*>(base + s_constants.offset);
-	next.schedules_ = reinterpret_cast<uint32_t*>(base + s_schedules.offset);
-	next.tracked_ = reinterpret_cast<uint16_t*>(base + s_tracked.offset);
-	next.matches_ = reinterpret_cast<MatchRef*>(base + s_matches.offset);
-	next.silences_ = reinterpret_cast<SilenceRef*>(base + s_silences.offset);
-	next.strings_ = base + s_strings.offset;
 	for (size_t i = 0; i < builder->n_constants; ++i) {
 		new (&next.constants_[i]) Val();
 	}
 	next.constant_count_ = builder->n_constants;
-	(void)s_rules.bytes;
 
 	if (!builder->run(rules, &next)) {
 		// The counting pass accepted what the building pass refused: a loader bug, never silent.
@@ -2770,7 +2794,7 @@ ValueType parameter_datapoint_type(Type type) {
 	}
 }
 
-size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, size_t capacity) {
+size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, size_t capacity, size_t first) {
 	if (!rules.is(JsonKind::array)) {
 		return 0;
 	}
@@ -2791,8 +2815,8 @@ size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, siz
 		return false;
 	};
 	auto add = [&](const char* rule, const char* parameter, ValueType type, bool adjustable) {
-		if (out != nullptr && count < capacity) {
-			ParameterDatapoint& d = out[count];
+		if (out != nullptr && count >= first && count - first < capacity) {
+			ParameterDatapoint& d = out[count - first];
 			parameter_datapoint_name(rule, parameter, d.name, sizeof(d.name));
 			d.type = type;
 			d.flags = adjustable ? (DatapointFlags::kWritable | DatapointFlags::kTransmit) : 0;

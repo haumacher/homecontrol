@@ -117,16 +117,15 @@ measurements of #60 say more.
 
 **At a deploy** (#70, doc/image.md "Memory of a swap"): the old image holds its blocks until the
 `block runtime` step releases them, and the new image's blocks are compiled and their datapoints
-built beside them. With the C6's sizes (`scripts/c6-model`) the swap's peak above the old image
-grows by about 1.5 KB per block (the rules' compilation is the peak) and by about 2 KB per block
-from about seven blocks (the `model` step), less than a block's steady cost (4.3 KB for a room
-controller with 16 mirrors in the test system, 1.3 to 2.4 KB for a heating demand). A block in both
-images thus lowers a deploy's lowest free heap by its steady size plus at most that again, about
-6 KB for a room controller: on the C6, which reached 26 KB at revision 13 of the test system (two
-blocks), three more room controllers leave under 10 KB. `Swap memory: a block costs at the peak at
-most its steady size; the swap stays within its budget` pins it: the peak above the old image is at
-most the swap's budget (16 KB for `example.json` without blocks, 64-bit host) plus k times a
-block's steady cost, and a block adds at most its steady cost to the peak. The diagnostic outputs (`p`, `i`, `d`, `error`, `filtered`,
+built beside them. With the C6's sizes (`scripts/c6-model`) the swap's peak (the `model` step) grows
+by about 1.9 KB per block, less than a block's steady cost (3.8 KB for a room controller with 16
+mirrors in the test system, 1.3 to 2.4 KB for a heating demand). A block in both images thus lowers
+a deploy's lowest free heap by its steady size plus about 2 KB. The block runtime takes one
+allocation per instance (about 1.1 KB for a room controller), not one block of all instances.
+`Swap memory: a block costs at the peak at most its steady size; the swap stays within its budget
+and takes no large block` pins it: the peak above the old image is at most the swap's budget (9 KB
+for `example.json` without blocks, 64-bit host) plus k times a block's steady cost, a block adds at
+most its steady cost to the peak, and no allocation of the swap exceeds 3 KB. The diagnostic outputs (`p`, `i`, `d`, `error`, `filtered`,
 `activeSetpoint`, `state`) are 7 of the 16 mirrors.
 
 Flash: the blocks (runtime, loader, room controller, API, UI) took the C6 application from 0x411a0

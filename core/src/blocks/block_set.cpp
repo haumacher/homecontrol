@@ -176,7 +176,7 @@ const char* const kMembers[] = {"id", "type", "version", "label", "enabled", "en
 	"aggregation", "outputs", "parameters", "description", "comment", nullptr};
 
 struct Compiler {
-	const DatapointModel& model;
+	const DatapointDirectory& model;
 	const BlockDirectory& directory;
 	const BlockRegistry& registry;
 	BlockLoadResult& result;
@@ -209,11 +209,11 @@ struct Compiler {
 		if (span.kind != JsonSpan::Kind::string || !json_string(span, name, sizeof(name))) {
 			return refuse(BlockError::malformed, "a datapoint name must be a string of 1..63 bytes");
 		}
-		const Datapoint* dp = model.find(name);
-		if (dp == nullptr) {
+		DatapointRef dp;
+		if (!model.lookup(name, dp)) {
 			return refuse(BlockError::unknown_reference, "no datapoint '%s'", name);
 		}
-		id = dp->id();
+		id = dp.id();
 		return true;
 	}
 
@@ -424,7 +424,9 @@ bool Compiler::inputs(const JsonSpan& item, size_t index, BlockSpec& spec) {
 				if (!datapoint(name, id)) {
 					return false;
 				}
-				const Datapoint* dp = model.get(id);
+				DatapointRef found;
+				model.lookup(id, found); // resolved by name just before
+				const DatapointRef* dp = &found;
 				char own[Datapoint::kMaxName + 2];
 				std::snprintf(own, sizeof(own), "block/%s/", spec.id);
 				if (std::strncmp(dp->name(), own, std::strlen(own)) == 0) {
@@ -524,7 +526,9 @@ bool Compiler::outputs(const JsonSpan& item, size_t index, BlockSpec& spec, cons
 		if (!datapoint(value, id)) {
 			return false;
 		}
-		const Datapoint* dp = model.get(id);
+		DatapointRef found;
+				model.lookup(id, found); // resolved by name just before
+				const DatapointRef* dp = &found;
 		const char* owner = directory.owner(dp->name());
 		if (owner != nullptr) {
 			return refuse(BlockError::output_conflict, "'%s' is owned by %s", dp->name(), owner);
@@ -759,6 +763,12 @@ int BlockSet::find(const char* id) const {
 
 BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointModel& model, const BlockDirectory& directory,
 	const BlockRegistry& registry) {
+	ModelDirectory datapoints(model);
+	return load(blocks, datapoints, directory, registry);
+}
+
+BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointDirectory& model, const BlockDirectory& directory,
+	const BlockRegistry& registry) {
 	clear();
 	BlockLoadResult result;
 	Compiler c{model, directory, registry, result};
@@ -853,18 +863,19 @@ BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointModel& mod
 }
 
 size_t implied_datapoints(const JsonSpan& blocks, const BlockRegistry& registry, ImpliedDatapoint* out,
-	size_t capacity) {
+	size_t capacity, size_t first) {
 	if (blocks.kind != JsonSpan::Kind::array) {
 		return 0;
 	}
 	size_t count = 0;
 	auto add = [&](const char* id, const char* member, ValueType type, uint8_t flags) {
-		if (out != nullptr && count < capacity) {
-			if (!mirror_name(id, member, out[count].name, sizeof(out[count].name))) {
+		if (out != nullptr && count >= first && count - first < capacity) {
+			ImpliedDatapoint& d = out[count - first];
+			if (!mirror_name(id, member, d.name, sizeof(d.name))) {
 				return;
 			}
-			out[count].type = type;
-			out[count].flags = flags;
+			d.type = type;
+			d.flags = flags;
 		}
 		++count;
 	};

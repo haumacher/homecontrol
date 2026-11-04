@@ -27,7 +27,10 @@ std::atomic<size_t> g_heap_blocks{0};
 std::atomic<size_t> g_heap_peak{0};
 std::atomic<size_t> g_charged{0};
 std::atomic<size_t> g_charged_peak{0};
-std::atomic<unsigned> g_excluding{0}; // not thread_local: the 32-bit model build has no TLS
+std::atomic<size_t> g_heap_largest{0};
+std::atomic<unsigned> g_excluding{0};
+std::atomic<size_t> g_block_limit{0}; // 0: none
+std::atomic<size_t> g_block_refused{0}; // not thread_local: the 32-bit model build has no TLS
 
 struct alignas(alignof(std::max_align_t)) Header {
 	size_t size;
@@ -36,6 +39,11 @@ struct alignas(alignof(std::max_align_t)) Header {
 };
 
 void* allocate(size_t size) noexcept {
+	size_t limit = g_block_limit.load();
+	if (limit > 0 && size > limit && g_excluding == 0) {
+		++g_block_refused;
+		return nullptr;
+	}
 	void* raw = std::malloc(sizeof(Header) + (size ? size : 1));
 	if (raw == nullptr) {
 		return nullptr;
@@ -49,6 +57,9 @@ void* allocate(size_t size) noexcept {
 		++g_heap_blocks;
 		size_t top = g_heap_peak.load();
 		while (held > top && !g_heap_peak.compare_exchange_weak(top, held)) {
+		}
+		size_t big = g_heap_largest.load();
+		while (size > big && !g_heap_largest.compare_exchange_weak(big, size)) {
 		}
 		size_t charged = g_charged.fetch_add(charge(size)) + charge(size);
 		size_t most = g_charged_peak.load();
@@ -107,13 +118,23 @@ size_t heap_live() { return g_heap_live.load(); }
 size_t heap_blocks() { return g_heap_blocks.load(); }
 size_t heap_peak() { return g_heap_peak.load(); }
 
+BlockLimit::BlockLimit(size_t bytes) {
+	g_block_refused = 0;
+	g_block_limit = bytes;
+}
+BlockLimit::~BlockLimit() { g_block_limit = 0; }
+size_t BlockLimit::refused() const { return g_block_refused.load(); }
+
 HeapExclusion::HeapExclusion() { ++g_excluding; }
 HeapExclusion::~HeapExclusion() { --g_excluding; }
 
 size_t heap_charged() { return g_charged.load(); }
 size_t heap_charged_peak() { return g_charged_peak.load(); }
 
+size_t heap_largest() { return g_heap_largest.load(); }
+
 size_t heap_mark() {
+	g_heap_largest.store(0);
 	g_charged_peak.store(g_charged.load());
 	return g_heap_peak.exchange(g_heap_live.load());
 }

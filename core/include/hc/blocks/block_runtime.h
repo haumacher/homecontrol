@@ -104,8 +104,8 @@ struct BlockMemory {
 /// rule engine inside its cascades (rules::BlockHost): after the rules for every event, for its
 /// timers and periods ordered with the rule timers, and after the rules' start cascades.
 ///
-/// Memory: one block per adopt() for the instances' runtime (and the interest bitmap); nothing is
-/// allocated while events are processed. Threading: the event loop's thread.
+/// Memory: per adopt() one block for the instance table and the interest bitmap and one per
+/// instance with its runtime data; nothing is allocated while events are processed. Threading: the event loop's thread.
 class BlockRuntime : public rules::BlockHost {
 public:
 	static constexpr const char* kTechnologyName = "blocks";
@@ -206,6 +206,7 @@ private:
 	};
 
 	struct Instance;
+	struct InstanceTable;
 	struct Runtime;
 	class Context;
 	friend class Context;

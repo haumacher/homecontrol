@@ -91,6 +91,9 @@ public:
 	/// component owns. On a refusal the set stays empty and the result names the first problem.
 	BlockLoadResult load(const JsonSpan& blocks, const DatapointModel& model, const BlockDirectory& directory,
 		const BlockRegistry& registry);
+	/// The same against a directory of the datapoints (the image loader's tables: no scratch model).
+	BlockLoadResult load(const JsonSpan& blocks, const DatapointDirectory& datapoints, const BlockDirectory& directory,
+		const BlockRegistry& registry);
 
 	size_t size() const { return count_; }
 	const BlockSpec& at(size_t index) const { return specs_[index]; }
@@ -122,11 +125,12 @@ struct ImpliedDatapoint {
 };
 
 /// The implied datapoints of `blocks`, in block order (`enabled`, the adjustable parameters, the
-/// outputs, the aggregated inputs), into `out` up to `capacity`; returns how many there are.
+/// outputs, the aggregated inputs), from the `first` on into `out` up to `capacity` (a caller fills
+/// its tables in batches); returns how many there are.
 /// Lenient: an instance that is not well-formed (no id, an unknown type) is skipped, since load()
 /// refuses it with the precise reason.
 size_t implied_datapoints(const JsonSpan& blocks, const BlockRegistry& registry, ImpliedDatapoint* out,
-	size_t capacity);
+	size_t capacity, size_t first = 0);
 
 /// The value of a parameter in its image form (spec/blocks.md 4): a number, a boolean, a choice's
 /// id or a time of day object. False (with `reason`) when it is not of the parameter's type; the

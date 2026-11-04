@@ -2,6 +2,17 @@
 
 menu "HomeControl runtime image"
 
+	config HC_IMAGE_LOAD_YIELD
+		bool "Let the lower-priority tasks run between the phases of an image load"
+		default y
+		help
+			An image load runs on the event loop for several hundred milliseconds, at the loop's
+			priority. Meanwhile the tasks below it (the KNX socket's reader, mDNS, the E-Home sender,
+			the console writer) cannot take what the network delivers to them, and every packet that
+			waits for them holds a WiFi receive buffer of the heap: on the C6 about 20 KB in the first
+			170 ms of a deploy (homecontrol #70). With this option the loop sleeps one tick at the end
+			of each phase (about 20 phases, at most 10 ms each), so they drain what has arrived.
+
 	config HC_IMAGE_HEAP_PHASES
 		bool "Log the heap at each phase of an image load"
 		default n
@@ -13,5 +24,16 @@ menu "HomeControl runtime image"
 			"Memory of a swap" lists them). Off, the same
 			lines are logged at debug level: `log level hc.image debug` on the console switches them
 			on without a rebuild.
+
+	config HC_IMAGE_HEAP_BY_TASK
+		bool "With the heap of each task (heap task tracking)"
+		default n
+		select HEAP_TASK_TRACKING
+		help
+			Adds to the load's last line and to the lines 3 s and 10 s after it every task whose heap
+			changed by 256 B or more since the load began (heap_caps_get_per_task_info): what the
+			load's own allocations do not explain, such as network buffers of tasks the load held
+			back. Turns on the IDF's heap task tracking, which costs a few bytes per allocation and
+			some speed: for measurements, not for production builds.
 
 endmenu

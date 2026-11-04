@@ -153,7 +153,7 @@ hc::esp::EspImageStaging g_staging;
 // The image's store off the loop (#68): a task of its own per store.
 hc::esp::EspWorker g_worker(g_queue);
 // The heap at each phase of a load (#70): `log level hc.image debug`, or CONFIG_HC_IMAGE_HEAP_PHASES.
-hc::esp::EspLoadProbe g_load_probe;
+hc::esp::EspLoadProbe g_load_probe(g_queue);
 
 hc::esp::ImageConsole& image_console() {
 	static hc::esp::ImageConsole instance(image(), g_queue);
