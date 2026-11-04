@@ -1,0 +1,148 @@
+{
+	"title": "A block disabled while faulted stays quiet at the next image: the swap finds it disabled and writes nothing, its outputs hold the failsafe values of the fault (spec/blocks.md 6.1).",
+	"note": "The switch of a faulted instance changes only the switch (6.1). A block disabled without a fault writes its failsafe values at a swap (5.2); this one wrote them at the fault already.",
+	"datapoints": [
+		{
+			"name": "a",
+			"type": "real"
+		},
+		{
+			"name": "b",
+			"type": "real"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "led",
+			"type": "boolean"
+		},
+		{
+			"name": "flag",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"a": 5
+	},
+	"blocks": [
+		{
+			"id": "c",
+			"type": "org.homecontrol.conformance",
+			"version": "1.1",
+			"label": "Conformance c",
+			"inputs": {
+				"x": "a"
+			},
+			"outputs": {
+				"y": "out",
+				"pulse": "led"
+			},
+			"parameters": {
+				"faultAbove": 100
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 2000,
+			"report": {
+				"datapoint": "a",
+				"value": 150
+			}
+		},
+		{
+			"at": 3000,
+			"setBlock": {
+				"block": "c",
+				"enabled": false
+			}
+		},
+		{
+			"at": 4000,
+			"check": {
+				"blocks": {
+					"c": {
+						"status": "fault"
+					}
+				}
+			}
+		},
+		{
+			"at": 5000,
+			"image": {
+				"blocks": [
+					{
+						"id": "c",
+						"type": "org.homecontrol.conformance",
+						"version": "1.1",
+						"label": "Conformance c",
+						"inputs": {
+							"x": "a"
+						},
+						"outputs": {
+							"y": "out",
+							"pulse": "led"
+						},
+						"parameters": {
+							"faultAbove": 100
+						}
+					}
+				]
+			}
+		},
+		{
+			"at": 6000,
+			"report": {
+				"datapoint": "a",
+				"value": 7
+			}
+		}
+	],
+	"end": 8000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "c",
+				"datapoint": "out",
+				"value": 5.0
+			},
+			{
+				"at": 2000,
+				"block": "c",
+				"datapoint": "out",
+				"value": -1.0
+			},
+			{
+				"at": 2000,
+				"block": "c",
+				"datapoint": "led",
+				"value": false
+			}
+		],
+		"logs": [
+			{
+				"at": 2000,
+				"block": "c",
+				"code": "fault"
+			}
+		],
+		"final": {
+			"datapoints": {
+				"out": -1.0,
+				"led": false,
+				"block/c/enabled": false
+			},
+			"blocks": {
+				"c": {
+					"status": "disabled"
+				}
+			},
+			"persisted": {
+				"@c/enabled": false
+			}
+		}
+	}
+}

@@ -86,6 +86,7 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `23-room-valve-protection` | Valve protection on its weekday from protectionTime: the valve fully open for protectionDuration, before summer; once per day. |
 | `24-room-modes` | The setpoint from presence, the heating period, the HVAC mode and an external setpoint; frost mode, off, forced and summer. |
 | `25-room-integral-reboot` | The integral survives an orderly reboot (persisted at most every persistEvery and at the reboot); the filter starts again from the first report. |
+| `26-fault-disabled-swap` | A block disabled while faulted is found disabled by the next image and writes nothing; its outputs hold the failsafe values of the fault (6.1). |
 
 ## How the expected values were computed
 

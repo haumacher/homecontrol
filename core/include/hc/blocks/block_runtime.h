@@ -245,7 +245,10 @@ private:
 	BlockSet set_;
 	Runtime* runtime_ = nullptr;
 	bool booted_ = false;
-	uint32_t persist_interval_ms_ = 0; ///< The pacing of spec/blocks.md B13, per instance.
+	uint32_t persist_interval_ms_ = 0; ///< n x 120 s of spec/blocks.md B13 (n the instances with persistent state).
+
+	/// The shortest interval between two writes of the instance's record (spec/blocks.md B13).
+	uint64_t persist_interval(size_t block) const;
 	TimerHandle persist_timer_;
 	uint64_t persist_deadline_ = 0;
 };

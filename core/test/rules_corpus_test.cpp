@@ -1275,8 +1275,9 @@ HC_BLOCK_CASE("22", "room-boost")
 HC_BLOCK_CASE("23", "room-valve-protection")
 HC_BLOCK_CASE("24", "room-modes")
 HC_BLOCK_CASE("25", "room-integral-reboot")
+HC_BLOCK_CASE("26", "fault-disabled-swap")
 
 TEST_CASE("BlocksCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::corpus_files("blocks");
-	CHECK(files.size() == 25);
+	CHECK(files.size() == 26);
 }

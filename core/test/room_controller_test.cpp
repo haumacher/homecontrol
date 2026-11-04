@@ -14,6 +14,7 @@
 #include "allocation_counter.h"
 #include "conformance_block.h"
 #include "doctest.h"
+#include "hc/value_store.h"
 #include "fake_blob_store.h"
 #include "hc/blocks/block_runtime.h"
 #include "hc/blocks/room_controller.h"
@@ -466,4 +467,33 @@ TEST_CASE("BlockRuntime: no allocation in steady state; the cost of a room contr
 	MESSAGE("block runtime object " << m.object << " B, runtime " << m.runtime << " B, set " << m.set << " B, "
 		<< mirrors << " mirror datapoints (host, 64-bit)");
 	CHECK(mirrors == 1 + 4 + 10 + 1); // enabled, 4 setpoints, 10 outputs, the aggregated temperature
+}
+
+TEST_CASE("BlockRuntime: each record is paced by max(persistEvery of its type, n x 120 s) (spec/blocks.md B13)") {
+	// Two instances with persistent state: n x 120 s = 240 s. The conformance type's persistEvery is
+	// 60 s, the room controller's 600 s: the conformance record is written every 240 s, not at the
+	// room controller's 600 s (a global interval wrote it three times less often).
+	hc_test::FakeBlobStore blobs;
+	Rig rig(R"([{"id": "c", "type": "org.homecontrol.conformance", "version": "1.1", "label": "C",
+		"inputs": {"x": "temp"}},
+		{"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Room",
+		"inputs": {"temperature": "temp2"}, "outputs": {"valve": "valve"}}])", &blobs);
+	char c_name[hc::persist::kBlobNameSize];
+	hc::persist::blob_name(BlockRuntime::kBlobPrefix, "c", c_name);
+	char wz_name[hc::persist::kBlobNameSize];
+	hc::persist::blob_name(BlockRuntime::kBlobPrefix, "wz", wz_name);
+	rig.report("temp", 1.0);
+	rig.report("temp2", 19.0);
+	int c_before = blobs.writes_of[c_name];
+	int wz_before = blobs.writes_of[wz_name];
+	// The conformance block's period (10 s) changes its persisted count every call.
+	for (int s = 10; s <= 2400; s += 10) {
+		rig.report("temp2", 19.0 + (s % 600 == 0 ? 0.5 : 0.0));
+		rig.run(static_cast<uint64_t>(s) * 1000);
+	}
+	int c_writes = blobs.writes_of[c_name] - c_before;
+	int wz_writes = blobs.writes_of[wz_name] - wz_before;
+	CHECK(c_writes >= 9);  // 2400 s / 240 s
+	CHECK(c_writes <= 10);
+	CHECK(wz_writes <= 4); // 2400 s / 600 s
 }

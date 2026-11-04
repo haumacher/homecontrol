@@ -194,6 +194,7 @@ struct BlockRuntime::Instance {
 	bool enabled = true;
 	bool enabled_overridden = false;
 	bool restored = false;         ///< The record comes from before (the next start's `restored`).
+	bool was_fault = false;        ///< Faulted before this image: its outputs hold their failsafe values.
 	bool dirty = false;            ///< A persisted field differs from the stored record.
 	bool written_once = false;     ///< Written since the boot: the next write waits for the interval.
 	double* state = nullptr;       ///< One per manifest field.
@@ -591,12 +592,18 @@ void BlockRuntime::write_record(size_t block) {
 	}
 }
 
+uint64_t BlockRuntime::persist_interval(size_t block) const {
+	// spec/blocks.md B13: max(persistEvery, n x 120 s) per instance, n the instances with persistent state.
+	uint64_t every = set_.at(block).type->manifest().persist_every_ms;
+	return every > persist_interval_ms_ ? every : persist_interval_ms_;
+}
+
 void BlockRuntime::schedule_persist() {
 	uint64_t earliest = EventLoop::kNever;
 	for (size_t b = 0; runtime_ != nullptr && b < runtime_->count; ++b) {
 		const Instance& in = runtime_->instances[b];
 		if (in.dirty && in.status != BlockStatus::fault) {
-			uint64_t due = in.written_once ? in.last_write_ms + persist_interval_ms_ : 0;
+			uint64_t due = in.written_once ? in.last_write_ms + persist_interval(b) : 0;
 			earliest = due < earliest ? due : earliest;
 		}
 	}
@@ -626,7 +633,7 @@ void BlockRuntime::on_persist() {
 	for (size_t b = 0; runtime_ != nullptr && b < runtime_->count; ++b) {
 		Instance& in = runtime_->instances[b];
 		if (in.dirty && in.status != BlockStatus::fault &&
-			(!in.written_once || in.last_write_ms + persist_interval_ms_ <= now)) {
+			(!in.written_once || in.last_write_ms + persist_interval(b) <= now)) {
 			write_record(b);
 		}
 	}
@@ -826,6 +833,7 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 				in.restored = load_record(i, mismatch);
 				in.written_once = oi.written_once;
 				in.last_write_ms = oi.last_write_ms;
+				in.was_fault = true;
 			} else if (std::strcmp(om.type, m.type) == 0 && om.major == m.major) {
 				// The same type and major version: the record in RAM, by field id (spec/blocks.md 8.1).
 				for (size_t f = 0; f < m.state_count; ++f) {
@@ -939,12 +947,6 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 	booted_ = true;
 	uint32_t paced = static_cast<uint32_t>(persisting * 3600000u / BlockLimits::kRecordWritesPerHour);
 	persist_interval_ms_ = paced;
-	for (size_t i = 0; i < count; ++i) {
-		const Manifest& m = set_.at(i).type->manifest();
-		if (m.persists() && m.persist_every_ms > persist_interval_ms_) {
-			persist_interval_ms_ = m.persist_every_ms;
-		}
-	}
 	prune(false);
 	bind();
 	schedule_persist();
@@ -1409,10 +1411,16 @@ void BlockRuntime::start_block(size_t index, rules::StartReason reason) {
 	}
 	Instance& in = runtime_->instances[index];
 	const Manifest& m = set_.at(index).type->manifest();
+	bool was_fault = in.was_fault;
+	in.was_fault = false;
 	if (!in.enabled) {
 		in.status = BlockStatus::disabled;
 		in.started = false;
-		write_failsafe(index); // a disabled block's outputs are defined (spec/blocks.md B10)
+		if (!was_fault) {
+			// A disabled block's outputs are defined (spec/blocks.md B10); a faulted one's are at their
+			// failsafe values already: nothing is written (6.1).
+			write_failsafe(index);
+		}
 		return;
 	}
 	in.status = BlockStatus::running;
