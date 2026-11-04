@@ -97,3 +97,10 @@ CONFIG_MDNS_TASK_STACK_SIZE=3584
 # Tmr Svc (FreeRTOS software timers): kept at 2048, 260 B used: its callbacks are the IDF's own
 # and short, but one that logs needs the ROM printf's frame of 1.25 KB (#48).
 CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=2048
+
+# Optimize for size (issue #45 item 11, measured 2026-11-04 on the C6 with the test home and 2 blocks,
+# against -Og of the same commit): the application 212 KB smaller (13 % of ota_0 free instead of
+# 5 %), 16 KB more free heap (67 KB), the lowest since boot 12 KB higher, the largest block 15 KB
+# larger, the longest loop turn 123 ms instead of 161 ms. Costs: the loop task's stack use 880 B
+# higher (main.cpp kLoopTaskStack), and backtraces of a core dump are less exact. Assertions stay on.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
