@@ -1,0 +1,58 @@
+{
+	"title": "Load refusal: sunElevation() in a match condition (a rule cannot trigger on the sun's position)",
+	"description": "The sun's position is a function of the wall clock, not a datapoint: no update tells a match trigger to evaluate it again, so it is refused like the other time functions (spec/rules.md 2.3, 4.7, decision 13). A rule follows the sun with a timer (case 64).",
+	"datapoints": [
+		{
+			"name": "out.flag",
+			"type": "boolean"
+		}
+	],
+	"location": {
+		"lat": 52.52,
+		"lon": 13.405
+	},
+	"rules": [
+		{
+			"id": "bad",
+			"name": "Bad",
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "match",
+							"condition": {
+								"kind": "binary",
+								"op": ">",
+								"left": {
+									"kind": "call",
+									"function": "sunElevation",
+									"args": []
+								},
+								"right": {
+									"kind": "literal",
+									"type": "real",
+									"value": 10.0
+								}
+							}
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "out.flag",
+							"value": {
+								"kind": "literal",
+								"type": "boolean",
+								"value": true
+							}
+						}
+					]
+				}
+			]
+		}
+	],
+	"end": 0,
+	"expected": {
+		"loadRefused": "forbidden"
+	}
+}

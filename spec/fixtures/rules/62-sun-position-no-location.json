@@ -1,0 +1,208 @@
+{
+	"title": "sunAzimuth() and sunElevation() have no value without a location, while the wall clock is synchronized",
+	"description": "The case has no location; the wall clock is synchronized (Sunday 2026-06-21 12:00:00 CEST) and time() has its value, the sun's position has none: valueNoValue for the azimuth, known() false, the fallback of coalesce(), conditionNoValue for the condition.",
+	"datapoints": [
+		{
+			"name": "sun.trigger",
+			"type": "boolean",
+			"writable": false
+		},
+		{
+			"name": "sun.azimuth",
+			"type": "real"
+		},
+		{
+			"name": "sun.elevation",
+			"type": "real"
+		},
+		{
+			"name": "sun.known",
+			"type": "boolean"
+		},
+		{
+			"name": "sun.up",
+			"type": "boolean"
+		},
+		{
+			"name": "sun.time",
+			"type": "timeOfDay"
+		}
+	],
+	"clock": {
+		"start": "2026-06-21T12:00:00",
+		"synchronized": true,
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"rules": [
+		{
+			"id": "sun",
+			"name": "Sun",
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "datapoint",
+							"datapoint": "sun.trigger",
+							"on": "update"
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "sun.azimuth",
+							"value": {
+								"kind": "call",
+								"function": "sunAzimuth",
+								"args": []
+							}
+						},
+						{
+							"kind": "write",
+							"datapoint": "sun.known",
+							"value": {
+								"kind": "call",
+								"function": "known",
+								"args": [
+									{
+										"kind": "call",
+										"function": "sunElevation",
+										"args": []
+									}
+								]
+							}
+						},
+						{
+							"kind": "write",
+							"datapoint": "sun.elevation",
+							"value": {
+								"kind": "call",
+								"function": "coalesce",
+								"args": [
+									{
+										"kind": "call",
+										"function": "sunElevation",
+										"args": []
+									},
+									{
+										"kind": "literal",
+										"type": "real",
+										"value": -90.0
+									}
+								]
+							}
+						},
+						{
+							"kind": "write",
+							"datapoint": "sun.time",
+							"value": {
+								"kind": "call",
+								"function": "time",
+								"args": []
+							}
+						}
+					]
+				},
+				{
+					"triggers": [
+						{
+							"kind": "datapoint",
+							"datapoint": "sun.trigger",
+							"on": "update"
+						}
+					],
+					"condition": {
+						"kind": "binary",
+						"op": ">",
+						"left": {
+							"kind": "call",
+							"function": "sunElevation",
+							"args": []
+						},
+						"right": {
+							"kind": "literal",
+							"type": "real",
+							"value": 0.0
+						}
+					},
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "sun.up",
+							"value": {
+								"kind": "literal",
+								"type": "boolean",
+								"value": true
+							}
+						}
+					],
+					"elseActions": [
+						{
+							"kind": "write",
+							"datapoint": "sun.up",
+							"value": {
+								"kind": "literal",
+								"type": "boolean",
+								"value": false
+							}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "sun.trigger",
+				"value": true
+			}
+		}
+	],
+	"end": 2000,
+	"expected": {
+		"commands": [
+			{
+				"at": 1000,
+				"rule": "sun",
+				"datapoint": "sun.known",
+				"value": false
+			},
+			{
+				"at": 1000,
+				"rule": "sun",
+				"datapoint": "sun.elevation",
+				"value": -90.0
+			},
+			{
+				"at": 1000,
+				"rule": "sun",
+				"datapoint": "sun.time",
+				"value": {
+					"hour": 12,
+					"minute": 0,
+					"second": 1,
+					"dayOfWeek": 7
+				}
+			}
+		],
+		"logs": [
+			{
+				"at": 1000,
+				"rule": "sun",
+				"code": "valueNoValue"
+			},
+			{
+				"at": 1000,
+				"rule": "sun",
+				"code": "conditionNoValue"
+			}
+		],
+		"final": {
+			"datapoints": {
+				"sun.azimuth": null,
+				"sun.up": null
+			}
+		}
+	}
+}

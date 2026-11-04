@@ -1,0 +1,276 @@
+{
+	"title": "sunAzimuth() and sunElevation(): the sun's position at the cascade's wall second from the case's location; the milliseconds dropped; below the horizon at night",
+	"description": "Berlin (52.52 N, 13.405 E), Europe/Berlin, the wall clock starts at 2026-06-21 12:00:00 CEST (10:00:00 UTC). The reports at 500 and 999 ms are in the wall second 12:00:00 and give the same position, the one at 1000 ms the position of 12:00:01; 18:00 CEST is in the west, 23:00 CEST below the horizon. The values follow spec/blocks.md 13.2 on the exact trigonometry of 13.1 (the same bits as the blocks' sun()).",
+	"note": "The expected values were computed with the throw-away executable model of the block corpus (spec/blocks.md 13.1 and 13.2 written literally in binary64) and cross-checked against the same formulas on the C library (within 1e-9 degrees) and the Astronomical Almanac's low-precision formula (within 0.02 degrees). The log messages pin the formatting of 4.9 on the exact values.",
+	"datapoints": [
+		{
+			"name": "sun.trigger",
+			"type": "boolean",
+			"writable": false
+		},
+		{
+			"name": "sun.azimuth",
+			"type": "real"
+		},
+		{
+			"name": "sun.elevation",
+			"type": "real"
+		},
+		{
+			"name": "sun.up",
+			"type": "boolean"
+		}
+	],
+	"clock": {
+		"start": "2026-06-21T12:00:00",
+		"synchronized": true,
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"location": {
+		"lat": 52.52,
+		"lon": 13.405
+	},
+	"rules": [
+		{
+			"id": "sun",
+			"name": "Sun position",
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "datapoint",
+							"datapoint": "sun.trigger",
+							"on": "update"
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "sun.azimuth",
+							"value": {
+								"kind": "call",
+								"function": "sunAzimuth",
+								"args": []
+							}
+						},
+						{
+							"kind": "write",
+							"datapoint": "sun.elevation",
+							"value": {
+								"kind": "call",
+								"function": "sunElevation",
+								"args": []
+							}
+						},
+						{
+							"kind": "write",
+							"datapoint": "sun.up",
+							"value": {
+								"kind": "binary",
+								"op": ">",
+								"left": {
+									"kind": "call",
+									"function": "sunElevation",
+									"args": []
+								},
+								"right": {
+									"kind": "literal",
+									"type": "real",
+									"value": 0.0
+								}
+							}
+						},
+						{
+							"kind": "log",
+							"level": "info",
+							"message": [
+								"sun ",
+								{
+									"kind": "call",
+									"function": "sunAzimuth",
+									"args": []
+								},
+								"° / ",
+								{
+									"kind": "call",
+									"function": "sunElevation",
+									"args": []
+								},
+								"°"
+							]
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{
+			"at": 500,
+			"report": {
+				"datapoint": "sun.trigger",
+				"value": true
+			}
+		},
+		{
+			"at": 999,
+			"report": {
+				"datapoint": "sun.trigger",
+				"value": true
+			}
+		},
+		{
+			"at": 1000,
+			"report": {
+				"datapoint": "sun.trigger",
+				"value": true
+			}
+		},
+		{
+			"at": 21600000,
+			"report": {
+				"datapoint": "sun.trigger",
+				"value": true
+			}
+		},
+		{
+			"at": 39600000,
+			"report": {
+				"datapoint": "sun.trigger",
+				"value": true
+			}
+		}
+	],
+	"end": 40000000,
+	"expected": {
+		"commands": [
+			{
+				"at": 500,
+				"rule": "sun",
+				"datapoint": "sun.azimuth",
+				"value": 149.360436349434
+			},
+			{
+				"at": 500,
+				"rule": "sun",
+				"datapoint": "sun.elevation",
+				"value": 58.14636897625627
+			},
+			{
+				"at": 500,
+				"rule": "sun",
+				"datapoint": "sun.up",
+				"value": true
+			},
+			{
+				"at": 999,
+				"rule": "sun",
+				"datapoint": "sun.azimuth",
+				"value": 149.360436349434
+			},
+			{
+				"at": 999,
+				"rule": "sun",
+				"datapoint": "sun.elevation",
+				"value": 58.14636897625627
+			},
+			{
+				"at": 999,
+				"rule": "sun",
+				"datapoint": "sun.up",
+				"value": true
+			},
+			{
+				"at": 1000,
+				"rule": "sun",
+				"datapoint": "sun.azimuth",
+				"value": 149.367252942726
+			},
+			{
+				"at": 1000,
+				"rule": "sun",
+				"datapoint": "sun.elevation",
+				"value": 58.147660751878654
+			},
+			{
+				"at": 1000,
+				"rule": "sun",
+				"datapoint": "sun.up",
+				"value": true
+			},
+			{
+				"at": 21600000,
+				"rule": "sun",
+				"datapoint": "sun.azimuth",
+				"value": 271.856001517662
+			},
+			{
+				"at": 21600000,
+				"rule": "sun",
+				"datapoint": "sun.elevation",
+				"value": 28.64808975589787
+			},
+			{
+				"at": 21600000,
+				"rule": "sun",
+				"datapoint": "sun.up",
+				"value": true
+			},
+			{
+				"at": 39600000,
+				"rule": "sun",
+				"datapoint": "sun.azimuth",
+				"value": 330.44084173079113
+			},
+			{
+				"at": 39600000,
+				"rule": "sun",
+				"datapoint": "sun.elevation",
+				"value": -9.058668468746662
+			},
+			{
+				"at": 39600000,
+				"rule": "sun",
+				"datapoint": "sun.up",
+				"value": false
+			}
+		],
+		"logs": [
+			{
+				"at": 500,
+				"rule": "sun",
+				"code": "log",
+				"level": "info",
+				"message": "sun 149.360436° / 58.146369°"
+			},
+			{
+				"at": 999,
+				"rule": "sun",
+				"code": "log",
+				"level": "info",
+				"message": "sun 149.360436° / 58.146369°"
+			},
+			{
+				"at": 1000,
+				"rule": "sun",
+				"code": "log",
+				"level": "info",
+				"message": "sun 149.367253° / 58.147661°"
+			},
+			{
+				"at": 21600000,
+				"rule": "sun",
+				"code": "log",
+				"level": "info",
+				"message": "sun 271.856002° / 28.64809°"
+			},
+			{
+				"at": 39600000,
+				"rule": "sun",
+				"code": "log",
+				"level": "info",
+				"message": "sun 330.440842° / -9.058668°"
+			}
+		]
+	}
+}

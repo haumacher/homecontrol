@@ -1253,10 +1253,16 @@ HC_RULE_CASE("55", "schedule-adjust-time")
 HC_RULE_CASE("56", "schedule-change-semantics")
 HC_RULE_CASE("57", "schedule-time-datapoint")
 HC_RULE_CASE("58", "schedule-image-swap-overrides")
+HC_RULE_CASE("59", "sun-position")
+HC_RULE_CASE("60", "sun-position-nrel-example")
+HC_RULE_CASE("61", "sun-position-no-clock")
+HC_RULE_CASE("62", "sun-position-no-location")
+HC_RULE_CASE("63", "load-refused-match-sun")
+HC_RULE_CASE("64", "sun-follow-timer")
 
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
-	CHECK(files.size() == 58);
+	CHECK(files.size() == 64);
 }
 
 // The block conformance corpus (spec/fixtures/blocks/README.md), run by the same runner.

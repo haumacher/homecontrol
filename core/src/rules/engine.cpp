@@ -2465,6 +2465,16 @@ Val Engine::eval_call(const Node& n, Eval& cx) {
 			}
 			return Val::of_time(t);
 		}
+		case Fn::sun_azimuth:
+		case Fn::sun_elevation: {
+			// The blocks' sun() (spec/blocks.md B21): the cascade's wall second, computed once per
+			// second for the rules and the blocks together; none without the clock or a location.
+			SunPosition position;
+			if (!cascade_sun(position)) {
+				return Val::none(n.type);
+			}
+			return Val::of_real(fn == Fn::sun_azimuth ? position.azimuth : position.elevation);
+		}
 		case Fn::since_update:
 		case Fn::last_known:
 		case Fn::quality: {

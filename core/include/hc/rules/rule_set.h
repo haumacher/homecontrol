@@ -51,7 +51,7 @@ enum class Fn : uint8_t {
 	if_, known, coalesce, between, hysteresis,
 	abs, min, max, clamp, round, floor, ceil, trunc, round_to, to_int,
 	now, today, time, weekday, hour, minute, second, year, month, day, date_of, time_of, in_window,
-	sunrise, sunset, dawn, dusk,
+	sunrise, sunset, dawn, dusk, sun_azimuth, sun_elevation,
 	since_update, since_change, changed_within, last_known, quality,
 	running, remaining, state,
 	length, contains, starts_with, ends_with, to_string,

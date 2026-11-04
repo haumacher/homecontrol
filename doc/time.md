@@ -114,14 +114,14 @@ elevation at an instant: the NOAA formulas of the events above evaluated at the 
 on `hc::exact` (`exact_math.h`), sines, cosines and arc tangents built from `+ - * /`, `sqrt` and
 `floor` alone, so that E-Home's Java simulation computes the same bits (`spec/blocks.md` 13.1,
 13.2; compiled with `-ffp-contract=off`). The blocks read it as `sun()` (`spec/blocks.md` B21) at the
-cascade's wall time and the time service's location (`TimeSource::location()`); the rule engine
-computes it once per wall second (`Engine::cascade_sun()`). Accuracy (`core/test/astro_test.cpp`):
+cascade's wall time and the time service's location (`TimeSource::location()`), the rules as
+`sunAzimuth()` and `sunElevation()` (`spec/rules.md` 4.7, issue #73); the rule engine computes it
+once per wall second for both (`Engine::cascade_sun()`). Accuracy (`core/test/astro_test.cpp`):
 within 0.0025° of the NREL Solar Position Algorithm's published example (its refraction and
 parallax taken out), within 0.011° of the Astronomical Almanac's low-precision formula over 7
 latitudes, 4 longitudes and a year; within 3e-12° of the same formulas on the library's functions.
 Refraction (up to 0.6° at the horizon) is not applied. One call costs 0.25 µs on the host, about
-0.7 ms on the C6 (estimated). The rules' functions `sunAzimuth()`/`sunElevation()` of issue #63 are
-not part of it yet.
+0.7 ms on the C6 (estimated).
 
 ## The scheduler
 

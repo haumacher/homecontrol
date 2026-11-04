@@ -1,0 +1,135 @@
+{
+	"title": "Following the sun: a timer that restarts itself evaluates sunAzimuth() and sunElevation() every 5 minutes; onlyOnChange writes the changes only",
+	"description": "The pattern of spec/rules.md 4.7 for a rule that follows the sun: the start trigger and the timer's expiry run the same reaction, which restarts the timer and writes whether the sun is on a south-east facade (azimuth 90..200 degrees, more than 10 degrees above the horizon). Berlin, 2026-06-21 from 06:00 CEST for ten hours: the sun is not on the facade at the start, comes onto it in the morning and leaves it in the afternoon, each at the first tick after the crossing.",
+	"note": "The expected ticks were computed with the throw-away executable model (spec/blocks.md 13.1 and 13.2) at every tick, cross-checked against the same formulas on the C library and the Astronomical Almanac's low-precision formula; the crossing ticks are not near a threshold within 0.02 degrees.",
+	"datapoints": [
+		{
+			"name": "facade.sun",
+			"type": "boolean"
+		}
+	],
+	"clock": {
+		"start": "2026-06-21T06:00:00",
+		"synchronized": true,
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"location": {
+		"lat": 52.52,
+		"lon": 13.405
+	},
+	"rules": [
+		{
+			"id": "facade",
+			"name": "Sun on the facade",
+			"timers": [
+				{
+					"id": "tick",
+					"duration": {
+						"kind": "literal",
+						"type": "duration",
+						"value": 300000
+					}
+				}
+			],
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "start"
+						},
+						{
+							"kind": "timer",
+							"timer": "tick"
+						}
+					],
+					"actions": [
+						{
+							"kind": "restartTimer",
+							"timer": "tick"
+						},
+						{
+							"kind": "write",
+							"datapoint": "facade.sun",
+							"value": {
+								"kind": "binary",
+								"op": "and",
+								"left": {
+									"kind": "call",
+									"function": "between",
+									"args": [
+										{
+											"kind": "call",
+											"function": "sunAzimuth",
+											"args": []
+										},
+										{
+											"kind": "literal",
+											"type": "real",
+											"value": 90.0
+										},
+										{
+											"kind": "literal",
+											"type": "real",
+											"value": 200.0
+										}
+									]
+								},
+								"right": {
+									"kind": "binary",
+									"op": ">",
+									"left": {
+										"kind": "call",
+										"function": "sunElevation",
+										"args": []
+									},
+									"right": {
+										"kind": "literal",
+										"type": "real",
+										"value": 10.0
+									}
+								}
+							},
+							"onlyOnChange": true
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [],
+	"end": 36100000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"rule": "facade",
+				"datapoint": "facade.sun",
+				"value": false
+			},
+			{
+				"at": 9000000,
+				"rule": "facade",
+				"datapoint": "facade.sun",
+				"value": true
+			},
+			{
+				"at": 28500000,
+				"rule": "facade",
+				"datapoint": "facade.sun",
+				"value": false
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"facade.sun": false
+			},
+			"timers": {
+				"facade/tick": 200000
+			},
+			"firings": {
+				"facade": 121
+			}
+		}
+	}
+}

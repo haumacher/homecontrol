@@ -43,7 +43,8 @@ public:
 	virtual bool sun_time(SunEvent event, TimeOfDay& out) const = 0;
 
 	/// The sun's position at the UTC instant `utc_seconds` (hc::sun_position() at the location);
-	/// false without coordinates. The default has none. The blocks' sun() (spec/blocks.md B21).
+	/// false without coordinates. The default has none. The blocks' sun() (spec/blocks.md B21) and
+	/// the rules' sunAzimuth() and sunElevation() (spec/rules.md 4.7).
 	virtual bool sun_position(int64_t utc_seconds, hc::SunPosition& out) const {
 		(void)utc_seconds;
 		(void)out;
@@ -323,7 +324,8 @@ public:
 	}
 	/// The sun's position at the cascade's wall time, the instant of cascade_wall() (spec/blocks.md
 	/// B21, 5.5); false while the wall clock is not synchronized or without coordinates. Computed
-	/// once per wall second, for every block of every cascade in it.
+	/// once per wall second, for every block and every sunAzimuth() and sunElevation() of a rule in
+	/// every cascade in it.
 	bool cascade_sun(SunPosition& out) const;
 	/// The block deadlines changed outside a cascade: the engine's loop timer follows.
 	void deadlines_changed() {

@@ -28,7 +28,9 @@ if (result.ok()) engine.start(hc::rules::StartReason::boot);         // image af
 - The engine registers itself as a `DatapointListener` of the model. A listener must not change
   the model, so the listener only records change times and queues the update; a posted callback
   runs the cascades.
-- `TimeSource` gives the local wall time (with the summer-time flag), the sun times, and the
+- `TimeSource` gives the local wall time (with the summer-time flag), the sun times, the sun's
+  position (`sun_position()`, which `sunAzimuth()` and `sunElevation()` read through
+  `Engine::cascade_sun()`, once per wall second together with the blocks' `sun()`), and the
   conversions between a local date-time and its UTC instant (`local_to_utc`, `utc_to_local`) that
   date-time arithmetic and comparisons use (spec 4.5, 4.6). `hc::image::RulesClock` implements it
   over the time service of issue #9 and its `TimeZone`; the defaults (UTC) serve tests without a

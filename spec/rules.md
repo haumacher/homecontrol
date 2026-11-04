@@ -321,7 +321,9 @@ conversions are functions (section 4.7): `round`, `floor`, `ceil`, `trunc` (real
 *No value* is not a type; any expression of any type may have no value. It arises from:
 
 - a datapoint reference whose datapoint has quality `unknown` or `stale`;
-- a time function while the wall clock is not synchronized, a sun function without a result;
+- a time function while the wall clock is not synchronized, a sun function without a result
+  (`sunrise()` and the like when the event does not occur, `sunAzimuth()` and `sunElevation()`
+  without a location);
 - `remaining(t)` of a stopped timer; `weekday(t)` of a time of day without a day;
 - an *evaluation error*: integer overflow, division or remainder by zero, a result that is not
   a finite real, a string longer than 28 bytes, a function argument outside its domain (`clamp`
@@ -504,6 +506,7 @@ datapoint (`hysteresis(@fan.humidity, 60, 70, @fan.on)` switches on at 70, off a
 | `dateOf(x)`, `timeOf(x)` | dateTime | date; timeOfDay (with the day of week) |
 | `inWindow(t, from, until)` | timeOfDay or dateTime, timeOfDay, timeOfDay | `from <= t < until` when `from < until`; `t >= from or t < until` when `from > until` (across midnight); `false` when equal; a dateTime uses its time of day |
 | `sunrise()`, `sunset()`, `dawn()`, `dusk()` | — | timeOfDay of today's event (dawn and dusk: civil twilight) from the time service; no value without coordinates or when the event does not occur |
+| `sunAzimuth()`, `sunElevation()` | — | real: the sun's azimuth (degrees from north through east, 0..360) and elevation (degrees above the horizon, -90..90, geometric: no refraction) at the cascade's wall time and the controller's location; no value without a location |
 
 **Datapoint history** (the first argument must be a datapoint reference)
 
@@ -534,8 +537,35 @@ datapoint (`hysteresis(@fan.humidity, 60, 70, @fan.on)` switches on at 70, off a
 | `controlled(bit, n)` | boolean, integer 0..255 | controlled |
 | `controlBit(x)`, `controlValue(x)` | controlled | boolean; integer |
 
+`sunAzimuth()` and `sunElevation()` are the two halves of the blocks' `sun()` (`spec/blocks.md`
+B21): the position by the algorithm of `spec/blocks.md` 13.2 on the exact trigonometry of 13.1, so
+the controller and E-Home's simulation agree to the bit, at the UTC instant of `now()` in whole
+seconds (the milliseconds dropped; in the repeated hour at the end of summer time the clock's own
+instant) and the location of `spec/blocks.md` 5.5 (the image's `settings.location`, otherwise the
+device's setting). The position is computed once per wall second and shared by every rule and
+block of the cascades in that second, so both functions and `sun()` of one cascade describe the
+same position. Near the horizon the visible sun is up to 0.6° higher than the geometric elevation
+(0.1° at 10°).
+
+**Following the sun.** The sun's position is a function of the wall clock, not a datapoint: no
+update says that it moved, so no trigger matches it, and like the other time functions it is
+refused in a `match` condition (2.3, decision 13; case 63). A rule that follows the sun evaluates
+it on a timer that restarts itself, started by the `start` trigger; with `onlyOnChange` it commands
+only the changes (case 64):
+
+```
+rule facade "Sun on the facade"
+  timer tick = 5min
+  when start | timer tick
+    then restartTimer tick; write facade.sun := between(sunAzimuth(), 90.0, 200.0) and sunElevation() > 10.0 (onlyOnChange)
+```
+
+A period of a few minutes suits facades and windows (the sun moves 1° in 4 minutes; its azimuth
+near noon in summer about twice as fast); a shading decision with hysteresis, lock times and weather
+protection is the sun shading block's (`spec/blocks.md` 18), which runs on the same position.
+
 The pure functions allowed in a `match` trigger are all of the above except the time, history,
-timer and state functions.
+timer and state functions; `sunAzimuth()` and `sunElevation()` are time functions.
 
 ### 4.8 Canonical text
 

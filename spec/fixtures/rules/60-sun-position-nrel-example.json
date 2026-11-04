@@ -1,0 +1,78 @@
+{
+	"title": "sunAzimuth() and sunElevation() at the NREL Solar Position Algorithm's published example: Golden, Colorado, 2003-10-17 12:30:30 UTC-7, at the start",
+	"description": "The example of Reda and Andreas, \"Solar Position Algorithm for Solar Radiation Applications\" (NREL/TP-560-34302, 2008), Table A5.1: latitude 39.742476, longitude -105.1786, 2003-10-17 12:30:30 local time at UTC-7 (zone MST7). NREL gives the topocentric azimuth 194.34024 degrees and the topocentric elevation without refraction 39.872046 degrees; the geometric geocentric position of spec/blocks.md 13.2 is within 0.02 degrees of it after the parallax (0.0019 degrees) is added. A western longitude, a fixed zone without summer time, a date before 2026.",
+	"note": "The expected values were computed with the throw-away executable model (spec/blocks.md 13.1 and 13.2 written literally) and cross-checked against the NREL example, the same formulas on the C library and the Astronomical Almanac's low-precision formula.",
+	"datapoints": [
+		{
+			"name": "sun.azimuth",
+			"type": "real"
+		},
+		{
+			"name": "sun.elevation",
+			"type": "real"
+		}
+	],
+	"clock": {
+		"start": "2003-10-17T12:30:30",
+		"synchronized": true,
+		"zone": "MST7"
+	},
+	"location": {
+		"lat": 39.742476,
+		"lon": -105.1786
+	},
+	"rules": [
+		{
+			"id": "nrel",
+			"name": "NREL example",
+			"reactions": [
+				{
+					"triggers": [
+						{
+							"kind": "start"
+						}
+					],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "sun.azimuth",
+							"value": {
+								"kind": "call",
+								"function": "sunAzimuth",
+								"args": []
+							}
+						},
+						{
+							"kind": "write",
+							"datapoint": "sun.elevation",
+							"value": {
+								"kind": "call",
+								"function": "sunElevation",
+								"args": []
+							}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [],
+	"end": 1000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"rule": "nrel",
+				"datapoint": "sun.azimuth",
+				"value": 194.34258286147883
+			},
+			{
+				"at": 0,
+				"rule": "nrel",
+				"datapoint": "sun.elevation",
+				"value": 39.87207442405636
+			}
+		],
+		"logs": []
+	}
+}

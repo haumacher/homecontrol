@@ -25,7 +25,7 @@ constexpr const char* kFunctionNames[] = {
 	"if", "known", "coalesce", "between", "hysteresis",
 	"abs", "min", "max", "clamp", "round", "floor", "ceil", "trunc", "roundTo", "toInt",
 	"now", "today", "time", "weekday", "hour", "minute", "second", "year", "month", "day", "dateOf", "timeOf",
-	"inWindow", "sunrise", "sunset", "dawn", "dusk",
+	"inWindow", "sunrise", "sunset", "dawn", "dusk", "sunAzimuth", "sunElevation",
 	"sinceUpdate", "sinceChange", "changedWithin", "lastKnown", "quality",
 	"running", "remaining", "state",
 	"length", "contains", "startsWith", "endsWith", "toString",
@@ -40,7 +40,7 @@ constexpr const char* kOperatorTexts[] = {"-", "not", "or", "and", "==", "!=", "
 constexpr const char* kLoadErrorNames[] = {"ok", "malformed", "duplicateId", "unknownReference", "typeError",
 	"invalidLiteral", "invalidParameter", "notWritable", "notReadable", "forbidden", "limitExceeded", "outOfMemory"};
 
-bool is_time_function(Fn fn) { return fn >= Fn::now && fn <= Fn::dusk; }
+bool is_time_function(Fn fn) { return fn >= Fn::now && fn <= Fn::sun_elevation; }
 bool is_history_function(Fn fn) { return fn >= Fn::since_update && fn <= Fn::quality; }
 
 bool numeric(Type t) { return t == Type::integer || t == Type::real; }
@@ -2260,6 +2260,7 @@ bool Builder::call(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 	size_t min_args = 0, max_args = 0;
 	switch (fn) {
 		case Fn::now: case Fn::today: case Fn::time: case Fn::sunrise: case Fn::sunset: case Fn::dawn: case Fn::dusk:
+		case Fn::sun_azimuth: case Fn::sun_elevation:
 			min_args = max_args = 0;
 			break;
 		case Fn::weekday: case Fn::state: min_args = 0; max_args = 1; break;
@@ -2501,6 +2502,8 @@ bool Builder::call(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 		case Fn::sunset:
 		case Fn::dawn:
 		case Fn::dusk: result = Type::time_of_day; break;
+		case Fn::sun_azimuth:
+		case Fn::sun_elevation: result = Type::real; break;
 		case Fn::since_update:
 		case Fn::since_change: result = Type::duration; break;
 		case Fn::changed_within:

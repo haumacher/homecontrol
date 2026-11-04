@@ -19,6 +19,7 @@ the next free number; a number is never reused.
 | `schedules` | array, optional | Schedule entries that exist in the image (for `schedule` triggers): each an id, or `{"id", "output"}` with the name of the datapoint the entry writes (a rule may not write it, `spec/rules.md` 10.1); or a full entry of the image (`spec/schedules.md` 2, recognized by its `kind`, without `output`), which the device's scheduler runs on the case's clock: it fires by itself, and its adjustable `time` (`spec/schedules.md` 2.2) is the datapoint `schedule/<id>/time`, which the runner derives like the parameter datapoints. A case uses either form, not both. |
 | `clock` | object, optional | `{"start": "YYYY-MM-DDTHH:MM:SS", "synchronized": bool, "zone": "<POSIX TZ>"}`: the local wall time at time 0 (a time that occurs twice is its first occurrence), whether it is synchronized (default `true`) and the time zone as a POSIX TZ string (`"CET-1CEST,M3.5.0,M10.5.0/3"`; absent: UTC). Without `clock` the wall clock is not synchronized. A runner applies the zone through its own evaluation of the string, never the host's time zone. |
 | `ui` | object, optional | `{"lang": "<tag>"}`: the device's UI language (the setting `ui.lang`, default `en`), in which labels are resolved (`spec/rules.md` 2.2). |
+| `location` | object, optional | `{"lat", "lon"}`: the controller's location in degrees (north and east positive). With it and a synchronized `clock`, `sunAzimuth()` and `sunElevation()` (`spec/rules.md` 4.7) give the sun's position by `spec/blocks.md` 13.2 at the wall second; without it they have no value. It does not change `astro`. |
 | `astro` | object, optional | The sun times of the time service: `sunrise`, `sunset`, `dawn`, `dusk` as time-of-day values; an absent one has no value. |
 | `persisted` | object, optional | Parameter overrides and rule states stored before the boot: `"<ruleId>/<parameterId>": {"type": <parameter type>, "value": <JSON value>}`, and `"<ruleId>/.state": {"type": "state", "value": "<state id>"}` (`spec/rules.md` 8.5). |
 | `initial` | object, optional | Datapoint values present before the rules start: `"<name>": <JSON value>`, quality good, updated at time 0. Datapoints not listed are unknown. |
@@ -151,7 +152,20 @@ Reals compare with a relative tolerance of 1e-9; everything else compares exactl
 | `56-schedule-change-semantics` | A change is not a gap: moving the time earlier past now fires nothing today, later today fires today, a day that fired stays handled; a reset returns to the image (`spec/schedules.md` 4.2). |
 | `57-schedule-time-datapoint` | `schedule/<id>/time`: its quiet value at the load, a command changes the schedule, one outside the bounds is refused, an API change updates it, rules read it when the entry fires (`spec/schedules.md` 2.2). |
 | `58-schedule-image-swap-overrides` | An image swap keeps an override while the entry, the adjustable member and the fit to the new bounds remain, and drops it otherwise (`spec/schedules.md` 4.2, 4.4). |
+| `59-sun-position` | `sunAzimuth()` and `sunElevation()` at the cascade's wall second (the milliseconds dropped) from the case's `location`, through the time zone; below the horizon at night; the log format of the exact values. |
+| `60-sun-position-nrel-example` | The NREL Solar Position Algorithm's published example (Golden, Colorado, 2003-10-17 12:30:30 UTC-7) at the start: a western longitude, a fixed zone. |
+| `61-sun-position-no-clock` | No value while the wall clock is not synchronized, also with a location: `valueNoValue` and `conditionNoValue` once, `known()`, `coalesce()`, again after a value; the southern hemisphere. |
+| `62-sun-position-no-location` | No value without a location while `time()` has its value. |
+| `63-load-refused-match-sun` | Load refusal `forbidden`: `sunElevation()` in a `match` condition (a rule cannot trigger on the sun's position). |
+| `64-sun-follow-timer` | Following the sun with a timer that restarts itself (the pattern of `spec/rules.md` 4.7): `onlyOnChange` writes when the sun comes onto a facade and leaves it. |
 
 The expected outputs were computed by hand and cross-checked against a throw-away executable model of
-the specification; a `note` starting with "Review:" contains a judgment call the author should
-confirm, one starting with "Decided" names the decision of `spec/rules.md` section 12 it pins.
+the specification. The sun's positions of cases 59 to 64 come from the throw-away executable model of
+the block corpus (`spec/fixtures/blocks/README.md`), which writes `spec/blocks.md` 13.1 and 13.2
+literally in binary64; every position was cross-checked against the same formulas on the C library's
+`sin`, `cos`, `asin` and `atan2` (within 1e-9°) and the Astronomical Almanac's low-precision formula
+(a different algorithm, within 0.02°), case 60 also against the NREL example's published topocentric
+azimuth 194.34024° and elevation without refraction 39.872046° (within 0.0025° after the parallax);
+no decision of case 64 lies within 0.02° of its threshold. A `note` starting with "Review:" contains
+a judgment call the author should confirm, one starting with "Decided" names the decision of
+`spec/rules.md` section 12 it pins.
