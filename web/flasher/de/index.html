@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<!--
+  Copyright (c) 2026 Bernhard Haumacher
+
+  The German HomeControl web flasher; the English original is ../index.html (keep both in step).
+-->
+<html lang="de">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>HomeControl Flasher</title>
+	<meta name="description" content="Die Firmware des Smart-Home-Controllers HomeControl aus dem Browser auf ein ESP32-C6-Board installieren.">
+	<link rel="icon" href="data:,">
+	<link rel="stylesheet" href="../flasher.css">
+	<script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+	<script type="module" src="../flasher.js"></script>
+</head>
+<body>
+<main data-base="../">
+	<nav class="lang"><a href="../" hreflang="en">English</a> · <strong>Deutsch</strong></nav>
+
+	<h1>HomeControl</h1>
+	<p class="subtitle">Der Smart-Home-Controller auf einem daumengroßen ESP32-C6-Board. Er führt die
+		Zeitpläne, Regeln und Visualisierungsseiten Deiner KNX-Installation aus, spricht mit
+		Zigbee-Geräten und arbeitet weiter, wenn PC, Internet und Cloud aus sind.</p>
+
+	<h2>Die Idee in einem Satz</h2>
+	<p>Du planst Dein Zuhause in <a href="https://github.com/haumacher/ehome" rel="noopener">E-Home</a>
+		(Räume, Geräte, Regeln, Zeitpläne, Seiten); E-Home spielt das Ergebnis auf den Controller,
+		und der Controller führt es selbstständig aus, direkt bei Dir zu Hause: am KNX-Bus über
+		KNXnet/IP und in seinem eigenen Zigbee-Netz.</p>
+
+	<div class="steps">
+		<div>
+			<h3>1. Planen</h3>
+			<p>E-Home importiert Dein ETS-Projekt; dort schreibst Du Regeln und Zeitpläne und gestaltest
+				die Seiten für das Wand-Tablet oder das Handy.</p>
+		</div>
+		<div>
+			<h3>2. Übertragen</h3>
+			<p>E-Home schickt ein signiertes Laufzeit-Image an den Controller. Er nimmt nur Images an,
+				die für Deine Installation signiert sind.</p>
+		</div>
+		<div>
+			<h3>3. Laufen</h3>
+			<p>Der Controller schaltet, dimmt und meldet selbstständig, zeigt seine Seiten in Deinem
+				Heimnetz und merkt sich Werte und Verlauf über Neustarts hinweg.</p>
+		</div>
+	</div>
+
+	<h2 id="bedarf">Was Du brauchst</h2>
+	<ul>
+		<li><strong>Ein ESP32-C6-Board mit mindestens 4 MB Flash</strong>, zum Beispiel das Espressif
+			ESP32-C6-DevKitC-1 oder -DevKitM-1. Status-LED und Taster dieser Boards werden direkt
+			genutzt.</li>
+		<li>Ein USB-Kabel, das Daten überträgt (kein reines Ladekabel).</li>
+		<li><strong>Google Chrome oder Microsoft Edge auf einem Computer</strong> (Windows, macOS,
+			Linux). Firefox, Safari und Smartphones können keine seriellen Schnittstellen ansprechen.</li>
+		<li>Name und Schlüssel Deines WLANs (2,4 GHz; der ESP32-C6 hat kein 5-GHz-Funkteil).</li>
+		<li>Für KNX: eine KNXnet/IP-Schnittstelle oder einen IP-Router im selben Netz. Für Zigbee:
+			nichts, das Funkteil ist auf dem Board.</li>
+	</ul>
+
+	<div class="note warn">
+		<p><strong>Nur der ESP32-C6.</strong> Die Firmware läuft nicht auf dem klassischen ESP32 und
+			nicht auf S2, S3, C3 oder H2: Der Installer bricht mit „Your … board is not supported“ ab.
+			Boards mit 8 oder 16 MB Flash funktionieren, der Installer schreibt aber die 4-MB-Aufteilung,
+			der Controller nutzt also 4 MB davon.</p>
+	</div>
+
+	<h2 id="schritt-1">Schritt 1 — Board anschließen</h2>
+	<p>Steck das Board an Deinen Computer. Hat es zwei USB-Buchsen, nimm die mit der Aufschrift
+		<strong>USB</strong> (der eigene USB-Anschluss des Chips), nicht <em>UART</em>: Die
+		WLAN-Einrichtung nach der Installation und die Konsole laufen nur über diesen Anschluss.</p>
+
+	<h2 id="schritt-2">Schritt 2 — Firmware installieren</h2>
+	<div class="note warn" id="install-unsupported" hidden>
+		<p><strong>Dieser Browser kann die Firmware nicht installieren.</strong> Öffne diese Seite in
+			Google Chrome oder Microsoft Edge auf einem Computer.</p>
+	</div>
+
+	<p>Klick auf den Knopf. Der Browser fragt, welches Gerät die Seite verwenden darf: Wähle
+		<strong>USB JTAG/serial debug unit</strong> (unter Windows evtl. <em>USB Serial Device
+		(COMn)</em>) und bestätige mit <strong>Verbinden</strong>.</p>
+
+	<div class="install">
+		<esp-web-install-button manifest="../manifest.json">
+			<button class="flash-button" slot="activate" type="button">HomeControl installieren</button>
+			<button class="flash-button" slot="unsupported" type="button" disabled>HomeControl installieren</button>
+			<button class="flash-button" slot="not-allowed" type="button" disabled>HomeControl installieren</button>
+		</esp-web-install-button>
+		<p class="version" id="install-version" data-label="Firmware {version} für den ESP32-C6 (4-MB-Aufteilung)"
+			data-missing="Es ist noch keine Firmware veröffentlicht.">&nbsp;</p>
+		<p class="version" id="install-picker" hidden>
+			<label>Version:
+				<select data-stable="stabil" data-prerelease="Vorabversion"></select>
+			</label>
+		</p>
+	</div>
+
+	<p>Der Dialog (auf Englisch) bietet dann <strong>Install HomeControl</strong> an:</p>
+	<ul>
+		<li><strong>Ein neues Board</strong> (oder eines mit anderer Firmware): Als Nächstes kommt die
+			Frage <em>Erase device</em>. Setz den Haken bei einem Board, auf dem vorher etwas anderes
+			lief, damit nichts von der alten Firmware zurückbleibt; bei einem fabrikneuen Board ist es
+			egal.</li>
+		<li><strong>Ein Board, auf dem HomeControl schon läuft</strong>: Der Dialog zeigt <em>Update
+			HomeControl</em> und löscht nichts. Was erhalten bleibt und was nicht, steht unten unter
+			<a href="#neu-installieren">Neu installieren</a>.</li>
+	</ul>
+	<p>Bestätige mit <strong>Install</strong>. Das Schreiben dauert ein bis zwei Minuten; zieh das
+		Board in der Zeit nicht ab.</p>
+
+	<h2 id="schritt-3">Schritt 3 — Ins WLAN aufnehmen</h2>
+	<p>Direkt nach der Installation bietet der Dialog die WLAN-Einrichtung an: Netz auswählen,
+		Schlüssel eingeben, <strong>Connect</strong>. Während der Controller sich verbindet, blinkt die
+		Status-LED schnell. Ist er online, bietet der Dialog <strong>Visit Device</strong> an.</p>
+	<p><strong>Andere Wege:</strong></p>
+	<ul>
+		<li><strong>WPS</strong>: Ein Controller ohne WLAN-Zugangsdaten wartet auf WPS (die LED blinkt
+			schnell, etwa fünfmal pro Sekunde). Drück den WPS-Knopf Deines Routers; an der FRITZ!Box
+			ist das <em>Connect / WPS</em>. Um später neu zu koppeln, halte den Taster <em>BOOT</em> des
+			Boards 3 s lang gedrückt.</li>
+		<li><strong>Später von dieser Seite</strong>: Die WLAN-Einrichtung wird 5 Minuten nach dem
+			Start des Boards angeboten und eine Minute, nachdem es online ist. Klick erneut auf den
+			Installationsknopf: Er startet das Board neu und bietet <em>Configure Wi-Fi</em> an.</li>
+		<li><strong>Serielle Konsole</strong>: <code>wifi set &lt;ssid&gt; &lt;schlüssel&gt;</code> an der
+			Eingabeaufforderung <code>hc&gt;</code> (mit einem beliebigen seriellen Terminal am
+			USB-Anschluss).</li>
+	</ul>
+
+	<h2 id="schritt-4">Schritt 4 — Den Controller öffnen</h2>
+	<p>Öffne <code>http://homecontrol-xxxxxx.local/</code> in einem Browser im selben Netz; dabei sind
+		<code>xxxxxx</code> die letzten sechs Hex-Ziffern der MAC-Adresse des Boards (der Link
+		<em>Visit Device</em> im Dialog hat den richtigen Namen). Löst der Name nicht auf, such das
+		Gerät in der Geräteliste Deines Routers und öffne seine IP-Adresse, zum Beispiel
+		<code>http://192.168.178.42/</code>.</p>
+	<ol>
+		<li><strong>Gerätepasswort setzen.</strong> Ein neuer Controller zeigt nur diese Seite: Wer sie
+			zuerst öffnet, legt das Passwort fest (8 bis 64 Zeichen). Erledige das gleich.</li>
+		<li><strong>Updates einschalten.</strong> Settings → Firmware update → <em>Update source</em>
+			(auf Deutsch: Einstellungen → Firmware-Update → Update-Quelle):
+			<pre>https://haumacher.github.io/homecontrol/stable</pre>
+			Der Controller prüft dann einmal am Tag, installiert neue Versionen selbst und lädt das
+			Sprachpaket seiner Version (Einstellungen → Sprache, z. B. Deutsch). Jedes Update-Manifest
+			ist signiert; der Controller installiert nur Versionen, die mit dem HomeControl-Release-Schlüssel
+			signiert sind, den er mitbringt.</li>
+		<li><strong>E-Home verbinden.</strong> Füg den Controller in E-Home Deiner Installation hinzu;
+			E-Home zeigt einen Einmal-Code. Trag auf der Einstellungsseite des Controllers in der Karte
+			<em>E-Home</em> die Adresse von E-Home und den Code ein. Ab dann spielt E-Home seine
+			Planung auf den Controller.</li>
+	</ol>
+	<p>Die LED zeigt den Zustand auf einen Blick:</p>
+	<table>
+		<tr><th>LED</th><th>Bedeutung</th></tr>
+		<tr><td>blinkt schnell</td><td>wartet auf WPS oder verbindet sich mit der WLAN-Einrichtung</td></tr>
+		<tr><td>blinkt langsam (½ s an, ½ s aus)</td><td>noch keine IP-Adresse, oder verbindet sich neu</td></tr>
+		<tr><td>kurzer Puls einmal pro Sekunde</td><td>online, noch nichts übertragen</td></tr>
+		<tr><td>an, jede Sekunde kurz aus</td><td>eingerichtet, aber etwas fehlt (z. B. die KNX-Verbindung)</td></tr>
+		<tr><td>an</td><td>bereit</td></tr>
+	</table>
+
+	<div class="note warn">
+		<p><strong>Nur im Heimnetz betreiben.</strong> Der Controller darf nicht aus dem Internet
+			erreichbar sein: keine Portfreigabe, kein „Exposed Host“ für ihn im Router. E-Home erreicht
+			ihn über eine Verbindung, die der Controller selbst aufbaut.</p>
+	</div>
+
+	<h2 id="neu-installieren">Neu installieren und aktualisieren</h2>
+	<p>Ein eingerichteter Controller wird am besten <strong>über das Netz</strong> aktualisiert (die
+		Update-Quelle oben) oder mit <strong>Einstellungen → Firmware-Update → Firmware-Datei
+		installieren</strong> und der Datei <code>homecontrol.bin</code> aus den
+		<a href="https://github.com/haumacher/homecontrol/releases" rel="noopener">Releases</a>.
+		Beides behält alles.</p>
+	<p>Eine erneute Installation von dieser Seite schreibt die ganze Firmware (Bootloader,
+		Partitionstabelle, Updater, Anwendung) und einen <strong>leeren Speicher</strong>:</p>
+	<table>
+		<tr><th></th><th>Update (ohne Löschen)</th><th>Mit „Erase device“</th></tr>
+		<tr><td>WLAN, Gerätepasswort, gemerkte Anmeldungen, E-Home-Verbindung und der Schlüssel der Installation, Einstellungen</td><td>bleiben</td><td>gelöscht</td></tr>
+		<tr><td>Zigbee-Netz und seine Geräte</td><td>bleiben</td><td>gelöscht</td></tr>
+		<tr><td>Übertragenes Laufzeit-Image, letzte Werte, Verlauf, Sprachpaket</td><td>gelöscht (E-Home überträgt neu)</td><td>gelöscht</td></tr>
+	</table>
+	<p>Die Seite ist also der Weg, einen Controller zurückzuholen, der nicht mehr startet; mit
+		<em>Erase device</em> beginnt er von vorn wie ein neuer.</p>
+
+	<h2 id="hilfe">Hilfe bei Problemen</h2>
+	<details>
+		<summary>Das Board erscheint nicht in der Auswahl des Browsers</summary>
+		<ul>
+			<li>Probier ein anderes Kabel (viele sind reine Ladekabel) und die Buchse <strong>USB</strong>
+				des Boards.</li>
+			<li>Schließ alle anderen Programme, die den Anschluss belegen (ein serieller Monitor, die
+				Arduino-IDE, ein zweiter Browser-Tab mit dieser Seite).</li>
+			<li><strong>Linux</strong>: Dein Benutzer braucht Zugriff auf <code>/dev/ttyACM*</code>:
+				<code>sudo usermod -aG dialout $USER</code>, danach neu anmelden (unter Arch Linux heißt
+				die Gruppe <code>uucp</code>).</li>
+			<li>Windows und macOS brauchen keinen Treiber: Der USB-Anschluss des ESP32-C6 ist ein
+				serielles Standardgerät.</li>
+		</ul>
+	</details>
+	<details>
+		<summary>„Failed to initialize“ oder die Installation bricht sofort ab</summary>
+		<p>Vielleicht stürzt die Firmware auf dem Board so schnell ab, dass der Browser es nicht in den
+			Download-Modus bringt. Bring es von Hand dorthin: <strong>BOOT</strong> halten,
+			<strong>RESET</strong> drücken und loslassen, <strong>BOOT</strong> loslassen, dann erneut auf
+			den Installationsknopf klicken. Danach einmal <strong>RESET</strong> drücken: Ein Board im
+			Download-Modus bleibt dort, bis der Taster gedrückt oder das Kabel neu gesteckt wird.</p>
+	</details>
+	<details>
+		<summary>Die WLAN-Einrichtung erscheint nicht oder scheitert</summary>
+		<p>Die Einrichtung wird 5 Minuten nach dem Start des Boards angeboten. Klick erneut auf den
+			Installationsknopf (er startet das Board neu) und wähle <em>Configure Wi-Fi</em>. „Unable to
+			connect“ heißt: falscher Schlüssel oder Netz außer Reichweite; reine 5-GHz-Netze gehen
+			nicht. WPS ist der Ausweg (Schritt 3).</p>
+	</details>
+	<details>
+		<summary>Gerätepasswort vergessen</summary>
+		<p>Verbinde ein serielles Terminal mit dem USB-Anschluss und gib an der Eingabeaufforderung
+			<code>hc&gt;</code> <code>web password clear</code> ein; beim nächsten Besuch legst Du ein
+			neues fest.</p>
+	</details>
+	<details>
+		<summary>Ohne diese Seite installieren (esptool)</summary>
+		<p>Lade die sechs Dateien eines <a href="https://github.com/haumacher/homecontrol/releases"
+			rel="noopener">Releases</a> herunter und schreib sie an diese Adressen (4-MB-Aufteilung):</p>
+		<pre>esptool.py --chip esp32c6 write_flash \
+  0x0 bootloader.bin 0x8000 partition-table.bin \
+  0x10000 hc_updater.bin 0x100000 homecontrol.bin \
+  0x3b0000 ota_data_ota0.bin 0x3b2000 storage.bin</pre>
+		<p>Lass <code>storage.bin</code> weg, um Image und Werte eines eingerichteten Controllers zu
+			behalten.</p>
+	</details>
+
+	<p>Fragen und Probleme: <a href="https://github.com/haumacher/homecontrol/issues"
+		rel="noopener">GitHub-Issues</a>. Nenn bitte das Board, die Firmware-Version (Einstellungen →
+		System) und was die LED tut.</p>
+
+	<footer>
+		<p>Quellcode der Firmware: <a href="https://github.com/haumacher/homecontrol"
+			rel="noopener">haumacher/homecontrol</a> auf GitHub. Der Installer ist
+		<a href="https://esphome.github.io/esp-web-tools/" rel="noopener">ESP Web Tools</a>.</p>
+	</footer>
+</main>
+</body>
+</html>

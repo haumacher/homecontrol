@@ -1,0 +1,98 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# The GitHub Pages site https://haumacher.github.io/homecontrol/ (doc/ota.md "Releases and the web
+# flasher"): the web flasher and the firmware of the releases. Built from the GitHub releases, which
+# scripts/release.sh publishes on the author's machine (the release key never reaches CI): the
+# newest five releases with their flash parts and signed update manifests, the language packs of
+# every release. Runs when a release is published, when the flasher pages change, and by hand;
+# by hand with `stable` set, the stable channel points at an older release on the site (rollback).
+name: Pages
+
+on:
+  release:
+    types: [published]
+  push:
+    branches: [master]
+    paths:
+      - web/flasher/**
+      - scripts/pages-site.py
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+    inputs:
+      stable:
+        description: Version of the stable channel (empty for the newest release)
+        required: false
+        default: ''
+
+# One deployment at a time, the newest wins.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  site:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the releases
+        id: releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE: ${{ inputs.stable }}
+        run: |
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --exclude-drafts --json tagName --jq '.[].tagName' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' > tags.txt || true
+          if [ ! -s tags.txt ]; then
+            echo "no release yet: nothing to deploy"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Newest first by semver precedence (a pre-release before its release).
+          python3 -c '
+          import sys, importlib.util
+          spec = importlib.util.spec_from_file_location("site", "scripts/pages-site.py")
+          site = importlib.util.module_from_spec(spec); spec.loader.exec_module(site)
+          tags = [t.strip() for t in open("tags.txt") if t.strip()]
+          for t in sorted(tags, key=lambda t: site.precedence(t[1:]), reverse=True): print(t)
+          ' > sorted.txt
+          ARGS=()
+          n=0
+          while read -r tag; do
+            n=$((n + 1))
+            dir="$RUNNER_TEMP/releases/$tag"
+            if [ "$n" -le 5 ]; then
+              gh release download "$tag" -R "$GITHUB_REPOSITORY" -D "$dir" --pattern '*.bin' --pattern '*.json' \
+                --pattern 'manifest.sig' --pattern 'SHA256SUMS' --pattern 'lang-*.json.gz'
+              ARGS+=(--release "$dir")
+            else
+              gh release download "$tag" -R "$GITHUB_REPOSITORY" -D "$dir" --pattern 'i18n-manifest.json' \
+                --pattern 'lang-*.json.gz'
+              ARGS+=(--i18n "$dir")
+            fi
+          done < sorted.txt
+          if [ -n "$STABLE" ]; then
+            ARGS+=(--stable "$STABLE")
+          fi
+          python3 scripts/pages-site.py --out "$RUNNER_TEMP/site" "${ARGS[@]}"
+          du -sh "$RUNNER_TEMP/site"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.releases.outputs.count != '0'
+        with:
+          path: ${{ runner.temp }}/site
+
+      - name: Deploy the site
+        id: deploy
+        if: steps.releases.outputs.count != '0'
+        uses: actions/deploy-pages@v4

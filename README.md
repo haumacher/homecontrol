@@ -4,6 +4,8 @@ An ESP32-C6 based controller for your smart home: the runtime that executes sche
 visualization for a KNX installation and a Zigbee network, engineered with
 [E-Home](https://github.com/haumacher/ehome).
 
+- **Install it**: the web flasher at https://haumacher.github.io/homecontrol/ (Chrome or Edge,
+  an ESP32-C6 board by USB); releases at https://github.com/haumacher/homecontrol/releases.
 - `ROADMAP.md` — where the project is going and the decisions taken.
 - `CLAUDE.md` — build facts and conventions.
 - `doc/hardware.md` — boards and wiring.

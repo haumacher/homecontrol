@@ -1,5 +1,5 @@
 {
-  "_note": "ESP Web Tools manifest for the HomeControl firmware (doc/network.md 'Improv / web flasher', doc/ota.md). The part paths are relative to this file. The offsets are the 4 MB OTA layout (platform/esp/partitions-4MB.csv), which also runs on 8 and 16 MB modules: bootloader 0x0, partition table 0x8000, updater (factory) 0x10000, application (ota_0) 0x100000, and an otadata image that selects ota_0 at 0x3b0000, so the first boot starts the application, and the LittleFS image with the web UI in the storage partition at 0x3b2000 (doc/web.md). scripts/flasher-local.sh copies a build into firmware/esp32c6/ (not versioned) and checks these offsets against the build's flasher_args.json. For a release the binaries are the GitHub release assets, https://github.com/haumacher/homecontrol/releases/download/<tag>/<asset> (pattern to be filled when the first release is cut); release downloads may lack CORS headers, in which case the release workflow copies the assets next to this manifest (GitHub Pages) instead.",
+  "_note": "ESP Web Tools manifest of the local web flasher and the template of a release's install.json (doc/ota.md 'Releases and the web flasher'). The part paths are relative to this file: scripts/flasher-local.sh copies a local build into firmware/esp32c6/ (not versioned); scripts/release.sh keeps the parts and offsets, checks them against the release build's flasher_args.json, names the files beside install.json and sets the version; on the site, manifest.json is the stable release's install.json with its parts in firmware/<version>/. The offsets are the 4 MB OTA layout (platform/esp/partitions-4MB.csv), which also runs on 8 and 16 MB modules: bootloader 0x0, partition table 0x8000, updater (factory) 0x10000, application (ota_0) 0x100000, an otadata image that selects ota_0 at 0x3b0000 (the first boot starts the application), and an empty LittleFS image of the storage partition at 0x3b2000 (the firmware never formats it). NVS (0x9000), the core dump and the Zigbee partitions are not written: without 'Erase device' a reinstall keeps WiFi, password, E-Home enrollment and the Zigbee network. new_install_prompt_erase: a device that does not answer Improv as HomeControl is asked whether to erase (unticked by default); one that does is updated without erasing.",
   "name": "HomeControl",
   "version": "1.0.0",
   "new_install_prompt_erase": true,
@@ -8,12 +8,30 @@
     {
       "chipFamily": "ESP32-C6",
       "parts": [
-        { "path": "firmware/esp32c6/bootloader.bin", "offset": 0 },
-        { "path": "firmware/esp32c6/partition-table.bin", "offset": 32768 },
-        { "path": "firmware/esp32c6/hc_updater.bin", "offset": 65536 },
-        { "path": "firmware/esp32c6/homecontrol.bin", "offset": 1048576 },
-        { "path": "firmware/esp32c6/ota_data_ota0.bin", "offset": 3866624 },
-        { "path": "firmware/esp32c6/storage.bin", "offset": 3874816 }
+        {
+          "path": "firmware/esp32c6/bootloader.bin",
+          "offset": 0
+        },
+        {
+          "path": "firmware/esp32c6/partition-table.bin",
+          "offset": 32768
+        },
+        {
+          "path": "firmware/esp32c6/hc_updater.bin",
+          "offset": 65536
+        },
+        {
+          "path": "firmware/esp32c6/homecontrol.bin",
+          "offset": 1048576
+        },
+        {
+          "path": "firmware/esp32c6/ota_data_ota0.bin",
+          "offset": 3866624
+        },
+        {
+          "path": "firmware/esp32c6/storage.bin",
+          "offset": 3874816
+        }
       ]
     }
   ]

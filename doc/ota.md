@@ -19,6 +19,7 @@ twice the space on a 4 MB module.
 | Flash size, table selection, app version | `platform/esp/hc_project.cmake` |
 | otadata image that boots ota_0 after a USB flash | `platform/esp/tools/gen_otadata.py` |
 | Development update server | `scripts/update-server.py` |
+| Releases, the web flasher and the Pages site | `scripts/release.sh`, `scripts/pages-site.py`, `.github/workflows/pages.yml`, `web/flasher/` |
 
 ## Partition layout
 
@@ -418,6 +419,98 @@ image: a malicious or compromised update source can withhold updates but not ins
 release key did not announce. The binary itself is not signed separately, and secure boot and flash
 encryption stay off (irreversible on the chip, development boards are shared; #20). The browser
 upload is authorized by the device's own session or token, not by the release key.
+
+## Releases and the web flasher
+
+Decided on 2026-11-04 (ROADMAP.md): a release is built and signed on the release owner's machine
+and published as a GitHub release; a workflow turns the releases into the GitHub Pages site
+https://haumacher.github.io/homecontrol/, which is the web flasher, the update source and the home
+of the language packs at once.
+
+**The release key never leaves the owner's machine.** No CI job signs and no GitHub secret holds
+the key. `scripts/release.sh` (`--help`) signs the manifest with
+`~/.config/homecontrol/release-key.secret` (`HC_RELEASE_SECRET` for another file) through
+`scripts/sign.py`, which reads the file itself (no copy is made), and refuses to go on unless the
+signature verifies against the committed `platform/esp/release-key.pub`, the key every firmware
+carries. CI only copies signed bytes.
+
+**`scripts/release.sh`**, modeled on the PhoneBlock dongle's:
+
+1. Preconditions: a clean tree (untracked files included), HEAD exactly on the tag `vX.Y.Z` where
+   `X.Y.Z` is `hc::kVersion` and no other `v*` tag, not behind its upstream, the tag on origin (if
+   there) at the same commit, no published GitHub release of the tag, ESP-IDF v5.5.6.
+2. The host tests in `build-release-host/`.
+3. The updater and the application for esp32c6 in `updater/build-esp32c6-release` and
+   `build-esp32c6-release`, both wiped first so the sdkconfig comes from the defaults alone:
+   `HC_FLASH_SIZE=4MB`, `HC_RELEASE_KEY` the committed key, `HC_EXTRA_CA` empty (checked in the
+   generated sdkconfig, as is the updater's test option `HC_UPDATER_TEST_BUTTON_WINDOW`).
+4. The stage `build-release/<version>/assets/`: the six flash parts, `install.json` (the ESP Web
+   Tools manifest, from the template `web/flasher/manifest.json`, its offsets checked against the
+   build's `flasher_args.json` and the application's descriptor checked to carry the release's
+   version), the update manifest `manifest.json` with `url` =
+   `/homecontrol/firmware/<version>/homecontrol.bin` and its `manifest.sig`, the language packs
+   (`scripts/i18n-pack.py manifest`, as `i18n-manifest.json` and `lang-<code>.json.gz`),
+   `SHA256SUMS`, and `homecontrol.elf` and `hc_updater.elf` for decoding core dumps (release assets
+   only). `build-release/<version>/site/` is the Pages site built from this release alone
+   (`scripts/pages-site.py`), for a look before publishing.
+5. Publishing (not with `--stage` or `--dry-run`, which prints the commands): `git push origin
+   vX.Y.Z`, `gh release create --draft --verify-tag` with every asset (a version with a pre-release
+   suffix becomes a GitHub pre-release), then `gh release edit --draft=false`. The published release
+   starts the Pages workflow. A run that failed after pushing the tag can be repeated: it uploads
+   to the draft of the tag.
+
+`--stage` and `--dry-run` check everything a release checks but only warn about the missing tag
+(their output stays on the machine); both sign, so the stage mirrors what is published.
+
+**The Pages site** (`.github/workflows/pages.yml`, source "GitHub Actions"; it runs when a release
+is published, when `web/flasher/` or the site script change on master, and by hand). It downloads
+the GitHub releases with `gh`: the newest five completely, the older ones only their language
+packs. The releases are the store; nothing is fetched from the live site, so a deployment is
+reproducible from the releases alone (deleting a GitHub release takes it off the site at the next
+run). A release takes about 3.6 MB of the site (the ELF files stay in the release only; `SHA256SUMS` lists them too), five about 18 MB, far below the 1 GB limit of Pages.
+
+| Path | Content |
+|---|---|
+| `/`, `/de/` | the flasher page (English, German), `flasher.css`, `flasher.js` (`web/flasher/`) |
+| `/manifest.json` | ESP Web Tools manifest of the stable release, parts in `firmware/<version>/` |
+| `/releases.json` | the releases on the site and the stable one (the page's release choice) |
+| `/firmware/<version>/` | the flash parts, `install.json`, `manifest.json` + `manifest.sig`, `SHA256SUMS`, `i18n/` |
+| `/stable/manifest.json`, `/stable/manifest.sig` | the stable release's signed update manifest, byte for byte |
+| `/stable/<version>/i18n/` | the language packs of every release ever published |
+
+The **update source** of an installed controller is `https://haumacher.github.io/homecontrol/stable`
+(Settings, Firmware update, Update source; console `update url set ...`): the device reads
+`<update.url>/manifest.json` and `.sig`, the image from `/homecontrol/firmware/<version>/` (the
+leading `/` keeps scheme and host), and its language pack from `<update.url>/<version>/i18n/`.
+Because the image URL is absolute within the site, the same signed bytes serve from `stable/` and
+from `firmware/<version>/`. The stable release is the newest one without a pre-release suffix; the
+workflow run by hand with `stable` = an older version on the site points the channel back to it
+(devices that already updated stay, `hc::check_update` installs only newer versions; devices not
+yet updated stop at the older one, and the flasher offers it). There is no beta channel yet.
+
+**What the web flasher writes, and the erase decision.** The ESP Web Tools manifest has the parts
+bootloader (0x0), partition table (0x8000), updater (0x10000), application (0x100000), the otadata
+that selects ota_0 (0x3b0000) and the empty LittleFS `storage.bin` (0x3b2000), all of the 4 MB
+table, the only one the page offers (it runs on 8 and 16 MB modules, which then use 4 MB). NVS
+(0x9000), the core dump and the Zigbee partitions are never part of it. With
+`new_install_prompt_erase: true` ESP Web Tools 10.4 decides like this (its `install-dialog.js`):
+
+- a board that answers Improv with the firmware name `HomeControl` (opening the port resets it, so
+  an installed controller always offers Improv then) gets *Update HomeControl*, written **without
+  erase**: WiFi, password, remembered sessions, the E-Home enrollment and installation key, the
+  settings and the Zigbee network survive; the storage (runtime image, values, history, language
+  pack) is replaced by the empty image, because the firmware never formats an unreadable
+  partition itself (`hc_storage`) and so the flasher cannot leave it out for a new board. E-Home
+  deploys the image again;
+- any other board (new, erased, another firmware, or HomeControl crashing too early for Improv)
+  gets *Install HomeControl* and the question *Erase device*, **unticked by default**: ticked, the
+  whole flash is erased first; unticked, the parts are written over whatever is there.
+
+Without `new_install_prompt_erase` ESP Web Tools would erase every board that does not answer
+Improv, without asking: a controller that crashes at boot would lose its NVS on a repair attempt.
+The page explains both paths, recommends the over-the-air update or the browser upload (which keep
+everything) for an installed controller, and offers older releases on the site through
+`firmware/<version>/install.json`.
 
 ## Development procedure
 

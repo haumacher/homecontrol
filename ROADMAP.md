@@ -243,3 +243,18 @@ outside world (weather, external services).
   log everybody out is replaced by an explicit "log out everywhere" (Settings, System; `POST
   /api/auth/sessions/clear`; console `web session clear`), which ends the remembered sessions too,
   as does `web password clear`. Plain sessions are unchanged (RAM, 24 h idle, end at reboot).
+- **2026-11-04 — Releases: signed on the owner's machine, published as GitHub releases, served by
+  GitHub Pages (`doc/ota.md` "Releases and the web flasher").** The release key never leaves the
+  owner's machine: `scripts/release.sh` builds the host tests, the updater and the application from
+  the defaults alone (4 MB table, the committed release key, no development CA) on the tag `vX.Y.Z`
+  = `hc::kVersion`, signs the update manifest, verifies the signature against
+  `platform/esp/release-key.pub`, and publishes the flash parts, the signed manifest, the language
+  packs and the ELF files as the GitHub release of the tag; no CI job signs and no secret holds the
+  key. A workflow builds https://haumacher.github.io/homecontrol/ from the releases (the newest
+  five completely, the language packs of all): the web flasher (English, German), `stable/` as the
+  update source (`update.url`), `firmware/<version>/` per release; rollback by pointing `stable`
+  at an older release by hand. The web flasher writes everything but NVS, the core dump and the
+  Zigbee partitions, including the empty storage image; it asks before erasing (unticked by
+  default) a board that does not answer Improv as HomeControl and updates one that does without
+  erasing, so a reinstall keeps WiFi, password, enrollment and the Zigbee network but loses the
+  deployed image, the values and the history. Only the 4 MB layout is offered.
