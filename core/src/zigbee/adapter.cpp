@@ -129,6 +129,7 @@ struct ZigbeeAdapter::Pending {
 ZigbeeAdapter::~ZigbeeAdapter() {
 	loop_.cancel(check_timer_);
 	loop_.cancel(refresh_timer_);
+	loop_.cancel(held_timer_);
 	loop_.cancel(interview_.timer);
 	delete[] points_;
 	delete[] ids_;
@@ -350,6 +351,7 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 	struct Saved {
 		Value value;
 		Quality quality;
+		bool pending; ///< A command held while the network is not up (homecontrol #72).
 	};
 	Saved* saved = loaded_ && point_count_ > 0 ? new (std::nothrow) Saved[point_count_] : nullptr;
 	if ((count > 0 && (table == nullptr || ids == nullptr || specs == nullptr || names == nullptr)) ||
@@ -382,7 +384,8 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 	if (saved != nullptr) {
 		for (size_t i = 0; i < point_count_; ++i) {
 			const Datapoint* dp = model_.get(static_cast<uint16_t>(i));
-			saved[i] = dp != nullptr ? Saved{dp->value(), dp->quality()} : Saved{Value(), Quality::unknown};
+			saved[i] = dp != nullptr ? Saved{dp->value(), dp->quality(), dp->pending()}
+			                         : Saved{Value(), Quality::unknown, false};
 		}
 	}
 	DatapointStatus status = model_.load(specs, count);
@@ -411,6 +414,9 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 					model_.report(*this, static_cast<uint16_t>(i), saved[j].value);
 				} else {
 					model_.restore(static_cast<uint16_t>(i), saved[j].value);
+				}
+				if (saved[j].pending) {
+					model_.set_pending(*this, static_cast<uint16_t>(i), true);
 				}
 				break;
 			}
@@ -1422,7 +1428,15 @@ void ZigbeeAdapter::network_state(bool up, uint16_t pan_id, uint8_t channel, Iee
 		format_ieee(extended_pan, ext);
 		Log::info(kTag, "network up: PAN id 0x%04x, channel %u, extended PAN id %s", static_cast<unsigned>(pan_id),
 			static_cast<unsigned>(channel), ext);
+		size_t held = commands_held();
+		if (held > 0 && !held_timer_.valid()) {
+			Log::info(kTag, "sending %u held command(s)", static_cast<unsigned>(held));
+			held_next_ = 0;
+			send_held();
+		}
 	} else {
+		loop_.cancel(held_timer_);
+		held_timer_ = TimerHandle();
 		network_.permit_until_ms = 0;
 		Log::warn(kTag, "network down");
 	}
@@ -1781,6 +1795,57 @@ bool ZigbeeAdapter::command(const Datapoint& datapoint, const Value& value) {
 		Log::warn(kTag, "command of '%s' refused: read-only", datapoint.name());
 		return false;
 	}
+	if (!command_valid(point, datapoint, value)) {
+		return false;
+	}
+	if (!network_.up) {
+		if (!hold_logged_) {
+			hold_logged_ = true;
+			Log::info(kTag, "holding commands until the Zigbee network is up (first: '%s')", datapoint.name());
+		}
+		char text[48];
+		Log::debug(kTag, "holding the command %s for '%s'", value.format(text, sizeof(text)), datapoint.name());
+		model_.set_pending(*this, datapoint.id(), true);
+		return true;
+	}
+	if (!send_command(*device, point, datapoint, value)) {
+		return false;
+	}
+	if (datapoint.pending()) {
+		model_.set_pending(*this, datapoint.id(), false); // this value replaces the held one
+	}
+	return true;
+}
+
+bool ZigbeeAdapter::command_valid(const ZigbeePoint& point, const Datapoint& datapoint, const Value& value) const {
+	switch (point.function) {
+		case Function::on_off:
+			return true;
+		case Function::level: {
+			double percent = value.as_real();
+			if (!(percent >= 0.0 && percent <= 100.0)) {
+				Log::warn(kTag, "command of '%s' refused: a level takes 0..100 %%", datapoint.name());
+				return false;
+			}
+			return true;
+		}
+		case Function::color_temperature: {
+			uint32_t kelvin = value.as_unsigned();
+			if (kelvin < 16 || kelvin > 1000000) {
+				Log::warn(kTag, "command of '%s' refused: a colour temperature takes 16..1000000 K", datapoint.name());
+				return false;
+			}
+			return true;
+		}
+		default:
+			Log::warn(kTag, "command of '%s' refused: %s has no command", datapoint.name(),
+				function_info(point.function).key);
+			return false;
+	}
+}
+
+bool ZigbeeAdapter::send_command(const ZigbeeDevice& device, const ZigbeePoint& point, const Datapoint& datapoint,
+	const Value& value) {
 	bool sent = false;
 	uint16_t sent_cluster = point.command_cluster;
 	uint16_t sent_command = 0;
@@ -1790,49 +1855,74 @@ bool ZigbeeAdapter::command(const Datapoint& datapoint, const Value& value) {
 		case Function::on_off:
 			if (point.command_cluster == cluster::kLevelControl) {
 				sent_command = 0x04;
-				sent = driver_.move_to_level(device->ieee, device->short_addr, point.endpoint, value.as_bool() ? 254 : 0,
+				sent = driver_.move_to_level(device.ieee, device.short_addr, point.endpoint, value.as_bool() ? 254 : 0,
 					kTransitionDs);
 			} else {
 				sent_command = value.as_bool() ? 0x01 : 0x00;
-				sent = driver_.on_off(device->ieee, device->short_addr, point.endpoint,
+				sent = driver_.on_off(device.ieee, device.short_addr, point.endpoint,
 					value.as_bool() ? OnOffCommand::on : OnOffCommand::off);
 			}
 			break;
 		case Function::level: {
-			double percent = value.as_real();
-			if (!(percent >= 0.0 && percent <= 100.0)) {
-				Log::warn(kTag, "command of '%s' refused: a level takes 0..100 %%", datapoint.name());
-				return false;
-			}
-			long level = std::lround(percent * 254.0 / 100.0);
+			long level = std::lround(value.as_real() * 254.0 / 100.0);
 			sent_command = 0x04;
-			sent = driver_.move_to_level(device->ieee, device->short_addr, point.endpoint, static_cast<uint8_t>(level),
+			sent = driver_.move_to_level(device.ieee, device.short_addr, point.endpoint, static_cast<uint8_t>(level),
 				kTransitionDs);
 			break;
 		}
 		case Function::color_temperature: {
-			uint32_t kelvin = value.as_unsigned();
-			if (kelvin < 16 || kelvin > 1000000) {
-				Log::warn(kTag, "command of '%s' refused: a colour temperature takes 16..1000000 K", datapoint.name());
-				return false;
-			}
-			long mireds = std::lround(1e6 / static_cast<double>(kelvin));
+			long mireds = std::lround(1e6 / static_cast<double>(value.as_unsigned()));
 			sent_command = 0x0A;
-			sent = driver_.move_to_color_temperature(device->ieee, device->short_addr, point.endpoint,
+			sent = driver_.move_to_color_temperature(device.ieee, device.short_addr, point.endpoint,
 				static_cast<uint16_t>(mireds), kTransitionDs);
 			break;
 		}
 		default:
-			Log::warn(kTag, "command of '%s' refused: %s has no command", datapoint.name(),
-				function_info(point.function).key);
-			return false;
+			break;
 	}
 	if (!sent) {
 		Log::warn(kTag, "command of '%s' refused: the Zigbee stack did not take it", datapoint.name());
 		return false;
 	}
-	traffic(ZigbeeTraffic::Kind::command, *device, point.endpoint, sent_cluster, sent_command, datapoint.id(), &value);
+	traffic(ZigbeeTraffic::Kind::command, device, point.endpoint, sent_cluster, sent_command, datapoint.id(), &value);
 	return true;
+}
+
+size_t ZigbeeAdapter::commands_held() const {
+	size_t result = 0;
+	for (size_t i = 0; i < model_.size(); ++i) {
+		const Datapoint* dp = model_.get(static_cast<uint16_t>(i));
+		result += dp->pending() && dp->technology() == this ? 1 : 0;
+	}
+	return result;
+}
+
+void ZigbeeAdapter::send_held() {
+	held_timer_ = TimerHandle();
+	if (!network_.up) {
+		return;
+	}
+	for (size_t id = held_next_; id < model_.size(); ++id) {
+		const Datapoint* dp = model_.get(static_cast<uint16_t>(id));
+		if (!dp->pending() || dp->technology() != this) {
+			continue;
+		}
+		held_next_ = static_cast<uint16_t>(id + 1);
+		model_.set_pending(*this, dp->id(), false);
+		long index = index_of(dp->id());
+		const ZigbeeDevice* device = index >= 0 ? database_.find(points_[index].ieee) : nullptr;
+		char text[48];
+		dp->value().format(text, sizeof(text));
+		if (device == nullptr || device->short_addr == kNoShortAddress || !points_[index].commandable()) {
+			Log::warn(kTag, "dropping the held command %s for '%s': the device has not joined", text, dp->name());
+		} else if (send_command(*device, points_[index], *dp, dp->value())) {
+			Log::info(kTag, "sent the held command %s for '%s'", text, dp->name());
+		}
+		held_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kHeldSpacingMs,
+			Callback::member<ZigbeeAdapter, &ZigbeeAdapter::send_held>(this));
+		return;
+	}
+	hold_logged_ = false;
 }
 
 bool ZigbeeAdapter::read(const Datapoint& datapoint) {

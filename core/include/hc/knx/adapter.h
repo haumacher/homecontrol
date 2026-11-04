@@ -54,9 +54,24 @@ struct KnxMapping {
 ///   reported; a decoding refusal is logged with the address and the octets, the datapoint stays.
 /// - A group read of a readable datapoint's sending address is answered with a group response of
 ///   the current value if its quality is good (otherwise not answered, logged).
-/// - A command of a transmitting datapoint is sent as a group write (refused while the tunnel is
-///   down: the value stays). When the gateway confirms it, the other datapoints listening on the
-///   address take the value too, as the bus devices do.
+/// - A command of a transmitting datapoint is sent as a group write. When the gateway confirms it,
+///   the other datapoints listening on the address take the value too, as the bus devices do.
+/// - While the tunnel is not up a command is held (homecontrol #72): it is checked and encoded as
+///   if it were sent (a value the DPT cannot encode is refused), the model stores it and marks the
+///   datapoint pending (Datapoint::pending()); a later command replaces it (one value per
+///   datapoint, no queue). When the tunnel comes up the held values are sent once, in datapoint
+///   order, before the reads on start, through the same send path (at most kPendingCapacity
+///   unconfirmed at a time, the rest as confirmations come). A report of the datapoint drops its
+///   held value (the bus's is newer). A command while the held values still fill the send path
+///   is held behind them. A write queued while the tunnel was up and lost when it went down is not
+///   held (the probe KnxProbe.QueuedCommandsAreLostWithTheTunnelAndNotReplayed): only what was
+///   commanded while it was not up is. A transmit-only datapoint is never held: its owner publishes
+///   again (the time master's clock).
+///   Across an image swap the model keeps the mark of a datapoint it keeps the value of (by name);
+///   configure() drops it for a datapoint the new mapping cannot send.
+/// - Refused: a command of a datapoint without a sending address, one the DPT cannot encode, and
+///   while the tunnel is up and kPendingCapacity writes wait for their confirmation (outside the
+///   sending of the held commands).
 /// - Tunnel down: every datapoint becomes stale. Tunnel up: the read-on-start datapoints are read,
 ///   one every kReadSpacingMs, so a hundred reads do not burst onto the bus.
 /// - A read the application asks for (read(), a rule's `read` action) joins the same queue: a group
@@ -112,6 +127,9 @@ public:
 	/// Reads still to be sent: from the last tunnel up and those the application asked for.
 	size_t reads_pending() const;
 
+	/// Commands held while the tunnel was not up and not yet sent (Datapoint::pending()).
+	size_t commands_held() const;
+
 	/// The tunnel and the telegram log (nullptr if none) it was given (the monitor stream sends and
 	/// listens there).
 	KnxTunnel& tunnel() { return tunnel_; }
@@ -121,6 +139,7 @@ public:
 	const char* name() const override { return "knx"; }
 	bool command(const Datapoint& datapoint, const Value& value) override;
 	bool read(const Datapoint& datapoint) override;
+	bool holds_commands() const override { return true; }
 
 	// KnxTunnelListener
 	void tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previous) override;
@@ -159,6 +178,14 @@ private:
 	/// Queues a group read of every read-on-start datapoint (tunnel up, new mapping).
 	void want_reads_on_start();
 	void free_tables();
+	/// Sends the held commands from held_cursor_ on while the send path has room (tunnel up).
+	void send_held();
+	/// Holds the command `value` of `datapoint` (entry `index`) to send later (the model stores the
+	/// value); logs the first one of an outage.
+	void hold(size_t index, const Datapoint& datapoint, const Value& value);
+	/// Whether a write can be queued now: the tunnel is up, fewer than kPendingCapacity sends wait for
+	/// their confirmation, the tunnel's queue has room.
+	bool can_send() const;
 
 	EventLoop& loop_;
 	const Clock& clock_;
@@ -171,6 +198,8 @@ private:
 	Listen* listens_ = nullptr;  ///< Sorted by address.
 	size_t listen_count_ = 0;
 	size_t read_cursor_ = 0;     ///< Next entry to consider for a read (count_: none waits).
+	size_t held_cursor_ = 0;     ///< Next entry to consider for a held command (count_: none waits).
+	bool hold_logged_ = false;   ///< The first held command since the tunnel was last up is logged.
 	TimerHandle read_timer_;
 	PendingSend pending_[kPendingCapacity] = {};
 	size_t pending_count_ = 0;

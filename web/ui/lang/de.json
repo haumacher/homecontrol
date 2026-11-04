@@ -42,6 +42,7 @@
 	"value.on": "Ein",
 	"value.off": "Aus",
 	"value.unknown": "—",
+	"value.waiting": "wartet auf Versand",
 	"value.stale": "veraltet",
 	"value.control": "Steuerung",
 	"tile.toggle": "{name} schalten",

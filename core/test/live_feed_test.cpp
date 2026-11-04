@@ -116,11 +116,17 @@ TEST_CASE("LiveFeed sends a snapshot on subscribe, then batched updates per loop
 	CHECK(f.transport.messages(1, "status").size() == 1);
 	f.run();
 	auto snapshot = f.transport.messages(1, "datapoints");
-	REQUIRE(snapshot.size() == 1);
-	CHECK(snapshot[0]["snapshot"].boolean == true);
-	CHECK(snapshot[0]["done"].boolean == true);
-	CHECK(snapshot[0]["updates"].items.size() == f.model.size());
+	// The demo's datapoints take two messages of kMessageSize (with the pending member, #72).
+	REQUIRE(snapshot.size() == 2);
+	size_t total = 0;
+	for (size_t i = 0; i < snapshot.size(); ++i) {
+		CHECK(snapshot[i]["snapshot"].boolean == true);
+		CHECK(snapshot[i]["done"].boolean == (i + 1 == snapshot.size()));
+		total += snapshot[i]["updates"].items.size();
+	}
+	CHECK(total == f.model.size());
 	CHECK(snapshot[0]["updates"].items[0]["name"].text == "Living room light");
+	CHECK(snapshot[0]["updates"].items[0]["pending"].boolean == false);
 
 	f.transport.sent.clear();
 	// Three updates in one turn, one datapoint twice: one message, two entries, latest value.

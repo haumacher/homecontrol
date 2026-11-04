@@ -348,7 +348,11 @@ Another combination refuses the image (`typeError`). An unbound input reads as n
    enumeration) and the datapoint is commanded. The output types command these datapoint types,
    any other refuses the image (`typeError`): `real` and `integer` command `real`, `unsigned`,
    `signed`; `enumeration` commands `enumeration`, `unsigned`; `boolean` commands `boolean`. The datapoint is commanded (`DatapointModel::command()`), like a rule's write. A
-   refusal of the technology logs `writeRefused` and is no fault.
+   refusal of the technology logs `writeRefused` and is no fault. While the technology is not
+   connected (the KNX tunnel is down, the Zigbee network is not up) the write is held and sent
+   once it connects (spec/rules.md 7.3 step 5): an output written once at the start (the room
+   controller's `switch`, the heating demand's `request`, which write only on a change) reaches
+   the bus after a boot or a swap during an outage.
 3. The output's mirror `block/<id>/<port>` is published (origin `publish`) when its value differs
    or its quality is not good.
 

@@ -442,6 +442,7 @@ DatapointStatus DatapointModel::load(const DatapointSpec* specs, size_t count, b
 				dp.value_ = previous->value_;
 				dp.quality_ = previous->quality_;
 				dp.updated_ms_ = previous->updated_ms_;
+				dp.pending_ = previous->pending();
 				++kept;
 			}
 		}
@@ -513,6 +514,9 @@ DatapointStatus DatapointModel::bind(uint16_t id, Technology& technology) {
 		return DatapointStatus::not_owner;
 	}
 	dp->technology_ = &technology;
+	if (!technology.holds_commands()) {
+		dp->pending_ = false;
+	}
 	return DatapointStatus::ok;
 }
 
@@ -604,7 +608,35 @@ DatapointStatus DatapointModel::report(Technology& technology, uint16_t id, cons
 			technology.name(), value_type_name(value.type()), value_type_name(dp->type_));
 		return DatapointStatus::wrong_type;
 	}
+	dp->pending_ = false; // the bus's value is newer than a held command
 	store(*dp, *converted, UpdateOrigin::report);
+	return DatapointStatus::ok;
+}
+
+DatapointStatus DatapointModel::set_pending(Technology& technology, uint16_t id, bool pending) {
+	if (notifying_) {
+		Log::error(kTag, "refusing the pending mark from a datapoint listener (post it to the event loop)");
+		return DatapointStatus::busy;
+	}
+	Datapoint* dp = lookup(id, "pending mark");
+	if (dp == nullptr) {
+		return DatapointStatus::unknown_id;
+	}
+	if (dp->technology_ != &technology) {
+		Log::error(kTag, "refusing the pending mark of '%s' from %s: not its owner", dp->name_, technology.name());
+		return DatapointStatus::not_owner;
+	}
+	if (dp->pending_ == pending) {
+		return DatapointStatus::ok;
+	}
+	dp->pending_ = pending;
+	if (!commanding_) {
+		notifying_ = true;
+		for (size_t i = 0; i < listener_count_; ++i) {
+			listeners_[i]->datapoint_pending(*dp);
+		}
+		notifying_ = false;
+	}
 	return DatapointStatus::ok;
 }
 

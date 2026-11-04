@@ -698,6 +698,20 @@ changed something), not the current value.
    success the model stores the value and tells its listeners; the update is a derived event of
    the cascade, even when the value did not change (`on: update` triggers see it, `on: change`
    triggers do not).
+5. While the datapoint's technology is not connected (the KNX tunnel is down, the Zigbee network
+   is not up) the write is not refused (homecontrol #72): the technology checks the value as if
+   it sent it (a value it cannot encode, out of the device's range, or for a device that has not
+   joined is refused as in 4) and holds it, one value per datapoint (a later write replaces it,
+   there is no queue); the model stores it as in 4, so rules and blocks see the commanded value,
+   and the datapoint shows `pending` (spec/api.md "Datapoints"). When the technology connects it
+   sends every held value once, in datapoint order, through its normal paced send path, before
+   the reads on start; then `pending` ends. A value the bus reports before it went out (another
+   device wrote the address, a status object) replaces it and the held one is dropped: the bus is
+   newer. A read on start of a datapoint with a held value goes after the write, and its answer is
+   an ordinary update: if the bus says something else, the bus's value wins. An image swap keeps
+   the held value of a datapoint it keeps by name (with its value, 7.6) and sends it on the next
+   connect; a datapoint the new image no longer has, or no longer sends, loses it. A write the
+   technology took while connected and lost when the connection dropped is not repeated.
 
 ### 7.4 Match triggers
 

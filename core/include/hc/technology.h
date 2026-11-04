@@ -41,6 +41,14 @@ public:
 		return false;
 	}
 
+	/// Whether the technology holds a command while it is not connected (the KNX tunnel is down, the
+	/// Zigbee network is not up) instead of refusing it, and sends it once it connects
+	/// (homecontrol #72, spec/rules.md 7.3). Such a technology marks the datapoint with
+	/// DatapointModel::set_pending() while it holds the value. A load keeps the mark of a datapoint it
+	/// keeps the value of (DatapointModel::load() with `keep_values`); bind() drops it when the new
+	/// owner does not hold commands. The default: it does not.
+	virtual bool holds_commands() const { return false; }
+
 protected:
 	~Technology() = default;
 };

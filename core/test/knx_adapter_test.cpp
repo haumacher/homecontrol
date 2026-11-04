@@ -196,9 +196,12 @@ TEST_CASE("KnxAdapter.DecodingRefusalKeepsTheValue") {
 
 TEST_CASE("KnxAdapter.CommandSendsAGroupWrite") {
 	AdapterFixture f;
-	CHECK(f.model.command(0, Value::of_bool(true)) == DatapointStatus::refused);
-	CHECK(f.capture.sink.contains("W hc.knx: refusing command for 'light': the KNX tunnel is down"));
-	CHECK(f.dp(0).quality() == Quality::unknown);
+	// While the tunnel is down a command is held (homecontrol #72, knx_hold_test.cpp); a value the DPT
+	// cannot encode is refused all the same.
+	CHECK(f.model.command(2, Value::of_real(150.0)) == DatapointStatus::refused);
+	CHECK(f.capture.sink.contains("W hc.knx: refusing command for 'dimmer': 5.001 cannot encode it"));
+	CHECK(f.dp(2).quality() == Quality::unknown);
+	CHECK_FALSE(f.dp(2).pending());
 
 	f.connect(7);
 	f.run_for(1000); // let the reads go out

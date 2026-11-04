@@ -193,11 +193,15 @@ export function valueTile(el, env) {
 		if (quality === "stale" && dp) {
 			text += ` · ${t("tile.last_known", { ago: formatAgo(live.ageMs(dp)) })}`;
 		}
+		if (dp && dp.pending) {
+			text += ` · ${t("value.waiting")}`;
+		}
 		if (!editable && info.writable) {
 			text += ` · ${t("element.read_only")}`;
 		}
 		stateText.textContent = text;
 		element.classList.toggle("stale", quality === "stale");
+		element.classList.toggle("waiting", !!(dp && dp.pending));
 		element.classList.toggle("unknown", quality === "unknown");
 		const on = type === "boolean" && dp && quality !== "unknown" && dp.value === true;
 		element.classList.toggle("on", !!on);

@@ -477,7 +477,11 @@ void LiveFeed::tick() {
 	monitor_flush(); // retries a client whose send buffers were full
 }
 
-void LiveFeed::datapoint_updated(const DatapointUpdate& update) {
+void LiveFeed::datapoint_updated(const DatapointUpdate& update) { queue_datapoint(update.datapoint.id()); }
+
+void LiveFeed::datapoint_pending(const Datapoint& datapoint) { queue_datapoint(datapoint.id()); }
+
+void LiveFeed::queue_datapoint(uint16_t id) {
 	bool any = false;
 	for (const Client& c : clients_) {
 		any = any || (c.used && c.subscribed);
@@ -485,7 +489,6 @@ void LiveFeed::datapoint_updated(const DatapointUpdate& update) {
 	if (!any) {
 		return;
 	}
-	uint16_t id = update.datapoint.id();
 	for (size_t i = 0; i < pending_count_; ++i) {
 		if (pending_[i] == id) {
 			return; // the flush sends the latest value
@@ -525,7 +528,10 @@ void LiveFeed::flush() {
 			json.begin_object().member("id", static_cast<uint32_t>(dp->id()));
 			json.key("value");
 			write_value_json(json, dp->value());
-			json.member("quality", quality_name(dp->quality())).member("updated_ms", dp->updated_ms()).end_object();
+			json.member("quality", quality_name(dp->quality()))
+				.member("updated_ms", dp->updated_ms())
+				.member("pending", dp->pending())
+				.end_object();
 			if (json.overflowed()) {
 				json.reset(mark);
 				break;

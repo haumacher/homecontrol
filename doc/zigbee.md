@@ -250,6 +250,22 @@ the request keeps its previous configuration until the next change or interview.
 to Level with On/Off). The writable datapoints (`.on`, `.level`, `.color_temperature`) carry the
 flags writable and transmit; the server functions except `multistate` are read at start.
 
+**Commands before the network is up** (homecontrol #72, spec/rules.md 7.3 step 5). Zigbee had the
+gap of the KNX tunnel: the stack takes requests only once it has formed or restored the network a
+few seconds after the boot (`ZigbeeService`'s `ready`), so the start cascade's writes to a Zigbee
+datapoint were refused by the driver and lost. Now, while the adapter's network is not up
+(`network_state()`), a command of a joined device's commandable point is checked as if it were sent
+(level 0..100 %, colour temperature, a function with a command) and held: the model stores it and
+marks the datapoint pending, a later command replacing it. The first held command logs `holding
+commands until the Zigbee network is up (first: '<name>')`. When the network comes up the adapter
+logs `sending <n> held command(s)` and sends them once, in datapoint order, one every
+`kHeldSpacingMs` (100 ms; the first at once), each logged `sent the held command <value> for
+'<name>'`; a device that is no longer joined then drops its command (logged). A report of the
+datapoint before its command went out drops it (the device is newer). A command to a device that
+has not joined, or out of range, is refused as before; while the network is up a command goes to
+the driver at once, also unchanged. A reload of the datapoints (a device interviewed or removed)
+keeps the mark with the value, by name.
+
 ### The model
 
 On the device the adapter is a provider of dynamic datapoints of the image service (issue #29,

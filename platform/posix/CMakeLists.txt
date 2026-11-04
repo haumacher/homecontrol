@@ -135,6 +135,7 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/knx_tunnel_test.cpp"
 	"${HC_REPO_DIR}/core/test/knx_adapter_test.cpp"
 	"${HC_REPO_DIR}/core/test/knx_probe_test.cpp"
+	"${HC_REPO_DIR}/core/test/knx_hold_test.cpp"
 	test/posix_udp_test.cpp
 )
 

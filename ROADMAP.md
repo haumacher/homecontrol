@@ -224,3 +224,11 @@ outside world (weather, external services).
   1.2 firmware would ignore `blocks`); one namespace `block/<id>/<x>`; aggregation per instance;
   one record per instance paced to 30 writes an hour; a corpus run by the core and E-Home's
   simulation, its expected values from an independent model of the specification.
+- **2026-11-04 — Commands while a technology is not connected are held, not refused (#72).** The
+  KNX adapter (tunnel down) and the Zigbee adapter (network not up) accept a command, the model
+  stores it and marks the datapoint `pending`; one value per datapoint, no queue. On connect the
+  held values go out once, in datapoint order, before the reads on start; a report before that
+  drops the held value (the bus is newer). An image swap keeps the mark with the value by name.
+  Refusals for other reasons stay (not writable, no conversion, not encodable, a device that has
+  not joined). Not held: the KNX time master's transmit-only datapoints (an old clock), and writes
+  lost with a tunnel that was up (unchanged: not replayed).

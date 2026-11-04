@@ -237,6 +237,7 @@ export class Live extends EventTarget {
 				dp.value = update.value;
 				dp.quality = update.quality;
 				dp.updated_ms = update.updated_ms;
+				dp.pending = update.pending === true;
 				ids.push(update.id);
 			}
 		}

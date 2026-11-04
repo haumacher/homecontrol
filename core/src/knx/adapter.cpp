@@ -173,12 +173,25 @@ bool KnxAdapter::configure(const KnxMapping* mappings, size_t count, const char*
 	listen_count_ = n;
 	pending_count_ = 0;
 	read_cursor_ = count_;
+	held_cursor_ = 0;
 	if (log_ != nullptr) {
 		log_->forget_datapoints();
+	}
+	// A command held across an image swap (the model kept its mark by name) is sent only if the new
+	// mapping sends the datapoint.
+	for (size_t i = 0; i < count_; ++i) {
+		const Entry& e = entries_[i];
+		const Datapoint* dp = model_.get(e.datapoint);
+		if (dp != nullptr && dp->pending() && dp->technology() == this &&
+			(e.transmit_only || !e.has_send || !dp->transmits())) {
+			Log::warn(kTag, "dropping the held command of '%s': the new mapping does not send it", dp->name());
+			model_.set_pending(*this, e.datapoint, false);
+		}
 	}
 	Log::info(kTag, "knx mapping: %u datapoints on %u group addresses", static_cast<unsigned>(count_),
 		static_cast<unsigned>(listen_count_));
 	if (tunnel_.is_up()) {
+		send_held();
 		want_reads_on_start();
 	}
 	return true;
@@ -201,9 +214,19 @@ void KnxAdapter::clear() {
 	free_tables();
 	pending_count_ = 0;
 	read_cursor_ = 0;
+	held_cursor_ = 0;
 	if (log_ != nullptr) {
 		log_->forget_datapoints();
 	}
+}
+
+size_t KnxAdapter::commands_held() const {
+	size_t result = 0;
+	for (size_t i = 0; i < count_; ++i) {
+		const Datapoint* dp = model_.get(entries_[i].datapoint);
+		result += dp != nullptr && dp->pending() && dp->technology() == this ? 1 : 0;
+	}
+	return result;
 }
 
 size_t KnxAdapter::reads_pending() const {
@@ -272,8 +295,8 @@ bool KnxAdapter::command(const Datapoint& datapoint, const Value& value) {
 		Log::warn(kTag, "refusing command for '%s': not mapped to a sending group address", datapoint.name());
 		return false;
 	}
-	char address[GroupAddress::kMaxText];
-	if (!tunnel_.is_up()) {
+	if (entry->transmit_only && !tunnel_.is_up()) {
+		// Its owner publishes again (the time master's clock would be old by the time it went out).
 		Log::warn(kTag, "refusing command for '%s': the KNX tunnel is %s (%s)", datapoint.name(),
 			tunnel_state_name(tunnel_.state()), tunnel_.reason());
 		return false;
@@ -286,6 +309,13 @@ bool KnxAdapter::command(const Datapoint& datapoint, const Value& value) {
 			entry->dpt.format(dpt, sizeof(dpt)), error);
 		return false;
 	}
+	size_t index = static_cast<size_t>(entry - entries_);
+	// Held while the tunnel is not up, and while the held commands of the last connect still fill
+	// the send path (behind them).
+	if (!entry->transmit_only && (!tunnel_.is_up() || (held_cursor_ < count_ && !can_send()))) {
+		hold(index, datapoint, value);
+		return true;
+	}
 	if (pending_count_ == kPendingCapacity) {
 		Log::warn(kTag, "refusing command for '%s': %u writes wait for their confirmation", datapoint.name(),
 			static_cast<unsigned>(kPendingCapacity));
@@ -293,17 +323,83 @@ bool KnxAdapter::command(const Datapoint& datapoint, const Value& value) {
 	}
 	uint32_t token = tunnel_.send(frame);
 	if (token == 0) {
+		char address[GroupAddress::kMaxText];
 		Log::warn(kTag, "refusing command for '%s' to %s: the tunnel refused the frame", datapoint.name(),
 			entry->send.format(address, sizeof(address)));
 		return false;
 	}
 	pending_[pending_count_++] = PendingSend{token, datapoint.id()};
+	if (datapoint.pending()) {
+		model_.set_pending(*this, datapoint.id(), false); // this value replaces the held one
+	}
 	return true;
+}
+
+bool KnxAdapter::can_send() const {
+	return tunnel_.is_up() && pending_count_ < kPendingCapacity && tunnel_.queued() < KnxTunnel::kQueueCapacity;
+}
+
+void KnxAdapter::hold(size_t index, const Datapoint& datapoint, const Value& value) {
+	if (!hold_logged_) {
+		hold_logged_ = true;
+		if (tunnel_.is_up()) {
+			Log::info(kTag, "holding commands until the send queue has room (first: '%s')", datapoint.name());
+		} else {
+			const char* reason = tunnel_.reason();
+			bool has_reason = reason != nullptr && reason[0] != '\0';
+			Log::info(kTag, "holding commands until the KNX tunnel is up (%s%s%s; first: '%s')",
+				tunnel_state_name(tunnel_.state()), has_reason ? ": " : "", has_reason ? reason : "", datapoint.name());
+		}
+	}
+	char text[48];
+	Log::debug(kTag, "holding the command %s for '%s'", value.format(text, sizeof(text)), datapoint.name());
+	model_.set_pending(*this, datapoint.id(), true);
+	if (tunnel_.is_up() && index < held_cursor_) {
+		held_cursor_ = index;
+	}
+}
+
+void KnxAdapter::send_held() {
+	while (held_cursor_ < count_ && can_send()) {
+		const Entry& entry = entries_[held_cursor_];
+		const Datapoint* dp = model_.get(entry.datapoint);
+		if (dp == nullptr || !dp->pending() || dp->technology() != this) {
+			++held_cursor_;
+			continue;
+		}
+		LData frame;
+		const char* error = nullptr;
+		char text[48];
+		char address[GroupAddress::kMaxText];
+		entry.send.format(address, sizeof(address));
+		if (!make_group_value(frame, entry.send, GroupService::write, entry.dpt, dp->value(), &error)) {
+			Log::warn(kTag, "dropping the held command for '%s': it cannot be encoded (%s)", dp->name(), error);
+		} else {
+			uint32_t token = tunnel_.send(frame);
+			if (token == 0) {
+				return; // tried again with the next confirmation
+			}
+			pending_[pending_count_++] = PendingSend{token, entry.datapoint};
+			Log::info(kTag, "sending the held command %s for '%s' to %s", dp->value().format(text, sizeof(text)),
+				dp->name(), address);
+		}
+		++held_cursor_;
+		model_.set_pending(*this, entry.datapoint, false);
+	}
+	if (held_cursor_ >= count_) {
+		hold_logged_ = false;
+	}
 }
 
 void KnxAdapter::tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previous) {
 	(void) previous;
 	if (tunnel.state() == TunnelState::up) {
+		size_t held = commands_held();
+		if (held > 0) {
+			Log::info(kTag, "knx tunnel up: sending %u held command(s)", static_cast<unsigned>(held));
+		}
+		held_cursor_ = 0;
+		send_held();
 		want_reads_on_start();
 		return;
 	}
@@ -311,6 +407,8 @@ void KnxAdapter::tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previ
 		loop_.cancel(read_timer_);
 		read_timer_ = TimerHandle();
 		read_cursor_ = count_;
+		held_cursor_ = count_;
+		hold_logged_ = false;
 		for (size_t i = 0; i < count_; ++i) {
 			entries_[i].read_wanted = false;
 		}
@@ -348,6 +446,10 @@ void KnxAdapter::schedule_read() {
 void KnxAdapter::read_due() {
 	read_timer_ = TimerHandle();
 	if (read_cursor_ >= count_ || !tunnel_.is_up()) {
+		return;
+	}
+	if (held_cursor_ < count_) {
+		schedule_read(); // the held commands go first
 		return;
 	}
 	Entry& entry = entries_[read_cursor_];
@@ -458,6 +560,9 @@ void KnxAdapter::tunnel_sent(const KnxTunnel& tunnel, uint32_t token, const LDat
 			pending_[i] = pending_[--pending_count_];
 			break;
 		}
+	}
+	if (outcome != SendOutcome::lost) {
+		send_held(); // a confirmation made room
 	}
 	GroupData data;
 	if (!group_data(frame, data)) {

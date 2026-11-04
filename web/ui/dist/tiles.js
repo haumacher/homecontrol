@@ -315,6 +315,9 @@ export function functionTile(fn, env) {
 		if (quality === "stale" && primary) {
 			state += ` · ${t("tile.last_known", { ago: formatAgo(live.ageMs(primary)) })}`;
 		}
+		if (Object.keys(roles).some((role) => dp(role) && dp(role).pending)) {
+			state += ` · ${t("value.waiting")}`;
+		}
 		stateText.textContent = sliderEditing ? stateText.textContent : state;
 		element.classList.toggle("stale", quality === "stale");
 		element.classList.toggle("unknown", quality === "unknown" && fn.kind !== "scene" && fn.kind !== "button");

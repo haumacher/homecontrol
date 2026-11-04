@@ -4,6 +4,7 @@
 // The Zigbee adapter under the fake clock: join, interview, datapoints, reports, commands, stale
 // devices, the persisted database, the image's bindings and the refusals.
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -189,6 +190,51 @@ TEST_CASE("ZigbeeAdapter: commands go through the driver") {
 	CHECK(f.model.command(f.dp(kBulbOn)->id(), Value::of_bool(true)) == DatapointStatus::refused);
 	CHECK(capture.sink.contains("command of 'zigbee.00124b0001020304.11.on' refused: the Zigbee stack did not take it"));
 	CHECK(f.dp(kBulbOn)->value() == Value::of_bool(false));
+}
+
+TEST_CASE("ZigbeeAdapter: commands while the network is not up are held and sent once it is (#72)") {
+	ZigbeeFixture f;
+	f.start_network();
+	f.join_bulb();
+	f.adapter.network_state(false, 0, 0, 0); // a restart of the stack: the network is not up yet
+	hc_test::ScopedCapture capture;
+	size_t calls = f.driver.calls.size();
+	uint16_t on = f.dp(kBulbOn)->id();
+	uint16_t level = f.dp(kBulbLevel)->id();
+	CHECK(f.model.command(on, Value::of_bool(true)) == DatapointStatus::ok);
+	CHECK(f.model.command(on, Value::of_bool(false)) == DatapointStatus::ok); // the last one counts
+	CHECK(f.model.command(level, Value::of_real(50.0)) == DatapointStatus::ok);
+	// Refused for another reason: refused as before, the held value stays.
+	CHECK(f.model.command(level, Value::of_real(101.0)) == DatapointStatus::refused);
+	CHECK(f.driver.calls.size() == calls);
+	CHECK(f.dp(kBulbOn)->pending());
+	CHECK(f.dp(kBulbOn)->value() == Value::of_bool(false));
+	CHECK(f.dp(kBulbLevel)->pending());
+	CHECK(f.dp(kBulbLevel)->value() == Value::of_real(50.0));
+	CHECK(f.adapter.commands_held() == 2);
+	CHECK(capture.sink.contains("I hc.zigbee: holding commands until the Zigbee network is up"));
+	f.adapter.network_state(true, 0x1a62, 15, 0xdddddddddddddddd);
+	CHECK(capture.sink.contains("I hc.zigbee: sending 2 held command(s)"));
+	// The first at once, the next after kHeldSpacingMs, in datapoint order; each once.
+	std::vector<std::string> sent(f.driver.calls.begin() + static_cast<long>(calls), f.driver.calls.end());
+	REQUIRE(sent.size() == 1);
+	f.run_for(ZigbeeAdapter::kHeldSpacingMs);
+	sent.assign(f.driver.calls.begin() + static_cast<long>(calls), f.driver.calls.end());
+	size_t first_on = std::find(sent.begin(), sent.end(), "onoff 0x1a2b 11 off") - sent.begin();
+	size_t first_level = std::find(sent.begin(), sent.end(), "level 0x1a2b 11 127 5") - sent.begin();
+	REQUIRE(first_on < sent.size());
+	REQUIRE(first_level < sent.size());
+	CHECK((on < level) == (first_on < first_level));
+	CHECK(f.driver.count("onoff 0x1a2b 11 on") == 0);
+	f.run_for(10 * ZigbeeAdapter::kHeldSpacingMs);
+	CHECK(f.driver.count("onoff 0x1a2b 11 off") == 1);
+	CHECK(f.driver.count("level 0x1a2b 11 127 5") == 1);
+	CHECK_FALSE(f.dp(kBulbOn)->pending());
+	CHECK_FALSE(f.dp(kBulbLevel)->pending());
+	// Up: a command goes out at once, as before.
+	CHECK(f.model.command(on, Value::of_bool(true)) == DatapointStatus::ok);
+	CHECK(f.driver.calls.back() == "onoff 0x1a2b 11 on");
+	CHECK_FALSE(f.dp(kBulbOn)->pending());
 }
 
 TEST_CASE("ZigbeeAdapter: a sensor's datapoints are read-only") {

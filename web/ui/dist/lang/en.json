@@ -42,6 +42,7 @@
 	"value.on": "On",
 	"value.off": "Off",
 	"value.unknown": "—",
+	"value.waiting": "waiting to be sent",
 	"value.stale": "stale",
 	"value.control": "control",
 	"tile.toggle": "Switch {name}",

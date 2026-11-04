@@ -847,6 +847,7 @@ void WebApi::write_datapoint(JsonWriter& json, const Datapoint& dp) {
 	write_value_json(json, dp.value());
 	json.member("quality", quality_name(dp.quality()))
 		.member("updated_ms", dp.updated_ms())
+		.member("pending", dp.pending())
 		.end_object();
 }
 

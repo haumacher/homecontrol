@@ -177,10 +177,29 @@ Behavior:
   other type the long form; a mismatch is a `wrong_length` refusal. Repeated frames are delivered
   like originals (a report of the same value; `DatapointUpdate::changed()` is false).
 - **Command** of a transmitting datapoint: encoded and queued as a group write; refused (the value
-  stays, the command fails with `refused`) while the tunnel is not up, when the value does not
-  encode, or when the queue is full. When the gateway confirms the write, the other datapoints
+  stays, the command fails with `refused`) when the value does not encode, or when the queue is
+  full. When the gateway confirms the write, the other datapoints
   listening on that address take the value as well — the bus devices do the same; the gateway does
   not echo our own telegram as an indication. The sender is not reported again.
+- **Held commands** (homecontrol #72, spec/rules.md 7.3 step 5): while the tunnel is not up a
+  command is encoded as if it were sent (a value that does not encode is still refused), then held:
+  the model stores the value and marks the datapoint pending (`Datapoint::pending()`, `pending` in
+  `/api/datapoints`), one value per datapoint, a later command replacing it. The first held command
+  of an outage logs `holding commands until the KNX tunnel is up (down: <reason>; first: '<name>')`,
+  the others go to the debug level. When the tunnel comes up the adapter logs `knx tunnel up:
+  sending <n> held command(s)` and sends them once, in datapoint order (one line `sending the held
+  command <value> for '<name>' to <address>` each), through the normal send path: at most
+  `kPendingCapacity` unconfirmed, the rest as the confirmations come; the reads on start wait
+  until they are out, so a held value goes before the read of its address, whose answer is an
+  ordinary report (the bus's value wins). A report of the datapoint before its value went out
+  drops it (the bus is newer). A command while the held ones still fill the send path is held
+  behind them. Transmit-only datapoints are not held (the time master's clock would be old: its
+  owner publishes again), and a write queued while the tunnel was up and lost with it is not
+  repeated (`KnxProbe.QueuedCommandsAreLostWithTheTunnelAndNotReplayed`). An image swap keeps the
+  mark of a datapoint the model keeps by name; `configure()` drops it (logged) for a datapoint the
+  new mapping cannot send; a datapoint the new image does not have is gone with its value. The
+  boot with the tunnel down is the common case: the start cascade of the rules and blocks writes
+  before the tunnel is up, and those values reach the bus with the first connect.
 - **Tunnel down**: every mapped datapoint becomes `stale` (`report_stale()`; an unknown one stays
   unknown), except the transmit-only ones, whose owner decides. **Tunnel up**: the read-on-start datapoints are read, one every 100 ms
   (`kReadSpacingMs`), so a hundred reads take ten seconds instead of flooding the gateway; the tunnel

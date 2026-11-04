@@ -108,6 +108,8 @@ public:
 	bool ehome_attached() const { return clients_[kEhomeSlot].used; }
 
 	void datapoint_updated(const DatapointUpdate& update) override;
+	/// The pending mark changed (a held command went out): the datapoint's state goes out like an update.
+	void datapoint_pending(const Datapoint& datapoint) override;
 
 	/// A change of the Zigbee coordinator (WebApi relays the adapter's events): every subscribed
 	/// client gets a {"type": "zigbee"} message at once (spec/api.md "Zigbee"). A client that missed
@@ -156,6 +158,8 @@ private:
 	void send_status(Client* only);
 	void tick();
 	void flush();
+	/// Queues the datapoint `id` for the next flush (datapoint_updated(), datapoint_pending()).
+	void queue_datapoint(uint16_t id);
 	void pump();
 	void schedule_pump();
 	bool authenticated(const Client& client) const { return client.principal != Principal::none; }

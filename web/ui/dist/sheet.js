@@ -73,6 +73,9 @@ export function openSheet(fn, env) {
 		} else if (ago !== null && dp.quality === "good") {
 			text += ` · ${formatAgo(ago)}`;
 		}
+		if (dp.pending) {
+			text += ` · ${t("value.waiting")}`;
+		}
 		return text;
 	};
 

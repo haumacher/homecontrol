@@ -533,7 +533,7 @@ TEST_CASE("DatapointModel memory per datapoint") {
 	// the name with its NUL. 64 bytes on the 32-bit ESP, 72 on a 64-bit host (value, time, the
 	// name, owner and transmitter pointers, id, type, flags, quality, padded to 8).
 	CHECK(sizeof(Datapoint) <= 72);
-	CHECK(sizeof(Datapoint) == (32 + 8 + 3 * sizeof(void*) + 5 + 7) / 8 * 8);
+	CHECK(sizeof(Datapoint) == (32 + 8 + 3 * sizeof(void*) + 6 + 7) / 8 * 8);
 }
 
 namespace {

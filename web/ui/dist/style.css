@@ -469,6 +469,11 @@ input:focus-visible {
 	opacity: 0.6;
 }
 
+/* A commanded value the technology holds until it connects (homecontrol #72). */
+.tile.waiting .tile-state {
+	font-style: italic;
+}
+
 .tile.pending .tile-icon {
 	animation: pulse 0.9s ease-in-out infinite;
 }

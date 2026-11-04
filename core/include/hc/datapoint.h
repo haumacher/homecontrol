@@ -269,6 +269,10 @@ public:
 	/// The technology that transmits what the owner publishes (DatapointModel::set_transmitter());
 	/// nullptr when the owner transmits itself or nothing is transmitted.
 	Technology* transmitter() const { return transmitter_; }
+	/// Whether the owning technology holds a commanded value it has not sent yet, because it is not
+	/// connected (homecontrol #72: the KNX tunnel is down, the Zigbee network is not up). The value is
+	/// value(); the technology sends it once it connects. Always false without an owner.
+	bool pending() const { return pending_ && technology_ != nullptr; }
 
 private:
 	friend class DatapointModel;
@@ -282,6 +286,7 @@ private:
 	ValueType type_ = ValueType::none;
 	uint8_t flags_ = 0;
 	Quality quality_ = Quality::unknown;
+	bool pending_ = false;
 };
 
 /// What a model load declares about one datapoint.
@@ -346,6 +351,11 @@ class DatapointListener {
 public:
 	virtual void datapoint_updated(const DatapointUpdate& update) = 0;
 
+	/// Datapoint::pending() changed without an update (the technology sent the held value, or a
+	/// configuration dropped it). A change that comes with an update (a command the technology holds,
+	/// a report) is told through datapoint_updated() alone. The same rules as datapoint_updated().
+	virtual void datapoint_pending(const Datapoint& datapoint) { (void) datapoint; }
+
 protected:
 	~DatapointListener() = default;
 };
@@ -403,7 +413,9 @@ public:
 
 	/// As load(); with `keep_values` a datapoint whose name and value type are those of a datapoint
 	/// of the previous model keeps its value, quality and update time (the runtime image swap,
-	/// spec/rules.md 7.6). Nothing is announced to the listeners: the values did not change.
+	/// spec/rules.md 7.6), and its Datapoint::pending() mark (a held command stays held when the new
+	/// owner holds commands, Technology::holds_commands()). Nothing is announced to the listeners:
+	/// the values did not change.
 	DatapointStatus load(const DatapointSpec* specs, size_t count, bool keep_values);
 
 	/// The checks load() makes of each spec (name, type, flags; logged), without the duplicate names
@@ -422,7 +434,8 @@ public:
 	const Datapoint* find(const char* name) const;
 
 	/// Makes `technology` the owner of the datapoint: it receives its commands and may report it.
-	/// Refused (not_owner) if another technology owns it already.
+	/// Refused (not_owner) if another technology owns it already. Drops a pending mark kept by the
+	/// load unless the technology holds commands.
 	DatapointStatus bind(uint16_t id, Technology& technology);
 
 	/// Makes `transmitter` the technology that transmits what the owner publishes (publish()): a
@@ -449,6 +462,14 @@ public:
 	/// The technology lost contact: the value stays, the quality becomes stale (listeners are told
 	/// if the quality was good).
 	DatapointStatus report_stale(Technology& technology, uint16_t id);
+
+	/// The owning technology marks the datapoint's value as held for sending (`pending` true: it is
+	/// not connected; homecontrol #72) or as sent or dropped (false); Datapoint::pending(). Only the
+	/// owner may (not_owner). Allowed inside the technology's command() (the mark of the value the
+	/// model is about to store); listeners are told through DatapointListener::datapoint_pending()
+	/// when the mark changes outside a command. A report() clears the mark: the value on the bus
+	/// is newer than the held one.
+	DatapointStatus set_pending(Technology& technology, uint16_t id, bool pending);
 
 	/// Sets the last known value of a datapoint from before the reboot (hc::ValueStore, right after
 	/// load()): the value (converted where exact) with quality stale, updated_ms() stays 0, and no

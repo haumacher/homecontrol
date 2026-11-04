@@ -47,12 +47,14 @@ function flatTiles(live, show) {
 		if (dp.type === "color" && dp.value) {
 			return [h("span", { class: "swatch", style: `background:${text}` }), text];
 		}
-		return dp.quality === "stale" ? `${text} · ${t("value.stale")}` : text;
+		const shown = dp.quality === "stale" ? `${text} · ${t("value.stale")}` : text;
+		return dp.pending ? `${shown} · ${t("value.waiting")}` : shown;
 	}
 
 	function update(tile, dp) {
 		tile.classList.toggle("on", dp.type === "boolean" && dp.value === true && dp.quality !== "unknown");
 		tile.classList.toggle("stale", dp.quality === "stale");
+		tile.classList.toggle("waiting", dp.pending === true);
 		tile.classList.toggle("unknown", dp.quality === "unknown");
 		tile.classList.toggle("pending", pending.has(dp.id));
 		replace(tile.querySelector(".tile-state"), state(dp));

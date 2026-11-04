@@ -158,6 +158,12 @@ protected:
 ///   0 or 65535, never goes stale). Silence counts from the start
 ///   for a device not heard since. Any frame of a stale device ends it; its datapoints are read
 ///   again.
+/// - **Commands.** A commandable point's command goes to the driver at once. While the network is
+///   not up it is held (homecontrol #72): checked as if it were sent, stored by the model, the
+///   datapoint marked pending; a later command replaces it. When the network comes up the held
+///   commands are sent once, in datapoint order, one every kHeldSpacingMs. A report drops the held
+///   value (the device's is newer). Refused: a point without a command, a value out of range, a
+///   device that has not joined, and the stack's refusal while the network is up.
 /// - **Reads.** After start() and after a silence, the server attributes of each device are read,
 ///   one device every kRefreshSpacingMs. A read the application asks for (read(), a rule's `read`
 ///   action) sends a Read Attributes of the datapoint's attribute at once; refused for a point the
@@ -184,6 +190,8 @@ public:
 	/// most an hour behind the last frame, and the flash sees at most about one write an hour.
 	static constexpr int64_t kSeenSaveS = 3600;
 	static constexpr uint32_t kRefreshSpacingMs = 500;
+	/// Spacing of the commands held while the network was not up, once it is (the first goes at once).
+	static constexpr uint32_t kHeldSpacingMs = 100;
 	/// Transition of the level and colour temperature commands, in tenths of a second.
 	static constexpr uint16_t kTransitionDs = 5;
 	static constexpr uint16_t kIdentifySeconds = 10;
@@ -303,6 +311,10 @@ public:
 	const char* name() const override { return "zigbee"; }
 	bool command(const Datapoint& datapoint, const Value& value) override;
 	bool read(const Datapoint& datapoint) override;
+	bool holds_commands() const override { return true; }
+
+	/// Commands held while the network was not up and not yet sent (Datapoint::pending()).
+	size_t commands_held() const;
 
 	// image::DynamicSpecProvider (with the image service, doc/image.md "Dynamic datapoints")
 	const char* provider_name() const override { return "zigbee"; }
@@ -403,6 +415,17 @@ private:
 	uint64_t start_ms_ = 0;
 	TimerHandle check_timer_;
 	TimerHandle refresh_timer_;
+	TimerHandle held_timer_;
+	uint16_t held_next_ = 0; ///< The model id from which the next held command is looked for.
+	bool hold_logged_ = false;
+
+	/// Whether the point has a command and `value` is in its range (logged when not).
+	bool command_valid(const ZigbeePoint& point, const Datapoint& datapoint, const Value& value) const;
+	/// Sends the command (command_valid() said yes); false (logged) when the stack does not take it.
+	bool send_command(const ZigbeeDevice& device, const ZigbeePoint& point, const Datapoint& datapoint,
+		const Value& value);
+	/// Sends the next held command and schedules the one after it (kHeldSpacingMs).
+	void send_held();
 	ZigbeeTrafficListener* traffic_ = nullptr;
 	ZigbeeEventListener* events_ = nullptr;
 	uint32_t generation_ = 0;

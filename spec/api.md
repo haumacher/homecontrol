@@ -140,14 +140,17 @@ A datapoint (doc/datapoints.md) in the API:
 
 ```json
 {"id": 0, "name": "Living room light", "type": "boolean", "flags": 3, "writable": true,
- "technology": "knx", "value": true, "quality": "good", "updated_ms": 51230}
+ "technology": "knx", "value": true, "quality": "good", "updated_ms": 51230, "pending": false}
 ```
 
 `type` is the value type's name (`boolean`, `unsigned`, `signed`, `real`, `enumeration`,
 `string`, `raw`, `time of day`, `date`, `date-time`, `controlled`, `color`; doc/datapoints.md);
 `flags` are the datapoint's flag bits; `technology` the name of the technology that owns it
 (`knx`, `zigbee`, `external`, `scheduler`, `rules` for a rule parameter's datapoint, ...; `null`
-for an application value); `quality` is `unknown` (no value yet), `good` or `stale`.
+for an application value); `quality` is `unknown` (no value yet), `good` or `stale`; `pending` is
+true while the owning technology holds a commanded value it has not sent yet because it is not
+connected (the KNX tunnel is down, the Zigbee network is not up; spec/rules.md 7.3): `value` is
+that commanded value, which goes out once the technology connects (homecontrol #72).
 Values in JSON:
 
 | type | JSON |
@@ -1160,7 +1163,7 @@ Server to client:
 | --- | --- |
 | `hello` | on connect: `authenticated`, `onboarded`, `device`, `version` |
 | `status` | the members of `GET /api/status`; when one of its discrete fields changes (network state, address, LED, time sync, Improv, mDNS, sessions, clients, datapoint count) and every 10 s |
-| `datapoints` | `now_ms`, `updates`: `[{"id", "value", "quality", "updated_ms"}]`. After `subscribe`: a snapshot in chunks with `snapshot: true`, `count`, `from`, `done` and the full datapoints (as in the REST API); then the changes, batched per event-loop turn (each datapoint once, with its latest value) |
+| `datapoints` | `now_ms`, `updates`: `[{"id", "value", "quality", "updated_ms", "pending"}]` (also when only `pending` changed: the held value was sent). After `subscribe`: a snapshot in chunks with `snapshot: true`, `count`, `from`, `done` and the full datapoints (as in the REST API); then the changes, batched per event-loop turn (each datapoint once, with its latest value) |
 | `result` | answer to `command`: `id`, `ref` (echoed), `ok`, and on refusal `error` and `code` (the `dp.*` codes of the REST command) |
 | `pong` | answer to `ping` |
 | `monitor` | the monitor stream: the answer to a `monitor` message, and the event batches (see "Monitor") |

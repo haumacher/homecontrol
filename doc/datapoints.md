@@ -62,6 +62,15 @@ before the first) and a quality:
   last known one and stays until the next report. A `kPersist` datapoint also starts stale after
   a reboot: `restore(id, value)` sets its saved value right after the load (see below).
 
+A datapoint can also be **pending** (`Datapoint::pending()`, homecontrol #72): its owner holds a
+commanded value it has not sent because it is not connected (a technology whose
+`Technology::holds_commands()` is true: the KNX adapter, the Zigbee adapter). The technology sets
+the mark inside its `command()` with `DatapointModel::set_pending()` and clears it when it sends
+the value; a `report()` clears it (the bus's value is newer). `load()` with `keep_values` keeps the
+mark with the value, `bind()` drops it for an owner that does not hold commands, and a datapoint
+without an owner is never pending. A change of the mark outside a command is told to the
+listeners through `DatapointListener::datapoint_pending()` (the live feed sends the datapoint).
+
 ### Owner and transmitter
 
 Every datapoint has at most one owner (`bind()`): the technology or component that reports it,
