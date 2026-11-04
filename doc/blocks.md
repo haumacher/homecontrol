@@ -97,8 +97,9 @@ instance is not written. The budget is in `doc/persistence.md` "The flash wear b
 ## Memory (ESP32-C6)
 
 Measured on the host (64-bit) by `BlockRuntime: no allocation in steady state; the cost of a room
-controller` and `Heating: no allocation in steady state; the cost of an instance is at most a room
-controller's`; the C6's 32-bit pointers make the figures slightly smaller.
+controller`, `Heating: no allocation in steady state; the cost of an instance is at most a room
+controller's` and `SunShading: no allocation in steady state; the cost of an instance is at most a
+room controller's`; the C6's 32-bit pointers make the figures slightly smaller.
 
 | What | Size |
 |---|---|
@@ -109,6 +110,7 @@ controller's`; the C6's 32-bit pointers make the figures slightly smaller.
 | Per room controller in all | about 3.3 KB on the host (3255 B) |
 | Per heating demand (8 valves, 4 demands): 11 fields, 11 parameters, 9 mirrors | about 2.0 KB on the host (2013 B) |
 | Per heating curve (2 outside sensors): 9 fields, 29 parameters, 8 mirrors | about 2.2 KB on the host (2170 B) |
+| Per sun shading (every input, `manual` on two datapoints): 20 fields, 31 parameters, 10 mirrors, no record | about 2.8 KB on the host (2760 B) |
 | Steady state | no allocation (calls, writes, timers, periods; the record writes allocate nothing in the core) |
 
 Ten rooms cost about 30 KB of heap. On the C6, whose heap minimum at a deploy is about 33 to 37 KB,

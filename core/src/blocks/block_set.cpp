@@ -549,6 +549,17 @@ bool Compiler::outputs(const JsonSpan& item, size_t index, BlockSpec& spec, cons
 			}
 			return -1;
 		};
+		for (size_t i = 0; i < m.port_count; ++i) { // spec/blocks.md B22: a block does not read its own output
+			if (m.ports[i].direction != Direction::in) {
+				continue;
+			}
+			for (size_t k = 0; k < spec.ports[i].count; ++k) {
+				if (spec.ports[i].datapoints[k] == id) {
+					return refuse(BlockError::forbidden, "'%s' is bound to the input '%s': a block does not read its own output",
+						dp->name(), m.ports[i].id);
+				}
+			}
+		}
 		int q = taken(spec, m.port_count);
 		if (q >= 0) {
 			return refuse(BlockError::output_conflict, "'%s' is bound to the output '%s' already", dp->name(),

@@ -1240,3 +1240,57 @@ TEST_CASE("Blocks review probe: a heating demand over a room controller that is 
 	CHECK(f.model.find("block/wz/valve")->value().as_real() == 30);
 	CHECK(f.model.find("req")->value().as_bool() == true);
 }
+
+TEST_CASE("Blocks review probe: sun shading without a wall clock; a wind alarm across an operation and an image swap") {
+	DashboardFixture f;
+	f.fake.clock.synchronized = false;
+	auto image = [](int revision) {
+		return std::string(R"({"image": {"schemaVersion": "1.3", "projectId": "shade", "revision": )") +
+			std::to_string(revision) + R"(},
+		"settings": {"location": {"lat": 48.137, "lon": 11.576}},
+		"datapoints": [{"id": "wind", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "man", "type": "boolean", "writable": true, "virtual": {}},
+		               {"id": "pos", "type": "real", "writable": true, "virtual": {}}],
+		"blocks": [{"id": "ss", "type": "org.homecontrol.sun-shading", "version": "1.0", "label": "South",
+		            "inputs": {"wind": "wind", "manual": "man"}, "outputs": {"position": "pos"},
+		            "parameters": {"alarmRelease": 60000, "minMoveInterval": 0}}]})";
+	};
+	f.load(image(1));
+	f.controller.run_once();
+	f.controller.run_once();
+	// No clock: no sun, idle, nothing written (a start in idle moves nothing).
+	CHECK(f.model.find("block/ss/state")->value().as_enum() == 0);
+	CHECK(f.model.find("pos")->quality() == hc::Quality::unknown);
+	CHECK(f.model.find("block/ss/sunAzimuth")->quality() == hc::Quality::unknown);
+	// The wind alarm works without a clock: retracted at once.
+	REQUIRE(f.model.command(f.model.find("wind")->id(), hc::Value::of_real(15.0)) == hc::DatapointStatus::ok);
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/ss/state")->value().as_enum() == 2);
+	CHECK(f.model.find("pos")->value().as_real() == 0);
+	// An operation during the alarm does not lift it; the retracted position is sent again.
+	REQUIRE(f.model.command(f.model.find("pos")->id(), hc::Value::of_real(50.0)) == hc::DatapointStatus::ok);
+	REQUIRE(f.model.command(f.model.find("man")->id(), hc::Value::of_bool(true)) == hc::DatapointStatus::ok);
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/ss/state")->value().as_enum() == 2);
+	CHECK(f.model.find("pos")->value().as_real() == 0);
+	// An image swap during the alarm keeps it (the state record of the same major version).
+	f.load(image(2));
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/ss/state")->value().as_enum() == 2);
+	CHECK(f.model.find("pos")->value().as_real() == 0);
+	// Calm: the alarm ends after alarmRelease, not before.
+	REQUIRE(f.model.command(f.model.find("wind")->id(), hc::Value::of_real(3.0)) == hc::DatapointStatus::ok);
+	f.controller.run_once();
+	f.fake.clock.advance(30000);
+	f.controller.run_once();
+	f.controller.run_once();
+	CHECK(f.model.find("block/ss/state")->value().as_enum() == 2);
+	f.fake.clock.advance(61000);
+	for (int i = 0; i < 4; ++i) {
+		f.controller.run_once();
+	}
+	CHECK(f.model.find("block/ss/state")->value().as_enum() != 2);
+}

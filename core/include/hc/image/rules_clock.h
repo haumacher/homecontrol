@@ -22,6 +22,7 @@ public:
 	bool sun_time(rules::SunEvent event, TimeOfDay& out) const override;
 	int64_t local_to_utc(const DateTime& local) const override;
 	bool utc_to_local(int64_t utc_seconds, DateTime& out) const override;
+	bool sun_position(int64_t utc_seconds, SunPosition& out) const override;
 
 private:
 	const hc::TimeSource& time_;

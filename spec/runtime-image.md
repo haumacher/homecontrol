@@ -116,7 +116,7 @@ The device settings the project fixes. Each is applied only if it differs from t
 | Member | Type | Meaning |
 |---|---|---|
 | `tz` | POSIX TZ string, 1..127 | The setting `tz` (`doc/time.md`). |
-| `location` | `{"lat": -90..90, "lon": -180..180, "elev": -500..9000}` (`elev` optional, metres, integer) | The coordinates for the sun times of astro schedules and `sunrise()`/`sunset()`. |
+| `location` | `{"lat": -90..90, "lon": -180..180, "elev": -500..9000}` (`elev` optional, metres, integer) | The coordinates for the sun times of astro schedules and `sunrise()`/`sunset()`, and for the sun's position of blocks (`spec/blocks.md` B21). |
 | `ntp` | `{"server": host name}` | The setting `ntp.server`; SNTP restarts with it. |
 
 ### 3.3 `datapoints`

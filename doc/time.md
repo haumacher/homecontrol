@@ -7,7 +7,8 @@ it is portable core code, tested on the host under fake clocks.
 | Piece | Where |
 |---|---|
 | `TimeSource` (the interface the rules and the scheduler read), `TimeService`, time events, location settings | `core/include/hc/time_service.h` |
-| Sunrise, sunset, civil dawn and dusk (NOAA) | `core/include/hc/astro.h` |
+| Sunrise, sunset, civil dawn and dusk (NOAA); the sun's position at an instant | `core/include/hc/astro.h` |
+| The exact trigonometry of the sun's position and the blocks | `core/include/hc/exact_math.h` |
 | The scheduler | `core/include/hc/scheduler.h` |
 | SNTP, the `tz` setting, the platform clock and time zone | `doc/network.md`, `core/include/hc/platform/` |
 
@@ -105,6 +106,22 @@ night (civil twilight only): the largest difference is **33 s**, i.e. within the
 reference; the test requires at most 60 s. Near a polar boundary (an event that barely occurs) the
 error grows, as for any rise/set computation; the event's existence near the boundary may differ
 from USNO by a day.
+
+## The sun's position
+
+`hc::sun_position(utc, location)` gives the sun's azimuth (from north through east) and geometric
+elevation at an instant: the NOAA formulas of the events above evaluated at the instant itself, but
+on `hc::exact` (`exact_math.h`), sines, cosines and arc tangents built from `+ - * /`, `sqrt` and
+`floor` alone, so that E-Home's Java simulation computes the same bits (`spec/blocks.md` 13.1,
+13.2; compiled with `-ffp-contract=off`). The blocks read it as `sun()` (`spec/blocks.md` B21) at the
+cascade's wall time and the time service's location (`TimeSource::location()`); the rule engine
+computes it once per wall second (`Engine::cascade_sun()`). Accuracy (`core/test/astro_test.cpp`):
+within 0.0025° of the NREL Solar Position Algorithm's published example (its refraction and
+parallax taken out), within 0.011° of the Astronomical Almanac's low-precision formula over 7
+latitudes, 4 longitudes and a year; within 3e-12° of the same formulas on the library's functions.
+Refraction (up to 0.6° at the horizon) is not applied. One call costs 0.25 µs on the host, about
+0.7 ms on the C6 (estimated). The rules' functions `sunAzimuth()`/`sunElevation()` of issue #63 are
+not part of it yet.
 
 ## The scheduler
 

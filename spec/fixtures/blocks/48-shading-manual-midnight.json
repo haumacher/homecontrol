@@ -1,0 +1,120 @@
+{
+	"title": "Sun shading: the lock 'midnight' (18.2 D6, D7): an evening closing bound to manual locks the automatic until the local date changes, so the setting sun does not retract the blind; the lock ends at the first step of the new date and writes nothing in idle.",
+	"note": "Munich, 2026-06-21 from 20:00 CEST, a facade facing 290 deg with the evening sun on it (minElevation 3). The schedule's closing reaches manual at 20:30. Local midnight is 22:00 UTC: the period's step at 00:00:00 CEST is the first of the new date.",
+	"location": {
+		"lat": 48.137,
+		"lon": 11.576
+	},
+	"clock": {
+		"start": "2026-06-21T20:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "close",
+			"type": "boolean"
+		},
+		{
+			"name": "pos",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "abend",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"manual": "close"
+			},
+			"outputs": {
+				"position": "pos"
+			},
+			"parameters": {
+				"facadeAzimuth": 290,
+				"minElevation": 3,
+				"manualLock": "midnight",
+				"minMoveInterval": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/abend/state": 1,
+					"pos": 100.0,
+					"block/abend/sunAzimuth": 293.7988584610173,
+					"block/abend/sunElevation": 10.269304963889203
+				}
+			}
+		},
+		{
+			"at": 1800000,
+			"report": {
+				"datapoint": "close",
+				"value": true
+			}
+		},
+		{
+			"at": 1801000,
+			"check": {
+				"datapoints": {
+					"block/abend/state": 5
+				},
+				"blocks": {
+					"abend": {
+						"state": {
+							"manualDay": 20625.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 14341000,
+			"check": {
+				"datapoints": {
+					"block/abend/state": 5
+				}
+			}
+		},
+		{
+			"at": 14401000,
+			"check": {
+				"datapoints": {
+					"block/abend/state": 0,
+					"pos": 100.0
+				},
+				"blocks": {
+					"abend": {
+						"state": {
+							"manualAt": -1.0,
+							"manualDay": -1.0
+						}
+					}
+				}
+			}
+		}
+	],
+	"end": 14700000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "abend",
+				"datapoint": "pos",
+				"value": 100.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/abend/state": 0,
+				"pos": 100.0
+			}
+		}
+	}
+}

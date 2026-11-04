@@ -1463,6 +1463,20 @@ bool Engine::parameter_command(const Datapoint& datapoint, const Value& value) {
 // ------------------------------------------------------------------------------------------
 // Cascades
 
+bool Engine::cascade_sun(SunPosition& out) const {
+	if (!wall_valid_) {
+		return false;
+	}
+	const int64_t utc = time_.local_to_utc(wall_);
+	if (!sun_cached_ || utc != sun_utc_) {
+		sun_known_ = time_.sun_position(utc, sun_);
+		sun_utc_ = utc;
+		sun_cached_ = true;
+	}
+	out = sun_;
+	return sun_known_;
+}
+
 void Engine::begin_cascade() {
 	cascade_ms_ = clock_.monotonic_ms();
 	wall_valid_ = time_.local_now(wall_);

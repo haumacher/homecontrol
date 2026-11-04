@@ -2,7 +2,7 @@
 
 The cases in this directory pin the semantics of `spec/blocks.md`: the block contract (calls,
 cascades, faults, failsafe values, the enable switch, persistence, image swaps, overrides, the quiet
-load, load refusals) and the built-in types (`spec/blocks.md` 14, 16, 17: the room controller, the heating demand, the heating curve). Every implementation
+load, load refusals) and the built-in types (`spec/blocks.md` 14, 16, 17, 18: the room controller, the heating demand, the heating curve, the sun shading). Every implementation
 runs every case and must produce exactly the expected outputs: the C++ core (one table-driven test,
 `core/test/rules_corpus_test.cpp`, which runs the rules corpus too) and E-Home's simulation
 (haumacher/ehome#75). A change of block semantics lands with new or changed cases.
@@ -17,6 +17,7 @@ timeline step defined there means the same here. The additions:
 |---|---|---|
 | `blocks` | array | The `blocks` member of the image (`spec/blocks.md` 4). `rules` may be absent (no rules). The block mirrors `block/<id>/<x>` (`spec/blocks.md` 6) are not listed in `datapoints`: the runner derives them, after the parameter datapoints of the rules. |
 | `persisted` | object | Also block parameter overrides, `"@<blockId>/<parameterId>": {"type": <parameter type>, "value": <JSON value>}`, and persisted state records, `"block/<id>": {"type": "<type id>", "version": "<major>.<minor>", "fields": {"<field>": <number>}}` (written as the device's record of `spec/blocks.md` 8.1). |
+| `location` | object | `{"lat", "lon"}`: the controller's location in degrees (north and east positive). With it and a synchronized `clock`, `sun()` (`spec/blocks.md` B21) gives the sun's position by `spec/blocks.md` 13.2 at the instant of the wall clock; without it, none. |
 | `expected.loadRefused` | string | As for rules, with the reasons of `spec/blocks.md` 11; `expected.path` (optional) is the refusal's path. |
 
 The conformance type `org.homecontrol.conformance` (`spec/blocks.md` 15) is registered by the runner
@@ -54,7 +55,7 @@ As in the rules corpus, with these additions:
 Reals compare with a relative tolerance of 1e-9 (and an absolute one of 1e-9 around 0); everything
 else compares exactly. State fields that hold monotonic times (the room controller's `lastStep`,
 `cycleStart`, `boostUntil` while set, `protectionUntil`, `sentAt`; the heating demand's `lastStep` and
-`switchedAt`; the heating curve's `lastStep`) depend on the origin a runner
+`switchedAt`; the heating curve's `lastStep`; the sun shading's `windCalmAt`, `rainDryAt`, `frostClearAt`, `brightAt`, `manualAt`, `manualSeen` and `movedAt` while not -1) depend on the origin a runner
 gives the monotonic clock and are not compared; differences of them are. Several `parameterReset`
 entries of one block for parameters that are gone come in an unspecified order; no case has two.
 
@@ -103,6 +104,19 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `39-load-refused-curve-points` | The heating curve's check (B17): the points' outside temperatures must rise; the first that does not is blamed. |
 | `40-heating-chain` | A room controller, a heating demand and a heating curve chained through their mirrors: valve to level, offset to flow, the curve's summer to the request. |
 | `41-demand-image-swap-keeps-hold` | Heating demand at an image swap: the record in RAM keeps the request and its switching time, so a deploy does not cut short minOn; the start writes the outputs again. |
+| `42-shading-sun-on-facade` | Sun shading: the sun on the facade by azimuth and elevation (`spec/blocks.md` 13.2, 18.2 D8), horizon points and an overhang; `sun()` itself through the sun mirrors; one move at the begin and one at the end of shading. |
+| `43-shading-slat-tracking` | Sun shading: slats at the cut-off angle, in steps of slatStep from slatOpen (180° slats: slatOpen 45, step 7); minMoveInterval holds the steps back, and a step passed while held is skipped. |
+| `44-shading-brightness` | Sun shading: brightness hysteresis and both delays, by the timer wake; the maximum of two sensors; a sensor that is not good counts as dark. |
+| `45-shading-wind` | Sun shading: the wind alarm over shading and heat protection, an operation during it, a gust restarting the release, a stale storm, windTimeout at the start and for a silent sensor. |
+| `46-shading-rain-frost` | Sun shading: rain and frost (the alarm input and the outside temperature), the order wind > rain > frost, each released after alarmRelease. |
+| `47-shading-manual-duration-sun-change` | Sun shading: the locks `duration` (restarted by a second operation) and `sunChange`; a lock that ends in shading moves, one that ends in idle writes nothing. |
+| `48-shading-manual-midnight` | Sun shading: the lock `midnight` on the local date: an evening closing keeps the setting sun from retracting the blind; the lock ends at local midnight. |
+| `49-shading-heat-protection` | Sun shading: heat protection without a sun position, its 1 K hysteresis and releases; enable false switches the automatic off while the alarms work on. |
+| `50-shading-min-interval-reboot` | Sun shading: minMoveInterval holds moves and releases until the timer wake, with the target as it is then; a pointless held move is dropped; a reboot in idle writes nothing. |
+| `51-load-refused-own-output` | B22: an output bound to a datapoint an input of the same block binds refuses the image with forbidden. |
+| `52-load-refused-shading-horizon` | The sun shading's check (B17): the horizon points' directions must rise. |
+| `53-shading-failsafe-parameters` | Sun shading: the failsafe is retracted; enabled again it moves at once with all outputs; the adjustable shadePosition and its reset move the blind. |
+| `54-shading-sensors-one-by-one` | Sun shading: wind and rain read one by one (D4): a stale storm behind a good calm and one silent sensor of two are alarms; a stale `manual` report and the start value are no operation (D6). |
 
 ## How the expected values were computed
 
@@ -136,3 +150,23 @@ end); the flows of 34 (slope 51, 58.5, 62.25, 64.25, 34.55, 25, 70; design 40, 4
 summer of 36 at 133 200 s; the swap of 41 (the outputs again at 60 s, off at 330 s, the pump at 390 s). Two inputs of the first draft were wrong, not the model (a missing
 `outsideFilter` in 34, a single report in 36 that ran into `sensorTimeout`); they were corrected and
 filled again. The C++ runner passes every case unchanged.
+
+Cases 42 to 54 (the sun shading, `spec/blocks.md` 18, B21, B22, 13.1, 13.2) were made the same way.
+Their inputs were written by hand (42 to 53; 54 by the model's agent from its self-test, reviewed),
+with the load refusals of 51 and 52. The same model was extended by a separate agent from the
+specification texts alone, without access to the C++ or Java sources: the exact trigonometry and
+the sun's position literally in binary64 (never a library sine on that path), `sun()` from the
+case's new `location` and the wall clock, B22 and the type. Its 26 questions (the instant of
+`sun()`, the location's source, the order of the output checks, what counts as an operation, a
+stale storm hidden by the aggregation, the slat steps' origin, `overhangAngle` 90, among others)
+were answered in the specification before the cases were filled; four of the answers changed the
+type (`manualSeen`, wind and rain read one by one, slat steps from `slatOpen`, no overhang test at
+90). The model filled the cases with `--write`. Independently, the agent derived the numbers by hand
+and, for the sun, with the Astronomical Almanac's formula on the library's functions: the begin and
+end of shading in 42 (4 800 and 21 240 s for the east facade, 11 820 s for the south), the slat steps
+of 43, the switching times of 44 (430, 3 600, 3 820, 4 800 s), the alarms of 45 and 46, the locks of
+47 and 48, and the moves of 49, 50 and 53; all agreed with the model. The smallest margin of a
+decision to its threshold is 0.016° (42, the azimuth test of the south facade), far above the 1e-9
+of the comparison and above the 0.01° between the two sun formulas. The C++ runner and E-Home's
+runner pass every case unchanged; `sun()` gives the same bits in all three (`SunPosition.TheNrelSpaExample`
+pins them).

@@ -9,6 +9,7 @@
 #include "hc/blocks/heating_curve.h"
 #include "hc/blocks/heating_demand.h"
 #include "hc/blocks/room_controller.h"
+#include "hc/blocks/sun_shading.h"
 
 namespace hc::blocks {
 
@@ -238,6 +239,7 @@ BlockRegistry::BlockRegistry(bool builtins) {
 		add(RoomController::instance());
 		add(HeatingDemand::instance());
 		add(HeatingCurve::instance());
+		add(SunShading::instance());
 	}
 }
 

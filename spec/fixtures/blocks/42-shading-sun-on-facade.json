@@ -1,0 +1,210 @@
+{
+	"title": "Sun shading: the sun on the facade by azimuth and elevation (spec/blocks.md 13.2, 18.2 D8), with horizon points and an overhang; the shading begins and ends with one move each (D2).",
+	"note": "Munich, 2026-06-21 from 05:30 CEST. 'ost' faces 100 deg (opening 160, minElevation 7.5, a horizon falling from 15 deg at -50 to 10 deg at the normal, a balcony at a profile angle of 60): it shades from the morning until the balcony takes over. 'sued' faces south with the defaults: it shades once the sun passes 90 deg of azimuth. No brightness: the sun decides alone. The sun mirrors pin sun() itself.",
+	"location": {
+		"lat": 48.137,
+		"lon": 11.576
+	},
+	"clock": {
+		"start": "2026-06-21T05:30:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "pos_o",
+			"type": "real"
+		},
+		{
+			"name": "ud_o",
+			"type": "boolean"
+		},
+		{
+			"name": "pos_s",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "ost",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "East",
+			"outputs": {
+				"position": "pos_o",
+				"upDown": "ud_o"
+			},
+			"parameters": {
+				"facadeAzimuth": 100,
+				"openingAngle": 160,
+				"minElevation": 7.5,
+				"overhangAngle": 60,
+				"horizonPoints": 2,
+				"horizonAngle1": -50,
+				"horizonElevation1": 15,
+				"horizonAngle2": 0,
+				"horizonElevation2": 10,
+				"minMoveInterval": 0
+			}
+		},
+		{
+			"id": "sued",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "South",
+			"outputs": {
+				"position": "pos_s"
+			},
+			"parameters": {
+				"minMoveInterval": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/ost/state": 0,
+					"block/sued/state": 0,
+					"block/ost/sunAzimuth": 55.31875598763869,
+					"block/ost/sunElevation": 1.3956323527885128,
+					"pos_o": null,
+					"ud_o": null,
+					"pos_s": null
+				}
+			}
+		},
+		{
+			"at": 3601000,
+			"check": {
+				"datapoints": {
+					"block/ost/state": 0,
+					"block/sued/state": 0,
+					"block/ost/sunAzimuth": 66.02209791377058,
+					"block/ost/sunElevation": 10.113003140716417,
+					"pos_o": null,
+					"ud_o": null,
+					"pos_s": null
+				}
+			}
+		},
+		{
+			"at": 7201000,
+			"check": {
+				"datapoints": {
+					"block/ost/state": 1,
+					"block/sued/state": 0,
+					"block/ost/sunAzimuth": 76.36396659661457,
+					"block/ost/sunElevation": 19.5751398829689,
+					"pos_o": 100.0,
+					"ud_o": true,
+					"pos_s": null
+				}
+			}
+		},
+		{
+			"at": 10801000,
+			"check": {
+				"datapoints": {
+					"block/ost/state": 1,
+					"block/sued/state": 0,
+					"block/ost/sunAzimuth": 86.89668772949133,
+					"block/ost/sunElevation": 29.46230093793242,
+					"pos_o": 100.0,
+					"ud_o": true,
+					"pos_s": null
+				}
+			}
+		},
+		{
+			"at": 14401000,
+			"check": {
+				"datapoints": {
+					"block/ost/state": 1,
+					"block/sued/state": 1,
+					"block/ost/sunAzimuth": 98.41292732846114,
+					"block/ost/sunElevation": 39.44455403623135,
+					"pos_o": 100.0,
+					"ud_o": true,
+					"pos_s": 100.0
+				}
+			}
+		},
+		{
+			"at": 18001000,
+			"check": {
+				"datapoints": {
+					"block/ost/state": 1,
+					"block/sued/state": 1,
+					"block/ost/sunAzimuth": 112.18775749937754,
+					"block/ost/sunElevation": 49.08736862015836,
+					"pos_o": 100.0,
+					"ud_o": true,
+					"pos_s": 100.0
+				}
+			}
+		},
+		{
+			"at": 21601000,
+			"check": {
+				"datapoints": {
+					"block/ost/state": 0,
+					"block/sued/state": 1,
+					"block/ost/sunAzimuth": 130.3874852218158,
+					"block/ost/sunElevation": 57.64873849595195,
+					"pos_o": 0.0,
+					"ud_o": false,
+					"pos_s": 100.0
+				}
+			}
+		}
+	],
+	"end": 23400000,
+	"expected": {
+		"commands": [
+			{
+				"at": 4800000,
+				"block": "ost",
+				"datapoint": "pos_o",
+				"value": 100.0
+			},
+			{
+				"at": 4800000,
+				"block": "ost",
+				"datapoint": "ud_o",
+				"value": true
+			},
+			{
+				"at": 11820000,
+				"block": "sued",
+				"datapoint": "pos_s",
+				"value": 100.0
+			},
+			{
+				"at": 21240000,
+				"block": "ost",
+				"datapoint": "pos_o",
+				"value": 0.0
+			},
+			{
+				"at": 21240000,
+				"block": "ost",
+				"datapoint": "ud_o",
+				"value": false
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/ost/state": 0,
+				"block/sued/state": 1,
+				"block/ost/sunAzimuth": 142.0870010114182,
+				"block/ost/sunElevation": 61.11483201810508,
+				"block/sued/sunAzimuth": 142.0870010114182,
+				"block/sued/sunElevation": 61.11483201810508,
+				"pos_o": 0.0,
+				"pos_s": 100.0
+			}
+		}
+	}
+}

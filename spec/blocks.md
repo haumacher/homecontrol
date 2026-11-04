@@ -118,11 +118,14 @@ Each names its alternatives; the sections state the decision as fact.
   that is simple enough to compute by hand and that faults on demand: `org.homecontrol.conformance`
   (section 15). The device's firmware does not contain it; the C++ test runner and E-Home's
   simulation register it for the corpus.
-- **B19. Determinism.** Built-in blocks use only `+`, `-`, `*`, `/`, comparisons, `floor` and
-  `fabs` on IEEE 754 doubles with round-to-nearest-even, evaluated in the order this document
+- **B19. Determinism.** Built-in blocks use only `+`, `-`, `*`, `/`, `sqrt`, comparisons, `floor`
+  and `fabs` on IEEE 754 doubles with round-to-nearest-even, evaluated in the order this document
   writes them, without fused multiply-add (`-ffp-contract=off`), so Java (`double`, no `Math.fma`)
-  and C++ give the same bits. No transcendental functions. The corpus compares reals with a
-  relative tolerance of 1e-9 and its cases keep threshold decisions away from that tolerance.
+  and C++ give the same bits. `sqrt` is one of IEEE 754's correctly rounded basic operations like
+  the four others (Java's `Math.sqrt`, C's `sqrt`). No transcendental functions of a library:
+  where a type needs a sine or an arc tangent, it uses the exact trigonometry of 13.1, built from
+  those operations alone. The corpus compares reals with a relative tolerance of 1e-9 and its cases
+  keep threshold decisions away from that tolerance.
 - **B20. An input binds up to 32 datapoints, and a block may read each of them.** `multiple` goes up
   to 32, and besides the aggregated `read(port)` a call may ask `count(port)` and `readAt(port, k)`,
   the k-th datapoint of the binding as a single-datapoint input reads it (3.1). The heating demand
@@ -133,6 +136,24 @@ Each names its alternatives; the sections state the decision as fact.
   where it is not used. *Alternatives:* 32 single ports `valve1` .. `valve32` (beyond the 24 ports of a
   type, and an instance would show 32 ports for a house of six rooms); new aggregations `topMean`
   and a stale policy in the runtime (rules of one type moved into the contract of every type).
+- **B21. The sun's position is a service of the controller.** A call may ask `sun()`: the sun's
+  azimuth and elevation at the cascade's wall time and the controller's location (5.5), computed by
+  the algorithm of 13.2 on the exact trigonometry of 13.1, so the device and E-Home's simulation
+  agree to the bit; none while the wall clock is not synchronized or no location is set. The sun
+  shading (section 18) needs it. *Alternatives:* azimuth and elevation as inputs from a weather
+  station (a second source for what the controller knows from its clock and location; not every
+  station has them, KNX stations send whole degrees, and the simulation would need them simulated);
+  the location as parameters of each instance (it belongs to the installation, and the image
+  carries it already in `settings.location`); a library's `sin` and `atan2` (they differ in the
+  last bits between Java, glibc and newlib, and a threshold decision such as "the sun is on the
+  facade" could then differ between the device and the simulation).
+- **B22. A block does not read its own outputs.** An input may not bind a datapoint that an output
+  of the same block binds (`forbidden`). A write commands the datapoint, and the command is an update
+  of it (`spec/rules.md` 7.3): the block would read its own write as an event of its input, a
+  feedback through the loop guard at best. The sun shading's `manual` input, which detects
+  operations of the blind, would take the block's own `upDown` for an operation. *Alternative:* each
+  type filters its echoes (every type would need its own rule, and the call cannot see an update's
+  origin).
 
 ### 1.4 Terms
 
@@ -225,6 +246,7 @@ What a call may use (the imports of a loaded module, the `BlockContext` of a bui
 |---|---|
 | `now()` | The cascade time on the monotonic clock in ms (`spec/rules.md` 7.1): control uses differences of it. |
 | `wall()` | The local wall time (date, time, day of the week 1..7) or none while the clock is not synchronized (calendars, `spec/rules.md` D9). |
+| `sun()` | The sun's azimuth (degrees from north through east, 0..360) and elevation (degrees above the horizon, -90..90) at the instant of `wall()`, or none while the clock is not synchronized or the controller has no location (B21, 5.5). |
 | `read(port)` | An input's value, its quality (`good`, `stale`, `unknown`), the monotonic time of its latest update and whether it is bound (5.3). |
 | `count(port)` | The number of datapoints bound to an input, 0 when it is unbound (B20). |
 | `readAt(port, k)` | The k-th of them (0-based, in binding order) as an input bound to that datapoint alone reads it (5.3): its value, quality, update time, bound. Outside 0..`count(port)` - 1: not bound, unknown. For an output or an index the type does not declare, `count` is 0. (A loaded module's imports for both follow with the WebAssembly runtime.) |
@@ -364,6 +386,17 @@ in the same call are ignored.
 `now()` is the cascade time, the same for every call of a cascade; a control law integrates over the
 difference to the time of its previous step (B6: monotonic, never the wall clock). `wall()` gives
 the local time from the time service, or none while it is not synchronized.
+
+`sun()` (B21) is the sun's position at the cascade's wall time: the UTC instant `u` of the wall
+clock that `wall()` shows as local time, in whole seconds (the milliseconds dropped, as `wall()`
+drops them; in the repeated hour at the end of summer time it is the clock's own instant, which
+`wall()`'s summer-time flag tells apart), and the controller's location, by the algorithm of 13.2.
+The location is the image's `settings.location` (`spec/runtime-image.md` 3.2) when the image has
+one, which replaces the device's own setting at the load (`doc/time.md`), otherwise the device's
+setting; a new location applies from the next cascade on and is no event. `sun()` is the same for
+every call of a cascade. None while `wall()` is none or no location is set. The
+elevation is geometric (no refraction): near the horizon the sun appears up to 0.6° higher (0.1°
+at 10°).
 
 ### 5.6 Values the image sets (quiet at load)
 
@@ -511,7 +544,7 @@ failure of an instance refuses the image with the path and one of the reasons of
 | `invalidParameter` | a parameter value outside its bounds or not a choice (`blocks[0].parameters.comfort`), a cross-parameter check of the type (B17: the path names the parameter the type blames, `blocks[0].parameters.outputMin`) |
 | `notWritable` | an output bound to a datapoint the application may not command |
 | `outputConflict` | an output bound to a datapoint another output binds, a schedule entry's output, the time master's or an implied datapoint (B14) |
-| `forbidden` | an input bound to a mirror of its own block; an aggregation for a port bound to one datapoint, or one the port does not allow; more datapoints than `multiple`; a port's direction wrong for its member (`outputs` naming an input) |
+| `forbidden` | an input bound to a mirror of its own block; an output bound to a datapoint an input of the same block binds (B22, `blocks[0].outputs.upDown`; checked after the output's datapoint is found, owned by nobody else (`outputConflict`), writable and of an accepted type, and before another output's binding of it); an aggregation for a port bound to one datapoint, or one the port does not allow; more datapoints than `multiple`; a port's direction wrong for its member (`outputs` naming an input) |
 | `limitExceeded` | more than 32 blocks; persistence keys that collide in the device's storage |
 
 | Limit | Value |
@@ -534,15 +567,114 @@ parameters reach the control pages as datapoints (`spec/runtime-image.md` 3.9).
 
 The corpus pins the exact values. To give the same results, an implementation:
 
-- evaluates the formulas of sections 14 to 17 in IEEE 754 binary64 with round-to-nearest-even, in
-  the order written (left to right, the parentheses as given), without fused multiply-add and
-  without extended precision;
-- uses `floor(x)`, `|x|`, `min`, `max` and comparisons only (no `exp`, `pow`, `log`), with
-  `min(a, b) = (b < a) ? b : a` and `max(a, b) = (a < b) ? b : a` (C++'s `std::min`/`std::max`: on a
-  tie, also of 0 and -0, the first argument);
+- evaluates the formulas of sections 13.1, 13.2 and 14 to 18 in IEEE 754 binary64 with
+  round-to-nearest-even, in the order written (left to right, the parentheses as given), without
+  fused multiply-add and without extended precision;
+- uses `floor(x)`, `|x|`, `sqrt(x)`, `min`, `max` and comparisons only (no `exp`, `pow`, `log`, no
+  library `sin` or `atan2`: the functions of 13.1 instead), with `min(a, b) = (b < a) ? b : a` and
+  `max(a, b) = (a < b) ? b : a` (C++'s `std::min`/`std::max`: on a tie, also of 0 and -0, the first
+  argument);
+- writes a constant such as `1.0 / 6.0` as that division, evaluated once in binary64, and a decimal
+  constant (`0.016708634`) as the binary64 value nearest to it (the literal of both languages);
 - takes times as integer milliseconds and converts them with `ms / 1000.0` where seconds are
   written;
 - orders calls, writes and log entries as section 5 says.
+
+### 13.1 Exact trigonometry
+
+Angles are degrees. The functions use only the operations above, so every implementation gives the
+same bits; their error against the true functions is below 1e-13 (sine and cosine) and 1e-12 degrees
+(the arc functions), far below what the formulas that use them need. `PI` is the binary64 value
+nearest to π (`3.141592653589793`), `RAD = PI / 180.0` and `DEG = 180.0 / PI`.
+
+```
+wrap360(x) = x - 360.0 * floor(x / 360.0)                               // 0..360
+
+sinDeg(x), cosDeg(x):
+    r  = wrap360(x)
+    k  = floor(r / 90.0 + 0.5)                                          // the nearest quadrant, 0..4
+    z  = (r - 90.0 * k) * RAD                                           // |z| <= π/4, radians
+    z2 = z * z
+    s  = z + z * z2 * (S3 + z2 * (S5 + z2 * (S7 + z2 * (S9 + z2 * (S11 + z2 * S13)))))
+    c  = 1.0 + z2 * (C2 + z2 * (C4 + z2 * (C6 + z2 * (C8 + z2 * (C10 + z2 * (C12 + z2 * C14))))))
+    k = 0 or 4:  sinDeg = s,   cosDeg = c
+    k = 1:       sinDeg = c,   cosDeg = -s
+    k = 2:       sinDeg = -s,  cosDeg = -c
+    k = 3:       sinDeg = -c,  cosDeg = s
+
+atan2Deg(y, x):                                                         // -180..180
+    if x == 0 and y == 0:  return 0
+    ax = |x|;  ay = |y|
+    swap = ay > ax
+    t  = swap ? ax / ay : ay / ax                                       // 0..1
+    t  = t / (1.0 + sqrt(1.0 + t * t))                                  // atan(t) = 2 atan(this), <= tan 22.5°
+    t  = t / (1.0 + sqrt(1.0 + t * t))                                  // once more, <= tan 11.25°
+    t2 = t * t
+    a  = t + t * t2 * (A3 + t2 * (A5 + t2 * (A7 + t2 * (A9 + t2 * (A11 + t2 * (A13 + t2 * (A15 + t2 * A17)))))))
+    d  = 4.0 * a * DEG
+    if swap:   d = 90.0 - d
+    if x < 0:  d = 180.0 - d
+    if y < 0:  d = -d
+    return d
+
+asinDeg(v):  w = min(max(v, -1.0), 1.0);  return atan2Deg(w, sqrt((1.0 - w) * (1.0 + w)))
+```
+
+The Taylor coefficients, each written as the division and evaluated once: `S3 = -1.0 / 6.0`,
+`S5 = 1.0 / 120.0`, `S7 = -1.0 / 5040.0`, `S9 = 1.0 / 362880.0`, `S11 = -1.0 / 39916800.0`,
+`S13 = 1.0 / 6227020800.0`; `C2 = -1.0 / 2.0`, `C4 = 1.0 / 24.0`, `C6 = -1.0 / 720.0`,
+`C8 = 1.0 / 40320.0`, `C10 = -1.0 / 3628800.0`, `C12 = 1.0 / 479001600.0`,
+`C14 = -1.0 / 87178291200.0`; `A3 = -1.0 / 3.0`, `A5 = 1.0 / 5.0`, `A7 = -1.0 / 7.0`,
+`A9 = 1.0 / 9.0`, `A11 = -1.0 / 11.0`, `A13 = 1.0 / 13.0`, `A15 = -1.0 / 15.0`, `A17 = 1.0 / 17.0`.
+`ax / ay` with `swap` and the halvings keep the series' argument at most tan 11.25° (0.199), where
+its first omitted term is below 3e-15 radians; the sine's and cosine's below 2e-14 at π/4. With the
+rounding of the steps the functions are within 1e-13 (sine, cosine) and 1e-12 degrees (the arc
+functions) of the true values, so they are not exact at exact angles (`atan2Deg(1, 1)` is not
+exactly 45): no decision of a type or a corpus case may rest on one. `wrap360` may give exactly 360
+for an argument just below 0, and `atan2Deg(0, -0.0)` is 0 (the first line); nothing corrects
+either, the values are used as computed.
+
+### 13.2 The sun's position
+
+`sun()` (B21) at the UTC instant `u` (integer seconds since 1970-01-01) and the location `lat`,
+`lon` (degrees, north and east positive) follows the NOAA solar calculator (Meeus, *Astronomical
+Algorithms*, the low-precision solar coordinates; the algorithm of `doc/time.md` for the sun's
+events, evaluated at the instant itself):
+
+```
+d   = (u - 946728000) / 86400.0                                         // days since J2000.0, 2000-01-01 12:00 UTC
+T   = d / 36525.0                                                       // Julian centuries
+L0  = wrap360(280.46646 + T * (36000.76983 + T * 0.0003032))            // mean longitude
+M   = 357.52911 + T * (35999.05029 - 0.0001537 * T)                     // mean anomaly
+e   = 0.016708634 - T * (0.000042037 + 0.0000001267 * T)                // eccentricity
+C   = sinDeg(M) * (1.914602 - T * (0.004817 + 0.000014 * T)) + sinDeg(2.0 * M) * (0.019993 - 0.000101 * T)
+      + sinDeg(3.0 * M) * 0.000289                                      // equation of the centre
+Om  = 125.04 - 1934.136 * T
+lam = L0 + C - 0.00569 - 0.00478 * sinDeg(Om)                           // apparent longitude
+eps = 23.0 + (26.0 + (21.448 - T * (46.815 + T * (0.00059 - T * 0.001813))) / 60.0) / 60.0
+      + 0.00256 * cosDeg(Om)                                            // obliquity
+dec = asinDeg(sinDeg(eps) * sinDeg(lam))                                // declination
+y   = sinDeg(eps / 2.0) / cosDeg(eps / 2.0);  y = y * y
+E   = 4.0 * (y * sinDeg(2.0 * L0) - 2.0 * e * sinDeg(M) + 4.0 * e * y * sinDeg(M) * cosDeg(2.0 * L0)
+      - 0.5 * y * y * sinDeg(4.0 * L0) - 1.25 * e * e * sinDeg(2.0 * M)) * DEG    // equation of time, minutes
+s   = u - 86400 * floor(u / 86400)                                      // seconds of the UTC day, 0..86399: integer floor division (also for u < 0)
+H   = (s / 60.0 + E + 4.0 * lon) / 4.0 - 180.0                          // hour angle, degrees
+up    = sinDeg(lat) * sinDeg(dec) + cosDeg(lat) * cosDeg(dec) * cosDeg(H)
+north = cosDeg(lat) * sinDeg(dec) - sinDeg(lat) * cosDeg(dec) * cosDeg(H)
+east  = -(cosDeg(dec) * sinDeg(H))
+elevation = atan2Deg(up, sqrt(north * north + east * east))
+azimuth   = wrap360(atan2Deg(east, north))
+```
+
+The sums are written as NOAA writes them and evaluated left to right (`L0 + C - 0.00569 - ...` is
+`((L0 + C) - 0.00569) - ...`). `(u - 946728000)` and `s` are integer operations; their results are
+converted to binary64 exactly. Accuracy: the low-precision coordinates are within 0.01° of the
+sun's true position for the years 1950..2050 (Meeus), within about 0.02° for 1900..2100; the host
+tests check the result against the NREL Solar Position Algorithm's published example (within 0.02°
+after its refraction and parallax are taken out) and against the Astronomical Almanac's
+low-precision formula over the seasons and latitudes (within 0.02°). The elevation is geometric:
+refraction lifts the visible sun by up to 0.6° at the horizon, 0.1° at 10°, which a shading
+threshold of a few degrees absorbs.
 
 ## 14. The room controller `org.homecontrol.room-controller` 1.0
 
@@ -1125,8 +1257,342 @@ switch (consecutive days, the hysteresis, a reboot in the middle of the count), 
 summer, a stale or silent outside temperature (the held value, `fault` after `sensorTimeout`), and no
 allocation in steady state. The corpus has the contract cases (`spec/fixtures/blocks/README.md`).
 
-## 18. Changes
+## 18. The sun shading `org.homecontrol.sun-shading` 1.0
+
+Automatic shading of one facade or window group with a venetian blind, a roller shutter or an
+awning (issue #63): it lowers the blind while the sun shines on the facade and it is bright enough,
+tracks the slats so that they just block the direct sun, closes for heat protection while nobody is
+at home, retracts for wind, rain and frost, and steps back for a while after an inhabitant operated
+the blind. Its outputs fit KNX blind actuators: the position and the slat position (DPT 5.001, 0 %
+open/up, 100 % closed/down) or, for an actuator without positions, up/down (DPT 1.008). The times of
+opening and closing in the morning and the evening are schedule entries (`spec/schedules.md`), not
+this block.
+
+### 18.1 Manifest
+
+Period 60 000 ms, timer `wake`, no persisted state.
+
+| Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
+|---|---|---|---|---|---|---|
+| `brightness` | real | lx | | 4: `max`, `mean` | change | The facade's brightness; unbound: the sun's position decides alone. |
+| `wind` | real | m/s | | 4: `max` | update | The wind speed. |
+| `rain` | boolean | | | 4: `any` | update | Rain sensors. |
+| `frost` | boolean | | | 1 | change | A frost alarm. |
+| `outside` | real | °C | | 1 | change | The outside temperature: frost below `frostLimit`. |
+| `manual` | boolean | | | 8: `any` | update | The blind's operations: the up/down and stop/step datapoints of its wall switches, and the outputs of schedule entries that move it (18.2 D6). A new value is an operation. |
+| `presence` | boolean | | | 1 | change | False: nobody at home (heat protection). |
+| `summer` | boolean | | | 1 | change | True: summer (heat protection); unbound: always. |
+| `roomTemperature` | real | °C | | 4: `max`, `mean` | change | For heat protection. |
+| `enable` | boolean | | | 1 | change | False: the automatic is off (shading and heat protection); the alarms stay. |
+
+| Output | Type | Unit | Failsafe | Meaning |
+|---|---|---|---|---|
+| `position` | real, `min` 0, `max` 100 | % | 0 | The blind's position (DPT 5.001: 0 up, 100 down). |
+| `slat` | real, `min` 0, `max` 100 | % | 0 | The slat position (DPT 5.001). |
+| `upDown` | boolean | | false | For an actuator without positions (DPT 1.008: false up, true down). |
+| `state` | enumeration, `min` 0, `max` 7 | | diagnostic | 0 idle, 1 shading, 2 wind, 3 rain, 4 frost, 5 manual, 6 heat protection, 7 off. |
+| `sunAzimuth` | real | ° | diagnostic | `sun()`'s azimuth (written while known). |
+| `sunElevation` | real | ° | diagnostic | `sun()`'s elevation (written while known). |
+
+| Parameter | Type | Default | Range | Adjustable | Meaning |
+|---|---|---|---|---|---|
+| `facadeAzimuth` | real, ° | 180 | 0..360 | | The direction the facade faces (its normal), from north through east. |
+| `openingAngle` | real, ° | 180 | 10..180 | | The sun is on the facade while its azimuth lies within half this angle of `facadeAzimuth`. |
+| `minElevation` | real, ° | 5 | 0..90 | | The sun is on the facade only above this elevation. |
+| `overhangAngle` | real, ° | 90 | 10..90 | | An overhang (a balcony, a roof) shades the window above this profile angle (18.4); 90: none (no test: near the facade's edge the profile angle nears 90°). |
+| `horizonPoints` | integer | 0 | 0..4 | | The points of the horizon used; 0: none. |
+| `horizonAngle1` .. `horizonAngle4` | real, ° | -60, -20, 20, 60 | -90..90 | | The points' directions relative to `facadeAzimuth` (negative: towards the lower azimuth), rising. |
+| `horizonElevation1` .. `horizonElevation4` | real, ° | 0 | 0..90 | | The horizon there (buildings, trees opposite): the sun is on the facade only above it. |
+| `brightnessOn` | real, lx | 30 000 | 0..200 000 | | Bright at or above it ... |
+| `brightnessOff` | real, lx | 20 000 | 0..200 000 | | ... dark below it; `brightnessOff` < `brightnessOn` (B17). |
+| `brightnessOnDelay` | duration | 120 000 | 0..3 600 000 | | How long it must be bright before it counts. |
+| `brightnessOffDelay` | duration | 900 000 | 0..7 200 000 | | How long it must be dark before it counts. |
+| `shadePosition` | real, % | 100 | 0..100 | yes | The position while shading. |
+| `slatMode` | enumeration | `fixed` (0) | `fixed` 0, `tracking` 1 | | The slats while shading: at `shadeSlat`, or following the sun (18.4). |
+| `shadeSlat` | real, % | 75 | 0..100 | | The slat position of `fixed`. |
+| `slatRatio` | real | 0.9 | 0.2..1 | | The slats' spacing divided by their width (`tracking`). |
+| `slatOpen` | real, % | 0 | 0..90 | | The slat position of horizontal slats; 100 % is closed (`tracking`; 50 for an actuator whose slats turn through 180°). |
+| `slatStep` | real, % | 10 | 1..50 | | The slat positions of `tracking` go in steps of it from `slatOpen`. |
+| `heatLimit` | real, °C | 26 | 18..40 | yes | Heat protection above it (with 1 K hysteresis). |
+| `windLimit` | real, m/s | 10 | 1..40 | | Wind alarm at or above it. |
+| `windTimeout` | duration | 0 | 0..86 400 000 | | A bound wind input without an update for this long, or without any value, is a wind alarm (a failed sensor); 0: never. |
+| `frostLimit` | real, °C | 2 | -20..10 | | Frost alarm below this outside temperature. |
+| `alarmRelease` | duration | 600 000 | 0..7 200 000 | | An alarm ends when its condition has not held for this long. |
+| `manualLock` | enumeration | `duration` (0) | `duration` 0, `sunChange` 1, `midnight` 2 | | How long an operation suspends the automatic (18.2 D7). |
+| `manualDuration` | duration | 7 200 000 | 60 000..86 400 000 | | The suspension of `duration`, the longest of `sunChange`, and that of `midnight` without a wall clock. |
+| `minMoveInterval` | duration | 300 000 | 0..3 600 000 | | The shortest time between two moves of the automatic (alarms excepted). |
+
+The horizon points are written in the manifest in the order `horizonAngle1`,
+`horizonElevation1`, ..., `horizonAngle4`, `horizonElevation4`, between `horizonPoints` and
+`brightnessOn`. Cross-parameter checks (B17), in this order: `brightnessOff` < `brightnessOn`
+(blamed: `brightnessOff`); `horizonAngle<i+1>` > `horizonAngle<i>` for the first `horizonPoints`
+points (`horizonAngle<i+1>`).
+
+State (nothing persisted): `lastState` (initial -1), `windOn`, `windCalmAt` (-1), `rainOn`,
+`rainDryAt` (-1), `frostOn`, `frostClearAt` (-1), `bright`, `brightAt` (-1), `heat`, `manualAt`
+(-1), `manualSunny`, `manualDay` (-1), `manualSeen` (-1), `holding`, `due`, `movedAt` (-1),
+`sentPosition` (-1), `sentSlat` (-1), `sentUpDown` (-1); the others initial 0. A time field at -1 is
+none.
+
+### 18.2 Decisions
+
+- **D1. The sun from the controller** (B21): its azimuth and elevation follow from the wall clock and
+  the location; the block compares them with the facade. Without a synchronized clock or a location
+  there is no sun: no shading (state `idle`), while heat protection and the alarms work on. A
+  brightness sensor alone does not shade: a roof sensor would lower every facade.
+- **D2. The automatic moves on changes.** The block writes when its target changes (shading begins,
+  a slat step, heat protection), and once when shading or heat protection ends (it retracts the
+  blind it lowered: `holding`). In `idle` it writes nothing else, so a schedule that closes the
+  blinds in the evening, or an inhabitant, is not overridden; a start in `idle` writes nothing (a
+  reboot at night leaves the blinds closed). A move writes the outputs that differ from what was
+  last written, all three when the state just became `shading` or `heat protection` or the blind
+  is released (`due`: after an operation or a start the blind may stand anywhere).
+- **D3. Fixed priorities: wind > rain > frost > manual > off > heat protection > shading > idle.**
+  The alarms retract the blind (position 0, slat 0, up), the safe position for wind (a lowered
+  blind is what a storm breaks), for rain (an awning's fabric) and for frost (a blind that freezes
+  in the down position cannot be raised); they are entered at once and end when their condition has
+  not held for `alarmRelease`. They need no wall clock: they count monotonic time.
+- **D4. An alarm counts every known value, of every sensor.** Wind at or above `windLimit`, a true
+  rain or frost alarm, an outside temperature below `frostLimit`: good or stale (a sensor that lost
+  contact keeps its last value, and a stale storm is a storm); only an unknown value has no alarm.
+  `wind` and `rain` are read one by one (B20): one sensor's storm is an alarm whatever the others
+  say (their `max` and `any` aggregate the good values first and would hide a stale storm behind a
+  good calm; they serve the mirrors). `windTimeout` makes a silent or missing wind sensor an alarm,
+  each of them: an unattended blind is retracted when one of its wind sensors fails, and at a start
+  until every sensor has a value (then `alarmRelease` more). After a reboot the datapoints whose
+  values the device persists are restored stale (`doc/persistence.md`), so a storm before the
+  reboot is one after it; the others are unknown (the corpus's `reboot` makes every value unknown).
+  Because the sensors are read one by one, `wind` and `rain` have the trigger `update`: with
+  `change`, a report of one sensor that leaves the aggregate as it was (a calm after a stale storm,
+  behind a good sensor at a higher speed) would call nothing, and the alarm would end a period late;
+  every report also refreshes `windTimeout`'s view of its sensor.
+- **D5. Failsafe: retracted.** A fault or a disabled instance writes position 0, slat 0 and up, the
+  safe position, like an alarm (B10).
+- **D6. An operation is a new value of `manual`**: an update (trigger `update`) after which one of its
+  datapoints has an update time later than any the block has seen (`manualSeen`), by a report, a
+  command of a rule or a schedule, or the UI. A datapoint going stale is no operation (it keeps its
+  update time); neither is the value a datapoint has at the start. Bind the blind's wall-switch
+  datapoints there (DPT 1.008, 1.007), which the actuator obeys besides the block's outputs, and
+  also the datapoints by which schedule entries close the blinds in the evening: such a closing then
+  locks the automatic too (`midnight`: until the next day), so shading does not retract the blind at
+  the end of the afternoon sun. The block's own outputs cannot be among them (B22): where a wall
+  switch and the automatic would share one up/down group address, the block's `upDown` gets a group
+  address of its own that the actuator's object also listens to (or the block drives `position`).
+  An operation during an alarm does not lock; the block writes the retracted position again at
+  once, so the alarm keeps the blind up. The port's aggregation `any` serves only its mirror (the
+  last value means nothing to the block).
+- **D7. The lock.** `duration`: `manualDuration` from the last operation. `sunChange`: until the
+  shading wish (the sun on the facade and bright) differs from what it was at the operation, at most
+  `manualDuration`. `midnight`: until the wall date differs from the date of the operation; without
+  a wall clock at the operation or now, `manualDuration`. A lock is not persisted: a reboot ends it,
+  an image swap keeps it (the record in RAM, 8.1). When it ends in `shading` or `heat protection`,
+  the block moves (`due`); in `idle` it writes nothing.
+- **D8. The sun on the facade** is a geometric test: the azimuth within `openingAngle / 2` of the
+  facade's normal, the elevation above `minElevation` and above the horizon at the sun's direction
+  (up to 4 points relative to the facade, joined by straight lines and flat beyond the first and
+  the last, like the heating curve's points), and the profile angle below `overhangAngle`. The
+  profile angle is the sun's elevation projected into the vertical plane normal to the facade:
+  what a horizontal overhang and horizontal slats see.
+- **D9. Brightness with hysteresis and delays.** Bright when the brightness stays at or above
+  `brightnessOn` for `brightnessOnDelay`, dark again when it stays below `brightnessOff` (or not
+  good) for `brightnessOffDelay`. A value that is not good counts as dark: shading is comfort, not
+  safety. Unbound, it is always bright.
+- **D10. Slat tracking at the cut-off angle.** For slats of width `w` at spacing `s`, the sun's
+  rays at the profile angle `α` just do not pass between them at the slat angle
+  `β = asin((s / w) cos α) - α` (from horizontal, outer edge down; derivation in 18.4), the most open
+  angle that still blocks the direct sun. `β` is limited to 0..90°, mapped linearly onto
+  `slatOpen` .. 100 % and rounded up to the next step of `slatStep` from `slatOpen` (towards closed:
+  never let the sun through; horizontal slats stay reachable), so that the slats move in steps, not
+  every minute.
+- **D11. Heat protection** while nobody is at home (`presence` good and false), in summer (`summer`
+  good and true, or unbound) and the room is warmer than `heatLimit` (good, `roomTemperature`
+  above it; off below `heatLimit - 1`): the blind closes fully (position 100, slat 100), whether or
+  not the sun is on the facade, and needs no wall clock. Unbound `presence` or `roomTemperature`: no
+  heat protection.
+- **D12. A minimum time between moves.** The automatic's moves (shading, slat steps, heat
+  protection, the release) keep `minMoveInterval` from the previous move; a move held back happens
+  when it expires (the timer `wake`), with the target as it is then. Alarms move at once. A start
+  moves at once.
+- **D13. `enable` false switches the automatic off** (state `off`): no shading and no heat
+  protection, nothing written; the alarms work on. The instance's enable switch instead stops the
+  block with the failsafe (D5). `enable` true again continues: in `shading` it moves, in `idle` after
+  shading it releases (`holding` stayed).
+- **D14. Nothing is persisted.** The state follows from the inputs within the delays; a reboot loses
+  only a lock (D7) and the brightness delays. So the type writes no record to flash.
+- **D15. Bind either `position` or `upDown`.** A positioning actuator moves to the position (and the
+  slat after it); `upDown` drives one without positions to its end (`true` when the target position
+  is above 0). Both bound, a "down" after a position would drive the blind fully down.
+- **D16. Smaller points.** `enable` and `presence` count only when good (a stale `enable` false
+  turns the automatic on again, as for the other types). Disabling and enabling the instance keeps
+  the record in RAM (6.1): a lock, the alarms and `holding` survive it, and the start moves at once
+  with every output (`due`), so the failsafe's retraction is not mistaken for the last written
+  position; a release of `holding` may write the retracted position a second time. `state` and the
+  sun's mirrors are written at every step (B9: bound, they command every time); without a sun they
+  keep their last value. A held move is no promise: the step at its expiry moves to the target as it
+  is then, or not at all.
+
+### 18.3 The calls
+
+| Call | What it does |
+|---|---|
+| `start(reason, restored)` | Without `restored`, every field at its initial value. Then `lastState = -1`, `movedAt = -1`, `manualSeen = latest(manual)`, the timer `wake` cancelled; then the step with `operated = 0`. |
+| `input(manual)` | `operated = latest(manual) > manualSeen ? 1 : 0`; `manualSeen = max(manualSeen, latest(manual))`; then the step with `operated`. |
+| every other `input`, `timer(wake)`, `period()`, `parameter` | The step with `operated = 0`. |
+
+`latest(manual)` is the largest update time of the datapoints bound to `manual` that are not unknown
+(`readAt`, B20), or -1 when there is none.
+
+### 18.4 The step
+
+With `t` = now (ms) and `Q.known` meaning `Q.quality != unknown`:
+
+```
+alarm(on, at, cond):                                                    // D3, D4: the three alarms
+    if cond:            on = 1;  at = -1
+    else if on == 1:    if at < 0: at = t
+                        if t - at >= alarmRelease:  on = 0;  at = -1
+
+windCond = 0                                                            // every wind sensor (D4)
+for k in 0 .. count(wind) - 1:
+    Wk = readAt(wind, k)
+    if (Wk.known and Wk.value >= windLimit) or (windTimeout > 0 and (not Wk.known or t - Wk.updated >= windTimeout)):
+        windCond = 1
+alarm(windOn, windCalmAt, windCond == 1)
+rainCond = 0
+for k in 0 .. count(rain) - 1:
+    Rk = readAt(rain, k);  if Rk.known and Rk.value != 0:  rainCond = 1
+alarm(rainOn, rainDryAt, rainCond == 1)
+F = read(frost);  O = read(outside)
+alarm(frostOn, frostClearAt, (F.known and F.value != 0) or (O.known and O.value < frostLimit))
+
+B = read(brightness)                                                    // D9
+if not B.bound:  bright = 1;  brightAt = -1
+else:
+    if bright == 0:  change = B.good and B.value >= brightnessOn;  delay = brightnessOnDelay
+    else:            change = not B.good or B.value < brightnessOff;  delay = brightnessOffDelay
+    if not change:   brightAt = -1
+    else:            if brightAt < 0: brightAt = t
+                     if t - brightAt >= delay:  bright = 1 - bright;  brightAt = -1
+
+sunOn = 0;  profile = 0                                                 // D1, D8
+if sun() is known as (az, el):
+    g = az - facadeAzimuth;  g = g - 360.0 * floor((g + 180.0) / 360.0)        // -180 <= g < 180
+    profile = atan2Deg(sinDeg(el), cosDeg(el) * cosDeg(g))
+    sunOn = |g| < openingAngle / 2.0 and el > minElevation
+            and (horizonPoints == 0 or el > horizon(g)) and (overhangAngle == 90 or profile < overhangAngle)
+sunny = sunOn == 1 and bright == 1
+
+P = read(presence);  S = read(summer);  RT = read(roomTemperature)     // D11
+if P.good and P.value == 0 and (not S.bound or (S.good and S.value != 0)) and RT.good:
+    if RT.value > heatLimit:               heat = 1
+    else if RT.value < heatLimit - 1.0:    heat = 0
+else:                                      heat = 0
+
+alarmed = windOn == 1 or rainOn == 1 or frostOn == 1                   // D6, D7
+w = wall()
+if operated == 1 and not alarmed:
+    manualAt = t;  manualSunny = sunny;  manualDay = w is known ? day(w) : -1;  holding = 0
+if manualAt >= 0:
+    if manualLock == midnight and manualDay >= 0 and w is known:  end = day(w) != manualDay
+    else:  end = t - manualAt >= manualDuration or (manualLock == sunChange and sunny != manualSunny)
+    if end:  manualAt = -1;  manualDay = -1
+
+E = read(enable)
+state = windOn == 1 ? wind : rainOn == 1 ? rain : frostOn == 1 ? frost : manualAt >= 0 ? manual
+      : (E.good and E.value == 0) ? off : heat == 1 ? heatProtection : sunny ? shading : idle
+```
+
+`horizon(g)` is the heating curve's `interpolate` (17.4) over the points (`horizonAngle<i>`,
+`horizonElevation<i>`), i = 1 .. `horizonPoints`, at `g`. `day(w)` is the number of days since
+1970-01-01 of the wall date (14.4). Then the target (D2, D3, D10, D11, D12), with `retracted` =
+(0, 0, 0) as (position, slat, upDown):
+
+```
+isAlarm(x)  = x is wind, rain or frost;   isActive(x) = x is shading or heatProtection
+target = none
+if isAlarm(state):
+    if not isAlarm(lastState) or operated == 1:
+        write position 0, slat 0, upDown 0;  sentPosition = 0;  sentSlat = 0;  sentUpDown = 0
+        movedAt = t;  holding = 0;  due = 0
+else if isActive(state):
+    if not isActive(lastState):  due = 1
+    if state == heatProtection:  target = (100, 100, 1)
+    else:                        target = (shadePosition, slatTarget, shadePosition > 0 ? 1 : 0)
+else if state == idle and holding == 1:
+    target = retracted;  due = 1
+else:
+    due = 0
+heldUntil = none
+if target is (p, q, u) and (due == 1 or p != sentPosition or q != sentSlat or u != sentUpDown):
+    if movedAt < 0 or t - movedAt >= minMoveInterval:
+        if due == 1 or p != sentPosition:  write position p;  sentPosition = p
+        if due == 1 or q != sentSlat:      write slat q;      sentSlat = q
+        if due == 1 or u != sentUpDown:    write upDown u;    sentUpDown = u
+        movedAt = t;  due = 0;  holding = isActive(state) ? 1 : 0
+    else:
+        heldUntil = movedAt + minMoveInterval
+```
+
+`slatTarget` is `shadeSlat` with `slatMode` `fixed`; with `tracking`:
+
+```
+beta = asinDeg(slatRatio * cosDeg(profile)) - profile
+beta = min(max(beta, 0.0), 90.0)
+q    = slatOpen + (100.0 - slatOpen) * (beta / 90.0)
+slatTarget = min(slatOpen + slatStep * -floor(-((q - slatOpen) / slatStep)), 100.0)   // up to the next step
+```
+
+The cut-off angle (D10): a slat of width `w` turned by `β` (outer edge down) around its centre has
+its edges at `±(w / 2)(cos β, -sin β)`, x outwards; the next slat up lies `s` higher. Direct light
+passes just not when the ray at the profile angle `α` runs from the upper slat's outer edge to the
+lower slat's inner edge: `w cos β sin α = (s - w sin β) cos α`, so `sin(α + β) = (s / w) cos α`.
+
+Then the timer and the remaining outputs:
+
+```
+wakeAt = the earliest of:
+    windCalmAt + alarmRelease     when windOn == 1 and windCalmAt >= 0;  the same for rain and frost
+    Wk.updated + windTimeout      for each k with windTimeout > 0, Wk.known and t - Wk.updated < windTimeout
+    brightAt + (bright == 0 ? brightnessOnDelay : brightnessOffDelay)    when brightAt >= 0
+    manualAt + manualDuration     when manualAt >= 0, unless manualLock == midnight with manualDay >= 0 and w known
+    heldUntil                     when set
+if wakeAt is set:  setTimer(wake, wakeAt - t)  else:  cancelTimer(wake)
+write state;  if sun() is known as (az, el):  write sunAzimuth az, sunElevation el
+lastState = state
+```
+
+Every deadline lies after `t`, so the timer's duration is at least 1 ms. A `midnight` lock with a
+wall clock ends at the first step on the next date (the period, within a minute).
+
+### 18.5 Cost
+
+One instance with every input bound (`manual` to two datapoints) and the three moving outputs:
+about 2.8 KB of heap on the host (64-bit; 2760 B), against 3.3 KB (3271 B) of a room controller
+measured the same way: 20 state fields, 31 parameters, 10 mirror datapoints (enabled,
+`shadePosition`, `heatLimit`, 6 outputs, the aggregated `manual`); each further input bound to
+several datapoints adds its mirror. No flash: nothing is persisted. A step costs the sun's position
+(13.2: about 20 sines and cosines and three arc tangents; 0.25 µs on the host, about 0.7 ms on the
+C6, which has no FPU, estimated from its ratio to the sun's events, which take 5 ms there); the
+engine computes it once per wall second for every block of every cascade in it.
+
+### 18.6 Tests
+
+The host tests (`core/test/sun_shading_test.cpp`) drive the block over simulated days at a place
+and check the sun on the facade by azimuth and elevation, with the horizon points and the overhang;
+the slat angle against the cut-off formula over a day; the brightness hysteresis and both delays; a
+wind alarm that overrides every other state and releases after `alarmRelease`, a stale storm, a
+failed wind sensor by `windTimeout`, rain and frost; a manual operation that locks the automatic for
+each `manualLock`, and an operation during an alarm; heat protection with its hysteresis; no two
+moves closer than `minMoveInterval`; a reboot in `idle` that writes nothing; the failsafe; the
+cost; and no allocation in steady state. `core/test/astro_test.cpp` checks `sun_position` (13.2)
+against the reference values, and the exact trigonometry (13.1) against the library's functions.
+The corpus has the contract cases (`spec/fixtures/blocks/README.md`).
+
+## 19. Changes
 
 - 1.0 (schema 1.3, issue #60): first version; the room controller 1.0.
 - 1.1 (schema 1.3, issues #61, #62): the heating demand 1.0 (section 16) and the heating curve 1.0
   (section 17); an input binds up to 32 datapoints and a call reads each with `count`/`readAt` (B20).
+- 1.2 (schema 1.3, issue #63): the sun shading 1.0 (section 18); the service `sun()` (B21) with the
+  exact trigonometry and the sun's position of 13.1 and 13.2, `sqrt` among the operations of B19; a
+  block does not read its own outputs (B22).

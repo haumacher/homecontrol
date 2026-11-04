@@ -1,0 +1,223 @@
+{
+	"title": "Sun shading: an operation locks the automatic (18.2 D6, D7): 'a' for manualDuration from the last operation, 'b' until the shading wish changes; while locked nothing is written, a lock that ends in shading moves (due), one that ends in idle writes nothing.",
+	"note": "Noon CEST, south facade, no brightness delays. a: manualLock duration, manualDuration 1 h; b: manualLock sunChange (at most manualDuration 2 h).",
+	"location": {
+		"lat": 48.137,
+		"lon": 11.576
+	},
+	"clock": {
+		"start": "2026-06-21T12:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "lux",
+			"type": "real"
+		},
+		{
+			"name": "sw_a",
+			"type": "boolean"
+		},
+		{
+			"name": "sw_b",
+			"type": "boolean"
+		},
+		{
+			"name": "pos_a",
+			"type": "real"
+		},
+		{
+			"name": "pos_b",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"lux": 50000
+	},
+	"blocks": [
+		{
+			"id": "a",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"brightness": "lux",
+				"manual": "sw_a"
+			},
+			"outputs": {
+				"position": "pos_a"
+			},
+			"parameters": {
+				"brightnessOnDelay": 0,
+				"brightnessOffDelay": 0,
+				"minMoveInterval": 0,
+				"manualDuration": 3600000
+			}
+		},
+		{
+			"id": "b",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"brightness": "lux",
+				"manual": "sw_b"
+			},
+			"outputs": {
+				"position": "pos_b"
+			},
+			"parameters": {
+				"brightnessOnDelay": 0,
+				"brightnessOffDelay": 0,
+				"minMoveInterval": 0,
+				"manualLock": "sunChange"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/a/state": 1,
+					"block/b/state": 1,
+					"pos_a": 100.0,
+					"pos_b": 100.0
+				}
+			}
+		},
+		{
+			"at": 300000,
+			"report": {
+				"datapoint": "sw_a",
+				"value": false
+			}
+		},
+		{
+			"at": 300000,
+			"report": {
+				"datapoint": "sw_b",
+				"value": false
+			}
+		},
+		{
+			"at": 301000,
+			"check": {
+				"datapoints": {
+					"block/a/state": 5,
+					"block/b/state": 5
+				}
+			}
+		},
+		{
+			"at": 900000,
+			"report": {
+				"datapoint": "lux",
+				"value": 1000
+			}
+		},
+		{
+			"at": 901000,
+			"check": {
+				"datapoints": {
+					"block/a/state": 5,
+					"block/b/state": 0
+				},
+				"blocks": {
+					"b": {
+						"state": {
+							"manualAt": -1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1500000,
+			"report": {
+				"datapoint": "lux",
+				"value": 50000
+			}
+		},
+		{
+			"at": 1501000,
+			"check": {
+				"datapoints": {
+					"block/a/state": 5,
+					"block/b/state": 1,
+					"pos_b": 100.0
+				}
+			}
+		},
+		{
+			"at": 2000000,
+			"report": {
+				"datapoint": "sw_a",
+				"value": true
+			}
+		},
+		{
+			"at": 3901000,
+			"check": {
+				"datapoints": {
+					"block/a/state": 5
+				}
+			}
+		},
+		{
+			"at": 5599000,
+			"check": {
+				"datapoints": {
+					"block/a/state": 5
+				}
+			}
+		},
+		{
+			"at": 5601000,
+			"check": {
+				"datapoints": {
+					"block/a/state": 1,
+					"pos_a": 100.0
+				}
+			}
+		}
+	],
+	"end": 5700000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "a",
+				"datapoint": "pos_a",
+				"value": 100.0
+			},
+			{
+				"at": 0,
+				"block": "b",
+				"datapoint": "pos_b",
+				"value": 100.0
+			},
+			{
+				"at": 1500000,
+				"block": "b",
+				"datapoint": "pos_b",
+				"value": 100.0
+			},
+			{
+				"at": 5600000,
+				"block": "a",
+				"datapoint": "pos_a",
+				"value": 100.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/a/state": 1,
+				"block/b/state": 1,
+				"pos_a": 100.0,
+				"pos_b": 100.0
+			}
+		}
+	}
+}

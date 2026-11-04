@@ -1,0 +1,382 @@
+{
+	"title": "Sun shading: heat protection (18.2 D11) while nobody is at home, in summer and the room above heatLimit, with 1 K hysteresis, closes fully without a sun position; it ends with one release; enable false switches the automatic off (D13) while the alarms work on.",
+	"note": "No location: sun() is none, shading is impossible, heat protection works. heatLimit 26 (default). The clock is synchronized.",
+	"clock": {
+		"start": "2026-07-10T14:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "pres",
+			"type": "boolean"
+		},
+		{
+			"name": "sum",
+			"type": "boolean"
+		},
+		{
+			"name": "room",
+			"type": "real"
+		},
+		{
+			"name": "en",
+			"type": "boolean"
+		},
+		{
+			"name": "rain",
+			"type": "boolean"
+		},
+		{
+			"name": "pos",
+			"type": "real"
+		},
+		{
+			"name": "slat",
+			"type": "real"
+		},
+		{
+			"name": "ud",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"pres": true,
+		"sum": true,
+		"room": 24
+	},
+	"blocks": [
+		{
+			"id": "hitze",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"presence": "pres",
+				"summer": "sum",
+				"roomTemperature": "room",
+				"enable": "en",
+				"rain": "rain"
+			},
+			"outputs": {
+				"position": "pos",
+				"slat": "slat",
+				"upDown": "ud"
+			},
+			"parameters": {
+				"minMoveInterval": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "pres",
+				"value": false
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 0
+				}
+			}
+		},
+		{
+			"at": 120000,
+			"report": {
+				"datapoint": "room",
+				"value": 26.5
+			}
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 6,
+					"pos": 100.0,
+					"slat": 100.0,
+					"ud": true
+				}
+			}
+		},
+		{
+			"at": 180000,
+			"report": {
+				"datapoint": "room",
+				"value": 25.5
+			}
+		},
+		{
+			"at": 181000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 6
+				}
+			}
+		},
+		{
+			"at": 240000,
+			"report": {
+				"datapoint": "room",
+				"value": 24.9
+			}
+		},
+		{
+			"at": 241000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 0,
+					"pos": 0.0,
+					"slat": 0.0,
+					"ud": false
+				}
+			}
+		},
+		{
+			"at": 300000,
+			"report": {
+				"datapoint": "room",
+				"value": 27
+			}
+		},
+		{
+			"at": 360000,
+			"report": {
+				"datapoint": "sum",
+				"value": false
+			}
+		},
+		{
+			"at": 361000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 0,
+					"pos": 0.0
+				}
+			}
+		},
+		{
+			"at": 420000,
+			"report": {
+				"datapoint": "sum",
+				"value": true
+			}
+		},
+		{
+			"at": 480000,
+			"report": {
+				"datapoint": "en",
+				"value": false
+			}
+		},
+		{
+			"at": 481000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 7,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 540000,
+			"report": {
+				"datapoint": "rain",
+				"value": true
+			}
+		},
+		{
+			"at": 541000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 3,
+					"pos": 0.0,
+					"ud": false
+				}
+			}
+		},
+		{
+			"at": 600000,
+			"report": {
+				"datapoint": "rain",
+				"value": false
+			}
+		},
+		{
+			"at": 1199000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 3
+				}
+			}
+		},
+		{
+			"at": 1201000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 7
+				}
+			}
+		},
+		{
+			"at": 1300000,
+			"report": {
+				"datapoint": "en",
+				"value": true
+			}
+		},
+		{
+			"at": 1301000,
+			"check": {
+				"datapoints": {
+					"block/hitze/state": 6,
+					"pos": 100.0,
+					"slat": 100.0,
+					"ud": true
+				}
+			}
+		}
+	],
+	"end": 1400000,
+	"expected": {
+		"commands": [
+			{
+				"at": 120000,
+				"block": "hitze",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 120000,
+				"block": "hitze",
+				"datapoint": "slat",
+				"value": 100.0
+			},
+			{
+				"at": 120000,
+				"block": "hitze",
+				"datapoint": "ud",
+				"value": true
+			},
+			{
+				"at": 240000,
+				"block": "hitze",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 240000,
+				"block": "hitze",
+				"datapoint": "slat",
+				"value": 0.0
+			},
+			{
+				"at": 240000,
+				"block": "hitze",
+				"datapoint": "ud",
+				"value": false
+			},
+			{
+				"at": 300000,
+				"block": "hitze",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 300000,
+				"block": "hitze",
+				"datapoint": "slat",
+				"value": 100.0
+			},
+			{
+				"at": 300000,
+				"block": "hitze",
+				"datapoint": "ud",
+				"value": true
+			},
+			{
+				"at": 360000,
+				"block": "hitze",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 360000,
+				"block": "hitze",
+				"datapoint": "slat",
+				"value": 0.0
+			},
+			{
+				"at": 360000,
+				"block": "hitze",
+				"datapoint": "ud",
+				"value": false
+			},
+			{
+				"at": 420000,
+				"block": "hitze",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 420000,
+				"block": "hitze",
+				"datapoint": "slat",
+				"value": 100.0
+			},
+			{
+				"at": 420000,
+				"block": "hitze",
+				"datapoint": "ud",
+				"value": true
+			},
+			{
+				"at": 540000,
+				"block": "hitze",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 540000,
+				"block": "hitze",
+				"datapoint": "slat",
+				"value": 0.0
+			},
+			{
+				"at": 540000,
+				"block": "hitze",
+				"datapoint": "ud",
+				"value": false
+			},
+			{
+				"at": 1300000,
+				"block": "hitze",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 1300000,
+				"block": "hitze",
+				"datapoint": "slat",
+				"value": 100.0
+			},
+			{
+				"at": 1300000,
+				"block": "hitze",
+				"datapoint": "ud",
+				"value": true
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/hitze/state": 6,
+				"pos": 100.0,
+				"slat": 100.0,
+				"ud": true
+			}
+		}
+	}
+}

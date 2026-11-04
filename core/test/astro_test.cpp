@@ -202,3 +202,194 @@ TEST_CASE("Astro.EveryEventLiesWithinTheSunWindow") {
 	hc::SunWindow none = hc::sun_window(2026, 6, 21, invalid);
 	CHECK(none.earliest > none.latest);
 }
+
+// ---- The sun's position (spec/blocks.md 13.1, 13.2) --------------------------------------------
+
+#include <cmath>
+
+#include "hc/exact_math.h"
+
+namespace {
+
+constexpr double kPiTest = 3.14159265358979323846;
+
+double rad(double degrees) { return degrees * kPiTest / 180.0; }
+double deg(double radians) { return radians * 180.0 / kPiTest; }
+
+/// Spec 13.2 transcribed on the library's functions: checks the transcription of the formulas,
+/// independent of the exact trigonometry.
+hc::SunPosition library_sun(int64_t u, double lat, double lon) {
+	double d = static_cast<double>(u - 946728000) / 86400.0;
+	double T = d / 36525.0;
+	double L0 = std::fmod(280.46646 + T * (36000.76983 + T * 0.0003032), 360.0);
+	double M = 357.52911 + T * (35999.05029 - 0.0001537 * T);
+	double e = 0.016708634 - T * (0.000042037 + 0.0000001267 * T);
+	double C = std::sin(rad(M)) * (1.914602 - T * (0.004817 + 0.000014 * T)) +
+		std::sin(rad(2 * M)) * (0.019993 - 0.000101 * T) + std::sin(rad(3 * M)) * 0.000289;
+	double Om = 125.04 - 1934.136 * T;
+	double lam = L0 + C - 0.00569 - 0.00478 * std::sin(rad(Om));
+	double eps = 23.0 + (26.0 + (21.448 - T * (46.815 + T * (0.00059 - T * 0.001813))) / 60.0) / 60.0 +
+		0.00256 * std::cos(rad(Om));
+	double dec = std::asin(std::sin(rad(eps)) * std::sin(rad(lam)));
+	double y = std::tan(rad(eps) / 2);
+	y *= y;
+	double E = 4 * deg(y * std::sin(2 * rad(L0)) - 2 * e * std::sin(rad(M)) +
+		4 * e * y * std::sin(rad(M)) * std::cos(2 * rad(L0)) - 0.5 * y * y * std::sin(4 * rad(L0)) -
+		1.25 * e * e * std::sin(2 * rad(M)));
+	int64_t s = ((u % 86400) + 86400) % 86400;
+	double H = rad((static_cast<double>(s) / 60.0 + E + 4.0 * lon) / 4.0 - 180.0);
+	double la = rad(lat);
+	double up = std::sin(la) * std::sin(dec) + std::cos(la) * std::cos(dec) * std::cos(H);
+	double north = std::cos(la) * std::sin(dec) - std::sin(la) * std::cos(dec) * std::cos(H);
+	double east = -std::cos(dec) * std::sin(H);
+	hc::SunPosition p;
+	p.elevation = deg(std::atan2(up, std::hypot(north, east)));
+	p.azimuth = std::fmod(deg(std::atan2(east, north)) + 360.0, 360.0);
+	return p;
+}
+
+/// The Astronomical Almanac's low-precision formula for the sun (accurate to 0.01 degrees between
+/// 1950 and 2050): independent of the NOAA algorithm.
+hc::SunPosition almanac_sun(int64_t u, double lat, double lon) {
+	double n = static_cast<double>(u) / 86400.0 + 2440587.5 - 2451545.0;
+	double L = std::fmod(280.460 + 0.9856474 * n, 360.0);
+	double g = rad(std::fmod(357.528 + 0.9856003 * n, 360.0));
+	double lam = rad(L + 1.915 * std::sin(g) + 0.020 * std::sin(2 * g));
+	double eps = rad(23.439 - 0.0000004 * n);
+	double ra = std::atan2(std::cos(eps) * std::sin(lam), std::cos(lam));
+	double dec = std::asin(std::sin(eps) * std::sin(lam));
+	double gmst = std::fmod(18.697374558 + 24.06570982441908 * n, 24.0);
+	double ha = rad(gmst * 15 + lon) - ra;
+	double la = rad(lat);
+	hc::SunPosition p;
+	p.elevation = deg(std::asin(std::sin(la) * std::sin(dec) + std::cos(la) * std::cos(dec) * std::cos(ha)));
+	p.azimuth = std::fmod(
+		deg(std::atan2(-std::sin(ha), std::tan(dec) * std::cos(la) - std::sin(la) * std::cos(ha))) + 720.0, 360.0);
+	return p;
+}
+
+double angle_difference(double a, double b) {
+	double d = std::fmod(a - b + 540.0, 360.0) - 180.0;
+	return std::fabs(d);
+}
+
+} // namespace
+
+TEST_CASE("ExactMath.SineAndCosineMatchTheLibrary") {
+	double worst = 0;
+	for (int i = -7200; i <= 7200; ++i) {
+		double x = i * 0.137;
+		double s, c;
+		hc::exact::sin_cos_deg(x, s, c);
+		worst = std::fmax(worst, std::fabs(s - std::sin(rad(x))));
+		worst = std::fmax(worst, std::fabs(c - std::cos(rad(x))));
+		CHECK(s == hc::exact::sin_deg(x));
+		CHECK(c == hc::exact::cos_deg(x));
+	}
+	CHECK(worst < 1e-13);
+	// The quadrants are exact.
+	CHECK(hc::exact::sin_deg(0) == 0);
+	CHECK(hc::exact::sin_deg(90) == 1);
+	CHECK(hc::exact::cos_deg(180) == -1);
+	CHECK(hc::exact::sin_deg(-90) == -1);
+	CHECK(hc::exact::cos_deg(360) == 1);
+	CHECK(hc::exact::wrap360(-30) == 330);
+	CHECK(hc::exact::wrap360(725) == 5);
+}
+
+TEST_CASE("ExactMath.ArcFunctionsMatchTheLibrary") {
+	double worst = 0;
+	uint32_t state = 12345;
+	auto next = [&state]() {
+		state = state * 1103515245u + 12345u;
+		return static_cast<double>((state >> 8) & 0xffff) / 65535.0 * 10.0 - 5.0;
+	};
+	for (int i = 0; i < 100000; ++i) {
+		double y = next();
+		double x = next();
+		worst = std::fmax(worst, std::fabs(hc::exact::atan2_deg(y, x) - deg(std::atan2(y, x))));
+	}
+	for (int i = -1000; i <= 1000; ++i) {
+		double v = i / 1000.0;
+		worst = std::fmax(worst, std::fabs(hc::exact::asin_deg(v) - deg(std::asin(v))));
+	}
+	CHECK(worst < 1e-12);
+	CHECK(hc::exact::atan2_deg(0, 0) == 0);
+	CHECK(std::fabs(hc::exact::atan2_deg(1, 1) - 45) < 1e-12);
+	CHECK(hc::exact::atan2_deg(0, -1) == 180);
+	CHECK(hc::exact::atan2_deg(-1, 0) == -90);
+	CHECK(hc::exact::asin_deg(1) == 90);
+	CHECK(hc::exact::asin_deg(1.5) == 90); // limited to -1..1
+	CHECK(hc::exact::asin_deg(-1) == -90);
+}
+
+TEST_CASE("SunPosition.TheNrelSpaExample") {
+	// NREL's Solar Position Algorithm (Reda and Andreas 2003, Table A4.1): 2003-10-17 12:30:30 at
+	// UTC-7, 39.742476 N, 105.1786 W: topocentric zenith 50.11162 degrees (refraction at 820 mbar and
+	// 11 degrees C: +0.0163 degrees of elevation; parallax: -0.0019), azimuth 194.34024.
+	GeoLocation golden;
+	golden.latitude = 39.742476;
+	golden.longitude = -105.1786;
+	int64_t u = utc(2003, 10, 17, 19, 30) + 30;
+	hc::SunPosition p = hc::sun_position(u, golden);
+	double geometric = (90.0 - 50.11162) - 0.0163 + 0.0019;
+	CHECK(std::fabs(p.elevation - geometric) < 0.02);
+	CHECK(std::fabs(p.azimuth - 194.34024) < 0.02);
+	// The bits of the specification's formulas (a Python transcription of spec/blocks.md 13.1 and
+	// 13.2 in binary64 gives exactly these; E-Home's Java gives them too).
+	CHECK(p.azimuth == 194.34258286147883);
+	CHECK(p.elevation == 39.87207442405636);
+}
+
+TEST_CASE("SunPosition.FollowsTheFormulasAndTheAlmanac") {
+	double worst_formula = 0;
+	double worst_almanac = 0;
+	const double latitudes[] = {-60, -33.9, 0, 23, 48.137, 60, 66};
+	const double longitudes[] = {-122.4, 0, 11.576, 151.2};
+	for (double lat : latitudes) {
+		for (double lon : longitudes) {
+			GeoLocation where;
+			where.latitude = lat;
+			where.longitude = lon;
+			for (int day = 0; day < 365; day += 9) {
+				for (int hour = 0; hour < 24; hour += 2) {
+					int64_t u = utc(2026, 1, 1, hour, 17) + day * 86400;
+					hc::SunPosition p = hc::sun_position(u, where);
+					REQUIRE(p.azimuth >= 0);
+					REQUIRE(p.azimuth <= 360);
+					hc::SunPosition f = library_sun(u, lat, lon);
+					worst_formula = std::fmax(worst_formula, std::fabs(p.elevation - f.elevation));
+					worst_formula = std::fmax(worst_formula, angle_difference(p.azimuth, f.azimuth));
+					if (p.elevation > -5) {
+						hc::SunPosition a = almanac_sun(u, lat, lon);
+						worst_almanac = std::fmax(worst_almanac, std::fabs(p.elevation - a.elevation));
+						worst_almanac = std::fmax(worst_almanac,
+							angle_difference(p.azimuth, a.azimuth) * std::cos(rad(p.elevation)));
+					}
+				}
+			}
+		}
+	}
+	MESSAGE("worst against the library transcription " << worst_formula << ", against the almanac " << worst_almanac);
+	CHECK(worst_formula < 1e-9);
+	CHECK(worst_almanac < 0.02);
+}
+
+TEST_CASE("SunPosition.NoonInMunichAtTheSolstice") {
+	// At the June solstice the sun's noon elevation is 90 - latitude + 23.44; it culminates in the
+	// south.
+	GeoLocation munich;
+	munich.latitude = 48.137;
+	munich.longitude = 11.576;
+	double best = -90;
+	double azimuth_at_best = 0;
+	for (int minute = 0; minute < 24 * 60; ++minute) {
+		hc::SunPosition p = hc::sun_position(utc(2026, 6, 21, 0, 0) + minute * 60, munich);
+		if (p.elevation > best) {
+			best = p.elevation;
+			azimuth_at_best = p.azimuth;
+		}
+	}
+	CHECK(best == doctest::Approx(90 - 48.137 + 23.44).epsilon(0.001));
+	CHECK(std::fabs(azimuth_at_best - 180) < 0.5);
+}

@@ -86,8 +86,15 @@ public:
 
 	bool sun_times(const hc::Date&, hc::SunTimes&) const override { return false; }
 	bool sun_window(const hc::Date&, hc::SunWindow&) const override { return false; }
+	/// The case's `location` (the blocks' sun(), spec/fixtures/blocks/README.md).
+	bool location(hc::GeoLocation& out) const override {
+		out = where;
+		return has_location;
+	}
 
 	const hc_test::FakeClock* clock = nullptr;
+	bool has_location = false;
+	hc::GeoLocation where;
 	bool synchronized = false;
 	int64_t start_utc = 0;
 	hc_test::PosixRuleZone zone;
@@ -100,6 +107,7 @@ public:
 	bool local_now(hc::DateTime& out) const override { return rules_clock.local_now(out); }
 	int64_t local_to_utc(const hc::DateTime& local) const override { return rules_clock.local_to_utc(local); }
 	bool utc_to_local(int64_t utc, hc::DateTime& out) const override { return rules_clock.utc_to_local(utc, out); }
+	bool sun_position(int64_t utc, hc::SunPosition& out) const override { return rules_clock.sun_position(utc, out); }
 
 	bool sun_time(hc::rules::SunEvent event, hc::TimeOfDay& out) const override {
 		const Val& v = sun[static_cast<size_t>(event)];
@@ -279,6 +287,11 @@ public:
 			time_.wall.start_utc = time_.wall.local_to_utc(date, static_cast<unsigned>(h), static_cast<unsigned>(mi),
 				static_cast<unsigned>(s));
 			time_.wall.synchronized = !c.has("synchronized") || c["synchronized"].boolean;
+		}
+		if (case_.has("location")) {
+			time_.wall.where.latitude = case_["location"]["lat"].number;
+			time_.wall.where.longitude = case_["location"]["lon"].number;
+			time_.wall.has_location = true;
 		}
 		if (case_.has("ui") && case_["ui"].has("lang")) {
 			REQUIRE(settings_.set_string(hc::setting::kUiLang, case_["ui"]["lang"].text.c_str()) == hc::SettingsStatus::ok);
@@ -1291,8 +1304,21 @@ HC_BLOCK_CASE("38", "curve-sensor-timeout")
 HC_BLOCK_CASE("39", "load-refused-curve-points")
 HC_BLOCK_CASE("40", "heating-chain")
 HC_BLOCK_CASE("41", "demand-image-swap-keeps-hold")
+HC_BLOCK_CASE("42", "shading-sun-on-facade")
+HC_BLOCK_CASE("43", "shading-slat-tracking")
+HC_BLOCK_CASE("44", "shading-brightness")
+HC_BLOCK_CASE("45", "shading-wind")
+HC_BLOCK_CASE("46", "shading-rain-frost")
+HC_BLOCK_CASE("47", "shading-manual-duration-sun-change")
+HC_BLOCK_CASE("48", "shading-manual-midnight")
+HC_BLOCK_CASE("49", "shading-heat-protection")
+HC_BLOCK_CASE("50", "shading-min-interval-reboot")
+HC_BLOCK_CASE("51", "load-refused-own-output")
+HC_BLOCK_CASE("52", "load-refused-shading-horizon")
+HC_BLOCK_CASE("53", "shading-failsafe-parameters")
+HC_BLOCK_CASE("54", "shading-sensors-one-by-one")
 
 TEST_CASE("BlocksCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::corpus_files("blocks");
-	CHECK(files.size() == 41);
+	CHECK(files.size() == 54);
 }

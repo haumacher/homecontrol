@@ -1,0 +1,272 @@
+{
+	"title": "Sun shading: the brightness's hysteresis and both delays (18.2 D9): bright only after brightnessOnDelay at or above brightnessOn, dark only after brightnessOffDelay below brightnessOff; a dip or a value between keeps the state; the maximum of two sensors; a sensor that is not good counts as dark.",
+	"note": "A south facade at 12:30 CEST on 2026-06-21: the sun is on it throughout. brightnessOn 30000, brightnessOff 20000, delays 2 and 15 min (defaults). The switch to bright and to dark comes with the timer wake, not with the period.",
+	"location": {
+		"lat": 48.137,
+		"lon": 11.576
+	},
+	"clock": {
+		"start": "2026-06-21T12:30:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "lux1",
+			"type": "real"
+		},
+		{
+			"name": "lux2",
+			"type": "real"
+		},
+		{
+			"name": "pos",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "hell",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"brightness": [
+					"lux1",
+					"lux2"
+				]
+			},
+			"outputs": {
+				"position": "pos"
+			},
+			"parameters": {
+				"minMoveInterval": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 10000,
+			"report": {
+				"datapoint": "lux1",
+				"value": 25000
+			}
+		},
+		{
+			"at": 300000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 0,
+					"block/hell/brightness": 25000.0
+				},
+				"blocks": {
+					"hell": {
+						"state": {
+							"bright": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 310000,
+			"report": {
+				"datapoint": "lux1",
+				"value": 35000
+			}
+		},
+		{
+			"at": 400000,
+			"report": {
+				"datapoint": "lux1",
+				"value": 31000
+			}
+		},
+		{
+			"at": 429000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 0
+				},
+				"blocks": {
+					"hell": {
+						"state": {
+							"bright": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 431000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 1,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 500000,
+			"report": {
+				"datapoint": "lux1",
+				"value": 15000
+			}
+		},
+		{
+			"at": 1300000,
+			"report": {
+				"datapoint": "lux1",
+				"value": 25000
+			}
+		},
+		{
+			"at": 1400000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 1
+				},
+				"blocks": {
+					"hell": {
+						"state": {
+							"bright": 1.0,
+							"brightAt": -1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1500000,
+			"report": {
+				"datapoint": "lux1",
+				"value": 15000
+			}
+		},
+		{
+			"at": 1600000,
+			"report": {
+				"datapoint": "lux2",
+				"value": 50000
+			}
+		},
+		{
+			"at": 1700000,
+			"report": {
+				"datapoint": "lux1",
+				"value": 1000
+			}
+		},
+		{
+			"at": 2600000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 1,
+					"block/hell/brightness": 50000.0
+				}
+			}
+		},
+		{
+			"at": 2700000,
+			"report": {
+				"datapoint": "lux2",
+				"value": 10000
+			}
+		},
+		{
+			"at": 3599000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 1,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 3601000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 0,
+					"pos": 0.0
+				}
+			}
+		},
+		{
+			"at": 3700000,
+			"report": {
+				"datapoint": "lux2",
+				"value": 80000
+			}
+		},
+		{
+			"at": 3830000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 1,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 3900000,
+			"stale": "lux1"
+		},
+		{
+			"at": 3900000,
+			"stale": "lux2"
+		},
+		{
+			"at": 4799000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 1
+				}
+			}
+		},
+		{
+			"at": 4801000,
+			"check": {
+				"datapoints": {
+					"block/hell/state": 0,
+					"pos": 0.0
+				}
+			}
+		}
+	],
+	"end": 4900000,
+	"expected": {
+		"commands": [
+			{
+				"at": 430000,
+				"block": "hell",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 3600000,
+				"block": "hell",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 3820000,
+				"block": "hell",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 4800000,
+				"block": "hell",
+				"datapoint": "pos",
+				"value": 0.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/hell/state": 0,
+				"pos": 0.0,
+				"block/hell/brightness": 80000.0
+			}
+		}
+	}
+}

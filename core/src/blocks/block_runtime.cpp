@@ -253,6 +253,7 @@ public:
 
 	uint64_t now() const override { return rt_.engine_.in_cascade() ? rt_.engine_.cascade_ms() : rt_.clock_.monotonic_ms(); }
 	bool wall(DateTime& out) const override { return rt_.engine_.cascade_wall(out); }
+	bool sun(SunPosition& out) const override { return rt_.engine_.cascade_sun(out); }
 
 	InputValue read(size_t port) const override {
 		if (port >= m_.port_count || m_.ports[port].direction != Direction::in) {

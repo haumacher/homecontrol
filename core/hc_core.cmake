@@ -92,7 +92,8 @@ list(APPEND HC_CORE_SOURCES
 )
 # Blocks: the block types, the loader of the image's `blocks` and the runtime (issue #60,
 # spec/blocks.md, doc/blocks.md). The blocks' arithmetic must give the same bits as E-Home's Java
-# simulation (spec/blocks.md 13): no fused multiply-add.
+# simulation (spec/blocks.md 13): no fused multiply-add. So must the exact trigonometry and the sun's
+# position they use (spec/blocks.md 13.1, 13.2).
 set(HC_CORE_BLOCK_SOURCES
 	"${HC_CORE_DIR}/src/blocks/block_type.cpp"
 	"${HC_CORE_DIR}/src/blocks/block_set.cpp"
@@ -100,6 +101,9 @@ set(HC_CORE_BLOCK_SOURCES
 	"${HC_CORE_DIR}/src/blocks/room_controller.cpp"
 	"${HC_CORE_DIR}/src/blocks/heating_demand.cpp"
 	"${HC_CORE_DIR}/src/blocks/heating_curve.cpp"
+	"${HC_CORE_DIR}/src/blocks/sun_shading.cpp"
+	"${HC_CORE_DIR}/src/exact_math.cpp"
+	"${HC_CORE_DIR}/src/sun_position.cpp"
 )
 list(APPEND HC_CORE_SOURCES ${HC_CORE_BLOCK_SOURCES})
 # (Not in the ESP-IDF's script-mode pass that only collects the component's requirements.)

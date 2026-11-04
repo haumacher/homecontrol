@@ -70,6 +70,21 @@ struct SunWindow {
 /// (earliest > latest), as sun_times() has no events then.
 SunWindow sun_window(int32_t year, unsigned month, unsigned day, const GeoLocation& where);
 
+/// The sun's position at an instant.
+struct SunPosition {
+	double azimuth = 0;   ///< Degrees from north through east, 0..360.
+	double elevation = 0; ///< Degrees above the horizon, -90..90; geometric (no refraction).
+};
+
+/// The sun's position at the UTC instant `utc_seconds` seen from `where` (its elevation above the
+/// ellipsoid is ignored): the NOAA solar calculator (Meeus' low-precision solar coordinates)
+/// evaluated at the instant, on the exact trigonometry of hc/exact_math.h, written exactly as
+/// spec/blocks.md 13.2 so that E-Home's simulation computes the same bits. Accuracy: within 0.02
+/// degrees of the true position between 1900 and 2100 (core/test/astro_test.cpp checks it against
+/// the NREL SPA example and the Astronomical Almanac's formula); refraction, which lifts the visible
+/// sun by up to 0.6 degrees at the horizon, is not applied.
+SunPosition sun_position(int64_t utc_seconds, const GeoLocation& where);
+
 /// Whether the coordinates are in range (latitude -90..90, longitude -180..180, elevation
 /// -500..9000 m, all finite). On refusal `error` (if given) names the problem.
 bool geo_location_valid(const GeoLocation& where, const char** error = nullptr);

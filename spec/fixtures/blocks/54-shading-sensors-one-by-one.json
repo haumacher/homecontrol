@@ -1,0 +1,253 @@
+{
+	"title": "Sun shading: wind and rain are read one by one, and an operation is a new update time of manual (spec/blocks.md 18.2 D4, D6, 18.3, 18.4): a stale storm of one wind sensor behind a good calm one is an alarm while the port's mirror shows the calm; one silent sensor of two times out; a stale manual report and the value at the start are no operation, a new report is.",
+	"note": "No location (no sun, idle without alarms), alarmRelease 0, windLimit 10 (default). 'x': wind [w1, w2], manual m; at the start w1 15, w2 3, m false (the start value, manualSeen = its update time 0): alarm, retracted. 1 s: w1 stale: still known 15, the alarm stays, while the mirror block/x/wind (max over the good values) shows 3. 2 s: w1 4: calm, released at once (alarmRelease 0), idle writes nothing. 3 s: m stale: an update of manual without a newer update time: no operation. 4 s: m true: an operation (lock, state manual). 'y': wind [v1, v2], windTimeout 60 s: v1 reports at 30 s and 50 s, v2 stays silent since its start value: at 60 s (the wake at v2's deadline, with the period) v2 times out: alarm, retracted, although the port's latest update is at 50 s; 90 s: v2 reports 3, its start value again: the port's max stays 5, but wind has trigger update, so the report calls the block: released at once (alarmRelease 0), idle, nothing written. 110 s: now v1, silent since 50 s, times out (wake at 50 + 60 s): alarm again, retracted again.",
+	"datapoints": [
+		{
+			"name": "w1",
+			"type": "real"
+		},
+		{
+			"name": "w2",
+			"type": "real"
+		},
+		{
+			"name": "m",
+			"type": "boolean"
+		},
+		{
+			"name": "pos_x",
+			"type": "real"
+		},
+		{
+			"name": "v1",
+			"type": "real"
+		},
+		{
+			"name": "v2",
+			"type": "real"
+		},
+		{
+			"name": "pos_y",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"w1": 15.0,
+		"w2": 3.0,
+		"m": false,
+		"v1": 3.0,
+		"v2": 3.0
+	},
+	"blocks": [
+		{
+			"id": "x",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Two sensors",
+			"inputs": {
+				"wind": [
+					"w1",
+					"w2"
+				],
+				"manual": "m"
+			},
+			"outputs": {
+				"position": "pos_x"
+			},
+			"parameters": {
+				"alarmRelease": 0,
+				"minMoveInterval": 0
+			}
+		},
+		{
+			"id": "y",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Silent sensor",
+			"inputs": {
+				"wind": [
+					"v1",
+					"v2"
+				]
+			},
+			"outputs": {
+				"position": "pos_y"
+			},
+			"parameters": {
+				"alarmRelease": 0,
+				"windTimeout": 60000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 500,
+			"check": {
+				"datapoints": {
+					"block/x/state": 2,
+					"block/y/state": 0,
+					"pos_x": 0.0,
+					"pos_y": null,
+					"block/x/wind": 15.0
+				}
+			}
+		},
+		{
+			"at": 1000,
+			"stale": "w1"
+		},
+		{
+			"at": 1500,
+			"check": {
+				"datapoints": {
+					"block/x/state": 2,
+					"block/x/wind": 3.0
+				},
+				"blocks": {
+					"x": {
+						"state": {
+							"windOn": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 2000,
+			"report": {
+				"datapoint": "w1",
+				"value": 4.0
+			}
+		},
+		{
+			"at": 2500,
+			"check": {
+				"datapoints": {
+					"block/x/state": 0,
+					"block/x/wind": 4.0
+				}
+			}
+		},
+		{
+			"at": 3000,
+			"stale": "m"
+		},
+		{
+			"at": 3500,
+			"check": {
+				"datapoints": {
+					"block/x/state": 0
+				},
+				"blocks": {
+					"x": {
+						"state": {
+							"manualAt": -1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 4000,
+			"report": {
+				"datapoint": "m",
+				"value": true
+			}
+		},
+		{
+			"at": 4500,
+			"check": {
+				"datapoints": {
+					"block/x/state": 5
+				}
+			}
+		},
+		{
+			"at": 30000,
+			"report": {
+				"datapoint": "v1",
+				"value": 4.0
+			}
+		},
+		{
+			"at": 50000,
+			"report": {
+				"datapoint": "v1",
+				"value": 5.0
+			}
+		},
+		{
+			"at": 59000,
+			"check": {
+				"datapoints": {
+					"block/y/state": 0,
+					"pos_y": null
+				}
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/y/state": 2,
+					"pos_y": 0.0,
+					"block/y/wind": 5.0
+				},
+				"blocks": {
+					"y": {
+						"state": {
+							"windOn": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 90000,
+			"report": {
+				"datapoint": "v2",
+				"value": 3.0
+			}
+		},
+		{
+			"at": 91000,
+			"check": {
+				"datapoints": {
+					"block/y/state": 0
+				}
+			}
+		}
+	],
+	"end": 120000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "x",
+				"datapoint": "pos_x",
+				"value": 0.0
+			},
+			{
+				"at": 60000,
+				"block": "y",
+				"datapoint": "pos_y",
+				"value": 0.0
+			},
+			{
+				"at": 110000,
+				"block": "y",
+				"datapoint": "pos_y",
+				"value": 0.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/x/state": 5,
+				"block/y/state": 2,
+				"pos_x": 0.0,
+				"pos_y": 0.0
+			}
+		}
+	}
+}

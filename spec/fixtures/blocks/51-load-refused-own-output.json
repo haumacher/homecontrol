@@ -1,0 +1,37 @@
+{
+	"title": "A block does not read its own outputs (B22): an output bound to a datapoint one of the block's inputs binds refuses the image with forbidden, at the output.",
+	"note": "The sun shading's upDown on the datapoint its manual input watches: its own write would count as an operation.",
+	"datapoints": [
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "move",
+			"type": "boolean"
+		}
+	],
+	"blocks": [
+		{
+			"id": "ss",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"manual": [
+					"sw",
+					"move"
+				]
+			},
+			"outputs": {
+				"upDown": "move"
+			}
+		}
+	],
+	"timeline": [],
+	"end": 1000,
+	"expected": {
+		"loadRefused": "forbidden",
+		"path": "blocks[0].outputs.upDown"
+	}
+}

@@ -1,0 +1,34 @@
+{
+	"title": "The sun shading's check (B17): the directions of the horizon points in use must rise; the first that does not is blamed with invalidParameter.",
+	"note": "horizonPoints 3: -10, -20, 30; the fourth point is not in use.",
+	"datapoints": [
+		{
+			"name": "pos",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "ss",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"outputs": {
+				"position": "pos"
+			},
+			"parameters": {
+				"horizonPoints": 3,
+				"horizonAngle1": -10,
+				"horizonAngle2": -20,
+				"horizonAngle3": 30,
+				"horizonAngle4": -90
+			}
+		}
+	],
+	"timeline": [],
+	"end": 1000,
+	"expected": {
+		"loadRefused": "invalidParameter",
+		"path": "blocks[0].parameters.horizonAngle2"
+	}
+}

@@ -74,6 +74,13 @@ public:
 	/// cannot matter (homecontrol #57).
 	virtual bool sun_window(const Date& date, SunWindow& out) const = 0;
 
+	/// The configured location (for the sun's position, hc::sun_position()); false when astronomy is
+	/// unavailable. The default has none.
+	virtual bool location(GeoLocation& out) const {
+		(void)out;
+		return false;
+	}
+
 	/// now_utc().synchronized.
 	bool synchronized() const { return now_utc().synchronized; }
 
@@ -181,7 +188,7 @@ public:
 	void refresh();
 
 	/// The configured location; false when astronomy is unavailable.
-	bool location(GeoLocation& out) const;
+	bool location(GeoLocation& out) const override;
 
 	/// Validates, stores (settings location.lat, location.lon, location.elev) and applies a
 	/// location; tells the listeners (kLocationChanged). On refusal returns false, logs and points

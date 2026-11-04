@@ -1,0 +1,236 @@
+{
+	"title": "Sun shading: rain and frost alarms (18.2 D3, D4) and the fixed order wind > rain > frost; frost from the alarm input or an outside temperature below frostLimit; each alarm ends alarmRelease after its condition, and shading returns with a move.",
+	"note": "Noon CEST, south facade, brightness good with no on delay; alarmRelease 5 min, frostLimit 2 (default).",
+	"location": {
+		"lat": 48.137,
+		"lon": 11.576
+	},
+	"clock": {
+		"start": "2026-06-21T12:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "lux",
+			"type": "real"
+		},
+		{
+			"name": "wind",
+			"type": "real"
+		},
+		{
+			"name": "rain",
+			"type": "boolean"
+		},
+		{
+			"name": "frost",
+			"type": "boolean"
+		},
+		{
+			"name": "out",
+			"type": "real"
+		},
+		{
+			"name": "pos",
+			"type": "real"
+		}
+	],
+	"initial": {
+		"lux": 50000
+	},
+	"blocks": [
+		{
+			"id": "wetter",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"brightness": "lux",
+				"wind": "wind",
+				"rain": "rain",
+				"frost": "frost",
+				"outside": "out"
+			},
+			"outputs": {
+				"position": "pos"
+			},
+			"parameters": {
+				"alarmRelease": 300000,
+				"brightnessOnDelay": 0,
+				"minMoveInterval": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 1,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "rain",
+				"value": true
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 3,
+					"pos": 0.0
+				}
+			}
+		},
+		{
+			"at": 120000,
+			"report": {
+				"datapoint": "wind",
+				"value": 15
+			}
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 2
+				}
+			}
+		},
+		{
+			"at": 180000,
+			"report": {
+				"datapoint": "wind",
+				"value": 1
+			}
+		},
+		{
+			"at": 479000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 2
+				}
+			}
+		},
+		{
+			"at": 481000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 3
+				}
+			}
+		},
+		{
+			"at": 600000,
+			"report": {
+				"datapoint": "rain",
+				"value": false
+			}
+		},
+		{
+			"at": 700000,
+			"report": {
+				"datapoint": "out",
+				"value": 1.5
+			}
+		},
+		{
+			"at": 899000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 3
+				}
+			}
+		},
+		{
+			"at": 901000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 4,
+					"pos": 0.0
+				}
+			}
+		},
+		{
+			"at": 1000000,
+			"report": {
+				"datapoint": "out",
+				"value": 5
+			}
+		},
+		{
+			"at": 1100000,
+			"report": {
+				"datapoint": "frost",
+				"value": true
+			}
+		},
+		{
+			"at": 1450000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 4
+				}
+			}
+		},
+		{
+			"at": 1500000,
+			"report": {
+				"datapoint": "frost",
+				"value": false
+			}
+		},
+		{
+			"at": 1799000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 4
+				}
+			}
+		},
+		{
+			"at": 1801000,
+			"check": {
+				"datapoints": {
+					"block/wetter/state": 1,
+					"pos": 100.0
+				}
+			}
+		}
+	],
+	"end": 1900000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wetter",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 60000,
+				"block": "wetter",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 1800000,
+				"block": "wetter",
+				"datapoint": "pos",
+				"value": 100.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/wetter/state": 1,
+				"pos": 100.0
+			}
+		}
+	}
+}

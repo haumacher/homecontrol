@@ -103,5 +103,14 @@ bool RulesClock::sun_time(rules::SunEvent event, TimeOfDay& out) const {
 	return true;
 }
 
+bool RulesClock::sun_position(int64_t utc_seconds, SunPosition& out) const {
+	GeoLocation where;
+	if (!time_.location(where)) {
+		return false;
+	}
+	out = hc::sun_position(utc_seconds, where);
+	return true;
+}
+
 } // namespace image
 } // namespace hc

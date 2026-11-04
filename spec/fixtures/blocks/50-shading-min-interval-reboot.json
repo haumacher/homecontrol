@@ -1,0 +1,233 @@
+{
+	"title": "Sun shading: minMoveInterval (18.2 D12) holds the automatic's moves, also a release, until it expires (the timer wake), with the target as it is then; a move that became pointless is dropped; a reboot in idle writes nothing (D2).",
+	"note": "13:00 CEST, south facade, brightness without delays, minMoveInterval 10 min. The reboot makes the brightness unknown: dark, idle.",
+	"location": {
+		"lat": 48.137,
+		"lon": 11.576
+	},
+	"clock": {
+		"start": "2026-06-21T13:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "lux",
+			"type": "real"
+		},
+		{
+			"name": "pos",
+			"type": "real"
+		},
+		{
+			"name": "slat",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "takt",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"brightness": "lux"
+			},
+			"outputs": {
+				"position": "pos",
+				"slat": "slat"
+			},
+			"parameters": {
+				"brightnessOnDelay": 0,
+				"brightnessOffDelay": 0,
+				"minMoveInterval": 600000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "lux",
+				"value": 50000
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/takt/state": 1,
+					"pos": 100.0,
+					"slat": 75.0
+				}
+			}
+		},
+		{
+			"at": 120000,
+			"report": {
+				"datapoint": "lux",
+				"value": 1000
+			}
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"block/takt/state": 0,
+					"pos": 100.0
+				},
+				"blocks": {
+					"takt": {
+						"state": {
+							"holding": 1.0,
+							"due": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 300000,
+			"report": {
+				"datapoint": "lux",
+				"value": 50000
+			}
+		},
+		{
+			"at": 659000,
+			"check": {
+				"datapoints": {
+					"block/takt/state": 1,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 661000,
+			"check": {
+				"datapoints": {
+					"block/takt/state": 1,
+					"pos": 100.0,
+					"slat": 75.0
+				}
+			}
+		},
+		{
+			"at": 700000,
+			"report": {
+				"datapoint": "lux",
+				"value": 1000
+			}
+		},
+		{
+			"at": 1259000,
+			"check": {
+				"datapoints": {
+					"block/takt/state": 0,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 1261000,
+			"check": {
+				"datapoints": {
+					"block/takt/state": 0,
+					"pos": 0.0,
+					"slat": 0.0
+				}
+			}
+		},
+		{
+			"at": 1300000,
+			"report": {
+				"datapoint": "lux",
+				"value": 50000
+			}
+		},
+		{
+			"at": 1310000,
+			"report": {
+				"datapoint": "lux",
+				"value": 1000
+			}
+		},
+		{
+			"at": 1350000,
+			"check": {
+				"datapoints": {
+					"block/takt/state": 0
+				},
+				"blocks": {
+					"takt": {
+						"state": {
+							"holding": 0.0,
+							"due": 0.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 1400000,
+			"reboot": true
+		},
+		{
+			"at": 1500000,
+			"check": {
+				"datapoints": {
+					"block/takt/state": 0,
+					"pos": null
+				}
+			}
+		}
+	],
+	"end": 1600000,
+	"expected": {
+		"commands": [
+			{
+				"at": 60000,
+				"block": "takt",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 60000,
+				"block": "takt",
+				"datapoint": "slat",
+				"value": 75.0
+			},
+			{
+				"at": 660000,
+				"block": "takt",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 660000,
+				"block": "takt",
+				"datapoint": "slat",
+				"value": 75.0
+			},
+			{
+				"at": 1260000,
+				"block": "takt",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 1260000,
+				"block": "takt",
+				"datapoint": "slat",
+				"value": 0.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/takt/state": 0,
+				"pos": null,
+				"slat": null
+			}
+		}
+	}
+}

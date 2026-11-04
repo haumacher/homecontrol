@@ -40,9 +40,20 @@ public:
 		return utc_to_local(start_utc + static_cast<int64_t>((clock->now_ms - kBase) / 1000), out);
 	}
 	bool sun_time(hc::rules::SunEvent, hc::TimeOfDay&) const override { return false; }
+	bool sun_position(int64_t utc_seconds, hc::SunPosition& out) const override {
+		if (!has_location) {
+			return false;
+		}
+		out = hc::sun_position(utc_seconds, location);
+		return true;
+	}
+	/// The UTC instant of the wall clock now.
+	int64_t utc() const { return start_utc + static_cast<int64_t>((clock->now_ms - kBase) / 1000); }
 	const hc_test::FakeClock* clock = nullptr;
 	bool synchronized = false;
 	int64_t start_utc = 0;
+	bool has_location = false;
+	hc::GeoLocation location;
 };
 
 /// A controller on the device's runtime: the engine (no rules), the block runtime, a model with the

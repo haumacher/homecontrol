@@ -1,0 +1,423 @@
+{
+	"title": "Sun shading: the wind alarm (18.2 D3, D4) retracts at once over shading and heat protection, an operation during it writes the retracted position again and locks nothing, a gust restarts the release delay, a stale storm is a storm, and windTimeout makes a sensor without a value or without an update an alarm.",
+	"note": "Noon CEST, south facade, the brightness good from the start. windTimeout 30 min, alarmRelease 10 min (default), windLimit 10. The start has no wind value yet: an alarm, so the start writes the retracted position. When the alarms end, the block moves with all three outputs (due).",
+	"location": {
+		"lat": 48.137,
+		"lon": 11.576
+	},
+	"clock": {
+		"start": "2026-06-21T12:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "lux",
+			"type": "real"
+		},
+		{
+			"name": "wind",
+			"type": "real"
+		},
+		{
+			"name": "sw",
+			"type": "boolean"
+		},
+		{
+			"name": "pres",
+			"type": "boolean"
+		},
+		{
+			"name": "sum",
+			"type": "boolean"
+		},
+		{
+			"name": "room",
+			"type": "real"
+		},
+		{
+			"name": "pos",
+			"type": "real"
+		},
+		{
+			"name": "slat",
+			"type": "real"
+		},
+		{
+			"name": "ud",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"lux": 50000
+	},
+	"blocks": [
+		{
+			"id": "wind",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"brightness": "lux",
+				"wind": "wind",
+				"manual": "sw",
+				"presence": "pres",
+				"summer": "sum",
+				"roomTemperature": "room"
+			},
+			"outputs": {
+				"position": "pos",
+				"slat": "slat",
+				"upDown": "ud"
+			},
+			"parameters": {
+				"windTimeout": 1800000,
+				"minMoveInterval": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 2,
+					"pos": 0.0,
+					"ud": false
+				}
+			}
+		},
+		{
+			"at": 60000,
+			"report": {
+				"datapoint": "wind",
+				"value": 3
+			}
+		},
+		{
+			"at": 659000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 2
+				}
+			}
+		},
+		{
+			"at": 661000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 1,
+					"pos": 100.0,
+					"slat": 75.0,
+					"ud": true
+				}
+			}
+		},
+		{
+			"at": 1200000,
+			"report": {
+				"datapoint": "wind",
+				"value": 12
+			}
+		},
+		{
+			"at": 1201000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 2,
+					"pos": 0.0,
+					"slat": 0.0,
+					"ud": false
+				}
+			}
+		},
+		{
+			"at": 1260000,
+			"report": {
+				"datapoint": "sw",
+				"value": true
+			}
+		},
+		{
+			"at": 1300000,
+			"report": {
+				"datapoint": "pres",
+				"value": false
+			}
+		},
+		{
+			"at": 1300000,
+			"report": {
+				"datapoint": "sum",
+				"value": true
+			}
+		},
+		{
+			"at": 1300000,
+			"report": {
+				"datapoint": "room",
+				"value": 30
+			}
+		},
+		{
+			"at": 1500000,
+			"report": {
+				"datapoint": "wind",
+				"value": 4
+			}
+		},
+		{
+			"at": 1860000,
+			"report": {
+				"datapoint": "wind",
+				"value": 11
+			}
+		},
+		{
+			"at": 1870000,
+			"report": {
+				"datapoint": "wind",
+				"value": 4
+			}
+		},
+		{
+			"at": 2469000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 2
+				}
+			}
+		},
+		{
+			"at": 2471000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 6,
+					"pos": 100.0,
+					"slat": 100.0,
+					"ud": true
+				},
+				"blocks": {
+					"wind": {
+						"state": {
+							"manualAt": -1.0,
+							"heat": 1.0
+						}
+					}
+				}
+			}
+		},
+		{
+			"at": 3000000,
+			"report": {
+				"datapoint": "wind",
+				"value": 20
+			}
+		},
+		{
+			"at": 3010000,
+			"stale": "wind"
+		},
+		{
+			"at": 4300000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 2,
+					"pos": 0.0
+				}
+			}
+		},
+		{
+			"at": 4400000,
+			"report": {
+				"datapoint": "wind",
+				"value": 2
+			}
+		},
+		{
+			"at": 5001000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 6,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 6199000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 6
+				}
+			}
+		},
+		{
+			"at": 6201000,
+			"check": {
+				"datapoints": {
+					"block/wind/state": 2,
+					"pos": 0.0,
+					"slat": 0.0,
+					"ud": false
+				}
+			}
+		}
+	],
+	"end": 6300000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "wind",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 0,
+				"block": "wind",
+				"datapoint": "slat",
+				"value": 0.0
+			},
+			{
+				"at": 0,
+				"block": "wind",
+				"datapoint": "ud",
+				"value": false
+			},
+			{
+				"at": 660000,
+				"block": "wind",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 660000,
+				"block": "wind",
+				"datapoint": "slat",
+				"value": 75.0
+			},
+			{
+				"at": 660000,
+				"block": "wind",
+				"datapoint": "ud",
+				"value": true
+			},
+			{
+				"at": 1200000,
+				"block": "wind",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 1200000,
+				"block": "wind",
+				"datapoint": "slat",
+				"value": 0.0
+			},
+			{
+				"at": 1200000,
+				"block": "wind",
+				"datapoint": "ud",
+				"value": false
+			},
+			{
+				"at": 1260000,
+				"block": "wind",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 1260000,
+				"block": "wind",
+				"datapoint": "slat",
+				"value": 0.0
+			},
+			{
+				"at": 1260000,
+				"block": "wind",
+				"datapoint": "ud",
+				"value": false
+			},
+			{
+				"at": 2470000,
+				"block": "wind",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 2470000,
+				"block": "wind",
+				"datapoint": "slat",
+				"value": 100.0
+			},
+			{
+				"at": 2470000,
+				"block": "wind",
+				"datapoint": "ud",
+				"value": true
+			},
+			{
+				"at": 3000000,
+				"block": "wind",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 3000000,
+				"block": "wind",
+				"datapoint": "slat",
+				"value": 0.0
+			},
+			{
+				"at": 3000000,
+				"block": "wind",
+				"datapoint": "ud",
+				"value": false
+			},
+			{
+				"at": 5000000,
+				"block": "wind",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 5000000,
+				"block": "wind",
+				"datapoint": "slat",
+				"value": 100.0
+			},
+			{
+				"at": 5000000,
+				"block": "wind",
+				"datapoint": "ud",
+				"value": true
+			},
+			{
+				"at": 6200000,
+				"block": "wind",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 6200000,
+				"block": "wind",
+				"datapoint": "slat",
+				"value": 0.0
+			},
+			{
+				"at": 6200000,
+				"block": "wind",
+				"datapoint": "ud",
+				"value": false
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/wind/state": 2,
+				"pos": 0.0,
+				"slat": 0.0,
+				"ud": false
+			}
+		}
+	}
+}

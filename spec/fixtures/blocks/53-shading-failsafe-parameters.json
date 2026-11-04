@@ -1,0 +1,230 @@
+{
+	"title": "Sun shading: the failsafe is the retracted position (18.2 D5) when the instance is disabled; enabled again it starts and moves at once with all three outputs; the adjustable shadePosition moves the blind at once (B8), its reset too.",
+	"note": "Noon CEST, south facade, brightness good with no on delay, shadeSlat 75 (default).",
+	"location": {
+		"lat": 48.137,
+		"lon": 11.576
+	},
+	"clock": {
+		"start": "2026-06-21T12:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "lux",
+			"type": "real"
+		},
+		{
+			"name": "pos",
+			"type": "real"
+		},
+		{
+			"name": "slat",
+			"type": "real"
+		},
+		{
+			"name": "ud",
+			"type": "boolean"
+		}
+	],
+	"initial": {
+		"lux": 50000
+	},
+	"blocks": [
+		{
+			"id": "ss",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"inputs": {
+				"brightness": "lux"
+			},
+			"outputs": {
+				"position": "pos",
+				"slat": "slat",
+				"upDown": "ud"
+			},
+			"parameters": {
+				"brightnessOnDelay": 0,
+				"minMoveInterval": 0
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/ss/state": 1,
+					"pos": 100.0,
+					"slat": 75.0,
+					"ud": true
+				}
+			}
+		},
+		{
+			"at": 60000,
+			"setBlock": {
+				"block": "ss",
+				"parameters": {
+					"shadePosition": 80
+				}
+			}
+		},
+		{
+			"at": 61000,
+			"check": {
+				"datapoints": {
+					"block/ss/state": 1,
+					"pos": 80.0,
+					"block/ss/shadePosition": 80.0
+				}
+			}
+		},
+		{
+			"at": 120000,
+			"setBlock": {
+				"block": "ss",
+				"enabled": false
+			}
+		},
+		{
+			"at": 121000,
+			"check": {
+				"datapoints": {
+					"pos": 0.0,
+					"slat": 0.0,
+					"ud": false,
+					"block/ss/enabled": false
+				},
+				"blocks": {
+					"ss": {
+						"status": "disabled"
+					}
+				}
+			}
+		},
+		{
+			"at": 180000,
+			"setBlock": {
+				"block": "ss",
+				"enabled": true
+			}
+		},
+		{
+			"at": 181000,
+			"check": {
+				"datapoints": {
+					"block/ss/state": 1,
+					"pos": 80.0,
+					"slat": 75.0,
+					"ud": true
+				},
+				"blocks": {
+					"ss": {
+						"status": "running"
+					}
+				}
+			}
+		},
+		{
+			"at": 240000,
+			"setBlock": {
+				"block": "ss",
+				"reset": [
+					"shadePosition"
+				]
+			}
+		},
+		{
+			"at": 241000,
+			"check": {
+				"datapoints": {
+					"block/ss/state": 1,
+					"pos": 100.0,
+					"block/ss/shadePosition": 100.0
+				}
+			}
+		}
+	],
+	"end": 300000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "ss",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 0,
+				"block": "ss",
+				"datapoint": "slat",
+				"value": 75.0
+			},
+			{
+				"at": 0,
+				"block": "ss",
+				"datapoint": "ud",
+				"value": true
+			},
+			{
+				"at": 60000,
+				"block": "ss",
+				"datapoint": "pos",
+				"value": 80.0
+			},
+			{
+				"at": 120000,
+				"block": "ss",
+				"datapoint": "pos",
+				"value": 0.0
+			},
+			{
+				"at": 120000,
+				"block": "ss",
+				"datapoint": "slat",
+				"value": 0.0
+			},
+			{
+				"at": 120000,
+				"block": "ss",
+				"datapoint": "ud",
+				"value": false
+			},
+			{
+				"at": 180000,
+				"block": "ss",
+				"datapoint": "pos",
+				"value": 80.0
+			},
+			{
+				"at": 180000,
+				"block": "ss",
+				"datapoint": "slat",
+				"value": 75.0
+			},
+			{
+				"at": 180000,
+				"block": "ss",
+				"datapoint": "ud",
+				"value": true
+			},
+			{
+				"at": 240000,
+				"block": "ss",
+				"datapoint": "pos",
+				"value": 100.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/ss/state": 1,
+				"pos": 100.0,
+				"slat": 75.0,
+				"ud": true
+			}
+		}
+	}
+}

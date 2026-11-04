@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "hc/astro.h"
 #include "hc/datapoint.h"
 
 namespace hc::blocks {
@@ -166,6 +167,9 @@ public:
 	virtual uint64_t now() const = 0;
 	/// The local wall time with its day of the week (1 Monday .. 7 Sunday); false while not synchronized.
 	virtual bool wall(DateTime& out) const = 0;
+	/// The sun's position at the instant of wall() and the controller's location (spec/blocks.md
+	/// B21); false while the clock is not synchronized or no location is set.
+	virtual bool sun(SunPosition& out) const = 0;
 	virtual InputValue read(size_t port) const = 0;
 	/// The number of datapoints bound to an input (spec/blocks.md B20); 0 when unbound.
 	virtual size_t count(size_t port) const = 0;

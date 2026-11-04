@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "hc/astro.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
 #include "hc/json_value.h"
@@ -40,6 +41,14 @@ public:
 	virtual bool local_now(DateTime& out) const = 0;
 	/// Today's local time of `event`; false without coordinates or when it does not occur today.
 	virtual bool sun_time(SunEvent event, TimeOfDay& out) const = 0;
+
+	/// The sun's position at the UTC instant `utc_seconds` (hc::sun_position() at the location);
+	/// false without coordinates. The default has none. The blocks' sun() (spec/blocks.md B21).
+	virtual bool sun_position(int64_t utc_seconds, hc::SunPosition& out) const {
+		(void)utc_seconds;
+		(void)out;
+		return false;
+	}
 
 	/// The instant (seconds since the epoch, UTC) of the local civil time `local` (spec 4.6): a time
 	/// that occurs twice (the hour after a fall-back) is its daylight-saving occurrence when
@@ -312,6 +321,10 @@ public:
 		out = wall_;
 		return wall_valid_;
 	}
+	/// The sun's position at the cascade's wall time, the instant of cascade_wall() (spec/blocks.md
+	/// B21, 5.5); false while the wall clock is not synchronized or without coordinates. Computed
+	/// once per wall second, for every block of every cascade in it.
+	bool cascade_sun(SunPosition& out) const;
 	/// The block deadlines changed outside a cascade: the engine's loop timer follows.
 	void deadlines_changed() {
 		if (!in_cascade_) {
@@ -482,6 +495,11 @@ private:
 	uint64_t cascade_ms_ = 0;
 	bool wall_valid_ = false;
 	DateTime wall_;
+	// cascade_sun()'s last result and the UTC second it is for.
+	mutable bool sun_cached_ = false;
+	mutable bool sun_known_ = false;
+	mutable int64_t sun_utc_ = 0;
+	mutable SunPosition sun_;
 	size_t current_rule_ = 0; ///< The rule whose actions run (for queueOverflow).
 
 	TimerHandle loop_timer_;

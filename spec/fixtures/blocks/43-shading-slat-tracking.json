@@ -1,0 +1,231 @@
+{
+	"title": "Sun shading: slat tracking at the cut-off angle (18.2 D10), rounded up to slatStep, mapped onto slatOpen..100; a minimum interval holds the slat steps back.",
+	"note": "An east facade, Munich, 2026-06-21 06:00..09:00 CEST. 'lam' (slatRatio 0.8, slatStep 10, slatOpen 0, no minimum interval) moves its slats every time the step changes; 'lam180' (an actuator whose slats turn through 180 deg: slatOpen 45, slatStep 7, so the steps count from 45, not from 0; minMoveInterval 1 h) moves them at most every hour, to the target as it is then: a step that passed while the move was held is skipped.",
+	"location": {
+		"lat": 48.137,
+		"lon": 11.576
+	},
+	"clock": {
+		"start": "2026-06-21T06:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "pos",
+			"type": "real"
+		},
+		{
+			"name": "slat",
+			"type": "real"
+		},
+		{
+			"name": "slat2",
+			"type": "real"
+		}
+	],
+	"blocks": [
+		{
+			"id": "lam",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"outputs": {
+				"position": "pos",
+				"slat": "slat"
+			},
+			"parameters": {
+				"facadeAzimuth": 90,
+				"openingAngle": 170,
+				"slatMode": "tracking",
+				"slatRatio": 0.8,
+				"slatStep": 10,
+				"minMoveInterval": 0
+			}
+		},
+		{
+			"id": "lam180",
+			"type": "org.homecontrol.sun-shading",
+			"version": "1.0",
+			"label": "Sun shading",
+			"outputs": {
+				"slat": "slat2"
+			},
+			"parameters": {
+				"facadeAzimuth": 90,
+				"openingAngle": 170,
+				"slatMode": "tracking",
+				"slatRatio": 0.8,
+				"slatOpen": 45,
+				"slatStep": 7,
+				"minMoveInterval": 3600000
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/lam/state": 1,
+					"block/lam180/state": 1,
+					"slat": 60.0,
+					"slat2": 80.0,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 1801000,
+			"check": {
+				"datapoints": {
+					"block/lam/state": 1,
+					"block/lam180/state": 1,
+					"slat": 50.0,
+					"slat2": 80.0,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 3601000,
+			"check": {
+				"datapoints": {
+					"block/lam/state": 1,
+					"block/lam180/state": 1,
+					"slat": 40.0,
+					"slat2": 73.0,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 5401000,
+			"check": {
+				"datapoints": {
+					"block/lam/state": 1,
+					"block/lam180/state": 1,
+					"slat": 40.0,
+					"slat2": 73.0,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 7201000,
+			"check": {
+				"datapoints": {
+					"block/lam/state": 1,
+					"block/lam180/state": 1,
+					"slat": 30.0,
+					"slat2": 59.0,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 9001000,
+			"check": {
+				"datapoints": {
+					"block/lam/state": 1,
+					"block/lam180/state": 1,
+					"slat": 20.0,
+					"slat2": 59.0,
+					"pos": 100.0
+				}
+			}
+		},
+		{
+			"at": 10801000,
+			"check": {
+				"datapoints": {
+					"block/lam/state": 1,
+					"block/lam180/state": 1,
+					"slat": 10.0,
+					"slat2": 52.0,
+					"pos": 100.0
+				}
+			}
+		}
+	],
+	"end": 10800000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "lam",
+				"datapoint": "pos",
+				"value": 100.0
+			},
+			{
+				"at": 0,
+				"block": "lam",
+				"datapoint": "slat",
+				"value": 60.0
+			},
+			{
+				"at": 0,
+				"block": "lam180",
+				"datapoint": "slat2",
+				"value": 80.0
+			},
+			{
+				"at": 420000,
+				"block": "lam",
+				"datapoint": "slat",
+				"value": 50.0
+			},
+			{
+				"at": 3300000,
+				"block": "lam",
+				"datapoint": "slat",
+				"value": 40.0
+			},
+			{
+				"at": 3600000,
+				"block": "lam180",
+				"datapoint": "slat2",
+				"value": 73.0
+			},
+			{
+				"at": 5880000,
+				"block": "lam",
+				"datapoint": "slat",
+				"value": 30.0
+			},
+			{
+				"at": 7200000,
+				"block": "lam180",
+				"datapoint": "slat2",
+				"value": 59.0
+			},
+			{
+				"at": 8220000,
+				"block": "lam",
+				"datapoint": "slat",
+				"value": 20.0
+			},
+			{
+				"at": 10320000,
+				"block": "lam",
+				"datapoint": "slat",
+				"value": 10.0
+			},
+			{
+				"at": 10800000,
+				"block": "lam180",
+				"datapoint": "slat2",
+				"value": 52.0
+			}
+		],
+		"logs": [],
+		"final": {
+			"datapoints": {
+				"block/lam/state": 1,
+				"block/lam180/state": 1,
+				"slat": 10.0,
+				"slat2": 52.0,
+				"pos": 100.0
+			}
+		}
+	}
+}
