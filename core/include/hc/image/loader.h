@@ -12,6 +12,7 @@
 #include "hc/datapoint.h"
 #include "hc/history.h"
 #include "hc/image/image.h"
+#include "hc/image/load_probe.h"
 #include "hc/json.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/time_master.h"
@@ -171,6 +172,8 @@ public:
 	void set_archive_cap(size_t bytes) { archive_cap_ = bytes; }
 	/// The block types the image may use (default: the device's built-in library).
 	void set_block_registry(const blocks::BlockRegistry& registry) { registry_ = &registry; }
+	/// Told the end of each phase of parse() (nullptr: none; homecontrol #70).
+	void set_probe(LoadProbe* probe) { probe_ = probe; }
 
 	/// True when the image is valid; `plan` then holds it. Otherwise `report` names the refusals.
 	bool parse(const char* text, size_t length, Plan& plan, Report& report) const;
@@ -181,6 +184,7 @@ private:
 	size_t archive_cap_ = HistoryLimits().archive_cap_bytes;
 	const char* language_;
 	const blocks::BlockRegistry* registry_ = &blocks::BlockRegistry::device();
+	LoadProbe* probe_ = nullptr;
 };
 
 /// The value type named in the image ("boolean", "unsigned", "signed", "real", "string",

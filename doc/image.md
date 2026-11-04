@@ -184,8 +184,111 @@ On the ESP32-C6 the image service and its components are static (part of the 8.6
 grew); the rules engine, scheduler, value store and history are linked for the first time (flash
 +171 KB). Per image (host measurements, 64-bit): the example keeps about 9 KB besides its stored
 copy, 2.3 KB of it history; the test-system template about 3 KB plus 11.5 KB of history (one
-day at one-minute spacing). A load needs the text and about 5 KB of load tables on top, and the
+day at one-minute spacing). A load needs the text and its load tables on top (below), and the
 event-loop task's stack (12 KB on the ESP; `image status` prints the reserve left).
+
+### Memory of a swap (#70)
+
+A load builds the new image beside the old one, which stays whole until the step that replaces its
+part: the old model goes at `model`, the old rules at `engine`, the old blocks at `block runtime`,
+the kept plan of the old image at `start`, the new image's plan at `release`. The lowest free heap of
+a deploy is therefore the old image's steady state minus the swap's peak above it. The phases, as
+`ImageService` and the `Loader` report them to a `LoadProbe` (`hc/image/load_probe.h`), each named
+at its end:
+
+| Phase | What it allocates (+) or frees (-) |
+|---|---|
+| `signature` | the signature check (nothing on the heap) |
+| `json` | + the plan (the `Plan` object) |
+| `datapoints` | + the datapoint tables, the KNX mapping, the index by name; - their scratch (the blocks' implied datapoints) |
+| `schedules`, `history`, `ui` | + locations, functions, schedules, history specs; the UI is checked, not kept |
+| `rules scratch`, `rules` | + a scratch `DatapointModel` of the image's datapoints, + the compiled rule set (kept), - the scratch and the compiler's work |
+| `blocks scratch`, `blocks` | + a second scratch model, + the compiled `BlockSet` (kept), - the scratch |
+| `compose`, `model` | + the composed spec table, + the new model; - the old model |
+| `persistence` | the value store and the history bound and restored (their tables for the new image) |
+| `engine` | the rule set adopted; - the old rules |
+| `block runtime` | + the instances' runtime, the mirrors bound; - the old runtime and set (`BlockRuntime::adopt`) |
+| `technologies` | KNX mapping, time master, schedules, external values, the providers |
+| `start` | the rules and blocks started; - the old image's kept plan (with a provider) |
+| `release` | - the new plan (kept instead with a provider) |
+| `mqtt`, `view`, `store` | the MQTT member, the UI model, the store (off the loop since #68) |
+
+Measured with the C6's sizes (`scripts/c6-model`, below) on E-Home's revision 11 of the KNX test
+system (23 482 bytes, 58 datapoints, 10 rules, 6 schedules, one history with archives, a provider
+registered as the Zigbee adapter is), with k blocks added as E-Home's revision 13 adds them (a room
+controller on the room temperature switching an LED, a heating demand over its valve requesting on
+another; k = 4 is two such pairs). Bytes above the start of the load, as the C6's heap charges them
+(TLSF: each block at least 12 bytes, rounded up to 4, plus a 4-byte header); "k over j" deploys the
+image with k blocks over the one with j:
+
+| Phase peak | 0 over 0 | 1 over 0 | 1 over 1 | 2 over 1 | 2 over 2 | 4 over 3 | 4 over 4 |
+|---|---|---|---|---|---|---|---|
+| `json` | 884 | 884 | 884 | 884 | 884 | 884 | 884 |
+| `datapoints` | 14 040 | 14 160 | 14 160 | 15 692 | 15 692 | 18 360 | 18 360 |
+| `ui` | 8 560 | 9 724 | 9 724 | 9 304 | 9 304 | 10 524 | 10 524 |
+| `rules scratch` | 14 628 | 17 132 | 17 132 | 17 360 | 17 360 | 20 588 | 20 588 |
+| `rules` | **27 324** | **29 828** | **29 828** | **30 056** | **30 056** | **33 284** | **33 284** |
+| `blocks scratch` | 21 704 | 24 208 | 24 208 | 24 436 | 24 436 | 27 664 | 27 664 |
+| `blocks` | 21 704 | 24 940 | 24 940 | 25 568 | 25 568 | 29 920 | 29 920 |
+| `model` | 23 724 | 26 924 | 26 924 | 27 536 | 27 536 | 31 840 | 31 840 |
+| `persistence` | 17 656 | 20 856 | 19 516 | 20 128 | 19 480 | 22 428 | 21 776 |
+| `engine` | 20 060 | 23 260 | 21 920 | 22 532 | 21 884 | 24 832 | 24 180 |
+| `block runtime` | 10 624 | 14 936 | 13 596 | 14 928 | 14 280 | 19 060 | 18 408 |
+| `technologies` | 11 672 | 15 984 | 13 020 | 14 352 | 12 680 | 15 840 | 14 164 |
+| `start`, `release` | 10 580 | 14 892 | 11 928 | 13 260 | 11 588 | 14 748 | 13 072 |
+| after the load | 0 | 4 312 | 0 | 1 332 | 0 | 2 380 | 0 |
+| the old image held | 35 156 | 35 140 | 39 452 | 39 452 | 40 784 | 44 540 | 46 920 |
+| old image + peak | 62 480 | 64 968 | 69 280 | 69 508 | 70 840 | 77 824 | 80 204 |
+
+The peak is the rules' compilation (the plan, a scratch model and the compiler's work beside the
+whole old image) and grows about 1.5 KB per block; the `model` step grows about 2 KB per block and
+becomes the peak from about seven blocks. A block's steady cost here is 4.3 KB for the room
+controller (16 mirror datapoints) and 1.3 to 2.4 KB for the heating demand: at the peak a block
+costs its steady size in the old image plus at most its steady size in the new one, nothing more.
+Measured on the C6, revision 12 (one block, over revision 11 without blocks) and revision 13 (two
+blocks, over revision 12) differ by about 4.5 KB at the lowest point: the room controller is in
+both images of the second swap (4.3 KB held by the old one) and the heating demand adds 0.2 KB to
+the peak. (The board's 7.6 KB came from two firmware builds; its steady figures put the room
+controller at 0.6 KB, so they do not resolve 4 KB either.)
+
+`Swap memory: a block costs at the peak at most its steady size; the swap stays within its budget`
+pins this on the host (64-bit, `example.json` with 0 to 4 blocks, over the same image and over one
+block fewer): the peak above the old image is at most **16 KB** (the swap's budget for that image
+without blocks; measured 13.2 KB on the host, 12.0 KB with the C6's sizes) plus k times a block's
+steady cost, a block adds to the peak at most its steady cost, a redeploy holds what the first
+deploy held, and nothing of the load is held at `release` beyond the new image. The probe and the
+whole-heap counter are in the test (`core/test/swap_memory_test.cpp`; the counter's
+`hc_test::heap_mark()`, `HeapExclusion` for the fakes of flash, NVS and the log ring); the table
+above is its measurement case, run with `HC_SWAP_IMAGE=<image without blocks>`.
+
+**The 32-bit model** (`scripts/c6-model`): the core and that test compiled by the ESP-IDF's
+RISC-V compiler, with the C6's sizes (4-byte pointers; a `Datapoint` is 64 bytes, a block
+instance's runtime 312), run under `qemu-riscv32-static` (newlib's `sim` system calls, stubs in
+`sim_stubs.c`). Not part of the gate:
+
+```
+source ~/tools/esp/esp-idf-v5.5/export.sh
+cmake -S scripts/c6-model -B build-c6model -G Ninja -DCMAKE_TOOLCHAIN_FILE=$PWD/scripts/c6-model/toolchain.cmake \
+    -DHC_SWAP_IMAGE=<image without blocks>
+cmake --build build-c6model && qemu-riscv32-static build-c6model/swap_c6
+```
+
+**On the board** (`hc::esp::EspLoadProbe`, component `hc_image`): `log level hc.image debug` on the
+console, or `CONFIG_HC_IMAGE_HEAP_PHASES=y` (menu "HomeControl runtime image", default off) for info
+level, logs every load's phases:
+
+```
+swap heap: begin: free <F> B, lowest since boot <M> B
+swap heap: json           free <f> B, lowest in the phase <l> B (<F - l> B below the start)
+...                       (one line per phase of the table above)
+swap heap: end (loaded): free <f> B, lowest of the load <L> B (<F - L> B below the start), lowest since boot <M'> B
+```
+
+The phase's lowest is `heap_caps_get_minimum_free_size()` over the IDF's local minimum, restarted at
+each phase (`heap_caps_monitor_local_minimum_free_size_start()`); the probe stops it at the end of
+the load, before the load's summary line, and the IDF then restores the minimum since boot,
+including the load's lows. A heartbeat or System page minimum below the load's lowest means the
+low came after the load (the store off the loop, the deployer's follow-up requests).
 
 ## Console and command line
 

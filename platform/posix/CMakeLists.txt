@@ -249,4 +249,5 @@ target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/web_diagnostics_test.c
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/web_diagnostics_probe_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/streaming_probe_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/memory_probe_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/swap_memory_test.cpp")
 target_sources(hc_tests PRIVATE test/posix_system_info_test.cpp)

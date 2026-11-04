@@ -38,6 +38,7 @@
 // ---- runtime image (issue #8) ----
 #include "hc/image/image_service.h"
 #include "esp_image_staging.h"
+#include "esp_load_probe.h"
 #include "esp_worker.h"
 #include "hc/image/memory_blob_store.h"
 #include "image_console.h"
@@ -151,6 +152,8 @@ hc::esp::MqttService& mqtt() {
 hc::esp::EspImageStaging g_staging;
 // The image's store off the loop (#68): a task of its own per store.
 hc::esp::EspWorker g_worker(g_queue);
+// The heap at each phase of a load (#70): `log level hc.image debug`, or CONFIG_HC_IMAGE_HEAP_PHASES.
+hc::esp::EspLoadProbe g_load_probe;
 
 hc::esp::ImageConsole& image_console() {
 	static hc::esp::ImageConsole instance(image(), g_queue);
@@ -181,6 +184,7 @@ void loop_task(void*) {
 	g_staging.start();
 	image().set_staging(&g_staging);
 	image().set_worker(&g_worker);
+	image().set_load_probe(&g_load_probe);
 	image().start();
 	i18n().start(); // language packs: the boot sync (after the blob store started)
 	hc::Log::info(kTag, "runtime image started; event-loop stack reserve %u B",

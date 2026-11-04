@@ -18,6 +18,7 @@
 #include "hc/image/image.h"
 #include "hc/image/image_body.h"
 #include "hc/image/image_store.h"
+#include "hc/image/load_probe.h"
 #include "hc/image/loader.h"
 #include "hc/image/model_view.h"
 #include "hc/image/rules_clock.h"
@@ -198,6 +199,10 @@ public:
 	void set_staging(ImageStaging* staging) { staging_ = staging; }
 	ImageStaging* staging() const { return staging_; }
 
+	/// Told the phases of every load (homecontrol #70, doc/image.md "Memory of a swap"); nullptr: none.
+	/// It outlives the service or is removed first.
+	void set_load_probe(LoadProbe* probe) { probe_ = probe; }
+
 	void set_ntp_changed(Callback callback) { ntp_changed_ = callback; }
 	/// Called after every change of the loaded image (load, swap, restore, unload): the model's ids
 	/// may have changed (the web API resyncs its live feed).
@@ -247,7 +252,16 @@ private:
 	/// The composed specs of a model load: the image's (`image_count`) and the providers'.
 	struct Composed;
 
+	bool load_steps(const char* text, size_t length, Source source, bool store, const uint8_t* signature,
+		ImageBody* holder, Callback stored);
 	bool apply(Plan& plan, Source source);
+	/// Tells the probe the outer load ended (once).
+	void end_probe(bool ok);
+	void phase(const char* name) {
+		if (probe_ != nullptr) {
+			probe_->load_phase(name);
+		}
+	}
 	/// Starts the store of `text` off the loop with `holder`'s body; false (nothing taken) when it
 	/// cannot (the reason logged): the caller stores within load().
 	bool store_off_loop(const char* text, size_t length, ImageBody& holder, Callback stored);
@@ -309,6 +323,9 @@ private:
 	Mqtt* mqtt_ = nullptr;
 	ImageStaging* staging_ = nullptr;
 	Worker* worker_ = nullptr;
+	LoadProbe* probe_ = nullptr;
+	unsigned load_depth_ = 0; ///< load() within load() (a failed apply restores the stored image).
+	bool probe_open_ = false; ///< The probe was told the outer load began and not yet that it ended.
 	/// The store off the loop: the body it reads (taken from the receiver), the text in it, the outcome
 	/// the job writes (read on the loop after `done`), the caller's callback.
 	std::atomic<bool> store_pending_{false};

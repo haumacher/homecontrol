@@ -1,0 +1,17 @@
+# Copyright (c) 2026 Bernhard Haumacher
+
+menu "HomeControl runtime image"
+
+	config HC_IMAGE_HEAP_PHASES
+		bool "Log the heap at each phase of an image load"
+		default n
+		help
+			Logs, under hc.image at info level, the free heap and the lowest free heap of each phase
+			of every image load: the parse (json, datapoints, schedules, history, ui), the rules'
+			and the blocks' compilation, the model, the adoption of the rules and the blocks, the
+			bindings, the start and the release of the old image (homecontrol #70, doc/image.md
+			"Memory of a swap" lists them). Off, the same
+			lines are logged at debug level: `log level hc.image debug` on the console switches them
+			on without a rebuild.
+
+endmenu

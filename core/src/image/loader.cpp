@@ -353,6 +353,14 @@ struct Ctx {
 
 	/// The block types the image may use.
 	const blocks::BlockRegistry* registry = &blocks::BlockRegistry::device();
+	/// Told the end of each phase (Loader::set_probe()).
+	LoadProbe* probe = nullptr;
+
+	void phase(const char* name) {
+		if (probe != nullptr) {
+			probe->load_phase(name);
+		}
+	}
 
 	void refuse(const char* format, ...) HC_PRINTF_FORMAT(2, 3) {
 		char reason[Report::kMaxReason + 1];
@@ -3185,6 +3193,7 @@ void parse_rules(Ctx& c, const JsonSpan& root, const Clock& clock, const char* l
 		}
 		return;
 	}
+	c.phase("rules scratch");
 	JsonSpanDocument document;
 	PlanSchedules schedules(plan);
 	// Compiled once: the set goes to the engine at the swap (Plan::rule_set).
@@ -3253,6 +3262,7 @@ void parse_blocks(Ctx& c, const JsonSpan& root, const Clock& clock, const Index&
 		}
 		return;
 	}
+	c.phase("blocks scratch");
 	PlanOwners owners(index);
 	blocks::BlockLoadResult result = plan.block_set.load(blocks_member, scratch, owners, *c.registry);
 	if (!result.ok()) {
@@ -3288,8 +3298,12 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 			static_cast<unsigned>(offset));
 		return false;
 	}
+	if (probe_ != nullptr) {
+		probe_->load_phase("json");
+	}
 	Ctx c(plan, report);
 	c.registry = registry_;
+	c.probe = probe_;
 	if (root.kind != JsonSpan::Kind::object) {
 		c.refuse("the image must be a JSON object");
 		return false;
@@ -3317,12 +3331,15 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 	std::sort(index.order, index.order + index.count, [&plan](uint16_t a, uint16_t b) {
 		return std::strcmp(plan.datapoints[a].name, plan.datapoints[b].name) < 0;
 	});
+	c.phase("datapoints");
 	Ids locations;
 	parse_locations(c, root, locations);
 	Ids functions;
 	parse_functions(c, root, locations, index, functions);
 	parse_schedules(c, root, index);
+	c.phase("schedules");
 	parse_history(c, root, history_cap_, archive_cap_);
+	c.phase("history");
 	parse_ui(c, root, functions, index);
 	JsonSpan external;
 	if (c.member(root, "external", external)) {
@@ -3345,11 +3362,14 @@ bool Loader::parse(const char* text, size_t length, Plan& plan, Report& report) 
 			}
 		}
 	}
+	c.phase("ui");
 	if (!c.stopped()) {
 		parse_rules(c, root, clock_, language_);
+		c.phase("rules");
 	}
 	if (!c.stopped()) {
 		parse_blocks(c, root, clock_, index);
+		c.phase("blocks");
 	}
 	if (!report.ok()) {
 		Log::warn(kTag, "image refused: %u problem%s, first at %s: %s", static_cast<unsigned>(report.total),

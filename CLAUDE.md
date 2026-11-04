@@ -89,7 +89,8 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   not versioned).
 - `scripts/` — developer helpers (`flasher-local.sh`, `update-server.py`: the development OTA update
   server, also serving the release's language packs; `i18n-pack.py`: pack check, DeepL fill-in with
-  `DEEPL_AUTH_KEY`, the per-release i18n manifest).
+  `DEEPL_AUTH_KEY`, the per-release i18n manifest; `c6-model/`: the core and the swap memory test with
+  the C6's sizes under `qemu-riscv32-static`, doc/image.md "Memory of a swap").
 - `doc/` — design notes; `doc/hardware.md` for boards, flash sizes, partition tables and wiring,
   `doc/diagnostics.md` for the reset reason, the boot record, core dumps, the watchdog and the
   console, `doc/core.md` for the core and its event loop, `doc/ota.md` for the OTA update and the

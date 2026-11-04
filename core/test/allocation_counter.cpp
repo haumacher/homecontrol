@@ -11,15 +11,28 @@
 
 namespace {
 
+/// What the C6's TLSF heap takes from its free bytes for a block of `size`.
+size_t charge(size_t size) {
+	size_t data = (size + 3) & ~static_cast<size_t>(3);
+	return (data < 12 ? 12 : data) + 4;
+}
+
 std::atomic<bool> g_counting{false};
 std::atomic<size_t> g_count{0};
 std::atomic<size_t> g_largest{0};
 std::atomic<size_t> g_live{0};
 std::atomic<size_t> g_peak{0};
+std::atomic<size_t> g_heap_live{0};
+std::atomic<size_t> g_heap_blocks{0};
+std::atomic<size_t> g_heap_peak{0};
+std::atomic<size_t> g_charged{0};
+std::atomic<size_t> g_charged_peak{0};
+std::atomic<unsigned> g_excluding{0}; // not thread_local: the 32-bit model build has no TLS
 
 struct alignas(alignof(std::max_align_t)) Header {
 	size_t size;
 	bool counted;
+	bool excluded;
 };
 
 void* allocate(size_t size) noexcept {
@@ -30,6 +43,18 @@ void* allocate(size_t size) noexcept {
 	Header* header = static_cast<Header*>(raw);
 	header->size = size;
 	header->counted = g_counting.load();
+	header->excluded = g_excluding > 0;
+	if (!header->excluded) {
+		size_t held = g_heap_live.fetch_add(size) + size;
+		++g_heap_blocks;
+		size_t top = g_heap_peak.load();
+		while (held > top && !g_heap_peak.compare_exchange_weak(top, held)) {
+		}
+		size_t charged = g_charged.fetch_add(charge(size)) + charge(size);
+		size_t most = g_charged_peak.load();
+		while (charged > most && !g_charged_peak.compare_exchange_weak(most, charged)) {
+		}
+	}
 	if (header->counted) {
 		++g_count;
 		size_t largest = g_largest.load();
@@ -48,6 +73,11 @@ void release(void* p) noexcept {
 		return;
 	}
 	Header* header = static_cast<Header*>(p) - 1;
+	if (!header->excluded) {
+		g_heap_live.fetch_sub(header->size);
+		g_charged.fetch_sub(charge(header->size));
+		--g_heap_blocks;
+	}
 	if (header->counted) {
 		g_live.fetch_sub(header->size);
 	}
@@ -72,6 +102,21 @@ size_t AllocationScope::count() const { return g_count.load(); }
 size_t AllocationScope::largest() const { return g_largest.load(); }
 size_t AllocationScope::peak() const { return g_peak.load(); }
 size_t AllocationScope::live() const { return g_live.load(); }
+
+size_t heap_live() { return g_heap_live.load(); }
+size_t heap_blocks() { return g_heap_blocks.load(); }
+size_t heap_peak() { return g_heap_peak.load(); }
+
+HeapExclusion::HeapExclusion() { ++g_excluding; }
+HeapExclusion::~HeapExclusion() { --g_excluding; }
+
+size_t heap_charged() { return g_charged.load(); }
+size_t heap_charged_peak() { return g_charged_peak.load(); }
+
+size_t heap_mark() {
+	g_charged_peak.store(g_charged.load());
+	return g_heap_peak.exchange(g_heap_live.load());
+}
 
 } // namespace hc_test
 

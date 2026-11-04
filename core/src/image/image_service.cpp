@@ -217,6 +217,31 @@ bool ImageService::authorize(const char* text, size_t length, Source source, con
 
 bool ImageService::load(const char* text, size_t length, Source source, bool store, const uint8_t* signature,
 	ImageBody* holder, Callback stored) {
+	bool outer = load_depth_++ == 0;
+	if (outer && probe_ != nullptr) {
+		probe_open_ = true;
+		probe_->load_begun();
+	}
+	bool ok = load_steps(text, length, source, store, signature, holder, stored);
+	if (outer) {
+		end_probe(ok);
+	}
+	--load_depth_;
+	return ok;
+}
+
+void ImageService::end_probe(bool ok) {
+	// Only the outer load's: a restore within a failed load reports its phases into the outer one.
+	if (probe_open_ && load_depth_ == 1) {
+		probe_open_ = false;
+		if (probe_ != nullptr) {
+			probe_->load_ended(ok);
+		}
+	}
+}
+
+bool ImageService::load_steps(const char* text, size_t length, Source source, bool store, const uint8_t* signature,
+	ImageBody* holder, Callback stored) {
 	uint64_t begin = controller_.clock().monotonic_ms();
 	if (store && store_pending()) {
 		// The worker reads the previous image's body: refused before anything is looked at (#68).
@@ -234,6 +259,7 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	// The steps' times for the split line below (homecontrol #66: the load holds the loop).
 	const Clock& clock = controller_.clock();
 	uint64_t t_signature = clock.monotonic_ms();
+	phase("signature");
 	Plan* plan = new (std::nothrow) Plan();
 	if (plan == nullptr) {
 		report_.clear();
@@ -245,6 +271,7 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	read_ui_lang(controller_.settings(), language, kTag); // as the engine reads it: the rules compile once
 	Loader loader(controller_.clock(), history_limits_.cap_bytes, language);
 	loader.set_archive_cap(history_limits_.archive_cap_bytes);
+	loader.set_probe(probe_);
 	if (!loader.parse(text, length, *plan, report_)) {
 		Log::warn(kTag, "image from %s refused (%s): %u problem%s; the %s", source_name(source),
 			report_kind_name(report_.kind), static_cast<unsigned>(report_.total), report_.total == 1 ? "" : "s",
@@ -266,6 +293,7 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	if (!ok) {
 		return false;
 	}
+	phase("release");
 	uint64_t t_apply = clock.monotonic_ms();
 	// 7c: the MQTT client, from the applied text (its datapoints are resolved by name against the
 	// model just loaded; without an `mqtt` member it is cleared). The loader checked the member, so
@@ -280,8 +308,10 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 	}
 	report_.clear();
 	uint64_t t_mqtt = clock.monotonic_ms();
+	phase("mqtt");
 	view_.build(text, length, model_);
 	uint64_t t_view = clock.monotonic_ms();
+	phase("view");
 	bool background = false;
 	if (store && holder != nullptr && worker_ != nullptr) {
 		background = store_off_loop(text, length, *holder, stored);
@@ -300,6 +330,8 @@ bool ImageService::load(const char* text, size_t length, Source source, bool sto
 		std::snprintf(store_error_, sizeof(store_error_), "not stored");
 	}
 	uint64_t t_store = clock.monotonic_ms();
+	phase("store");
+	end_probe(true); // before the summary reads the heap (the ESP probe's phase minimum ends with it)
 	MemoryInfo memory = controller_.system().memory();
 	Log::info(kTag, "image '%s' revision %u (%s, schema %s) loaded from %s in %u ms: %u datapoints (%u KNX), %u rules, "
 		"%u schedules, %u functions, %u locations, %u history rings%s; %u bytes, load tables %u of %u bytes used%s, "
@@ -679,6 +711,7 @@ bool ImageService::apply(Plan& plan, Source source) {
 		const Datapoint* old = model_.find(composed.specs[i].name);
 		previous[i] = old != nullptr ? old->id() : rules::kNone;
 	}
+	phase("compose");
 
 	// 1, 2: the rules' queued events still name the old ids; then the model.
 	engine_.flush();
@@ -690,6 +723,7 @@ bool ImageService::apply(Plan& plan, Source source) {
 		Log::error(kTag, "image not applied: the datapoint model refused it (%s)", datapoint_status_name(status));
 		return false;
 	}
+	phase("model");
 	// From here on the previous image is gone from RAM.
 	bool was_loaded = loaded_;
 	loaded_ = false;
@@ -707,6 +741,7 @@ bool ImageService::apply(Plan& plan, Source source) {
 	if (!bind_persistence(plan, source)) {
 		return false;
 	}
+	phase("persistence");
 
 	// 5: rules.
 	JsonSpanDocument document;
@@ -724,17 +759,20 @@ bool ImageService::apply(Plan& plan, Source source) {
 		return fail_applied(source, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
 			result.text);
 	}
+	phase("engine");
 	// 5b: the blocks, compiled by the loader's check (spec/blocks.md); the engine calls them.
 	bool blocks_adopted = plan.blocks_compiled ? blocks_.adopt(std::move(plan.block_set)) : blocks_.adopt(blocks::BlockSet());
 	plan.blocks_compiled = false;
 	if (!blocks_adopted) {
 		return fail_applied(source, "blocks", "no memory for the blocks' runtime");
 	}
+	phase("block runtime");
 
 	// 6, 7, 7b: KNX and the time master, the schedules, the external values.
 	if (!bind_technologies(plan, source)) {
 		return false;
 	}
+	phase("technologies");
 
 	// 8: start.
 	info_ = plan.info;
@@ -749,6 +787,7 @@ bool ImageService::apply(Plan& plan, Source source) {
 	if (was_loaded) {
 		Log::info(kTag, "image swapped; rules started (%s)", rules::start_reason_name(reason));
 	}
+	phase("start");
 	// Kept for the providers' reloads; the rules' text is gone with the image text.
 	drop_plan();
 	if (provider_count_ > 0) {
