@@ -7,6 +7,7 @@
 /platform/esp/build-*/
 /platform/esp/updater/build/
 /platform/esp/updater/build-*/
+/platform/esp/updater/managed_components/
 /platform/esp/sdkconfig
 /platform/esp/sdkconfig.old
 /platform/esp/managed_components/

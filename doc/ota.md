@@ -215,7 +215,7 @@ Console (prompt `hc>`):
 ## The updater
 
 A minimal ESP-IDF application in the factory partition: NVS, plain esp_wifi station with the
-application's credentials (no WPS, no console, no mDNS, no status LED), esp_http_client,
+application's credentials (no WPS, no console, no mDNS), the status LED (below), esp_http_client,
 esp_http_server (only for an upload), the OTA API. Log level info, flash at 40 MHz and the transmit power limit come from the application's
 `sdkconfig.defaults`, which the updater shares. At boot it logs `HomeControl updater <version>`,
 then repeats:
@@ -267,6 +267,33 @@ application to the updater always worked; the updater after a power-on or a USB 
 connected (measured 2026-11-04: 0 access points in every scan, against 3 to 4 after the fix, and the
 network up 10 s after the reset). The application was deaf in the same way until its first
 temperature reading or its own recovery (43 s to the network after a USB reset, 14 s with the fix).
+
+**The status LED.** The updater drives the application's LED (the same menuconfig choice
+*HomeControl status LED*: the WS2812 on GPIO8 of the C6 devkits, a plain GPIO LED, or none; the
+component `hc_status_light`) with patterns of its own (`hc::UpdaterLed`, 50 ms ticks, an esp_timer
+callback). Each one differs from the others and from the application's patterns
+([network.md, "Status LED"](network.md#status-led)) by its timing alone, so a plain LED tells them
+apart without the colour; the WS2812 adds a dim colour.
+
+| Pattern | Colour | Meaning |
+|---|---|---|
+| dark | | before the first decision; booting the application |
+| three 50 ms flashes, then dark to 1 s | red | emergency: no application in ota_0 and no instruction; hold the button for 3 s to upload one (below) |
+| solid, at once on press | amber | the button is down and the 3 s hold is counting (only while ota_0 holds no application) |
+| slow blink, 800 ms on / 800 ms off | blue | the button window is open: an upload without the token is accepted (5 minutes) |
+| 500 ms on / 500 ms off | magenta | WiFi has no address yet (before an upload is served or a download starts), and between download attempts |
+| short pulse, 100 ms every 1.6 s | cyan | serving the upload started from the application's Settings page, waiting for the image |
+| 150 ms on / 150 ms off | green | busy: a download or an upload is writing or verifying ota_0 |
+| flicker, 50 ms on / 50 ms off, for 2 s | red | error, over the pattern underneath: an upload refused or failed, a download attempt failed |
+
+Two patterns look like the application's on purpose or by necessity: *connecting* is the
+application's 500/500 with the same meaning, and *held* is solid like the application's *ready*, but
+only while a finger is on the button. A press does not show *held* while ota_0 holds a valid
+application (the button opens no window then). The window's blink takes precedence over
+*connecting*: after a hold in the emergency wait WiFi starts only then, and the blink acknowledges
+the hold at once; *connecting* shows when the window closes before the network is up. When the window
+closes, the LED returns to the emergency (or, for an upload with the token, to the cyan pulse); when
+an upload starts, it turns green.
 
 **The updater's own update is by USB only.** It is small and rarely changes; it cannot replace
 itself while it runs, and the application does not write the factory partition (except the
@@ -358,7 +385,8 @@ gave up, the browser tab was closed) cannot get a new one: the application that 
 While ota_0 holds no bootable application, holding the device's button (`CONFIG_HC_WPS_BUTTON_GPIO`,
 the BOOT button of the devkits, also the application's WPS button) for 3 s authorizes an upload
 without the token for 5 minutes (log `button held: ...`, `button_s` in `GET /status`, a hint on
-the updater's page and in the 401 answer). The updater also watches the button while it waits with
+the updater's page and in the 401 answer; the status LED turns amber while the hold counts, then
+blinks blue for the window, see "The status LED" above). The updater also watches the button while it waits with
 no application and no instruction (`next step in 300 s ... or hold the button`), and then serves
 the upload page. Security: the window needs someone at the device, who could flash it over USB as
 well; a device with a working application is never opened this way.

@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# Managed components of the OTA updater (IDF component manager). The resolved versions are pinned in
+# platform/esp/updater/dependencies.lock.<target>, which are versioned.
+dependencies:
+  idf: ">=5.5.5"
+  # The status LED's WS2812 (components/hc_status_light), the same as the application's.
+  espressif/led_strip: "~3.0.0"

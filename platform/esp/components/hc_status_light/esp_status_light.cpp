@@ -15,10 +15,10 @@ namespace {
 
 constexpr const char* kTag = "hc.led";
 
-/// The WS2812's colour when lit: a dim cyan (it is bright enough at a few percent).
-constexpr uint32_t kRed = 0;
-constexpr uint32_t kGreen = 8;
-constexpr uint32_t kBlue = 16;
+/// The WS2812's colour of set(bool) when lit: a dim cyan (it is bright enough at a few percent).
+constexpr uint8_t kRed = 0;
+constexpr uint8_t kGreen = 8;
+constexpr uint8_t kBlue = 16;
 
 } // namespace
 
@@ -73,13 +73,17 @@ bool EspStatusLight::init() {
 }
 
 void EspStatusLight::set(bool on) {
+	set(on, kRed, kGreen, kBlue);
+}
+
+void EspStatusLight::set(bool on, uint8_t red, uint8_t green, uint8_t blue) {
 #if defined(CONFIG_HC_STATUS_LED_WS2812)
 	led_strip_handle_t strip = static_cast<led_strip_handle_t>(strip_);
 	if (strip == nullptr) {
 		return;
 	}
 	if (on) {
-		led_strip_set_pixel(strip, 0, kRed, kGreen, kBlue);
+		led_strip_set_pixel(strip, 0, red, green, blue);
 		led_strip_refresh(strip);
 	} else {
 		led_strip_clear(strip);
@@ -92,6 +96,11 @@ void EspStatusLight::set(bool on) {
 #endif
 #else
 	(void)on;
+#endif
+#if !defined(CONFIG_HC_STATUS_LED_WS2812)
+	(void)red;
+	(void)green;
+	(void)blue;
 #endif
 }
 

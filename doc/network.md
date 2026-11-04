@@ -9,7 +9,7 @@ executes them.
 |---|---|
 | Connection workflow: when to connect, pair, retry, fall back | `core/include/hc/connectivity.h` |
 | Backoff policy | `core/include/hc/backoff.h` |
-| Status LED patterns | `core/include/hc/status_led.h` |
+| Status LED patterns | `core/include/hc/status_led.h`, the updater's `core/include/hc/updater_led.h` |
 | Hold-to-pair button logic | `core/include/hc/hold_button.h` |
 | Setting keys, defaults, validators, `store_wifi_credentials()` | `core/include/hc/network_settings.h` |
 | POSIX TZ validation, local time formatting | `core/include/hc/tz.h` |
@@ -18,7 +18,8 @@ executes them.
 | USB Serial/JTAG port shared by Improv and the console | `platform/esp/components/hc_improv` |
 | Console | `platform/esp/components/hc_console` |
 | Web flasher (ESP Web Tools manifest and page) | `web/flasher/` |
-| NVS settings, status LED, event-loop queue | `platform/esp/components/hc_platform` |
+| NVS settings, event-loop queue | `platform/esp/components/hc_platform` |
+| Status LED (application and OTA updater) | `platform/esp/components/hc_status_light` |
 
 ## Provisioning
 
@@ -188,7 +189,9 @@ again in 1 s`. The heartbeat line names the link state and, if it is not `normal
 The core derives the pattern (`Controller::led_status()`, `hc::StatusLed`, 50 ms ticks) and switches
 the light; the board's LED is chosen in menuconfig under *HomeControl status LED*: a WS2812 pixel
 on GPIO8 (default on the ESP32-C6 devkits, dim cyan), a plain GPIO LED (optionally active low), or
-none (default for the S3 build).
+none (default for the S3 build; component `hc_status_light`, shared with the OTA updater).
+The OTA updater shows its own patterns on the same LED, each distinguishable from these by its
+timing alone: the status LED in [ota.md, "The updater"](ota.md#the-updater).
 
 ## Transmit power
 

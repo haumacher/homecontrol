@@ -46,7 +46,9 @@
 #include "hc/json.h"
 #include "hc/log.h"
 #include "hc/network_settings.h"
+#include "esp_status_light.h"
 #include "hc/update_check.h"
+#include "hc/updater_led.h"
 #include "hc/version.h"
 #include "nvs_settings.h"
 
@@ -121,6 +123,66 @@ const char* reason(const char* fmt, ...) {
 
 void delay_ms(uint32_t ms) {
 	vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
+// ---- The status LED (doc/ota.md "The updater", the status LED) -----------------------------------
+//
+// An esp_timer callback ticks hc::UpdaterLed every 50 ms and switches the light when its output
+// changes; the rest of the updater sets the state and raises the error overlay through atomics.
+
+hc::esp::EspStatusLight g_light;
+std::atomic<hc::UpdaterLedState> g_led_state{hc::UpdaterLedState::off};
+/// Counts the errors to show: each new one starts the 2 s overlay.
+std::atomic<uint32_t> g_led_errors{0};
+
+void led_tick(void*) {
+	static hc::UpdaterLed led;
+	static uint32_t errors_shown = 0;
+	static bool first = true;
+	static hc::UpdaterLed::Output last = {};
+	led.set_state(g_led_state.load());
+	uint32_t errors = g_led_errors.load();
+	if (errors != errors_shown) {
+		errors_shown = errors;
+		led.flash_error();
+	}
+	hc::UpdaterLed::Output out = led.tick();
+	if (!out.on) {
+		out.colour = hc::UpdaterLed::Colour{0, 0, 0};
+	}
+	if (first || out.on != last.on || out.colour.r != last.colour.r || out.colour.g != last.colour.g ||
+		out.colour.b != last.colour.b) {
+		first = false;
+		last = out;
+		g_light.set(out.on, out.colour.r, out.colour.g, out.colour.b);
+	}
+}
+
+/// Sets up the light and starts its timer; without a configured LED nothing runs.
+void led_init() {
+	if (!g_light.init()) {
+		return;
+	}
+	esp_timer_create_args_t args = {};
+	args.callback = &led_tick;
+	args.name = "hc_led";
+	esp_timer_handle_t timer = nullptr;
+	esp_err_t err = esp_timer_create(&args, &timer);
+	if (err == ESP_OK) {
+		err = esp_timer_start_periodic(timer, static_cast<uint64_t>(hc::UpdaterLed::kTickMs) * 1000);
+	}
+	if (err != ESP_OK) {
+		ESP_LOGW(kTag, "status LED timer not started: %s", esp_err_to_name(err));
+	}
+}
+
+void led_show(hc::UpdaterLedState state) {
+	g_led_state.store(state);
+}
+
+/// The 2 s red flicker over the current state (a refused or failed upload, a failed download).
+void led_error() {
+	g_led_errors.fetch_add(1);
 }
 
 // ---- WiFi: plain station, the application's credentials ---------------------------------------
@@ -349,6 +411,7 @@ bool check_header(const uint8_t* data, size_t length, const char* version, hc::A
 /// `erased` tells whether the old application was already touched when it fails.
 bool download(const hc::UpdateInstruction& instruction, const esp_partition_t* app, bool& erased, const char*& why) {
 	erased = false;
+	led_show(hc::UpdaterLedState::busy); // the network is up: the download is in progress
 	if (static_cast<uint32_t>(instruction.size) > app->size) {
 		why = reason("image of %ld bytes does not fit the application partition (%lu bytes)",
 			static_cast<long>(instruction.size), static_cast<unsigned long>(app->size));
@@ -495,10 +558,12 @@ void boot_application(const esp_partition_t* app) {
 	esp_err_t err = esp_ota_set_boot_partition(app);
 	if (err != ESP_OK) {
 		ESP_LOGE(kTag, "cannot boot the application in %s: %s", app->label, esp_err_to_name(err));
+		led_error();
 		return;
 	}
 	ESP_LOGI(kTag, "restarting into the application");
-	delay_ms(100); // let the log line out
+	led_show(hc::UpdaterLedState::off);
+	delay_ms(100); // let the log line out (and the LED go dark)
 	esp_restart();
 }
 
@@ -595,6 +660,17 @@ bool button_held(int64_t now) {
 	(void) now;
 #endif
 	return false;
+}
+
+/// Whether the 3 s hold is counting: the button is down now and button_held() has not fired for this
+/// press yet (the status LED's `held`; then the window's blink acknowledges the hold at once).
+bool button_counting() {
+#if CONFIG_HC_WPS_BUTTON_GPIO >= 0
+	return g_button_ready && g_button_down_since_us >= 0 &&
+		gpio_get_level(static_cast<gpio_num_t>(CONFIG_HC_WPS_BUTTON_GPIO)) == 0;
+#else
+	return false;
+#endif
 }
 
 /// Whether the button window is open now.
@@ -723,6 +799,9 @@ void send_json(httpd_req_t* request, const char* status, const char* body, size_
 
 /// Refuses with {"error": reason, "code": code} and logs why.
 esp_err_t refuse(httpd_req_t* request, const char* status, const char* code, const char* why) {
+	if (request->method == HTTP_PUT) {
+		led_error(); // a refused or failed upload
+	}
 	ESP_LOGW(kTag, "%s %s refused (%s): %s", request->method == HTTP_PUT ? "PUT" : request->method == HTTP_POST ? "POST" : "GET",
 		request->uri, code, why);
 	char body[320];
@@ -991,11 +1070,16 @@ void serve_upload(const esp_partition_t* app, const hc::UpdateInstruction& instr
 	bool announced = false;
 	int64_t next_reminder_us = 0;
 	const char* why = "";
+	// Whether a hold of the button opens the window (ota_0 holds no application): inspected again only
+	// when an upload fails, which may have erased it.
+	bool button_counts = g_button_ready && inspect(app) != hc::AppImageState::valid;
+	UploadState last_state = g_upload_state.load();
 	if (!g_wifi_started && !wifi_start(why)) {
 		ESP_LOGE(kTag, "upload: %s", why);
 	}
 	for (;;) {
 		if (g_upload_restart.load()) {
+			led_show(hc::UpdaterLedState::off);
 			delay_ms(1000); // the answer leaves first
 			esp_restart();
 		}
@@ -1033,6 +1117,31 @@ void serve_upload(const esp_partition_t* app, const hc::UpdateInstruction& instr
 		int64_t deadline = g_upload_deadline_us.load();
 		UploadState state = g_upload_state.load();
 		bool running = state == UploadState::writing || state == UploadState::verifying;
+		if (state != last_state) {
+			if (state == UploadState::failed) {
+				button_counts = g_button_ready && inspect(app) != hc::AppImageState::valid;
+			}
+			last_state = state;
+		}
+		// The status LED (doc/ota.md "The updater"): busy while an image is written; held while the
+		// hold counts; the window's blink (also before the network is up: it acknowledges the hold);
+		// connecting without an address; waiting for the upload with the token; otherwise only the
+		// button helps (the window closed, ota_0 holds no application).
+		hc::UpdaterLedState shown;
+		if (running || state == UploadState::done) {
+			shown = hc::UpdaterLedState::busy;
+		} else if (button_counts && button_counting()) {
+			shown = hc::UpdaterLedState::held;
+		} else if (button_window_open()) {
+			shown = hc::UpdaterLedState::window;
+		} else if (!g_wifi_started || !(xEventGroupGetBits(g_events) & kGotIp)) {
+			shown = hc::UpdaterLedState::connecting;
+		} else if (g_upload_token[0] != '\0') {
+			shown = hc::UpdaterLedState::upload_ready;
+		} else {
+			shown = hc::UpdaterLedState::emergency;
+		}
+		led_show(shown);
 		if (deadline != 0 && now >= deadline) {
 			hc::UpdaterStep step = hc::decide_upload_expired(running ? hc::AppImageState::missing : inspect(app), running);
 			if (!running) {
@@ -1062,7 +1171,7 @@ void serve_upload(const esp_partition_t* app, const hc::UpdateInstruction& instr
 				ESP_LOGI(kTag, "waiting for the network to serve the firmware upload (%s)", left);
 			}
 		}
-		delay_ms(250);
+		delay_ms(100);
 	}
 }
 
@@ -1078,8 +1187,10 @@ void wait_watching_button(const esp_partition_t* app, uint32_t ms) {
 #else
 		bool held = button_held(now);
 #endif
+		led_show(button_counting() ? hc::UpdaterLedState::held : hc::UpdaterLedState::emergency);
 		if (held) {
 			g_button_until_us.store(now + kButtonWindowUs);
+			led_show(hc::UpdaterLedState::window);
 			ESP_LOGW(kTag, "button held: serving an upload without the token for 5 minutes");
 			hc::UpdateInstruction none;
 			std::memset(none.token, 0, sizeof(none.token));
@@ -1094,6 +1205,7 @@ void wait_watching_button(const esp_partition_t* app, uint32_t ms) {
 extern "C" void app_main(void) {
 	hc::Log::set_sink(&g_sink);
 	ESP_LOGI(kTag, "HomeControl updater %s (%s)", hc::kVersion, hc::build_id());
+	led_init();
 	init_nvs();
 	button_init();
 #if CONFIG_HC_UPDATER_TEST_BUTTON_WINDOW
@@ -1123,6 +1235,13 @@ extern "C" void app_main(void) {
 			status == hc::InstructionStatus::pending ? " for " : "",
 			status == hc::InstructionStatus::pending ? instruction.version : "", static_cast<long>(instruction.attempts),
 			hc::app_image_state_name(image), hc::updater_action_name(step.action), step.reason);
+		// The status LED until the step acts: the emergency (no application, no instruction: the button
+		// helps), or connecting before (and between) download attempts; the upload sets its own.
+		if (step.action == hc::UpdaterAction::wait) {
+			led_show(hc::UpdaterLedState::emergency);
+		} else if (step.action == hc::UpdaterAction::download) {
+			led_show(hc::UpdaterLedState::connecting);
+		}
 		if (step.delay_ms > 0) {
 			ESP_LOGI(kTag, "next step in %u s", static_cast<unsigned>(step.delay_ms / 1000));
 			if (step.action == hc::UpdaterAction::wait && (g_button_ready || kTestButtonWindow)) {
@@ -1156,11 +1275,14 @@ extern "C" void app_main(void) {
 			bool erased = false;
 			if (wifi_connected(why) && download(instruction, app, erased, why)) {
 				ESP_LOGI(kTag, "update to %s written and verified; restarting into it", instruction.version);
+				led_show(hc::UpdaterLedState::off);
 				delay_ms(100);
 				esp_restart();
 			}
 			ESP_LOGE(kTag, "attempt %ld failed: %s%s", static_cast<long>(attempt), why,
 				erased ? " (the application partition was already overwritten)" : " (the application is untouched)");
+			led_show(hc::UpdaterLedState::connecting);
+			led_error();
 			break;
 		}
 		}

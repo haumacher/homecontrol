@@ -22,6 +22,7 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/network_settings.cpp"
 	"${HC_CORE_DIR}/src/settings.cpp"
 	"${HC_CORE_DIR}/src/status_led.cpp"
+	"${HC_CORE_DIR}/src/updater_led.cpp"
 	"${HC_CORE_DIR}/src/tz.cpp"
 	"${HC_CORE_DIR}/src/version.cpp"
 	"${HC_CORE_DIR}/src/update_check.cpp"

@@ -7,7 +7,8 @@ menu "HomeControl status LED"
 		default HC_STATUS_LED_WS2812 if IDF_TARGET_ESP32C6
 		default HC_STATUS_LED_NONE
 		help
-			The LED that shows the controller's state (doc/network.md has the blink patterns).
+			The LED that shows the controller's state (doc/network.md has the blink patterns), and
+			the OTA updater's (doc/ota.md "The updater").
 			The ESP32-C6-DevKitC-1 and -DevKitM-1 carry a WS2812 RGB LED on GPIO8.
 
 		config HC_STATUS_LED_NONE

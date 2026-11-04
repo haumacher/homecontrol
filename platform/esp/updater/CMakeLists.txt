@@ -25,12 +25,17 @@ else()
 	set(PROJECT_VER "${PROJECT_VER}+upload")
 endif()
 
-# Only what the updater needs: the core (for the update instruction and the decision table) and the
-# NVS settings it shares with the application.
-set(EXTRA_COMPONENT_DIRS "${HC_ESP_DIR}/components/hc_core" "${HC_ESP_DIR}/components/hc_settings")
+# Only what the updater needs: the core (for the update instruction, the decision table and the LED
+# patterns), the NVS settings and the status LED it shares with the application.
+set(EXTRA_COMPONENT_DIRS "${HC_ESP_DIR}/components/hc_core" "${HC_ESP_DIR}/components/hc_settings"
+	"${HC_ESP_DIR}/components/hc_status_light")
 set(COMPONENTS main)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# The managed components (main/idf_component.yml: led_strip) are pinned per target in the versioned
+# updater/dependencies.lock.<target>, like the application's.
+idf_build_set_property(DEPENDENCIES_LOCK "${CMAKE_CURRENT_LIST_DIR}/dependencies.lock.${IDF_TARGET}")
 project(hc_updater)
 
 hc_check_partition_table()

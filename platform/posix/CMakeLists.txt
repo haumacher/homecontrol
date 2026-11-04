@@ -60,6 +60,7 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/tz_test.cpp"
 	"${HC_REPO_DIR}/core/test/hold_button_test.cpp"
 	"${HC_REPO_DIR}/core/test/status_led_test.cpp"
+	"${HC_REPO_DIR}/core/test/updater_led_test.cpp"
 	"${HC_REPO_DIR}/core/test/improv_protocol_test.cpp"
 	"${HC_REPO_DIR}/core/test/improv_test.cpp"
 	"${HC_REPO_DIR}/core/test/update_check_test.cpp"
