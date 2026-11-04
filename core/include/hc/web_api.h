@@ -120,7 +120,8 @@ struct WebResponse {
 /// the event loop's thread and send what it answers. Every refusal is a JSON object
 /// {"error": "<English reason>", "code": "<key>"} with a 4xx/5xx status.
 ///
-/// Access: GET /api/auth/session, POST /api/auth/onboard, /login and /logout are open; everything
+/// Access: GET /api/auth/session, POST /api/auth/onboard, /login and /logout are open
+/// (POST /api/auth/sessions/clear is not: it needs a principal like the rest); everything
 /// else needs a session cookie or a bearer token (401 otherwise; 403 with
 /// "auth.onboarding_required" while the device has no password). State-changing requests (POST,
 /// PUT, DELETE) without a bearer token must carry `X-Requested-With: HomeControl` (CSRF: a
@@ -255,6 +256,7 @@ private:
 	void auth_onboard(const WebRequest& request, WebResponse& response);
 	void auth_login(const WebRequest& request, WebResponse& response);
 	void auth_logout(const WebRequest& request, WebResponse& response);
+	void auth_sessions_clear(const WebRequest& request, WebResponse& response);
 	void status(WebResponse& response);
 	void datapoints(const WebRequest& request, WebResponse& response);
 	void datapoint(uint16_t id, WebResponse& response);
@@ -300,7 +302,10 @@ private:
 	void ok(WebResponse& response);
 	void write_schedule(JsonWriter& json, size_t index);
 	bool read_password(const WebRequest& request, WebResponse& response);
-	void set_session_cookie(WebResponse& response, const char* session);
+	/// The body's "remember" (absent: false); false with a 400 refusal if it is not a boolean.
+	bool read_remember(const WebRequest& request, WebResponse& response, bool& remember);
+	/// The session cookie; a remembered session's carries a Max-Age, nullptr clears the cookie.
+	void set_session_cookie(WebResponse& response, const char* session, bool remember = false);
 	void finish(WebResponse& response, JsonWriter& json);
 
 	Controller& controller_;

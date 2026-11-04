@@ -192,6 +192,9 @@ struct WebFixture {
 	hc::Auth auth{fake.settings, fake.clock, crypto};
 	hc::WebApi api{controller, model, auth, host};
 	char buffer[8192];
+	/// The API the requests go to (a test may point it to another instance, e.g. after a simulated
+	/// restart on the same settings).
+	hc::WebApi* api_target = &api;
 	/// The X-Image-Signature of the requests that follow ("": none).
 	std::string image_signature;
 
@@ -199,6 +202,7 @@ struct WebFixture {
 		int status = 0;
 		std::string body;
 		std::string cookie;
+		std::string set_cookie; ///< The whole Set-Cookie value.
 		uint32_t retry_after = 0;
 		Json json;
 	};
@@ -228,7 +232,7 @@ struct WebFixture {
 		req.body = body.c_str();
 		req.body_length = body.size();
 		hc::WebResponse resp(buffer, sizeof(buffer));
-		api.handle(req, resp);
+		api_target->handle(req, resp);
 		hc::PasswordHash hash;
 		if (resp.needs_hash) {
 			hash.params = resp.hash_params;
@@ -236,7 +240,7 @@ struct WebFixture {
 				hash.params.salt, sizeof(hash.params.salt), hash.params.iterations, hash.key, sizeof(hash.key));
 			req.hash = &hash;
 			hc::WebResponse second(buffer, sizeof(buffer));
-			api.handle(req, second);
+			api_target->handle(req, second);
 			return result(second);
 		}
 		return result(resp);
@@ -264,6 +268,7 @@ struct WebFixture {
 		r.body.assign(resp.body, resp.length);
 		r.retry_after = resp.retry_after_s;
 		std::string cookie = resp.set_cookie;
+		r.set_cookie = cookie;
 		size_t semicolon = cookie.find(';');
 		r.cookie = cookie.substr(0, semicolon);
 		std::string error;

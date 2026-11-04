@@ -18,6 +18,13 @@ function username(ctx) {
 		hidden: true, readonly: true, tabindex: "-1", "aria-hidden": "true" });
 }
 
+/// The checkbox "Stay logged in" (homecontrol #53), unchecked: the device remembers the session
+/// across restarts until logout or "log out everywhere".
+function rememberBox() {
+	const box = h("input", { type: "checkbox", id: "remember" });
+	return { box, element: h("label", { class: "check", for: "remember" }, box, t("auth.remember")) };
+}
+
 function card(...children) {
 	const logo = icon(logoPath);
 	logo.classList.add("logo");
@@ -30,6 +37,7 @@ export function renderOnboarding(content, ctx) {
 	const password = h("input", { type: "password", id: "pw", autocomplete: "new-password", required: true, autofocus: true });
 	const repeat = h("input", { type: "password", id: "pw2", autocomplete: "new-password", required: true });
 	const submit = h("button", { class: "button wide", type: "submit" }, t("auth.onboarding.submit"));
+	const remember = rememberBox();
 	const show = (text) => {
 		message.textContent = text;
 		message.hidden = !text;
@@ -54,7 +62,7 @@ export function renderOnboarding(content, ctx) {
 				submit.disabled = true;
 				submit.textContent = t("auth.login.working");
 				try {
-					await api("POST", "/api/auth/onboard", { password: password.value });
+					await api("POST", "/api/auth/onboard", { password: password.value, remember: remember.box.checked });
 					await ctx.refreshSession();
 					ctx.navigate("/", true);
 				} catch (error) {
@@ -73,6 +81,7 @@ export function renderOnboarding(content, ctx) {
 		h("div", { class: "field" }, h("label", { for: "pw" }, t("auth.password")), password,
 			h("span", { class: "hint" }, t("auth.password.hint", { min }))),
 		h("div", { class: "field" }, h("label", { for: "pw2" }, t("auth.password.repeat")), repeat),
+		remember.element,
 		message,
 		submit,
 	);
@@ -84,6 +93,7 @@ export function renderLogin(content, ctx) {
 	const message = h("p", { class: "message error", role: "alert", hidden: true });
 	const password = h("input", { type: "password", id: "pw", autocomplete: "current-password", required: true, autofocus: true });
 	const submit = h("button", { class: "button wide", type: "submit" }, t("auth.login.submit"));
+	const remember = rememberBox();
 	let countdown = null;
 	const show = (text) => {
 		message.textContent = text;
@@ -114,7 +124,7 @@ export function renderLogin(content, ctx) {
 				submit.disabled = true;
 				submit.textContent = t("auth.login.working");
 				try {
-					await api("POST", "/api/auth/login", { password: password.value });
+					await api("POST", "/api/auth/login", { password: password.value, remember: remember.box.checked });
 					await ctx.refreshSession();
 					ctx.navigate("/", true);
 				} catch (error) {
@@ -141,6 +151,7 @@ export function renderLogin(content, ctx) {
 		},
 		username(ctx),
 		h("div", { class: "field" }, h("label", { for: "pw" }, t("auth.password")), password),
+		remember.element,
 		message,
 		submit,
 	);

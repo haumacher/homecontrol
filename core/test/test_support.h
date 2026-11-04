@@ -176,6 +176,7 @@ public:
 			return hc::SettingsStatus::storage_error;
 		}
 		entries[key] = Entry{hc::SettingType::string, value, 0};
+		++writes;
 		return hc::SettingsStatus::ok;
 	}
 
@@ -210,7 +211,15 @@ public:
 		if (status != hc::SettingsStatus::ok) {
 			return status;
 		}
-		return entries.erase(key) > 0 ? hc::SettingsStatus::ok : hc::SettingsStatus::not_found;
+		if (entries.count(key) == 0) {
+			return hc::SettingsStatus::not_found; // nothing written (NVS writes nothing either)
+		}
+		if (fail_writes) {
+			return hc::SettingsStatus::storage_error;
+		}
+		entries.erase(key);
+		++writes;
+		return hc::SettingsStatus::ok;
 	}
 
 	void visit(hc::SettingsVisitor& visitor) const override {
@@ -221,6 +230,8 @@ public:
 
 	std::map<std::string, Entry> entries;
 	bool fail_writes = false;
+	/// Successful sets and erases (the flash writes a store would make).
+	size_t writes = 0;
 
 private:
 	hc::SettingsStatus find(const char* key, hc::SettingType type, const Entry*& out) const {
@@ -248,6 +259,7 @@ private:
 			return hc::SettingsStatus::storage_error;
 		}
 		entries[key] = Entry{type, std::string(), value};
+		++writes;
 		return hc::SettingsStatus::ok;
 	}
 };

@@ -1,7 +1,8 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
 // The System section of the Settings page: what an installed device's owner needs of the serial
 // console (issue #38, spec/api.md "System"): the update (also from a firmware file, issue #39),
-// restart and factory reset, log levels, the core dump, the API tokens, storage, the connections
+// restart and factory reset, log levels, the core dump, the API tokens, the sessions ("log out
+// everywhere", issue #53), storage, the connections
 // (KNX, MQTT, external sources, the language pack) and the WiFi credentials. Every refusal shows the
 // device's reason.
 
@@ -328,6 +329,26 @@ function tokenCard() {
 		shown, feedback);
 }
 
+/// The sessions and "log out everywhere" (homecontrol #53): ends every session of every browser,
+/// the remembered ones and this one included, then shows the login page.
+function sessionsCard(status, app) {
+	const web = (status && status.web) || {};
+	const feedback = feedbackLine();
+	const clear = actionButton(t("system.sessions.clear"), feedback, async () => {
+		await api("POST", "/api/auth/sessions/clear");
+		app.live.stop();
+		await app.refreshSession().catch(() => {});
+		app.navigate("/login", true);
+	}, { danger: true, confirm: () => t("system.sessions.clear.confirm") });
+	return card(t("system.sessions"),
+		rows([
+			[t("system.sessions.open"), String(web.sessions ?? "—")],
+			web.remembered !== undefined ? [t("system.sessions.remembered"), String(web.remembered)] : null,
+		]),
+		h("p", { class: "hint" }, t("system.sessions.hint")),
+		h("div", { class: "actions" }, clear), feedback);
+}
+
 function storageCard(details) {
 	const s = details && details.storage;
 	if (!s) {
@@ -390,6 +411,6 @@ export function renderSystem(container, app) {
 		drawDump(status);
 		replace(container, h("div", { class: "cards" },
 			updateCard(status, app), restartCard(ctx), dump, storageCard(status),
-			connectionsCard(status), logCard(), tokenCard(), wifiCard(ctx)));
+			connectionsCard(status), logCard(), tokenCard(), sessionsCard(status, app), wifiCard(ctx)));
 	}).catch((error) => replace(container, h("p", { class: "message error" }, errorText(error))));
 }

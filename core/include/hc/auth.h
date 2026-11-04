@@ -60,6 +60,11 @@ struct HashParams {
 /// - Browser sessions: kSessionSlots slots in RAM with a random 128-bit id (the cookie), expiring
 ///   after kSessionIdleMs without use and at every restart; when all are taken the least recently
 ///   used one is replaced.
+/// - Remembered sessions ("stay logged in", homecontrol #53): kRememberedSlots slots of their own,
+///   stored as the SHA-256 of the id under web.sess.0 .. web.sess.3 (`<order>$<hash hex>`, the order
+///   a creation counter). They have no idle expiry and survive restarts; they end at logout, with
+///   clear_sessions() and clear_password(). The settings are written only when one is created or
+///   ended, never on use; a fifth one replaces the oldest by creation order.
 /// - Bearer tokens for machines: "hct_" and 32 hex digits, shown once at creation, stored as their
 ///   SHA-256 under web.tok.0 .. web.tok.7 (`<name>$<hash hex>`), revocable by name.
 /// - Rate limiting: per source address, kFreeFailures failed logins are free; each further one
@@ -79,6 +84,10 @@ public:
 	/// The cookie's value: 32 hex digits.
 	static constexpr size_t kSessionText = kSessionIdBytes * 2 + 1;
 	static constexpr const char* kCookieName = "hc_session";
+	/// The Max-Age of a remembered session's cookie: 10 years (the device decides validity).
+	static constexpr uint32_t kRememberedCookieAgeS = 10u * 365 * 24 * 60 * 60;
+
+	static constexpr size_t kRememberedSlots = 4;
 
 	static constexpr size_t kMaxTokens = 8;
 	static constexpr size_t kMaxTokenName = 24;
@@ -95,11 +104,12 @@ public:
 	/// Persisted setting keys (never rename).
 	static constexpr const char* kPasswordKey = "web.pw";
 	static constexpr const char* kTokenKeyPrefix = "web.tok.";
+	static constexpr const char* kRememberedKeyPrefix = "web.sess.";
 
 	Auth(Settings& settings, const Clock& clock, Crypto& crypto);
 
-	/// Reads the password record and the tokens from the settings (an unreadable record is logged
-	/// and treated as absent).
+	/// Reads the password record, the tokens and the remembered sessions from the settings (an
+	/// unreadable record is logged and treated as absent).
 	void start();
 
 	bool has_password() const { return has_password_; }
@@ -111,33 +121,43 @@ public:
 
 	/// Onboarding: refused if a password exists; otherwise fresh parameters for the new hash.
 	AuthStatus begin_onboarding(HashParams& out);
-	/// Stores the derived key as the password and opens a session.
+	/// Stores the derived key as the password and opens a session (a remembered one with `remember`).
 	AuthStatus finish_onboarding(const HashParams& params, const uint8_t key[kKeySize], const char* source,
-		char session[kSessionText]);
+		char session[kSessionText], bool remember = false);
 
 	/// Login: refused without a password or while the source is blocked (`retry_after_s` set);
 	/// otherwise the stored parameters.
 	AuthStatus begin_login(const char* source, HashParams& out, uint32_t& retry_after_s);
-	/// Compares the derived key; on success opens a session, on failure counts it for the source.
+	/// Compares the derived key; on success opens a session (a remembered one with `remember`), on
+	/// failure counts it for the source.
 	AuthStatus finish_login(const char* source, const HashParams& params, const uint8_t key[kKeySize],
-		char session[kSessionText], uint32_t& retry_after_s, uint32_t& failures);
+		char session[kSessionText], uint32_t& retry_after_s, uint32_t& failures, bool remember = false);
 
-	/// Erases the password and ends every session (console `web password clear`): the device
-	/// returns to onboarding. Tokens stay.
+	/// Erases the password and ends every session, the remembered ones included (console `web
+	/// password clear`): the device returns to onboarding. Tokens stay.
 	AuthStatus clear_password();
 
 	// ---- Sessions ------------------------------------------------------------------------------
 
 	/// The session of a Cookie header value ("a=b; hc_session=<hex>; ..."); invalid if none or
-	/// expired. A hit counts as use.
+	/// expired. A hit counts as use (in RAM only: a remembered session is never written on use).
+	/// The slot of a reference is 0..kSessionSlots-1 for a RAM session, kSessionSlots.. for a
+	/// remembered one.
 	SessionRef session_from_cookie(const char* cookie);
 	/// Whether a session reference is still alive (not logged out, replaced or expired).
 	bool session_alive(const SessionRef& ref) const;
-	/// Counts as use (keeps the session from expiring).
+	/// Counts as use (keeps a RAM session from expiring; nothing for a remembered one).
 	void touch(const SessionRef& ref);
-	/// Ends the session.
-	void end_session(const SessionRef& ref);
+	/// Ends the session; a remembered one is erased from the settings (storage_error if that failed:
+	/// it is ended until the restart, and logged).
+	AuthStatus end_session(const SessionRef& ref);
+	/// Ends every session, RAM and remembered ("log out everywhere"; console `web session clear`).
+	/// `ended` is how many were alive. storage_error if a remembered one could not be erased.
+	AuthStatus clear_sessions(size_t* ended = nullptr);
+	/// Alive sessions of both kinds.
 	size_t session_count() const;
+	/// Remembered sessions.
+	size_t remembered_count() const;
 
 	// ---- Tokens --------------------------------------------------------------------------------
 
@@ -172,6 +192,15 @@ private:
 		bool used = false;
 	};
 
+	/// A remembered session: the SHA-256 of its id, its creation order (persisted) and its
+	/// generation (RAM only, like a RAM slot's).
+	struct Remembered {
+		uint8_t hash[Sha256::kDigestSize] = {};
+		uint32_t order = 0;
+		uint32_t generation = 0;
+		bool used = false;
+	};
+
 	struct Token {
 		char name[kMaxTokenName + 1] = {};
 		uint8_t hash[Sha256::kDigestSize] = {};
@@ -186,10 +215,14 @@ private:
 		bool used = false;
 	};
 
-	AuthStatus open_session(char session[kSessionText]);
+	AuthStatus open_session(char session[kSessionText], bool remember);
+	AuthStatus open_remembered(char session[kSessionText]);
+	AuthStatus end_remembered(size_t i);
+	AuthStatus clear_remembered();
 	void expire_sessions();
 	RateSlot* rate_slot(const char* source, bool create);
 	static void token_key(size_t slot, char* out, size_t size);
+	static void remembered_key(size_t slot, char* out, size_t size);
 
 	Settings& settings_;
 	const Clock& clock_;
@@ -198,6 +231,9 @@ private:
 	HashParams password_params_;
 	uint8_t password_key_[kKeySize] = {};
 	Session sessions_[kSessionSlots];
+	Remembered remembered_[kRememberedSlots];
+	/// The order the next remembered session gets (one above the highest stored).
+	uint32_t next_order_ = 1;
 	Token tokens_[kMaxTokens];
 	RateSlot rate_[kRateSlots];
 };

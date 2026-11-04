@@ -155,7 +155,8 @@ Console-only by design: `web password clear`, `crash` and `web demo`; also `wifi
 | | `crash stall yes` | spins on the event loop without feeding the watchdog: a `task watchdog` reset after 10 s | console only by design |
 | components | `web status` | the web server's state | `GET /api/status` (`web`) |
 | | `web token create\|list\|revoke` | API tokens (doc/web.md) | `POST`/`GET /api/tokens`, `DELETE /api/tokens/<name>`; Settings, System |
-| | `web password clear` | resets the device password, onboarding opens again | console only by design (the recovery from a lost password needs physical access) |
+| | `web session clear` | log out everywhere: ends every session, the remembered ones included (homecontrol #53) | `POST /api/auth/sessions/clear`; Settings, System |
+| | `web password clear` | resets the device password, ends every session (the remembered ones too), onboarding opens again | console only by design (the recovery from a lost password needs physical access) |
 | | `web demo` | the demo datapoints until the next restart | console only by design (a development aid) |
 | | `storage status` | the mount, free space, the blob store's files | `GET /api/status` (`storage`); Settings, System |
 | | `knx status`, `knx gateway set\|clear`, `knx nat on\|off` | doc/knx.md | `GET /api/status` (`knx`), `PUT /api/settings/knx.gateway`, `PUT /api/settings/knx.nat`; Settings |

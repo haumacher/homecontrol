@@ -218,10 +218,14 @@ void WebApi::finish(WebResponse& response, JsonWriter& json) {
 	response.length = json.length();
 }
 
-void WebApi::set_session_cookie(WebResponse& response, const char* session) {
+void WebApi::set_session_cookie(WebResponse& response, const char* session, bool remember) {
 	if (session == nullptr) {
 		std::snprintf(response.set_cookie, sizeof(response.set_cookie),
 			"%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict", Auth::kCookieName);
+	} else if (remember) {
+		std::snprintf(response.set_cookie, sizeof(response.set_cookie),
+			"%s=%s; Path=/; Max-Age=%u; HttpOnly; SameSite=Strict", Auth::kCookieName, session,
+			static_cast<unsigned>(Auth::kRememberedCookieAgeS));
 	} else {
 		std::snprintf(response.set_cookie, sizeof(response.set_cookie), "%s=%s; Path=/; HttpOnly; SameSite=Strict",
 			Auth::kCookieName, session);
@@ -312,8 +316,9 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		}
 	}
 
-	// ---- Open endpoints ----
-	if (starts_with(path, "/api/auth/")) {
+	// ---- Open endpoints (all of /api/auth/ but "log out everywhere") ----
+	bool clear_sessions = std::strcmp(path, "/api/auth/sessions/clear") == 0;
+	if (starts_with(path, "/api/auth/") && !clear_sessions) {
 		const char* what = path + 10;
 		bool known = std::strcmp(what, "session") == 0 || std::strcmp(what, "onboard") == 0 ||
 			std::strcmp(what, "login") == 0 || std::strcmp(what, "logout") == 0;
@@ -371,6 +376,14 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		return;
 	}
 
+	if (clear_sessions) {
+		if (request.method != HttpMethod::post) {
+			refuse(response, 405, "api.method_not_allowed", "use POST");
+			return;
+		}
+		auth_sessions_clear(request, response);
+		return;
+	}
 	if (std::strcmp(path, "/api/status") == 0) {
 		if (request.method != HttpMethod::get) {
 			refuse(response, 405, "api.method_not_allowed", "use GET");
@@ -655,13 +668,33 @@ bool WebApi::read_password(const WebRequest& request, WebResponse& response) {
 	return true;
 }
 
+bool WebApi::read_remember(const WebRequest& request, WebResponse& response, bool& remember) {
+	remember = false;
+	JsonSpan body;
+	JsonSpan member;
+	if (!json_parse(request.body, request.body_length, body, nullptr) || body.kind != JsonSpan::Kind::object ||
+		!json_member(body, "remember", member) || member.kind == JsonSpan::Kind::null) {
+		return true; // a bad body was refused by read_password() in the first pass
+	}
+	if (!json_bool(member, remember)) {
+		refuse(response, 400, "auth.remember_invalid", "\"remember\" must be true or false");
+		return false;
+	}
+	return true;
+}
+
 void WebApi::auth_onboard(const WebRequest& request, WebResponse& response) {
 	if (request.hash == nullptr) {
 		if (auth_.has_password()) {
 			refuse(response, 409, auth_status_code(AuthStatus::password_set), auth_status_text(AuthStatus::password_set));
 			return;
 		}
+		bool remember = false;
 		if (!read_password(request, response)) {
+			return;
+		}
+		if (!read_remember(request, response, remember)) {
+			std::memset(response.password, 0, sizeof(response.password));
 			return;
 		}
 		AuthStatus status = auth_.begin_onboarding(response.hash_params);
@@ -675,12 +708,18 @@ void WebApi::auth_onboard(const WebRequest& request, WebResponse& response) {
 		return;
 	}
 	char session[Auth::kSessionText];
-	AuthStatus status = auth_.finish_onboarding(request.hash->params, request.hash->key, request.source, session);
+	bool remember = false;
+	if (!read_remember(request, response, remember)) {
+		return;
+	}
+	AuthStatus status =
+		auth_.finish_onboarding(request.hash->params, request.hash->key, request.source, session, remember);
 	if (status != AuthStatus::ok) {
 		refuse(response, status == AuthStatus::password_set ? 409 : 500, auth_status_code(status), auth_status_text(status));
 		return;
 	}
-	set_session_cookie(response, session);
+	set_session_cookie(response, session, remember);
+	std::memset(session, 0, sizeof(session));
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object().member("ok", true).end_object();
 	finish(response, json);
@@ -689,7 +728,12 @@ void WebApi::auth_onboard(const WebRequest& request, WebResponse& response) {
 void WebApi::auth_login(const WebRequest& request, WebResponse& response) {
 	uint32_t retry_after = 0;
 	if (request.hash == nullptr) {
+		bool remember = false;
 		if (!read_password(request, response)) {
+			return;
+		}
+		if (!read_remember(request, response, remember)) {
+			std::memset(response.password, 0, sizeof(response.password));
 			return;
 		}
 		AuthStatus status = auth_.begin_login(request.source, response.hash_params, retry_after);
@@ -705,10 +749,15 @@ void WebApi::auth_login(const WebRequest& request, WebResponse& response) {
 	}
 	char session[Auth::kSessionText];
 	uint32_t failures = 0;
-	AuthStatus status =
-		auth_.finish_login(request.source, request.hash->params, request.hash->key, session, retry_after, failures);
+	bool remember = false;
+	if (!read_remember(request, response, remember)) {
+		return;
+	}
+	AuthStatus status = auth_.finish_login(request.source, request.hash->params, request.hash->key, session,
+		retry_after, failures, remember);
 	if (status == AuthStatus::ok) {
-		set_session_cookie(response, session);
+		set_session_cookie(response, session, remember);
+		std::memset(session, 0, sizeof(session));
 		JsonWriter json(response.body, response.capacity);
 		json.begin_object().member("ok", true).end_object();
 		finish(response, json);
@@ -741,13 +790,33 @@ void WebApi::auth_login(const WebRequest& request, WebResponse& response) {
 
 void WebApi::auth_logout(const WebRequest& request, WebResponse& response) {
 	SessionRef ref = auth_.session_from_cookie(request.cookie);
+	AuthStatus status = AuthStatus::ok;
 	if (ref.valid()) {
-		auth_.end_session(ref);
+		status = auth_.end_session(ref);
 		Log::info(kTag, "logout from %s", request.source);
 	}
 	set_session_cookie(response, nullptr);
+	if (status != AuthStatus::ok) {
+		// Ended until the restart; the stored record could not be erased (logged by Auth).
+		refuse(response, 500, auth_status_code(status), auth_status_text(status));
+		return;
+	}
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object().member("ok", true).end_object();
+	finish(response, json);
+}
+
+void WebApi::auth_sessions_clear(const WebRequest& request, WebResponse& response) {
+	size_t ended = 0;
+	AuthStatus status = auth_.clear_sessions(&ended);
+	Log::warn(kTag, "log out everywhere from %s: %u session(s) ended", request.source, static_cast<unsigned>(ended));
+	set_session_cookie(response, nullptr); // the caller's own session ended too
+	if (status != AuthStatus::ok) {
+		refuse(response, 500, auth_status_code(status), auth_status_text(status));
+		return;
+	}
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object().member("ok", true).member("ended", static_cast<uint32_t>(ended)).end_object();
 	finish(response, json);
 }
 
@@ -804,6 +873,7 @@ void WebApi::write_status(JsonWriter& json, bool full) {
 	json.member("led", led_status_name(ctl.led_status()));
 	json.key("web").begin_object()
 		.member("sessions", static_cast<uint32_t>(auth_.session_count()))
+		.member("remembered", static_cast<uint32_t>(auth_.remembered_count()))
 		.member("tokens", static_cast<uint32_t>(auth_.token_count()))
 		.member("ws_clients", static_cast<uint32_t>(feed_ != nullptr ? feed_->client_count() : 0))
 		.end_object();

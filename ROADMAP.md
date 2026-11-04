@@ -232,3 +232,14 @@ outside world (weather, external services).
   Refusals for other reasons stay (not writable, no conversion, not encodable, a device that has
   not joined). Not held: the KNX time master's transmit-only datapoints (an old clock), and writes
   lost with a tunnel that was up (unchanged: not replayed).
+- **2026-11-04 — "Stay logged in": remembered sessions survive reboots (#53).** Reverses the
+  2026-10 decision in `doc/web.md` "Sessions" not to persist sessions: logging in again after every
+  firmware upload and deployment is a burden without a security gain on a home network. A login or
+  onboarding with "stay logged in" (unchecked by default) gets a cookie with a 10-year `Max-Age`
+  and one of 4 slots of its own, stored as the SHA-256 of the session id in `web.sess.0` ..
+  `web.sess.3` (`<creation order>$<hash hex>`), valid until logout with no idle expiry and no
+  wall-clock dependency; a fifth replaces the oldest. Flash wear stays bounded because the settings
+  are written only when such a session is created or ended, never on use. The reboot as the way to
+  log everybody out is replaced by an explicit "log out everywhere" (Settings, System; `POST
+  /api/auth/sessions/clear`; console `web session clear`), which ends the remembered sessions too,
+  as does `web password clear`. Plain sessions are unchanged (RAM, 24 h idle, end at reboot).

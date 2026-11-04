@@ -63,6 +63,10 @@ void Auth::token_key(size_t slot, char* out, size_t size) {
 	std::snprintf(out, size, "%s%u", kTokenKeyPrefix, static_cast<unsigned>(slot));
 }
 
+void Auth::remembered_key(size_t slot, char* out, size_t size) {
+	std::snprintf(out, size, "%s%u", kRememberedKeyPrefix, static_cast<unsigned>(slot));
+}
+
 void Auth::start() {
 	char text[Settings::kMaxStringLength + 1];
 	SettingsStatus status = settings_.get_string(kPasswordKey, text, sizeof(text));
@@ -97,8 +101,37 @@ void Auth::start() {
 		tokens_[i].name[name_length] = '\0';
 		tokens_[i].used = true;
 	}
-	Log::info(kTag, "web authentication: %s, %u token(s)", has_password_ ? "device password set" : "no device password: onboarding open",
-		static_cast<unsigned>(token_count()));
+	// The remembered sessions: `<order>$<hash hex>` (doc/web.md "Sessions").
+	uint32_t highest = 0;
+	for (size_t i = 0; i < kRememberedSlots; ++i) {
+		uint32_t generation = remembered_[i].generation + 1; // a reference from before never matches
+		remembered_[i] = Remembered{};
+		remembered_[i].generation = generation;
+		char key[16];
+		remembered_key(i, key, sizeof(key));
+		status = settings_.get_string(key, text, sizeof(text));
+		if (status == SettingsStatus::not_found) {
+			continue;
+		}
+		const char* dollar = status == SettingsStatus::ok ? std::strchr(text, '$') : nullptr;
+		char* end = nullptr;
+		unsigned long long order = dollar != nullptr ? std::strtoull(text, &end, 10) : 0;
+		if (dollar == nullptr || end != dollar || order == 0 || order >= 0xFFFFFFFFull || text[0] < '0' || text[0] > '9' ||
+			std::strlen(dollar + 1) != Sha256::kDigestSize * 2 ||
+			!from_hex(dollar + 1, remembered_[i].hash, Sha256::kDigestSize)) {
+			Log::error(kTag, "remembered session %s unreadable: ignored (the slot is reused by the next one)", key);
+			remembered_[i] = Remembered{};
+			remembered_[i].generation = generation;
+			continue;
+		}
+		remembered_[i].order = static_cast<uint32_t>(order);
+		remembered_[i].used = true;
+		highest = remembered_[i].order > highest ? remembered_[i].order : highest;
+	}
+	next_order_ = highest + 1;
+	Log::info(kTag, "web authentication: %s, %u token(s), %u remembered session(s)",
+		has_password_ ? "device password set" : "no device password: onboarding open",
+		static_cast<unsigned>(token_count()), static_cast<unsigned>(remembered_count()));
 }
 
 bool Auth::password_valid(const char* password, size_t length, const char** error) {
@@ -167,7 +200,7 @@ AuthStatus Auth::begin_onboarding(HashParams& out) {
 }
 
 AuthStatus Auth::finish_onboarding(const HashParams& params, const uint8_t key[kKeySize], const char* source,
-	char session[kSessionText]) {
+	char session[kSessionText], bool remember) {
 	if (has_password_) {
 		return AuthStatus::password_set;
 	}
@@ -184,7 +217,7 @@ AuthStatus Auth::finish_onboarding(const HashParams& params, const uint8_t key[k
 	std::memcpy(password_key_, key, kKeySize);
 	has_password_ = true;
 	Log::warn(kTag, "device password set (onboarding from %s)", source != nullptr ? source : "?");
-	return open_session(session);
+	return open_session(session, remember);
 }
 
 Auth::RateSlot* Auth::rate_slot(const char* source, bool create) {
@@ -225,7 +258,7 @@ AuthStatus Auth::begin_login(const char* source, HashParams& out, uint32_t& retr
 }
 
 AuthStatus Auth::finish_login(const char* source, const HashParams& params, const uint8_t key[kKeySize],
-	char session[kSessionText], uint32_t& retry_after_s, uint32_t& failures) {
+	char session[kSessionText], uint32_t& retry_after_s, uint32_t& failures, bool remember) {
 	retry_after_s = 0;
 	failures = 0;
 	if (!has_password_) {
@@ -245,8 +278,8 @@ AuthStatus Auth::finish_login(const char* source, const HashParams& params, cons
 		if (slot != nullptr) {
 			*slot = RateSlot{};
 		}
-		Log::info(kTag, "login from %s", source != nullptr ? source : "?");
-		return open_session(session);
+		Log::info(kTag, "login from %s%s", source != nullptr ? source : "?", remember ? " (stay logged in)" : "");
+		return open_session(session, remember);
 	}
 	slot = rate_slot(source, true);
 	slot->failures++;
@@ -285,8 +318,9 @@ AuthStatus Auth::clear_password() {
 			++s.generation;
 		}
 	}
+	AuthStatus remembered = clear_remembered();
 	Log::warn(kTag, "device password cleared, all sessions ended: onboarding is open");
-	return AuthStatus::ok;
+	return remembered;
 }
 
 void Auth::expire_sessions() {
@@ -299,7 +333,84 @@ void Auth::expire_sessions() {
 	}
 }
 
-AuthStatus Auth::open_session(char session[kSessionText]) {
+AuthStatus Auth::open_remembered(char session[kSessionText]) {
+	Remembered* target = nullptr;
+	for (Remembered& r : remembered_) {
+		if (!r.used) {
+			target = &r;
+			break;
+		}
+		if (target == nullptr || r.order < target->order) {
+			target = &r;
+		}
+	}
+	size_t slot = static_cast<size_t>(target - remembered_);
+	uint8_t id[kSessionIdBytes];
+	if (!crypto_.random(id, sizeof(id))) {
+		return AuthStatus::no_random;
+	}
+	char text[kSessionText];
+	to_hex(id, sizeof(id), text);
+	uint8_t hash[Sha256::kDigestSize];
+	Sha256::hash(text, kSessionText - 1, hash);
+	char hash_hex[Sha256::kDigestSize * 2 + 1];
+	to_hex(hash, sizeof(hash), hash_hex);
+	char record[16 + sizeof(hash_hex)];
+	std::snprintf(record, sizeof(record), "%u$%s", static_cast<unsigned>(next_order_), hash_hex);
+	char key[16];
+	remembered_key(slot, key, sizeof(key));
+	SettingsStatus status = settings_.set_string(key, record);
+	std::memset(id, 0, sizeof(id));
+	if (status != SettingsStatus::ok) {
+		Log::error(kTag, "remembered session not stored (%s): %s", key, settings_status_name(status));
+		std::memset(text, 0, sizeof(text));
+		return AuthStatus::storage_error;
+	}
+	if (target->used) {
+		Log::info(kTag, "all %u remembered sessions in use: the oldest one ends",
+			static_cast<unsigned>(kRememberedSlots));
+	}
+	std::memcpy(target->hash, hash, sizeof(hash));
+	target->order = next_order_++;
+	++target->generation;
+	target->used = true;
+	std::memcpy(session, text, kSessionText);
+	std::memset(text, 0, sizeof(text));
+	return AuthStatus::ok;
+}
+
+AuthStatus Auth::end_remembered(size_t i) {
+	Remembered& r = remembered_[i];
+	char key[16];
+	remembered_key(i, key, sizeof(key));
+	SettingsStatus status = settings_.erase(key);
+	bool was_used = r.used;
+	uint32_t generation = r.generation + (was_used ? 1 : 0);
+	r = Remembered{};
+	r.generation = generation;
+	if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
+		Log::error(kTag, "remembered session %s not erased (%s): it ends now but returns after a restart", key,
+			settings_status_name(status));
+		return AuthStatus::storage_error;
+	}
+	return AuthStatus::ok;
+}
+
+AuthStatus Auth::clear_remembered() {
+	AuthStatus result = AuthStatus::ok;
+	for (size_t i = 0; i < kRememberedSlots; ++i) {
+		// Every key, an unreadable record too: none may come back after a restart.
+		if (end_remembered(i) != AuthStatus::ok) {
+			result = AuthStatus::storage_error;
+		}
+	}
+	return result;
+}
+
+AuthStatus Auth::open_session(char session[kSessionText], bool remember) {
+	if (remember) {
+		return open_remembered(session);
+	}
 	expire_sessions();
 	Session* target = nullptr;
 	for (Session& s : sessions_) {
@@ -356,6 +467,21 @@ SessionRef Auth::session_from_cookie(const char* cookie) {
 						return ref;
 					}
 				}
+				// A remembered session: its hash, compared in every slot (the time does not tell which
+				// one matched). Nothing is written on use.
+				uint8_t hash[Sha256::kDigestSize];
+				Sha256::hash(text, n, hash);
+				int found = -1;
+				for (size_t i = 0; i < kRememberedSlots; ++i) {
+					if (remembered_[i].used && constant_time_equal(remembered_[i].hash, hash, sizeof(hash))) {
+						found = static_cast<int>(i);
+					}
+				}
+				if (found >= 0) {
+					ref.slot = static_cast<int8_t>(kSessionSlots + static_cast<size_t>(found));
+					ref.generation = remembered_[found].generation;
+					return ref;
+				}
 			}
 		}
 		const char* next = std::strchr(p, ';');
@@ -368,24 +494,49 @@ SessionRef Auth::session_from_cookie(const char* cookie) {
 }
 
 bool Auth::session_alive(const SessionRef& ref) const {
-	if (!ref.valid() || static_cast<size_t>(ref.slot) >= kSessionSlots) {
+	if (!ref.valid() || static_cast<size_t>(ref.slot) >= kSessionSlots + kRememberedSlots) {
 		return false;
+	}
+	if (static_cast<size_t>(ref.slot) >= kSessionSlots) {
+		const Remembered& r = remembered_[static_cast<size_t>(ref.slot) - kSessionSlots];
+		return r.used && r.generation == ref.generation;
 	}
 	const Session& s = sessions_[ref.slot];
 	return s.used && s.generation == ref.generation && clock_.monotonic_ms() - s.last_used_ms < kSessionIdleMs;
 }
 
 void Auth::touch(const SessionRef& ref) {
-	if (session_alive(ref)) {
+	if (session_alive(ref) && static_cast<size_t>(ref.slot) < kSessionSlots) {
 		sessions_[ref.slot].last_used_ms = clock_.monotonic_ms();
 	}
 }
 
-void Auth::end_session(const SessionRef& ref) {
-	if (session_alive(ref)) {
-		sessions_[ref.slot].used = false;
-		++sessions_[ref.slot].generation;
+AuthStatus Auth::end_session(const SessionRef& ref) {
+	if (!session_alive(ref)) {
+		return AuthStatus::ok;
 	}
+	if (static_cast<size_t>(ref.slot) >= kSessionSlots) {
+		return end_remembered(static_cast<size_t>(ref.slot) - kSessionSlots);
+	}
+	sessions_[ref.slot].used = false;
+	++sessions_[ref.slot].generation;
+	return AuthStatus::ok;
+}
+
+AuthStatus Auth::clear_sessions(size_t* ended) {
+	size_t n = session_count();
+	for (Session& s : sessions_) {
+		if (s.used) {
+			s.used = false;
+			++s.generation;
+		}
+	}
+	AuthStatus status = clear_remembered();
+	if (ended != nullptr) {
+		*ended = n;
+	}
+	Log::warn(kTag, "all sessions ended (%u), the remembered ones included", static_cast<unsigned>(n));
+	return status;
 }
 
 size_t Auth::session_count() const {
@@ -395,6 +546,14 @@ size_t Auth::session_count() const {
 		if (s.used && now - s.last_used_ms < kSessionIdleMs) {
 			++n;
 		}
+	}
+	return n + remembered_count();
+}
+
+size_t Auth::remembered_count() const {
+	size_t n = 0;
+	for (const Remembered& r : remembered_) {
+		n += r.used ? 1 : 0;
 	}
 	return n;
 }

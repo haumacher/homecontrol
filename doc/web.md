@@ -77,12 +77,44 @@ what a 512 KB device cannot afford; no hardware help).
 A login creates a session: a random 128-bit id (hardware RNG), sent as the cookie
 `hc_session=<32 hex>; Path=/; HttpOnly; SameSite=Strict` without an expiry (it ends with the
 browser session). The device keeps 8 session slots in RAM; a session ends after 24 h without a
-request, at logout, when the password is reset, and at every reboot (nothing is persisted, so a
-stolen cookie dies with the next restart). A ninth login replaces the least recently used session.
-Each slot has a generation counter, so a WebSocket bound to an ended session notices within a second
-and closes. Rejected: signed stateless tokens (JWT; they cannot be revoked without state, and the
-state is 8 slots anyway); persisting sessions in NVS (flash wear on every login, and a reboot as a
-cheap "log everybody out" is a feature).
+request, at logout, when the password is reset, with "log out everywhere", and at every reboot (a
+stolen cookie of such a session dies with the next restart). A ninth login replaces the least
+recently used session. Each slot has a generation counter, so a WebSocket bound to an ended session
+notices within a second and closes. Rejected: signed stateless tokens (JWT; they cannot be revoked
+without state, and the state is a few slots anyway).
+
+**Remembered sessions ("stay logged in", homecontrol #53).** The login page and onboarding carry a
+checkbox "Stay logged in" ("Angemeldet bleiben"), unchecked by default; with it, `login` and
+`onboard` get `"remember": true`. Such a session has 4 slots of its own beside the 8 RAM slots,
+stored in the settings as the SHA-256 of its id: `web.sess.0` .. `web.sess.3` = `<creation
+order>$<64 hex>` (a persisted format, frozen; the keys are never renamed, and fit the NVS key limit
+of 15 characters). A flash dump therefore does not reveal a usable cookie. Its cookie carries
+`Max-Age=315360000` (10 years: the device decides validity, the browser only keeps it). It has no
+idle expiry and no wall-clock dependency, survives reboots and firmware updates, and ends at its
+logout, with "log out everywhere", and with `web password clear`. A fifth remembered login replaces
+the oldest by creation order, which is persisted with the record. The settings are written only when
+a remembered session is created (one set) or ended (one erase), never on use: a request with its
+cookie hashes the id (one SHA-256 of 32 bytes) and compares with the 4 stored hashes in RAM. A
+failed write refuses the login with `auth.storage_error` (no half-remembered session); a failed
+erase at logout ends the session until the restart and says so. Unreadable records are logged and
+their slots reused. RAM: 4 × (32-byte hash + order + generation + flag) = 176 bytes in `Auth`, plus
+the 4-byte order counter.
+
+**Log out everywhere** ("Alle Sitzungen abmelden", Settings → System; `POST
+/api/auth/sessions/clear` with the cookie and the CSRF header or with a token; console `web session
+clear`) ends every session, RAM and remembered, the caller's own included (the UI then shows the
+login page); open WebSockets of the ended sessions close with 1008 `auth.session_ended` through the
+generation counters. Tokens stay. E-Home is not affected: it authenticates with its enrollment
+secret, never with a session cookie (and the E-Home connection may not call `/api/auth/`).
+
+*Decision reversed on 2026-11-04 (homecontrol #53).* Until then this section said: "Rejected: …
+persisting sessions in NVS (flash wear on every login, and a reboot as a cheap 'log everybody out'
+is a feature)." Logging in again after every firmware upload and deployment is a burden without a
+security gain on a home network, which the owner rated higher. Flash wear stays bounded because only
+the creation and the end of a remembered session write (as rare as logins with the box checked, at
+most a few a day), never their use; the explicit "log out everywhere" replaces the reboot as the way
+to log everybody out. Plain sessions keep the old behaviour, so a shared or borrowed browser can
+still leave no trace beyond the restart.
 
 ### Tokens for machines
 
@@ -412,8 +444,8 @@ When the heap is exhausted the image still runs and `GET /api/model` refuses wit
   copied into a pool of 8 buffers of 1400 bytes and sent by work queued to the httpd task
   (`httpd_queue_work`); a send checks that the socket still belongs to the same connection (socket
   number plus a generation), a failed send closes the connection. The loop never blocks on a socket.
-- The `web` console command: `web status`, `web token create|list|revoke`, `web password clear`,
-  `web demo` (the demo datapoints until the next restart).
+- The `web` console command: `web status`, `web token create|list|revoke`, `web session clear` (log
+  out everywhere), `web password clear`, `web demo` (the demo datapoints until the next restart).
 - Static RAM of this package on the C6 (`idf.py size`, .bss): +38 KB, of which the web server object
   (API, feed, auth) 3.6 KB, the send pool 11 KB, the response buffer 8 KB (files are sent in
   chunks from its front), the job slot 2.3 KB (the API body and the WebSocket text share it), the

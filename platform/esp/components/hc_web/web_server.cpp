@@ -297,8 +297,8 @@ WebServer::WebServer(Controller& controller, DatapointModel& model, LoopQueue& q
 	  api_(controller, model, auth_, *this),
 	  feed_(api_, controller.loop(), *this),
 	  demo_(model, controller.loop(), controller.clock()),
-	  console_command_{"web", "status | token create <name> | token list | token revoke <name> | password clear | demo",
-		  "Web server (doc/web.md): state, API tokens for machines (shown once, stored hashed), reset the device "
+	  console_command_{"web", "status | token create <name> | token list | token revoke <name> | session clear | password clear | demo",
+		  "Web server (doc/web.md): state, API tokens for machines (shown once, stored hashed), log out everywhere, reset the device "
 		  "password (onboarding opens again), load the demo datapoints until the next restart",
 		  &WebServer::console_web, this} {
 	static Job job;
@@ -1185,13 +1185,15 @@ int WebServer::console_web(void* context, int argc, char** argv) {
 
 int WebServer::web_command(int argc, char** argv) {
 	static const char kUsage[] =
-		"web status | token create <name> | token list | token revoke <name> | password clear | demo";
+		"web status | token create <name> | token list | token revoke <name> | session clear | password clear | demo";
 	const char* sub = argc >= 2 ? argv[1] : "status";
 	if (std::strcmp(sub, "status") == 0 && argc <= 2) {
 		std::printf("server    %s, http://%s.local/\n", server_ != nullptr ? "running on port 80" : "not running",
 			device_name_);
 		std::printf("password  %s\n", auth_.has_password() ? "set" : "not set (the onboarding page sets it)");
-		std::printf("sessions  %u of %u\n", static_cast<unsigned>(auth_.session_count()),
+		std::printf("sessions  %u (%u of %u remembered, %u of %u in RAM)\n", static_cast<unsigned>(auth_.session_count()),
+			static_cast<unsigned>(auth_.remembered_count()), static_cast<unsigned>(Auth::kRememberedSlots),
+			static_cast<unsigned>(auth_.session_count() - auth_.remembered_count()),
 			static_cast<unsigned>(Auth::kSessionSlots));
 		std::printf("tokens    %u of %u\n", static_cast<unsigned>(auth_.token_count()),
 			static_cast<unsigned>(Auth::kMaxTokens));
@@ -1239,6 +1241,16 @@ int WebServer::web_command(int argc, char** argv) {
 			std::printf("token %s revoked\n", argv[3]);
 			return 0;
 		}
+	}
+	if (std::strcmp(sub, "session") == 0 && argc == 3 && std::strcmp(argv[2], "clear") == 0) {
+		size_t ended = 0;
+		AuthStatus status = auth_.clear_sessions(&ended);
+		if (status != AuthStatus::ok) {
+			std::printf("error: %s (the sessions ended until the restart)\n", auth_status_text(status));
+			return 1;
+		}
+		std::printf("all sessions ended (%u), the remembered ones included\n", static_cast<unsigned>(ended));
+		return 0;
 	}
 	if (std::strcmp(sub, "password") == 0 && argc == 3 && std::strcmp(argv[2], "clear") == 0) {
 		AuthStatus status = auth_.clear_password();

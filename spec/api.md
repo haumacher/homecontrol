@@ -27,11 +27,18 @@ that breaks a client needs a new path or field, not a changed meaning.
 A device without a password is **not onboarded**: it answers only `GET /api/auth/session` and
 `POST /api/auth/onboard`; everything else is refused with 403 `auth.onboarding_required`.
 
-Once onboarded, every endpoint except the four under `/api/auth/` needs either
+Once onboarded, every endpoint except the four open ones under `/api/auth/` (`session`, `onboard`,
+`login`, `logout`) needs either
 
 - the **session cookie** `hc_session` (set by onboarding and login: `HttpOnly; SameSite=Strict;
-  Path=/`, no `Max-Age`, i.e. a browser-session cookie; the device forgets all sessions at reboot
-  and after 24 h without use), or
+  Path=/`). Without `remember` it has no `Max-Age`, i.e. a browser-session cookie, and the device
+  forgets the session at reboot and after 24 h without use. With `"remember": true` ("stay logged
+  in", firmware from 2026-11, homecontrol #53) it carries `Max-Age=315360000` (10 years: the device
+  decides validity, not the browser), and the session survives reboots and firmware updates, has no
+  idle expiry, and ends only at its logout, with `POST /api/auth/sessions/clear`, the console's `web
+  session clear` or `web password clear`. The device keeps at most 4 remembered sessions; a fifth
+  replaces the oldest (by creation). A firmware before 2026-11 ignores `remember` and answers with
+  a browser-session cookie. Or
 - a **bearer token**: `Authorization: Bearer hct_<32 hex digits>`, created with
   `POST /api/tokens` (see "System") or on the serial console with `web token create <name>` (shown
   once; doc/web.md).
@@ -58,25 +65,41 @@ like the rest of this answer so that the login page speaks it too.
 
 ### `POST /api/auth/onboard` (open, only while not onboarded)
 
-Body `{"password": "<8 to 64 characters>"}`. Stores the password (salted PBKDF2-HMAC-SHA256) and
-logs the caller in: 200 `{"ok": true}` with `Set-Cookie`. Refusals: 400 `auth.password_missing`,
-400 `auth.password_invalid` (length), 409 `auth.password_set` (onboarded already; the password is
-reset only on the console), 500 `auth.storage_error`, 500 `auth.no_random`.
+Body `{"password": "<8 to 64 characters>", "remember": false}` (`remember` optional, default
+false; see above). Stores the password (salted PBKDF2-HMAC-SHA256) and logs the caller in: 200
+`{"ok": true}` with `Set-Cookie`. Refusals: 400 `auth.password_missing`, 400
+`auth.password_invalid` (length), 400 `auth.remember_invalid` (`remember` not a boolean), 409
+`auth.password_set` (onboarded already; the password is reset only on the console), 500
+`auth.storage_error` (also: a remembered session could not be stored; no session then), 500
+`auth.no_random`.
 
 ### `POST /api/auth/login` (open)
 
-Body `{"password": "..."}`. 200 `{"ok": true}` with `Set-Cookie`. A wrong password: 401
+Body `{"password": "...", "remember": false}` (`remember` optional, as for onboarding). 200
+`{"ok": true}` with `Set-Cookie`. A wrong password: 401
 `auth.wrong_password` with `failures` (consecutive failures from this address) and
 `free_failures` (5). From the sixth failure on, the address is blocked for 30 s, doubling with each
 further failure up to 15 min: 429 `auth.rate_limited` with `retry_after_s` and a `Retry-After`
 header; a block refuses even the right password. Also 409 `auth.onboarding_required`, 409
-`auth.password_changed` (the password was reset while the hash was computed), 400 as for
+`auth.password_changed` (the password was reset while the hash was computed), 400 and 500 as for
 onboarding.
 
 ### `POST /api/auth/logout` (open)
 
-Ends the session of the cookie (if any) and clears the cookie: 200 `{"ok": true}`. The session's
-WebSocket connections are closed with 1008 `auth.session_ended`.
+Ends the session of the cookie (if any, a remembered one too) and clears the cookie: 200 `{"ok":
+true}`. The session's WebSocket connections are closed with 1008 `auth.session_ended`. 500
+`auth.storage_error` (the cookie is cleared all the same) if a remembered session could not be
+erased from the settings: it ends now but would return after a restart.
+
+### `POST /api/auth/sessions/clear` (firmware from 2026-11)
+
+"Log out everywhere": ends every session, browser-session and remembered, the caller's own
+included, and clears the caller's cookie: 200 `{"ok": true, "ended": <sessions that were
+alive>}`. Not open: it needs the session cookie with the CSRF header (403 `auth.csrf` without it)
+or a bearer token (tokens stay); refused over the E-Home connection (403 `ehome.forbidden`, like all
+of `/api/auth/`). The ended sessions' WebSocket connections are closed with 1008
+`auth.session_ended`. 500 `auth.storage_error` if a remembered session could not be erased (the
+sessions are ended until the restart). The console's `web session clear` does the same.
 
 ## Status
 
@@ -95,7 +118,7 @@ WebSocket connections are closed with 1008 `auth.session_ended`.
  "update": {"available": true, "partition": "ota_0", "confirmed": true, "checking": false, "source": "",
             "last": "none since start"},
  "led": "setup",
- "web": {"sessions": 1, "tokens": 0, "ws_clients": 1},
+ "web": {"sessions": 1, "remembered": 0, "tokens": 0, "ws_clients": 1},
  "datapoints": 8,
  "image": {"loaded": true, "project": "example-house", "revision": 7, "name": "Example house", "source": "api",
            "datapoints": 17, "rules": 2, "schedules": 2, "blocks": 1, "degraded": false}}
@@ -104,6 +127,9 @@ WebSocket connections are closed with 1008 `auth.session_ended`.
 `device.schema` is the newest runtime image schema the firmware reads (`spec/runtime-image.md` I4,
 section 8): E-Home warns before deploying an image of a newer one, and refuses to deploy an image
 with `blocks` to a controller below 1.3 (`spec/blocks.md` B1).
+
+`web.sessions` counts the alive sessions of both kinds, `web.remembered` (firmware from 2026-11)
+those of them that stay logged in.
 
 `image` (builds with the runtime image service): without an image `{"loaded": false}`, after a
 refused load while no image runs also `"refused": "<code>"`. `source` is how the image came: `boot` (the stored
