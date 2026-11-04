@@ -1,0 +1,19 @@
+{"comment": "Zigbee remotes as buttons (1.4, haumacher/ehome #70): an enumeration press bound to a Zigbee action with its presses, every kind, one kind with two elements and a comment; a boolean and a controlled press as before, without presses; presses on another kind is an unknown member, ignored.",
+ "expect": {"valid": true},
+ "image": {"schemaVersion": "1.4", "projectId": "case", "revision": 1},
+ "datapoints": [
+   {"id": "hall.remote", "type": "enumeration", "zigbee": {"ieee": "000b57fffe112233", "endpoint": 1, "cluster": 6, "client": true}},
+   {"id": "bed.remote", "type": "enumeration", "zigbee": {"ieee": "000b57fffe445566", "endpoint": 1, "cluster": 8, "client": true}},
+   {"id": "bell", "type": "boolean", "writable": true, "virtual": {}},
+   {"id": "step", "type": "controlled", "virtual": {}},
+   {"id": "lamp", "type": "boolean", "writable": true, "virtual": {}}],
+ "functions": [
+   {"id": "hall-remote", "label": "Hall remote", "kind": "button",
+    "presses": {"press": [2], "on": [1], "off": [0], "up": [3], "down": [4], "release": [5]},
+    "datapoints": {"press": "hall.remote"}},
+   {"id": "bed-remote", "label": "Bed remote", "kind": "button",
+    "presses": {"on": [1, 2], "release": [5], "comment": "the toggle counts as on"},
+    "datapoints": {"press": "bed.remote", "state": "lamp"}},
+   {"id": "bell", "label": "Bell", "kind": "button", "datapoints": {"press": "bell"}},
+   {"id": "step", "label": "Step", "kind": "button", "datapoints": {"press": "step"}},
+   {"id": "lamp", "label": "Lamp", "kind": "light", "presses": {"anything": true}, "datapoints": {"command": "lamp"}}]}

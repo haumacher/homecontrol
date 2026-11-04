@@ -633,7 +633,9 @@ a client builds the dashboard without the image. Without an image: 200 `{"loaded
 - A function's `datapoints` maps each role to a datapoint id of `/api/datapoints` and the live
   feed; roles the loader does not know (spec I5) are passed on, a client ignores what it does not
   know. `room`, `unit`, `scene` and a location's `kind` and `parent` are left out when the image
-  has none.
+  has none. A button with an enumeration press (a Zigbee remote, 1.4) has its `presses` as the
+  image gives them (`{"on": [1], "off": [0], ...}`, spec/runtime-image.md 3.5): the client names the
+  last press by the kind its element belongs to.
 - A datapoint's `technology` is the name of the technology that owns it (`knx`, `scheduler`, ...,
   `null` for an application value); `binding` the image's technology members verbatim (`knx`,
   `zigbee`, `virtual`); `history` whether it keeps a history ring. `label`, `unit` and `binding`

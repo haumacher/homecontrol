@@ -36,6 +36,17 @@ const ICON = {
 	button: icons.touch,
 };
 
+/// The kinds of press a button's `presses` names (spec/runtime-image.md 3.5).
+const PRESS_KINDS = ["press", "on", "off", "up", "down", "release"];
+
+/// The kind of press whose elements in `presses` hold `element`; null for none.
+export function pressKind(presses, element) {
+	if (!presses || typeof element !== "number") {
+		return null;
+	}
+	return PRESS_KINDS.find((kind) => Array.isArray(presses[kind]) && presses[kind].includes(element)) || null;
+}
+
 /// Builds the tile of `fn`; `env` = {model, live, open(fn), history(id)}. Returns {element, ids,
 /// update()}: `ids` are the datapoints whose updates call update().
 export function functionTile(fn, env) {
@@ -162,7 +173,8 @@ export function functionTile(fn, env) {
 			}
 			break;
 		case "button":
-			if (writable("press")) {
+			// An enumeration press is a remote's action (image 1.4): reported, not commanded here.
+			if (writable("press") && typeOf("press") !== "enumeration") {
 				action = () => {
 					send("press", typeOf("press") === "controlled" ? { control: true, value: 1 } : true, "state");
 				};
@@ -301,7 +313,15 @@ export function functionTile(fn, env) {
 					return show("state");
 				}
 				const d = dp("press");
-				return d && d.quality !== "unknown" ? t("tile.pressed", { ago: formatAgo(live.ageMs(d)) }) : t("tile.not_pressed");
+				if (!d || d.quality === "unknown") {
+					return t("tile.not_pressed");
+				}
+				if (typeOf("press") === "enumeration") {
+					// The kind of the last press by the function's presses; an element of none by its number.
+					const kind = pressKind(fn.presses, d.value);
+					return t("tile.pressed_as", { press: kind ? t(`press.${kind}`) : formatValue(d), ago: formatAgo(live.ageMs(d)) });
+				}
+				return t("tile.pressed", { ago: formatAgo(live.ageMs(d)) });
 			}
 			default:
 				return primaryRole ? show(primaryRole) : t("value.unknown");

@@ -646,6 +646,57 @@ TEST_CASE("Image.ZigbeeAdapterAsProvider") {
 	CHECK(f.dp(kSensorTemperature)->value() == Value::of_real(21.5));
 }
 
+TEST_CASE("Image.ZigbeeRemoteIsAButtonWithItsPresses") {
+	// haumacher/ehome #70, spec/runtime-image.md 3.5 (1.4): the remote's action is the enumeration press
+	// of a button; every command is an update (a rule on `update` sees a second "on"), the model view
+	// and so GET /api/model carry the presses for the UI.
+	namespace cluster = hc::zigbee::cluster;
+	ZigbeeImageFixture f;
+	std::string image =
+		"{\"image\": {\"schemaVersion\": \"1.4\", \"projectId\": \"zb\", \"revision\": 1}, \"datapoints\": ["
+		"{\"id\": \"hall.remote\", \"type\": \"enumeration\", "
+		"\"zigbee\": {\"ieee\": \"000b57fffe112233\", \"endpoint\": 1, \"cluster\": 6, \"client\": true}}, "
+		"{\"id\": \"presses\", \"type\": \"unsigned\", \"writable\": true, \"virtual\": {}}], "
+		"\"functions\": [{\"id\": \"remote\", \"label\": \"Hall remote\", \"kind\": \"button\", "
+		"\"presses\": {\"press\": [2], \"on\": [1], \"off\": [0], \"up\": [3], \"down\": [4], \"release\": [5]}, "
+		"\"datapoints\": {\"press\": \"hall.remote\"}}], "
+		"\"rules\": [{\"id\": \"count\", \"name\": \"Count the on presses\", \"reactions\": [{\"triggers\": "
+		"[{\"kind\": \"datapoint\", \"datapoint\": \"hall.remote\", \"on\": \"update\"}], \"condition\": "
+		"{\"kind\": \"binary\", \"op\": \"==\", \"left\": {\"kind\": \"datapoint\", \"name\": \"hall.remote\"}, "
+		"\"right\": {\"kind\": \"literal\", \"type\": \"integer\", \"value\": 1}}, \"actions\": [{\"kind\": \"write\", "
+		"\"datapoint\": \"presses\", \"value\": {\"kind\": \"binary\", \"op\": \"+\", \"left\": {\"kind\": \"call\", "
+		"\"function\": \"coalesce\", \"args\": [{\"kind\": \"datapoint\", \"name\": \"presses\"}, {\"kind\": \"literal\", "
+		"\"type\": \"integer\", \"value\": 0}]}, \"right\": {\"kind\": \"literal\", \"type\": \"integer\", \"value\": 1}}}]}]}]}";
+	REQUIRE_MESSAGE(f.load(image), describe(f.service.report()));
+	f.device.join_button();
+	f.run_for(2000);
+	const hc::image::ModelView& view = f.service.view();
+	REQUIRE(view.function_count() == 1);
+	REQUIRE(view.function(0).presses != nullptr);
+	CHECK(std::string(view.function(0).presses) ==
+		"{\"press\": [2], \"on\": [1], \"off\": [0], \"up\": [3], \"down\": [4], \"release\": [5]}");
+	REQUIRE(view.function(0).role_count == 1);
+	CHECK(view.function(0).roles[0].datapoint == f.dp("hall.remote")->id());
+
+	auto press = [&](uint16_t on_cluster, uint8_t command, uint8_t argument) {
+		uint8_t payload[] = {argument, 0};
+		f.zigbee.command_received(hc_test::ZigbeeActions::by_short(hc_test::kButtonShort), 1, on_cluster, command,
+			payload, sizeof(payload));
+		f.run_for(10);
+	};
+	press(cluster::kOnOff, 0x01, 0); // on
+	CHECK(f.dp("hall.remote")->value() == Value::of_enum(1));
+	press(cluster::kOnOff, 0x01, 0); // on again: the same element, another update
+	CHECK(f.dp("presses")->value() == Value::of_unsigned(2));
+	press(cluster::kLevelControl, 0x05, 0); // held up: a move with on/off
+	CHECK(f.dp("hall.remote")->value() == Value::of_enum(3));
+	press(cluster::kLevelControl, 0x07, 0); // let go: stop
+	CHECK(f.dp("hall.remote")->value() == Value::of_enum(5));
+	press(cluster::kOnOff, 0x00, 0); // off
+	CHECK(f.dp("hall.remote")->value() == Value::of_enum(0));
+	CHECK(f.dp("presses")->value() == Value::of_unsigned(2));
+}
+
 // ---- Review probe (orchestrator): a provider's datapoint across an image swap, a refused change,
 // and the empty end. It reuses the fixture above, hence this file rather than a *_probe_test.cpp.
 TEST_CASE("Image.DynamicProbeSwapKeepsProviderValuesAndARefusedChangeKeepsTheModel") {

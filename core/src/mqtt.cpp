@@ -1532,7 +1532,12 @@ const char* Mqtt::component_of(const Function& function) const {
 		case kScene: return "scene";
 		case kButton: {
 			const Datapoint* dp = model_.get(function.roles[kButtonPress]);
-			return dp != nullptr && dp->writable() ? "button" : "binary_sensor";
+			if (dp != nullptr && dp->writable()) {
+				return "button";
+			}
+			// A remote's action (an enumeration press, 1.4) without a state: the last press's element.
+			return dp != nullptr && dp->type() == ValueType::enumeration && !function.has(kButtonState) ? "sensor"
+				: "binary_sensor";
 		}
 		default: return "sensor";
 	}
@@ -1738,8 +1743,8 @@ bool Mqtt::write_config(const Function& function) {
 			uint16_t state = function.has(kButtonState) ? r[kButtonState] : r[kButtonPress];
 			const Datapoint* dp = model_.get(state);
 			w.topic("state_topic", state, "state");
-			json.member("value_template",
-				dp != nullptr && dp->type() == ValueType::controlled ? kControlledOnOffTemplate : kOnOffTemplate);
+			json.member("value_template", dp != nullptr && dp->type() == ValueType::enumeration ? kValueTemplate
+				: dp != nullptr && dp->type() == ValueType::controlled ? kControlledOnOffTemplate : kOnOffTemplate);
 			primary = state;
 			break;
 		}

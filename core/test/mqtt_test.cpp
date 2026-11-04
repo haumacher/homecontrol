@@ -512,6 +512,30 @@ TEST_CASE("MqttCommandRefusalsArePublished") {
 	CHECK(f.capture.sink.contains("command on homecontrol/a1b2c3/dp/hall.presence/set refused: the datapoint is not writable"));
 }
 
+TEST_CASE("MqttAnnouncesARemoteAsTheSensorOfItsLastPress") {
+	// A button with an enumeration press (a Zigbee remote's action, image 1.4, haumacher/ehome #70)
+	// without a state: a sensor of the element, not a binary sensor; with a state as before.
+	Fixture f;
+	f.load(R"({"image": {"schemaVersion": "1.4", "projectId": "remote", "revision": 1},
+		"datapoints": [{"id": "hall.remote", "type": "enumeration",
+		                "zigbee": {"ieee": "000b57fffe112233", "endpoint": 1, "cluster": 6, "client": true}},
+		               {"id": "lamp", "type": "boolean", "virtual": {}}],
+		"functions": [{"id": "remote", "label": "Remote", "kind": "button", "presses": {"on": [1], "off": [0]},
+		               "datapoints": {"press": "hall.remote"}},
+		              {"id": "remote-lamp", "label": "Remote lamp", "kind": "button", "presses": {"on": [1]},
+		               "datapoints": {"press": "hall.remote", "state": "lamp"}}]})", kMember);
+	f.connect();
+	auto sensor = f.client.to("homeassistant/sensor/homecontrol-a1b2c3/remote/config");
+	REQUIRE(sensor.size() == 1);
+	CHECK(sensor[0].payload.find("\"state_topic\":\"~/dp/hall.remote/state\"") != std::string::npos);
+	CHECK(sensor[0].payload.find("\"value_template\":\"{{ value_json.value }}\"") != std::string::npos);
+	CHECK(f.client.to("homeassistant/binary_sensor/homecontrol-a1b2c3/remote/config").empty());
+	auto state = f.client.to("homeassistant/binary_sensor/homecontrol-a1b2c3/remote-lamp/config");
+	REQUIRE(state.size() == 1);
+	CHECK(state[0].payload.find("\"state_topic\":\"~/dp/lamp/state\"") != std::string::npos);
+	CHECK(state[0].payload.find("\"value_template\":\"{{ 'ON' if value_json.value else 'OFF' }}\"") != std::string::npos);
+}
+
 TEST_CASE("MqttBlindTakesOpenCloseStop") {
 	Fixture f;
 	f.load(kinds());

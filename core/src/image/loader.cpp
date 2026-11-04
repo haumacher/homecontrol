@@ -1873,7 +1873,9 @@ constexpr Role kClimate[] = {{"temperature", kRoleNumber, false, true}, {"setpoi
 	{"setpointCommand", kRoleNumber, true, false}, {"mode", kRoleEnum | kRoleNumber, false, false},
 	{"modeCommand", kRoleEnum | kRoleNumber, true, false}, {"heating", kRoleBool, false, false}};
 constexpr Role kScene[] = {{"command", kRoleNumber | kRoleEnum | kRoleControlled, true, true}};
-constexpr Role kButton[] = {{"press", kRoleBool | kRoleControlled, false, true}, {"state", kRoleBool, false, false}};
+// An enumeration press (1.4, ehome #70): a Zigbee remote's action, with the function's `presses`.
+constexpr Role kButton[] = {{"press", kRoleBool | kRoleControlled | kRoleEnum, false, true},
+	{"state", kRoleBool, false, false}};
 
 constexpr FunctionKind kFunctionKinds[] = {
 	{"light", kLight, sizeof(kLight) / sizeof(Role)},
@@ -1896,6 +1898,7 @@ const char* role_types_text(uint8_t types) {
 		case kRoleEnum | kRoleNumber: return "enumeration or a number";
 		case kRoleBool | kRoleControlled: return "boolean or controlled";
 		case kRoleNumber | kRoleEnum | kRoleControlled: return "a number, enumeration or controlled";
+		case kRoleBool | kRoleControlled | kRoleEnum: return "boolean, controlled or enumeration";
 		default: return "any type";
 	}
 }
@@ -1912,6 +1915,98 @@ bool role_type_fits(uint8_t types, ValueType type) {
 		case ValueType::enumeration: return (types & (kRoleEnum | kRoleNumber)) != 0;
 		case ValueType::controlled: return (types & kRoleControlled) != 0;
 		default: return false;
+	}
+}
+
+/// The kinds of press a button's `presses` names (1.4, ehome #70): a short press of a single or toggle
+/// button, the on and off buttons of a remote, its up and down (dim) buttons, pressed or held, and the
+/// release after holding one.
+const char* const kPressKinds[] = {"press", "on", "off", "up", "down", "release", nullptr};
+
+/// Whether datapoint `dp` of the plan is bound to a Zigbee client cluster (the action of a remote,
+/// spec/zigbee.md), whose elements are those of zigbee::action.
+bool zigbee_action(const Plan& plan, int dp) {
+	if (dp < 0 || static_cast<size_t>(dp) >= plan.datapoint_count || plan.bindings == nullptr ||
+		plan.bindings[dp] != Binding::zigbee) {
+		return false;
+	}
+	for (size_t i = 0; i < plan.zigbee_count; ++i) {
+		if (plan.zigbee[i].client && std::strcmp(plan.zigbee[i].name, plan.datapoints[dp].name) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/// The member `presses` of a button (spec/runtime-image.md 3.5, 1.4): required for an enumeration
+/// press, refused for another; strict inside. `action`: the press is a Zigbee action, whose elements
+/// (0..5) the elements must be; an enumeration press that is none was refused at its role.
+void parse_presses(Ctx& c, const JsonSpan& function, const DatapointSpec& press, bool action) {
+	JsonSpan presses;
+	bool has = c.member(function, "presses", presses);
+	Path p(c, ".presses");
+	if (press.type != ValueType::enumeration) {
+		if (has) {
+			c.refuse("presses is only for an enumeration press; '%s' is %s", press.name, value_type_label(press.type));
+		}
+		return;
+	}
+	if (!has) {
+		c.refuse("a button with an enumeration press needs presses (which elements are which press)");
+		return;
+	}
+	if (presses.kind != JsonSpan::Kind::object) {
+		c.refuse("malformed: presses must be an object of press kinds (press, on, off, up, down, release) to "
+			"arrays of elements");
+		return;
+	}
+	if (!c.only(presses, kPressKinds)) {
+		return;
+	}
+	const char* owner[zigbee::action::kDimStop + 1] = {};
+	size_t named = 0;
+	for (const char* const* kind = kPressKinds; *kind != nullptr; ++kind) {
+		JsonSpan list;
+		if (!c.member(presses, *kind, list)) {
+			continue;
+		}
+		++named;
+		Path q(c, ".%s", *kind);
+		if (list.kind != JsonSpan::Kind::array) {
+			c.refuse("malformed: %s must be a non-empty array of elements", *kind);
+			continue;
+		}
+		size_t position = 0;
+		unsigned n = 0;
+		JsonSpan element;
+		while (json_next_item(list, position, element)) {
+			Path r(c, "[%u]", n++);
+			double value = 0;
+			if (element.kind != JsonSpan::Kind::number || !json_number(element, value) || std::floor(value) != value) {
+				c.refuse("malformed: an element must be an integer");
+				continue;
+			}
+			if (!action) {
+				continue;
+			}
+			if (value < 0 || value > zigbee::action::kDimStop) {
+				c.refuse("element %.0f is no element of '%s' (a Zigbee action: 0..%u)", value, press.name,
+					static_cast<unsigned>(zigbee::action::kDimStop));
+				continue;
+			}
+			unsigned e = static_cast<unsigned>(value);
+			if (owner[e] != nullptr) {
+				c.refuse("element %u is a press of %s already", e, owner[e]);
+			} else {
+				owner[e] = *kind;
+			}
+		}
+		if (n == 0) {
+			c.refuse("malformed: %s must be a non-empty array of elements", *kind);
+		}
+	}
+	if (named == 0) {
+		c.refuse("presses names no press");
 	}
 }
 
@@ -2005,42 +2100,58 @@ void parse_functions(Ctx& c, const JsonSpan& root, const Ids& locations, const I
 		if (kind == nullptr) {
 			continue;
 		}
+		const bool button = std::strcmp(kind->name, "button") == 0;
+		const DatapointSpec* press = nullptr; // a button's press datapoint, once found
+		bool action = false;                  // whether it is a Zigbee action
 		JsonSpan roles;
-		Path a(c, ".datapoints");
-		if (!c.member(item, "datapoints", roles)) {
-			c.refuse("datapoints (the roles of a %s) is missing", kind->name);
-			continue;
-		}
-		if (!c.object(roles, "datapoints")) {
-			continue;
-		}
-		for (size_t r = 0; r < kind->role_count; ++r) {
-			const Role& role = kind->roles[r];
-			JsonSpan ref;
-			if (!c.member(roles, role.name, ref)) {
-				if (role.required) {
-					c.refuse("a %s needs the role %s", kind->name, role.name);
+		{
+			Path a(c, ".datapoints");
+			if (!c.member(item, "datapoints", roles)) {
+				c.refuse("datapoints (the roles of a %s) is missing", kind->name);
+				continue;
+			}
+			if (!c.object(roles, "datapoints")) {
+				continue;
+			}
+			for (size_t r = 0; r < kind->role_count; ++r) {
+				const Role& role = kind->roles[r];
+				JsonSpan ref;
+				if (!c.member(roles, role.name, ref)) {
+					if (role.required) {
+						c.refuse("a %s needs the role %s", kind->name, role.name);
+					}
+					continue;
 				}
-				continue;
+				Path b(c, ".%s", role.name);
+				char name[Datapoint::kMaxName + 1];
+				if (!c.string(ref, name, sizeof(name), 1, Datapoint::kMaxName, true, "the role")) {
+					continue;
+				}
+				int dp = index.find(name);
+				if (dp < 0) {
+					c.refuse("unknown datapoint '%s'", name);
+					continue;
+				}
+				const DatapointSpec& spec = c.plan.datapoints[dp];
+				if (!role_type_fits(role.types, spec.type)) {
+					c.refuse("datapoint '%s' is %s, but the role %s of a %s takes %s", name,
+						value_type_label(spec.type), role.name, kind->name, role_types_text(role.types));
+				}
+				if (role.writable && (spec.flags & DatapointFlags::kWritable) == 0) {
+					c.refuse("the role %s needs a writable datapoint; '%s' is not", role.name, name);
+				}
+				if (button && std::strcmp(role.name, "press") == 0) {
+					press = &spec;
+					action = zigbee_action(c.plan, dp);
+					if (spec.type == ValueType::enumeration && !action) {
+						c.refuse("an enumeration press needs a Zigbee action datapoint (a client binding), whose elements "
+							"are known; '%s' is not one", name);
+					}
+				}
 			}
-			Path b(c, ".%s", role.name);
-			char name[Datapoint::kMaxName + 1];
-			if (!c.string(ref, name, sizeof(name), 1, Datapoint::kMaxName, true, "the role")) {
-				continue;
-			}
-			int dp = index.find(name);
-			if (dp < 0) {
-				c.refuse("unknown datapoint '%s'", name);
-				continue;
-			}
-			const DatapointSpec& spec = c.plan.datapoints[dp];
-			if (!role_type_fits(role.types, spec.type)) {
-				c.refuse("datapoint '%s' is %s, but the role %s of a %s takes %s", name,
-					value_type_label(spec.type), role.name, kind->name, role_types_text(role.types));
-			}
-			if (role.writable && (spec.flags & DatapointFlags::kWritable) == 0) {
-				c.refuse("the role %s needs a writable datapoint; '%s' is not", role.name, name);
-			}
+		}
+		if (button && press != nullptr) {
+			parse_presses(c, item, *press, action);
 		}
 	}
 	c.plan.info.functions = count;

@@ -36,7 +36,7 @@ datapoints, added to the model behind the image's (`doc/image.md` "Dynamic datap
 | `ieee` | The device: 16 hex digits, colons allowed. Not 0 and not all ones. Required. |
 | `endpoint` | 1..240. Required. |
 | `cluster`, `attribute` | Select the function (the cluster/attribute pairs of the function table in `doc/zigbee.md`), decimal 0..65535. Required; `attribute` not for a client binding. |
-| `client` | `true`: the device's client cluster commands (a button: `cluster` 6 or 8), the `action` function; `attribute` is then ignored and `command` not allowed. Default `false`. |
+| `client` | `true`: the device's client cluster commands (a button: `cluster` 6 or 8), the `action` function; `attribute` is then ignored and `command` not allowed. Default `false`. Each command the remote sends is one update of the datapoint (0 off, 1 on, 2 toggle, 3 dim up, 4 dim down, 5 dim stop), also a repeated one; the datapoint is the `press` of a `button` function with its `presses` (`spec/runtime-image.md` 3.5, 1.4). |
 | `command` | The cluster commands go to (0..65534); absent: read-only. Only the function's own cluster, or Level Control (8) for `on_off` (cluster 6), is accepted. |
 | `reporting` | The attribute reporting the controller configures for this function instead of the function table's defaults (below, "Reporting overrides"). Optional; not for a client binding (`action`), `multistate` and `ias_zone`. |
 

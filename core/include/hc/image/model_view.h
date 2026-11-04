@@ -40,12 +40,13 @@ public:
 
 	struct Function {
 		const char* id;
-		const char* label; ///< JSON text.
-		const char* kind;  ///< "light", "dimmer", ...
-		int16_t room;      ///< Index into the locations, -1 for none.
-		const char* unit;  ///< "" for none.
-		uint8_t scene;     ///< 1..64 for a scene, else 0.
+		const char* label;   ///< JSON text.
+		const char* kind;    ///< "light", "dimmer", ...
+		const char* unit;    ///< "" for none.
+		const char* presses; ///< JSON object text of a button's `presses` (1.4), nullptr for none.
 		const Role* roles;
+		int16_t room;        ///< Index into the locations, -1 for none.
+		uint8_t scene;       ///< 1..64 for a scene, else 0.
 		uint8_t role_count;
 	};
 

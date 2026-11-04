@@ -364,6 +364,33 @@ TEST_CASE("WebApi.Dashboard without the image service or without an image") {
 	CHECK(f.get("/api/modelx", f.cookie).status == 404);
 }
 
+TEST_CASE("WebApi.Model passes a remote's presses on (image 1.4, haumacher/ehome #70)") {
+	DashboardFixture f;
+	f.load(R"({"image": {"schemaVersion": "1.4", "projectId": "remote", "revision": 1},
+		"datapoints": [{"id": "hall.remote", "type": "enumeration",
+		                "zigbee": {"ieee": "000b57fffe112233", "endpoint": 1, "cluster": 8, "client": true}},
+		               {"id": "bell", "type": "boolean", "writable": true, "virtual": {}}],
+		"functions": [{"id": "remote", "label": "Hall remote", "kind": "button",
+		               "presses": {"on": [1, 2], "off": [0], "up": [3], "down": [4], "release": [5]},
+		               "datapoints": {"press": "hall.remote"}},
+		              {"id": "bell", "label": "Bell", "kind": "button", "datapoints": {"press": "bell"}}]})");
+	auto r = f.get("/api/model", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	auto& functions = r.json["functions"].items;
+	REQUIRE(functions.size() == 2);
+	CHECK(functions[0]["kind"].text == "button");
+	CHECK(functions[0]["datapoints"]["press"].number == 0);
+	REQUIRE(functions[0]["presses"]["on"].items.size() == 2);
+	CHECK(functions[0]["presses"]["on"].items[1].number == 2);
+	CHECK(functions[0]["presses"]["release"].items[0].number == 5);
+	CHECK(functions[0]["presses"]["press"].kind == hc_test::Json::Kind::null);
+	// A boolean press has none, as before.
+	CHECK(functions[1]["presses"].kind == hc_test::Json::Kind::null);
+	auto& datapoints = r.json["datapoints"].items;
+	CHECK(datapoints[0]["type"].text == "enumeration");
+	CHECK_FALSE(datapoints[0]["writable"].boolean);
+}
+
 TEST_CASE("WebApi.Model of the example house: rooms, functions with roles, labels, units, bindings") {
 	DashboardFixture f;
 	f.load(image_fixture("example.json"));
@@ -931,7 +958,7 @@ std::string with_block(const std::string& block) {
 
 TEST_CASE("Image.Blocks: schema 1.3; mirrors behind the image's datapoints; refusals with their paths") {
 	DashboardFixture f;
-	CHECK(std::string(hc::image::schema_version_text()) == "1.3");
+	CHECK(std::string(hc::image::schema_version_text()) == "1.4");
 	f.load(kBlocksImage);
 	f.controller.run_once();
 	f.controller.run_once();
@@ -1002,7 +1029,7 @@ TEST_CASE("Image.Blocks: schema 1.3; mirrors behind the image's datapoints; refu
 	// Strict inside (B1): an unknown member of a newer minor schema names the firmware's version (I4).
 	{
 		std::string text = with_block(R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "wasm": "abc"})");
-		text.replace(text.find("\"1.3\""), 5, "\"1.4\"");
+		text.replace(text.find("\"1.3\""), 5, "\"1.5\"");
 		text.replace(text.find(R"(,
 		               {"id": "block/x", "type": "real", "virtual": {}})"), std::strlen(R"(,
 		               {"id": "block/x", "type": "real", "virtual": {}})"), "");
@@ -1023,7 +1050,7 @@ TEST_CASE("WebApi.Blocks: list, types, changes applied whole or refused whole, r
 	f.controller.run_once();
 	auto status = f.get("/api/status", f.cookie);
 	REQUIRE(status.status == 200);
-	CHECK(status.json["device"]["schema"].text == "1.3");
+	CHECK(status.json["device"]["schema"].text == "1.4");
 	CHECK(status.json["image"]["blocks"].number == 1);
 	auto r = f.get("/api/blocks", f.cookie);
 	REQUIRE(r.status == 200);

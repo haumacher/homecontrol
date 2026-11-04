@@ -28,22 +28,25 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
   more than about 100 KB may find no free heap block of its size; the device then answers 507
   and keeps its image.
 - **I4. Versioned by `image.schemaVersion`, `<major>.<minor>`.** A newer major version is refused
-  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.3)`); a
+  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.4)`); a
   newer minor version of a known major loads, and an older minor version too. Where a newer minor
   meets the strict objects of I5 (a rule, schedule or block member this firmware does not know),
   the refusal adds that the firmware is older than the image, from firmware 1.2 on:
-  `malformed: unknown member 'jitter' (the image's schema 1.4 is newer than this firmware reads, up
-  to 1.3: update the firmware)`. The device reports the newest version it reads as `schema` in
+  `malformed: unknown member 'jitter' (the image's schema 1.5 is newer than this firmware reads, up
+  to 1.4: update the firmware)`. The device reports the newest version it reads as `schema` in
   `GET /api/status` and in the E-Home connection's `auth` (`spec/api.md`), so E-Home can warn
   before a deploy, and refuses to deploy what the controller cannot run: an image with `blocks` to
   a controller below 1.3 (`spec/blocks.md` B1; one that reports no schema counts as at most 1.1),
-  because an older firmware would ignore the member and run no blocks. *Alternative:* a feature
+  because an older firmware would ignore the member and run no blocks; and an image with a button
+whose press is an enumeration (3.5) to a controller below 1.4, because an older firmware refuses the
+whole image for it. *Alternative:* a feature
   list (more precise, but E-Home would have to know which features a firmware has).
 - **I5. Unknown members are ignored, except in `rules`, `schedules` and `blocks`.** A minor version
   may add members; an older firmware loads the image without them. The rule, schedule and block
   objects keep their own strict policy (`spec/rules.md` 10, `spec/schedules.md` 2,
   `spec/blocks.md` 4: unknown members are refused, `description` and `comment` are allowed
-  everywhere), because a misspelt trigger or time must not silently disappear. A top-level
+  everywhere), and so does a button's `presses` (3.5), because a misspelt trigger, time or press
+  must not silently disappear. A top-level
   `comment` (or anywhere outside rules, schedules and blocks) is ignored too.
 - **I6. A missing optional member means "none".** No `rules`: no rules; no `knx.timeMaster`: no time
   master; no `settings.tz`: the device keeps its own setting. Nothing defaults to "keep what the
@@ -101,7 +104,7 @@ Strings are 1..N bytes of valid UTF-8 without control characters; N is given per
 
 | Member | Type | Required | Meaning |
 |---|---|---|---|
-| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.3` (section 8). |
+| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.4` (section 8). |
 | `projectId` | string, 1..63 | yes | E-Home's project. Shown in the status. |
 | `revision` | integer 0..4294967295 | yes | E-Home's deployment counter, shown in the status and returned by PUT. The device does not refuse an older revision: rolling back is a deployment like any other. |
 | `generatedAt` | string, 1..31 | no | ISO 8601 time of the export. |
@@ -236,6 +239,7 @@ What the inhabitant operates: a light, a blind, a sensor. A function names the d
 | `room` | location id | no | |
 | `unit` | string | no | For the UI. |
 | `scene` | integer 1..64 | for `scene` | The scene number as people count it. The device sends the KNX scene code `scene − 1` on the `command` datapoint (DPT 17.001 and 18.001 count from 0). |
+| `presses` | object kind of press → array of elements | for a `button` with an enumeration press (1.4) | Which elements of the press datapoint are which press, below. |
 | `datapoints` | object role → datapoint id | yes | |
 
 | Kind | Roles (**required**; *command roles need a writable datapoint*) |
@@ -247,9 +251,65 @@ What the inhabitant operates: a light, a blind, a sensor. A function names the d
 | `sensor` | **value** (any type) |
 | `climate` | **temperature** (number), `setpoint` (number), *setpointCommand* (number), `mode` (enumeration or number), *modeCommand* (enumeration or number), `heating` (boolean) |
 | `scene` | ***command*** (number, enumeration or controlled) |
-| `button` | **press** (boolean or controlled), `state` (boolean) |
+| `button` | **press** (boolean, controlled, or enumeration: a Zigbee remote's `action`, 1.4), `state` (boolean) |
 
 "number" is `unsigned`, `signed` or `real`. Unknown roles are ignored (I5).
+
+**A Zigbee remote is a button** (1.4, haumacher/ehome #70). A remote reports its presses as the
+enumeration datapoint of its `action` function (a client binding, 3.3 and `spec/zigbee.md`): every
+command it sends is one update of the datapoint, also when the element is the same as before (two
+presses of "on" are two updates), with the elements 0 off, 1 on, 2 toggle, 3 dim up, 4 dim down, 5
+dim stop (`doc/zigbee.md`, the function table). Such a datapoint is the `press` of a `button`, and
+the function says in `presses` which element is which kind of press:
+
+| Kind | Meaning | The remote's elements E-Home writes |
+|---|---|---|
+| `press` | a press of a single or toggle button | 2 (toggle) |
+| `on`, `off` | a press of the on or the off button | 1, 0 |
+| `up`, `down` | a press of the up or the down (dim) button, short (a step) or held (a move); the remote does not tell the two apart | 3, 4 |
+| `release` | the release of an up or down button after holding it | 5 |
+
+```json
+{"id": "hall-remote", "label": "Hall remote", "kind": "button", "room": "hall",
+ "presses": {"press": [2], "on": [1], "off": [0], "up": [3], "down": [4], "release": [5]},
+ "datapoints": {"press": "hall.remote"}}
+```
+
+Each kind is optional and names 1..6 elements; an element belongs to at most one kind; an element
+no kind names is no press (the device UI shows its number). One remote is one function, not one
+function per button: the device UI shows the last press with its kind ("On, 3 min ago", the press
+datapoint's last update), which needs all of a remote's elements in one place, and a rule names the
+datapoint anyway. `presses` is strict inside (I5): unknown members are refused, `description` and
+`comment` allowed. Refusals at `functions[i].presses` (the paths and the beginning of the reasons):
+
+| Path | Reason |
+|---|---|
+| `functions[i].datapoints.press` | `an enumeration press needs a Zigbee action datapoint (a client binding), whose elements are known; 'x' is not one` (a KNX or virtual enumeration: its elements are not known to the loader) |
+| `functions[i].presses` | `a button with an enumeration press needs presses (which elements are which press)` |
+| | `presses is only for an enumeration press; 'x' is boolean` (also controlled, or a number the role refused) |
+| | `malformed: presses must be an object of press kinds (press, on, off, up, down, release) to arrays of elements` |
+| | `malformed: unknown member 'longPress'` (with the hint of I4 when the image's minor version is newer) |
+| | `presses names no press` (an empty object) |
+| `functions[i].presses.on` | `malformed: on must be a non-empty array of elements` |
+| `functions[i].presses.on[k]` | `malformed: an element must be an integer` |
+| | `element 7 is no element of 'x' (a Zigbee action: 0..5)` |
+| | `element 1 is a press of off already` |
+
+A boolean or controlled press is unchanged: no `presses` (it is refused there), the UI's press
+button commands it (`true`, `{"control": true, "value": 1}`). An enumeration press is never
+commanded: a client binding is read-only (3.3).
+
+**Rules on a remote** name the press datapoint, not the function: a trigger `{"kind": "datapoint",
+"datapoint": "hall.remote", "on": "update"}` sees every press (`on: change`, the default, misses a
+second press of the same button), and the condition compares the element (`@hall.remote == 1`;
+spec/rules.md 3.1 compares enumerations with integers). A **long press** of a dimming remote is a
+held up or down button: the remote sends a move (`up`, 3, or `down`, 4) when the button is held and
+a stop (`release`, 5) when it is let go. A rule dims with two reactions: on an update to 3 or 4 it
+starts the dimming (a relative `step` of a dimmer, `{"control": true, "value": 1}` brighter), on an
+update to 5 it stops it (`{"control": false, "value": 0}`, step code 0). A rule that tells a long
+press from a short one starts a timer (say 0.5 s) on the update to 3 or 4: the timer expiring before
+the update to 5 is a long press (a transition to a state `held`), the update to 5 before it a short
+one (spec/rules.md 7.8, `restartTimer`, a `timer` trigger, `from`/`to`).
 
 ### 3.6 `knx`
 
@@ -536,3 +596,13 @@ persisted values and history rings: the device returns to setup.
   An image of 1.0 to 1.2 loads unchanged. A firmware that reads only up to 1.2 would ignore `blocks`
   (I5) and run none: E-Home deploys an image with blocks only to a controller that reports 1.3 or
   newer (I4, `spec/blocks.md` B1). The corpus is `spec/fixtures/blocks/`.
+- 1.4 (haumacher/ehome #70): the Zigbee remotes as buttons: the role `press` of a `button` also
+  takes an enumeration, a Zigbee action (a client binding), with the function's member `presses`
+  (3.5), strict inside (I5); the API's model passes `presses` on (`spec/api.md`), the device UI
+  shows the last press by its kind, MQTT announces such a button without `state` as a `sensor`
+  (`spec/mqtt.md`). Corpus cases `accept-button-presses`, `refuse-button-presses`. E-Home writes
+  1.4. An image of 1.0 to 1.3 loads unchanged. A firmware that reads only up to 1.3 refuses an
+  enumeration press (`datapoint 'x' is enumeration, but the role press of a button takes boolean or
+  controlled`), so the whole image: E-Home deploys an image with an enumeration press only to a
+  controller that reports 1.4 or newer (I4), as it does with blocks for 1.3; an image without one
+  loads on 1.3 as before (`presses` elsewhere is an unknown member, ignored).

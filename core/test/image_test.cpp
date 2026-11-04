@@ -293,6 +293,27 @@ TEST_CASE("Image.NewerMinorNamedInStrictRefusals") {
 			CHECK(reason == "malformed: unknown member 'jitter'");
 		}
 	}
+	// A button's presses are strict too (1.4, haumacher/ehome #70): a kind of a newer minor names it.
+	for (const char* version : {hc::image::schema_version_text(), static_cast<const char*>(newer)}) {
+		CAPTURE(version);
+		std::string text = std::string(R"({"image": {"schemaVersion": ")") + version +
+			R"(", "projectId": "p", "revision": 1}, "datapoints": [{"id": "r", "type": "enumeration",
+			"zigbee": {"ieee": "000b57fffe112233", "endpoint": 1, "cluster": 6, "client": true}}],
+			"functions": [{"id": "f", "label": "F", "kind": "button", "presses": {"on": [1], "doubleClick": [2]},
+			"datapoints": {"press": "r"}}]})";
+		Plan plan;
+		Report report;
+		REQUIRE_FALSE(parse(text, plan, report));
+		REQUIRE(report.count == 1);
+		CHECK(std::string(report.refusals[0].path) == "functions[0].presses");
+		std::string reason = report.refusals[0].reason;
+		if (version == newer) {
+			CHECK(reason == std::string("malformed: unknown member 'doubleClick' (the image's schema ") + newer +
+				" is newer than this firmware reads, up to " + hc::image::schema_version_text() + ": update the firmware)");
+		} else {
+			CHECK(reason == "malformed: unknown member 'doubleClick'");
+		}
+	}
 	// A long rule id and member: the reason is cut, never the hint.
 	std::string id(32, 'r'); // the longest rule id
 	std::string member(39, 'm');

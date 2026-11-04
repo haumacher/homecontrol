@@ -144,6 +144,8 @@ bool ModelView::build(const char* text, size_t length, const DatapointModel& mod
 			double scene = 0;
 			f.scene = json_member(item, "scene", value) && json_number(value, scene) && scene >= 1 && scene <= 64
 				? static_cast<uint8_t>(scene) : 0;
+			f.presses = json_member(item, "presses", value) && value.kind == JsonSpan::Kind::object ? raw_copy(value)
+				: nullptr;
 			f.roles = nullptr;
 			f.role_count = 0;
 			JsonSpan roles;

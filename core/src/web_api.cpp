@@ -1654,6 +1654,9 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		if (f.scene > 0) {
 			json.member("scene", static_cast<uint32_t>(f.scene));
 		}
+		if (f.presses != nullptr) {
+			json.key("presses").raw(f.presses, std::strlen(f.presses));
+		}
 		json.key("datapoints").begin_object();
 		for (size_t r = 0; r < f.role_count; ++r) {
 			json.member(f.roles[r].name, static_cast<uint32_t>(f.roles[r].datapoint));

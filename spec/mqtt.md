@@ -122,6 +122,7 @@ relative to `"~"` (Home Assistant's base-topic abbreviation) = `<base>`. Every c
 | `scene` | `scene` | `command_topic` C(command), `payload_on` the scene's value: `scene − 1` for a number or enumeration (KNX DPT 17.001 counts scenes from 0), `{"control":false,"value":scene − 1}` for a controlled datapoint (DPT 18.001) | — |
 | `button`, writable press | `button` | `command_topic` C(press), `payload_press` `true` (boolean) or `{"control":true,"value":1}` (controlled) | — |
 | `button`, read-only press | `binary_sensor` | `state_topic` S(state), else S(press), `value_template` OO (`value_json.value.value` for a controlled press) | state, else press |
+| `button`, enumeration press (a Zigbee remote's action, image 1.4) without `state` | `sensor` | `state_topic` S(press), `value_template` V (the element of the last press, spec/runtime-image.md 3.5) | press |
 
 | Unit | `device_class` |
 |---|---|
