@@ -4,6 +4,7 @@
 #include <string>
 
 #include "doctest.h"
+#include "hc/version.h"
 #include "hc/network_settings.h"
 #include "hc/blocks/room_controller.h"
 #include "hc/ehome_link.h"
@@ -134,7 +135,7 @@ TEST_CASE("WebApi status carries the device, network, time, memory, Improv, upda
 	REQUIRE(r.status == 200);
 	const hc_test::Json& j = r.json;
 	CHECK(j["device"]["name"].text == "homecontrol-a1b2c3");
-	CHECK(j["device"]["version"].text == "0.1.0-dev");
+	CHECK(j["device"]["version"].text == hc::kVersion);
 	CHECK(j["device"]["ui"].text == "abc123");
 	CHECK(j["network"].has("state"));
 	CHECK(j["network"]["mdns"].text == "homecontrol-a1b2c3.local");

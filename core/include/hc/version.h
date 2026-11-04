@@ -7,7 +7,7 @@
 namespace hc {
 
 /// The firmware version, the same on every platform.
-constexpr const char* kVersion = "0.1.0-dev";
+constexpr const char* kVersion = "1.0.0";
 
 /// The build id the build system injects (`git describe --always --dirty` at configure time),
 /// or "unknown" if git was not available.

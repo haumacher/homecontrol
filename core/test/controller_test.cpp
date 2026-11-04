@@ -50,7 +50,7 @@ TEST_CASE("Controller.StartLogsVersionAndFreeHeap") {
 	controller.start();
 
 	REQUIRE(p.sink.lines.size() >= 2);
-	CHECK(p.sink.lines[0] == std::string("I hc.ctl: HomeControl 0.1.0-dev (build ") + hc::build_id() + ") starting, reset reason: unknown");
+	CHECK(p.sink.lines[0] == std::string("I hc.ctl: HomeControl ") + hc::kVersion + " (build " + hc::build_id() + ") starting, reset reason: unknown");
 	CHECK(p.sink.contains("I hc.ctl: wall clock not synchronized (reads 0 s)"));
 	CHECK(p.sink.contains("I hc.ctl: free heap 300000 B (min 250000 B)"));
 	CHECK(controller.started());
