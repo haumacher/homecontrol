@@ -256,13 +256,14 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
               {"key": "mqtt.password", "value": null, "default": "", "editable": true, "secret": true, "stored": true},
               {"key": "knx.gateway", "value": "192.0.2.20", "default": "", "editable": true},
               {"key": "knx.nat", "value": "off", "default": "off", "editable": true},
+              {"key": "led.quiet", "value": "off", "default": "off", "editable": true},
               {"key": "wifi.ssid", "value": "...", "default": "", "editable": false}],
  "i18n": {"lang": "de", "state": "installed", "detail": "pack 'de' of release 0.2.0 installed (5035 bytes)",
           "release": "0.2.0", "offered": [{"code": "de", "name": "Deutsch"}]}}
 ```
 
 `value` is `null` when the setting is not stored (the default applies); `ui.lang` and `tz` always
-show the value in use. Secrets (`wifi.psk`, the password and token hashes `web.*`) never appear;
+show the value in use, as do the on/off settings (`knx.nat`, `led.quiet`). Secrets (`wifi.psk`, the password and token hashes `web.*`) never appear;
 the write-only `mqtt.password` (doc/mqtt.md) is listed with `secret: true` and `stored` saying
 whether one is kept, its `value` always `null`.
 `i18n` (only on a device that downloads language packs, i.e. not the POSIX build) is the state of
@@ -277,8 +278,10 @@ Body `{"value": "<string, at most 127 bytes>"}`; `""` erases `update.url`. Valid
 console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.url` an http(s) URL; doc/ota.md;
 `ui.lang` a language tag `[a-z]{2}(-[A-Z]{2})?`, doc/i18n.md; `wifi.ps` one of `none`, `min`, `max`,
 doc/network.md; `mqtt.user` and `mqtt.password` 1 to 63 bytes, `""` removes them; `knx.gateway` a host or IPv4
-address with an optional `:port`, `""` removes it; `knx.nat` `on` or `off`, doc/knx.md) and applied
-at once (a new `knx.gateway` or `knx.nat` reconnects the KNX tunnel, a new `ui.lang` starts the download of its language pack, a new `wifi.ps` is set on the
+address with an optional `:port`, `""` removes it; `knx.nat` `on` or `off`, doc/knx.md; `led.quiet` `on` or `off`, also `true` or
+`false`, doc/network.md) and applied
+at once (a new `knx.gateway` or `knx.nat` reconnects the KNX tunnel, a new `led.quiet` changes the
+status LED at its next tick, a new `ui.lang` starts the download of its language pack, a new `wifi.ps` is set on the
 running WiFi link, a new `mqtt.user` or `mqtt.password` reconnects the MQTT client). 200 with the settings list as for GET. Refusals: 404 `settings.unknown`, 403
 `settings.not_editable`, 400 `settings.value_missing`, 422 `settings.invalid` (with the reason),
 500 `settings.storage_error`.

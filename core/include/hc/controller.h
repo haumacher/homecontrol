@@ -117,6 +117,13 @@ public:
 	/// runtime image, degraded when the image's needs fail (LedInput), ready otherwise.
 	LedStatus led_status() const;
 
+	/// Whether the status LED is quiet (the setting led.quiet, read in start()): `ready` is dark.
+	bool led_quiet() const { return status_led_.quiet(); }
+
+	/// Stores led.quiet and applies it at once (the next LED tick). On a storage failure returns
+	/// false, logs and points `error` (if given) to the reason; the mode in effect is unchanged then.
+	bool set_led_quiet(bool quiet, const char** error = nullptr);
+
 	/// The source of the image part of led_status() (nullptr: none, the LED shows setup when up).
 	void set_led_input(const LedInput* input) { led_input_ = input; }
 

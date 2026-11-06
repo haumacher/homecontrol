@@ -241,7 +241,7 @@ public:
 	static void refuse(WebResponse& response, int status, const char* code, const char* text);
 
 	/// Validates and applies one of the UI-editable settings (tz, ntp.server, update.url, ui.lang,
-	/// wifi.ps, mqtt.user, mqtt.password, knx.gateway, knx.nat). On refusal returns false with the code
+	/// wifi.ps, mqtt.user, mqtt.password, knx.gateway, knx.nat, led.quiet). On refusal returns false with the code
 	/// and reason.
 	bool apply_setting(const char* key, const char* value, const char** code, const char** error);
 

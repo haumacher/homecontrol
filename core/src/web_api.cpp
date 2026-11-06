@@ -90,6 +90,7 @@ constexpr SettingInfo kShownSettings[] = {
 	{setting::kMqttPassword, true, true},
 	{knx::setting::kGateway, true},
 	{knx::setting::kNat, true},
+	{setting::kLedQuiet, true},
 	{setting::kWifiSsid, false},
 	// The E-Home connection (doc/ehome.md): set by the enrollment, erased by "Disconnect"; the
 	// owner's switch. ehome.secret and ehome.socket are never listed.
@@ -1160,6 +1161,11 @@ void WebApi::settings(WebResponse& response) {
 			store.get_bool(info.key, nat);
 			std::snprintf(value, sizeof(value), "%s", nat ? "on" : "off");
 			status = SettingsStatus::ok;
+		} else if (std::strcmp(info.key, setting::kLedQuiet) == 0) {
+			// A boolean setting shown as on/off; the mode in use (an unreadable value is off).
+			fallback = "off";
+			std::snprintf(value, sizeof(value), "%s", controller_.led_quiet() ? "on" : "off");
+			status = SettingsStatus::ok;
 		}
 		json.begin_object().member("key", info.key);
 		json.key("value");
@@ -1280,6 +1286,18 @@ bool WebApi::apply_setting(const char* key, const char* value, const char** code
 			return false;
 		}
 		Log::info(kTag, "KNX NAT mode %s", nat ? "on" : "off");
+		return true;
+	}
+	if (std::strcmp(key, setting::kLedQuiet) == 0) {
+		bool quiet = std::strcmp(value, "on") == 0 || std::strcmp(value, "true") == 0;
+		if (!quiet && std::strcmp(value, "off") != 0 && std::strcmp(value, "false") != 0) {
+			*error = "led.quiet is on or off";
+			return false;
+		}
+		if (!controller_.set_led_quiet(quiet, error)) {
+			*code = "settings.storage_error";
+			return false;
+		}
 		return true;
 	}
 	if (std::strcmp(key, setting::kEhomeEnabled) == 0) {

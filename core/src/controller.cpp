@@ -85,6 +85,18 @@ void Controller::start() {
 	loop_.schedule_periodic(start_ms_ + kHeartbeatPeriodMs, kHeartbeatPeriodMs,
 		Callback::member<Controller, &Controller::heartbeat>(this));
 
+	bool quiet = false;
+	SettingsStatus quiet_status = settings_.get_bool(setting::kLedQuiet, quiet);
+	if (quiet_status != SettingsStatus::ok && quiet_status != SettingsStatus::not_found) {
+		Log::error(kTag, "setting %s unreadable (%s): the status LED is not quiet", setting::kLedQuiet,
+			settings_status_name(quiet_status));
+		quiet = false;
+	}
+	status_led_.set_quiet(quiet);
+	if (quiet) {
+		Log::info(kTag, "status LED quiet: dark while ready");
+	}
+
 	if (status_light_ != nullptr) {
 		status_light_->set(false);
 		loop_.schedule_periodic(start_ms_, StatusLed::kTickMs, Callback::member<Controller, &Controller::led_tick>(this));
@@ -114,6 +126,21 @@ void Controller::led_tick() {
 		light_on_ = on;
 		status_light_->set(on);
 	}
+}
+
+bool Controller::set_led_quiet(bool quiet, const char** error) {
+	SettingsStatus status = settings_.set_bool(setting::kLedQuiet, quiet);
+	if (status != SettingsStatus::ok) {
+		Log::error(kTag, "refusing %s %s: cannot store it (%s)", setting::kLedQuiet, quiet ? "on" : "off",
+			settings_status_name(status));
+		if (error != nullptr) {
+			*error = settings_status_name(status);
+		}
+		return false;
+	}
+	status_led_.set_quiet(quiet);
+	Log::info(kTag, "status LED %s", quiet ? "quiet: dark while ready" : "lit while ready");
+	return true;
 }
 
 void Controller::run_once() {

@@ -168,6 +168,15 @@ changes it on the running link; `none` is the phoneblock dongle's choice (mains 
 loses ACKs that some access points punish with a disassociation, reason 34) and the right one for a
 household without Zigbee devices that wants the lowest latency.
 
+The setting `led.quiet` (`on` | `off`, also `true` | `false`; default `off`; the Settings page,
+`PUT /api/settings/led.quiet`) makes the status LED quiet: it is dark while the controller is
+`ready`, and lights only to report pairing, connecting, setup or a fault (degraded), with the
+patterns below. It belongs to the device, not to the runtime image (where the box is mounted
+decides whether the LED disturbs anyone), so a deploy does not touch it. A change shows at the next
+LED tick, without a restart; the controller reads it at start. `GET /api/status` and the WebSocket
+`status` keep reporting the state (`ready`), so the status page tells a quiet LED from one without
+power. The OTA updater keeps its own patterns and does not read the setting.
+
 **Backoff:** 1 s, 2 s, 4 s, 8 s, 16 s, 32 s, 60 s, 60 s, ... after consecutive failures; reset
 when the link comes up and when the workflow changes mode.
 
@@ -185,9 +194,10 @@ again in 1 s`. The heartbeat line names the link state and, if it is not `normal
 | short pulse, 100 ms on / 900 ms off | online but no runtime image loaded yet; with an image the LED shows `ready`, or `degraded` while the KNX tunnel is down under a KNX image |
 | short dropout, 900 ms on / 100 ms off | degraded: configured, but something fails (reserved for later packages) |
 | solid | ready |
+| dark | ready with `led.quiet` on, or no power |
 
-The core derives the pattern (`Controller::led_status()`, `hc::StatusLed`, 50 ms ticks) and switches
-the light; the board's LED is chosen in menuconfig under *HomeControl status LED*: a WS2812 pixel
+The core derives the pattern (`Controller::led_status()`, `hc::StatusLed`, 50 ms ticks; with
+`led.quiet` on the pattern of `ready` is dark, see above) and switches the light; the board's LED is chosen in menuconfig under *HomeControl status LED*: a WS2812 pixel
 on GPIO8 (default on the ESP32-C6 devkits, dim cyan), a plain GPIO LED (optionally active low), or
 none (default for the S3 build; component `hc_status_light`, shared with the OTA updater).
 The OTA updater shows its own patterns on the same LED, each distinguishable from these by its
@@ -241,6 +251,7 @@ the default. The POSIX build takes the host's synchronized clock and applies `tz
 | `wifi.psk` | string | none (open network) | WPS, `wifi set`, erased by `wifi clear` |
 | `tz` | string | `CET-1CEST,M3.5.0,M10.5.0/3` | `tz set` |
 | `ntp.server` | string | `pool.ntp.org` | `ntp set` |
+| `led.quiet` | boolean | false | the Settings page, `PUT /api/settings/led.quiet` |
 
 Keys have 1 to 15 characters of `A-Z a-z 0-9 . _ -`; string values at most 127 bytes without
 control characters; integers are 32 bit; every violation is refused with a reason, nothing is

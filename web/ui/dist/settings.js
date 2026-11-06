@@ -71,7 +71,7 @@ function statusCards(s) {
 	);
 }
 
-/// A setting with a fixed set of values (wifi.ps): a selector, applied on change, with the hint
+/// A setting with a fixed set of values (wifi.ps, knx.nat, led.quiet): a selector, applied on change, with the hint
 /// text settings.<key>.hint; the choices are labelled settings.<key>.<value>.
 function choiceRow(setting, choices) {
 	const id = `setting-${setting.key}`;
@@ -96,7 +96,7 @@ function choiceRow(setting, choices) {
 	return h("div", { class: "field" }, h("label", { for: id }, t(`settings.key.${setting.key}`)), select, feedback);
 }
 
-const kChoices = { "wifi.ps": ["none", "min", "max"], "knx.nat": ["off", "on"] };
+const kChoices = { "wifi.ps": ["none", "min", "max"], "knx.nat": ["off", "on"], "led.quiet": ["off", "on"] };
 
 function settingRow(setting, onSaved) {
 	const id = `setting-${setting.key}`;
