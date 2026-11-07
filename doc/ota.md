@@ -583,11 +583,16 @@ asks every server for records of at most 4 KB (RFC 6066 Max Fragment Length,
 | haumacher.github.io (GitHub Pages, the update source) | no | 16 401 bytes |
 | release-assets.githubusercontent.com | no | 16 401 bytes |
 
-So the receive buffer stays at the 16 KB of the default (`CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384`):
-a smaller one fails on the first full record from GitHub's servers (`MBEDTLS_ERR_SSL_INVALID_RECORD`).
-The manifest (at most 1 KB) and its signature arrive in one small record each; a language pack from
-the Pages site needs the 16.7 KB block. The updater downloads the image with the static buffers of
-`sdkconfig.defaults` (16 KB + 4 KB), with the application not running.
+The application fetches only small bodies from GitHub: the manifest (at most 1 KB), its signature
+and the language packs (the German one of 1.0.0 has 10 132 bytes). Pages sends a body that small in
+one record of its size, so the receive buffer, allocated per record, takes a block of the pack's
+size, not 16.7 KB. `CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN` stays at the default 16384 all the same: with
+dynamic buffers it is only the limit of a record, it costs no memory, and a smaller limit would refuse
+the record of a pack above it (`MBEDTLS_ERR_SSL_INVALID_RECORD`). The image, the only large download,
+is the updater's: it runs alone, with the static buffers of `sdkconfig.defaults` (16 KB + 4 KB), and
+receives the 16 KB records of GitHub's servers without strain. Where the 4 KB request pays is E-Home:
+an image E-Home deploys over the WebSocket (up to 148 KB) arrives in 4 KB records instead of 16 KB
+ones, while the application runs everything else.
 
 ## Development procedure
 
