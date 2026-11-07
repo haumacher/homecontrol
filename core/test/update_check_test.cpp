@@ -453,44 +453,77 @@ TEST_CASE("UpdateCheck.UpdaterDecisionTable") {
 	CHECK(std::string(step.reason).find("every 5 minutes") != std::string::npos);
 }
 
-TEST_CASE("Update source: the release site by default, off on request, the user's URL otherwise") {
+TEST_CASE("Update source: the channel of the release site, stable by default, a development server in its place") {
 	hc_test::FakeSettings settings;
 	char source[hc::Settings::kMaxStringLength + 1];
-	// Nothing stored: the releases on the Pages site.
+	// Nothing stored: the stable channel of the Pages site.
+	CHECK(std::string(hc::update_channel(settings)) == "stable");
 	REQUIRE(hc::update_source(settings, source, sizeof(source)));
 	CHECK(std::string(source) == "https://haumacher.github.io/homecontrol/stable");
-	CHECK(std::string(source) == hc::setting::kDefaultUpdateUrl);
 	CHECK(hc::update_url_valid(source));
 
 	const char* error = nullptr;
-	REQUIRE(hc::store_update_source(settings, "https://updates.example/hc", &error));
+	REQUIRE(hc::store_update_channel(settings, "beta", &error));
 	REQUIRE(hc::update_source(settings, source, sizeof(source)));
-	CHECK(std::string(source) == "https://updates.example/hc");
+	CHECK(std::string(source) == "https://haumacher.github.io/homecontrol/beta");
 
-	REQUIRE(hc::store_update_source(settings, "off", &error));
-	CHECK(settings.entries.at(hc::setting::kUpdateUrl).text == "off");
+	REQUIRE(hc::store_update_channel(settings, "off", &error));
 	CHECK_FALSE(hc::update_source(settings, source, sizeof(source)));
 	CHECK(std::string(source).empty());
 
-	// Empty returns to the default: the setting is erased (also when nothing is stored).
-	REQUIRE(hc::store_update_source(settings, "", &error));
-	CHECK(settings.entries.count(hc::setting::kUpdateUrl) == 0);
-	REQUIRE(hc::store_update_source(settings, nullptr, &error));
-	REQUIRE(hc::update_source(settings, source, sizeof(source)));
-	CHECK(std::string(source) == hc::setting::kDefaultUpdateUrl);
+	CHECK_FALSE(hc::store_update_channel(settings, "nightly", &error));
+	CHECK(std::string(error) == "the update channel is stable, beta or off");
+	CHECK(std::string(hc::update_channel(settings)) == "off");
+	// An unreadable value reads as stable.
+	settings.set_string(hc::setting::kUpdateChannel, "x");
+	CHECK(std::string(hc::update_channel(settings)) == "stable");
 
-	// An empty value stored by an older firmware's "update url set" meant "no source": it stays off.
-	settings.set_string(hc::setting::kUpdateUrl, "");
+	// The development server replaces the channel until it is cleared.
+	REQUIRE(hc::store_update_channel(settings, "off", &error));
+	REQUIRE(hc::store_update_url(settings, "http://192.0.2.10:8070", &error));
+	REQUIRE(hc::update_source(settings, source, sizeof(source)));
+	CHECK(std::string(source) == "http://192.0.2.10:8070");
+	CHECK_FALSE(hc::store_update_url(settings, "ftp://192.0.2.10", &error));
+	REQUIRE(hc::store_update_url(settings, "", &error));
+	CHECK(settings.entries.count(hc::setting::kUpdateUrl) == 0);
 	CHECK_FALSE(hc::update_source(settings, source, sizeof(source)));
 
-	// Anything else must be a URL; a refusal leaves the stored source alone.
-	REQUIRE(hc::store_update_source(settings, "https://updates.example/hc", &error));
-	CHECK_FALSE(hc::store_update_source(settings, "ftp://updates.example/hc", &error));
-	CHECK(std::string(error).find("http") != std::string::npos);
-	REQUIRE(hc::update_source(settings, source, sizeof(source)));
-	CHECK(std::string(source) == "https://updates.example/hc");
-
-	// A buffer too small for the source gives none rather than a truncated URL.
 	char small[8];
+	REQUIRE(hc::store_update_channel(settings, "stable", &error));
 	CHECK_FALSE(hc::update_source(settings, small, sizeof(small)));
+}
+
+TEST_CASE("Update source: an update.url of an older firmware becomes a channel") {
+	struct Case {
+		const char* stored;
+		const char* channel; // nullptr: stays as the development server
+	};
+	const Case cases[] = {
+		{"https://haumacher.github.io/homecontrol/stable", "stable"},
+		{"https://haumacher.github.io/homecontrol/stable.", "stable"}, // copied with a full stop
+		{"https://haumacher.github.io/homecontrol/stable/", "stable"},
+		{"https://haumacher.github.io/homecontrol/beta", "beta"},
+		{"https://haumacher.github.io/homecontrol", "stable"},
+		{"off", "off"},
+		{"", "off"},
+		{"http://192.0.2.10:8070", nullptr},
+		{"https://haumacher.github.io/homecontrolx/stable", nullptr},
+	};
+	for (const Case& c : cases) {
+		hc_test::FakeSettings settings;
+		settings.set_string(hc::setting::kUpdateUrl, c.stored);
+		const char* migrated = hc::migrate_update_source(settings);
+		if (c.channel == nullptr) {
+			CHECK_MESSAGE(migrated == nullptr, c.stored);
+			CHECK_MESSAGE(settings.entries.count(hc::setting::kUpdateUrl) == 1, c.stored);
+		} else {
+			REQUIRE_MESSAGE(migrated != nullptr, c.stored);
+			CHECK_MESSAGE(std::string(migrated) == c.channel, c.stored);
+			CHECK_MESSAGE(std::string(hc::update_channel(settings)) == c.channel, c.stored);
+			CHECK_MESSAGE(settings.entries.count(hc::setting::kUpdateUrl) == 0, c.stored);
+		}
+	}
+	hc_test::FakeSettings none;
+	CHECK(hc::migrate_update_source(none) == nullptr);
+	CHECK(none.entries.empty());
 }

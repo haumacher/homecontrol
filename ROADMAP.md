@@ -272,3 +272,12 @@ outside world (weather, external services).
   client asks for 4 KB records (Max Fragment Length, as the PhoneBlock dongle does); E-Home's server
   and github.com honour it, GitHub Pages and the release assets send 16 KB records regardless, so the
   receive buffer stays at 16 KB (doc/ota.md "TLS records").
+- **2026-11-07 — The update source is a channel, not a URL (the author: "provide a selector for
+  stable or beta - no update url input").** Replaces the default update.url of the same day: a
+  controller that had `…/homecontrol/stable.` stored (copied with a full stop) fetched 404s. Settings
+  offers the update channel `stable` (default), `beta` (the newest release, pre-releases included;
+  the Pages site publishes `beta/` beside `stable/`) or `off`; the source is
+  `https://haumacher.github.io/homecontrol/<channel>`. update.url stays only as the console's
+  development server; an update.url of an older firmware into the release site (or `off`, empty)
+  becomes the channel at the next start. "Check" and "Update now" show their outcome on the card
+  instead of "the result shows in the log".

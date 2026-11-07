@@ -145,7 +145,7 @@ Console-only by design: `web password clear`, `crash` and `web demo`; also `wifi
 | | `wifi wps`, `wifi clear` | doc/network.md | console only (both take the device off its network; WPS needs the router's button anyway) |
 | | `ntp set <server>` | doc/network.md | `PUT /api/settings/ntp.server` |
 | time | `tz set <posix-tz>` | doc/time.md | `PUT /api/settings/tz` |
-| update | `update status \| check \| now [<url>] \| url set <url>\|off \| url clear` | doc/ota.md | `GET /api/status` (`update`), `POST /api/system/update/check`, `POST /api/system/update/now`, `PUT /api/settings/update.url`; Settings, System |
+| update | `update status \| check \| now [<url>] \| channel stable\|beta\|off \| url set <url> \| url clear` | doc/ota.md | `GET /api/status` (`update`), `POST /api/system/update/check`, `POST /api/system/update/now`, `PUT /api/settings/update.channel`; Settings, System |
 | diagnostics | `log level` | the core's threshold and the tags with their own | `GET /api/system/log-level` |
 | | `log level <tag\|*> <error\|warn\|info\|debug>` | sets a tag's level at run time: an `hc.*` tag in `hc::Log` (also what reaches the ring and `/api/log`, at most 8 tags) and in the IDF log; other tags (`wifi`, `httpd`, ...) in the IDF log only (their debug lines exist only in a build with `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG`); `*` sets the default and drops every per-tag level; not stored, a restart returns to info | `PUT /api/system/log-level`; Settings, System |
 | | `log tail [<n>]` | the newest n lines of the log ring (default 20): `seq ms level tag: message` | `GET /api/log`; the Log page |

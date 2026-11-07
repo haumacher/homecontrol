@@ -47,7 +47,7 @@ already authenticated; its commands show in the monitor with `"via": "ehome"`.
 Requests go into `WebApi::handle` with `WebRequest::ehome` set: the "E-Home" principal has a
 token's rights minus what is decided on site only. Refused 403 `ehome.forbidden` and logged:
 onboarding, login, password (`/api/auth/*`), API tokens, WiFi, factory reset, the firmware upload,
-the enrollment and disconnect (`/api/ehome*`), writing `update.url` and any `ehome.*` setting.
+the enrollment and disconnect (`/api/ehome*`), writing `update.channel` (or `update.url`) and any `ehome.*` setting.
 Firmware never travels over this connection.
 
 The enrollment's HTTP answer waits for E-Home's (`WebResponse::deferred`: the web servers poll

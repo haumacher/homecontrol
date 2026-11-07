@@ -148,7 +148,7 @@ it, a script cannot without a preflight the device never grants). The WebSocket 
 
 REST under `/api/` for everything that is a request (status, datapoints, commands, log, settings,
 authentication, the image's model, history, rules and schedules) and one WebSocket for what changes by itself (datapoint values, the status). The
-settings the UI may change are a whitelist: `tz`, `ntp.server`, `update.url`, `ui.lang`; `wifi.ssid` is shown
+settings the UI may change are a whitelist: `tz`, `ntp.server`, `update.channel`, `ui.lang`; `wifi.ssid` is shown
 read-only; secrets never appear. `knx.gateway` joins the whitelist with the KNX package (issue #7),
 which is not on this branch. Rejected: everything over the WebSocket (no curl, no caching
 semantics, no status codes); server-sent events (a second mechanism for commands would still be

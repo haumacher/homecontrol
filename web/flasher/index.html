@@ -147,9 +147,9 @@
 	<ol>
 		<li><strong>Set the device password.</strong> A new controller shows only this page: the
 			first person to open it chooses the password (8 to 64 characters). Do it right away.</li>
-		<li><strong>Turn on updates.</strong> Settings → Firmware update → <em>Update source</em>:
-			<pre>https://haumacher.github.io/homecontrol/stable</pre>
-			The controller then checks once a day, installs new releases by itself, and downloads
+		<li><strong>Updates are on.</strong> The controller follows the update channel <em>Stable</em>
+			(Settings → <em>Update channel</em>; <em>Beta</em> also brings the pre-releases, <em>Off</em>
+			stops automatic updates). It checks once a day, installs new releases by itself, and downloads
 			the language pack of its release (Settings → Language, e.g. Deutsch). Every update
 			manifest is signed; the controller installs only releases signed with the HomeControl
 			release key it carries.</li>
@@ -174,7 +174,7 @@
 	</div>
 
 	<h2 id="reinstall">Reinstalling and updating</h2>
-	<p>An installed controller is best updated <strong>over the air</strong> (the update source
+	<p>An installed controller is best updated <strong>over the air</strong> (the update channel
 		above) or with <strong>Settings → Firmware update → Install firmware file</strong>, using
 		<code>homecontrol.bin</code> from the
 		<a href="https://github.com/haumacher/homecontrol/releases" rel="noopener">releases</a>.

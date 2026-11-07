@@ -244,9 +244,13 @@ TEST_CASE("WebApi settings show the non-secret values and validate changes like 
 	CHECK(f.fake.settings.entries["ntp.server"].text == "ntp.example.org");
 	auto badntp = f.request(HttpMethod::put, "/api/settings/ntp.server", "{\"value\":\"bad host!\"}", cookie);
 	CHECK(badntp.status == 422);
-	auto url = f.request(HttpMethod::put, "/api/settings/update.url", "{\"value\":\"ftp://x\"}", cookie);
-	CHECK(url.status == 422);
-	CHECK(url.json["error"].text == "not an http:// or https:// URL");
+	// The update source is a channel; there is no URL to enter (update.url is the console's).
+	auto channel = f.request(HttpMethod::put, "/api/settings/update.channel", "{\"value\":\"nightly\"}", cookie);
+	CHECK(channel.status == 422);
+	CHECK(channel.json["error"].text == "the update channel is stable, beta or off");
+	CHECK(f.request(HttpMethod::put, "/api/settings/update.channel", "{\"value\":\"beta\"}", cookie).status == 200);
+	CHECK(f.fake.settings.entries["update.channel"].text == "beta");
+	CHECK(f.request(HttpMethod::put, "/api/settings/update.url", "{\"value\":\"https://x.example\"}", cookie).status == 404);
 	auto ro = f.request(HttpMethod::put, "/api/settings/wifi.ssid", "{\"value\":\"x\"}", cookie);
 	CHECK(ro.status == 403);
 	CHECK(ro.json["code"].text == "settings.not_editable");

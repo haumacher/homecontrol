@@ -22,9 +22,11 @@
 #                                     manifest.sig (the signed update manifest), SHA256SUMS,
 #                                     i18n/manifest.json and i18n/lang-<code>.json.gz
 #   stable/manifest.json, .sig        the stable release's update manifest, byte for byte
-#                                     (update.url = <site>/stable)
-#   stable/<version>/i18n/            the language packs of every release on the site (also the
-#                                     older ones): the device reads <update.url>/<version>/i18n/
+#                                     (the update channel stable: <site>/stable)
+#   beta/manifest.json, .sig          the same of the newest release, pre-releases included
+#                                     (the update channel beta; the stable one while it is newest)
+#   stable/<version>/i18n/, beta/...  the language packs of every release on the site (also the
+#                                     older ones): the device reads <channel>/<version>/i18n/
 
 import argparse
 import json
@@ -35,6 +37,8 @@ import sys
 
 REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 VERSION = re.compile(r'^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$')
+# The update channels (hc::setting::kUpdateChannel): each one a directory of the site.
+CHANNELS = ('stable', 'beta')
 PAGE_FILES = ('index.html', 'de/index.html', 'flasher.css', 'flasher.js')
 FLASH_PARTS = ('bootloader.bin', 'partition-table.bin', 'hc_updater.bin', 'homecontrol.bin', 'ota_data_ota0.bin',
 			   'storage.bin')
@@ -105,6 +109,8 @@ def main():
 	else:
 		finals = [v for v in ordered if '-' not in v]
 		stable = finals[0] if finals else ordered[0]
+	# The beta channel: the newest release, pre-releases included (never older than stable).
+	beta = ordered[0] if precedence(ordered[0]) > precedence(stable) else stable
 
 	out = args.out
 	os.makedirs(out)
@@ -122,14 +128,17 @@ def main():
 			if os.path.isfile(os.path.join(assets, name)):
 				shutil.copyfile(os.path.join(assets, name), os.path.join(target, name))
 		copy_i18n(assets, os.path.join(target, 'i18n'))
-		copy_i18n(assets, os.path.join(out, 'stable', version, 'i18n'))
+		for channel in CHANNELS:
+			copy_i18n(assets, os.path.join(out, channel, version, 'i18n'))
 	for version, assets in older.items():
-		copy_i18n(assets, os.path.join(out, 'stable', version, 'i18n'))
+		for channel in CHANNELS:
+			copy_i18n(assets, os.path.join(out, channel, version, 'i18n'))
 
 	# The stable channel: the signed update manifest exactly as signed (its image URL is absolute in
 	# the site's path, so the same bytes serve from stable/ and from firmware/<version>/).
-	for name in ('manifest.json', 'manifest.sig'):
-		shutil.copyfile(os.path.join(releases[stable], name), os.path.join(out, 'stable', name))
+	for channel, version in (('stable', stable), ('beta', beta)):
+		for name in ('manifest.json', 'manifest.sig'):
+			shutil.copyfile(os.path.join(releases[version], name), os.path.join(out, channel, name))
 
 	# The flasher's manifest: the stable release's install.json with its parts in firmware/<version>/.
 	with open(os.path.join(releases[stable], 'install.json'), encoding='utf-8') as f:
@@ -142,10 +151,10 @@ def main():
 		f.write('\n')
 
 	with open(os.path.join(out, 'releases.json'), 'w', encoding='utf-8') as f:
-		json.dump({'stable': stable, 'releases': [{'version': v, 'prerelease': '-' in v} for v in ordered]}, f, indent=2)
+		json.dump({'stable': stable, 'beta': beta, 'releases': [{'version': v, 'prerelease': '-' in v} for v in ordered]}, f, indent=2)
 		f.write('\n')
 
-	print('site %s: stable %s, releases %s%s' % (out, stable, ', '.join(ordered),
+	print('site %s: stable %s, beta %s, releases %s%s' % (out, stable, beta, ', '.join(ordered),
 		  ', language packs of %s' % ', '.join(sorted(older, key=precedence, reverse=True)) if older else ''))
 	return 0
 

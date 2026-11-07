@@ -130,7 +130,6 @@ public:
 	bool mdns_announced() const override { return false; }
 	const char* ntp_server() const override { return ""; }
 	void ntp_server_changed() override;
-	bool set_update_url(const char* url, const char** error) override;
 	void write_update_state(JsonWriter& json) const override;
 	const char* ui_version() const override { return ui_version_; }
 	uint16_t websocket_port() const override { return static_cast<uint16_t>(port_ + 1); }

@@ -266,7 +266,6 @@
 	"settings.readonly": "Änderbar im Abschnitt System unten (WLAN), mit dem Hinweis dort.",
 	"settings.key.tz": "Zeitzone (POSIX-TZ)",
 	"settings.key.ntp.server": "Zeitserver (NTP)",
-	"settings.key.update.url": "Update-Quelle",
 	"settings.key.wifi.ssid": "WLAN",
 	"settings.key.ui.lang": "Sprache",
 	"settings.key.wifi.ps": "WLAN-Energiesparen",
@@ -437,7 +436,6 @@
 	"system.update.now": "Jetzt aktualisieren",
 	"system.update.now.confirm": "Neueste Firmware jetzt installieren? Das Gerät startet neu.",
 	"system.update.checking": "prüft…",
-	"system.update.started": "Gestartet; das Ergebnis steht im Log.",
 	"system.upload": "Firmware-Datei installieren",
 	"system.upload.hint": "Installiert die homecontrol.bin eines Releases von diesem Rechner.",
 	"system.upload.by_address": "Dateien werden nur unter der Adresse des Geräts installiert (dort neu anmelden):",
@@ -646,5 +644,14 @@
 	"blocks.diagnostic": "Diagnose",
 	"blocks.quality.stale": "veraltet",
 	"blocks.quality.unknown": "unbekannt",
-	"technology.blocks": "Ein Baustein"
+	"technology.blocks": "Ein Baustein",
+	"settings.key.update.channel": "Update-Kanal",
+	"settings.update.channel.stable": "Stabil: die Releases",
+	"settings.update.channel.beta": "Beta: auch die Vorabversionen",
+	"settings.update.channel.off": "Aus: kein automatisches Update",
+	"settings.update.channel.hint": "Wo der Controller einmal täglich nach neuer Firmware und Sprachpaketen sucht. Wirkt sofort.",
+	"status.update.off": "keine (Update-Kanal aus)",
+	"system.update.installing": "Das Update wird installiert; das Gerät startet neu…",
+	"system.update.running": "Version {version} läuft.",
+	"system.update.no_result": "Noch kein Ergebnis; es erscheint unter „Letztes Ergebnis“, sobald die Prüfung fertig ist."
 }

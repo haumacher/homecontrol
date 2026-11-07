@@ -167,7 +167,7 @@ Members only `GET /api/status` carries (not the WebSocket's `status` message, wh
 Each appears when the build has the service.
 
 `update` is platform-specific: always `available` (whether the device updates itself), the ESP
-build adds `partition`, `confirmed`, `checking`, `source` (the update source in use: update.url, or its default when none is stored; `""` when it is `off`), `last`,
+build adds `partition`, `confirmed`, `checking`, `source` (the update source in use: `https://haumacher.github.io/homecontrol/<update.channel>`, or the development server of the console's update.url; `""` when the channel is `off`), `last`,
 `last_ago_s`, with a source `next_check_s`, and `release_key`: the fingerprint of the release key
 the firmware accepts manifests from (doc/ota.md "Manifest signature"; an unsigned or mis-signed
 manifest shows in `last` as `manifest refused: <reason>`).
@@ -249,7 +249,7 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
 ```json
 {"settings": [{"key": "tz", "value": "CET-1CEST,M3.5.0,M10.5.0/3", "default": "CET-1CEST,M3.5.0,M10.5.0/3", "editable": true},
               {"key": "ntp.server", "value": null, "default": "pool.ntp.org", "editable": true},
-              {"key": "update.url", "value": null, "default": "https://haumacher.github.io/homecontrol/stable", "editable": true},
+              {"key": "update.channel", "value": "stable", "default": "stable", "editable": true},
               {"key": "ui.lang", "value": "de", "default": "en", "editable": true},
               {"key": "wifi.ps", "value": "min", "default": "min", "editable": true},
               {"key": "mqtt.user", "value": null, "default": "", "editable": true},
@@ -274,8 +274,8 @@ retry follows); `offered` the languages the release's manifest lists, by their o
 
 ### `PUT /api/settings/<key>`
 
-Body `{"value": "<string, at most 127 bytes>"}`; `""` erases `update.url` (back to its default). Validated as on the
-console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.url` an http(s) URL or `off`; doc/ota.md;
+Body `{"value": "<string, at most 127 bytes>"}`. Validated as on the
+console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.channel` one of `stable`, `beta`, `off`; doc/ota.md;
 `ui.lang` a language tag `[a-z]{2}(-[A-Z]{2})?`, doc/i18n.md; `wifi.ps` one of `none`, `min`, `max`,
 doc/network.md; `mqtt.user` and `mqtt.password` 1 to 63 bytes, `""` removes them; `knx.gateway` a host or IPv4
 address with an optional `:port`, `""` removes it; `knx.nat` `on` or `off`, doc/knx.md; `led.quiet` `on` or `off`, also `true` or
@@ -312,7 +312,7 @@ erased), 501 `system.unavailable`, 409 `system.busy`.
 
 ### `POST /api/system/update/check` and `POST /api/system/update/now`
 
-`check` asks the update server (update.url) whether a newer release exists and installs it as the
+`check` asks the update source (the update channel) whether a newer release exists and installs it as the
 periodic check would; `now` installs the newest release regardless of the version (the console's
 `update check` and `update now`, doc/ota.md). `now` takes an optional body `{"url": "<http(s) URL
 of a firmware image>"}`. 200 `{"ok": true, "force": <bool>}`: the check runs in the background, its
@@ -982,7 +982,7 @@ request within 5 s, ESP).
 E-Home is a service on the public internet that manages many installations; it can never reach a
 controller in a home's private network. So the controller connects to E-Home, outbound, over TLS,
 and only while its owner has switched the connection on for configuration and deployment. Firmware
-does not travel over this connection (it comes from the release server of `update.url` or the
+does not travel over this connection (it comes from the release site of the update channel or the
 browser upload, doc/ota.md). The connection carries the controller's live feed to E-Home and
 E-Home's requests to the controller, in the same JSON the browser and the local API use. The
 controller's side is described in doc/ehome.md.
@@ -1099,7 +1099,7 @@ accepts the answer is 413 `api.body_too_large`, when the controller has no memor
 Requests run with the "E-Home" principal: everything a token may do, minus what is decided on site
 only. Refused with 403 `ehome.forbidden` (and logged): `/api/auth/*` (onboarding, login, password),
 `/api/tokens*`, `/api/system/wifi`, `/api/system/factory-reset`, `/api/system/update/upload`,
-`/api/ehome*` (enrollment, disconnect, accepting a key), and writing `update.url` or any `ehome.*`
+`/api/ehome*` (enrollment, disconnect, accepting a key), and writing `update.channel`, `update.url` or any `ehome.*`
 setting. One
 request at a time per socket; a second before the response is refused 429 `ehome.busy` (a second
 that announces `length` closes the socket: its binary messages could not be told apart). The response

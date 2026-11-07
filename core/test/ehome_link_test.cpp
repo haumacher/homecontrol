@@ -532,6 +532,7 @@ TEST_CASE("E-Home: the principal is refused onboarding, WiFi, the factory reset,
 		{"DELETE", "/api/ehome", "null"},
 		{"POST", "/api/tokens", "{\"name\":\"x\"}"},
 		{"PUT", "/api/settings/update.url", "{\"value\":\"https://evil.example\"}"},
+		{"PUT", "/api/settings/update.channel", "{\"value\":\"beta\"}"},
 		{"PUT", "/api/settings/ehome.enabled", "{\"value\":\"false\"}"},
 	};
 	int id = 100;

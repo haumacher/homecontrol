@@ -267,7 +267,7 @@ TEST_CASE("Lang: blob names and manifest URLs") {
 TEST_CASE("Lang: nothing is fetched before the network, the clock and an update source are there") {
 	Fixture f(false);
 	f.settings.set_string(hc::setting::kUiLang, "de");
-	f.settings.set_string(hc::setting::kUpdateUrl, hc::setting::kUpdateUrlOff);
+	f.settings.set_string(hc::setting::kUpdateChannel, hc::setting::kUpdateChannelOff);
 	f.boot();
 	CHECK(f.fetcher.urls.empty());
 	CHECK(f.packs.state() == LanguagePackState::waiting);
@@ -282,10 +282,10 @@ TEST_CASE("Lang: nothing is fetched before the network, the clock and an update 
 	f.clock.synchronized = true;
 	f.run_for(LanguagePacks::kReadyPollMs);
 	CHECK(f.fetcher.urls.empty());
-	CHECK(std::string(f.packs.detail()).find("no update source") != std::string::npos);
+	CHECK(std::string(f.packs.detail()).find("update channel is off") != std::string::npos);
 	// The reason is logged when it changes, not at every poll.
 	f.run_for(3 * LanguagePacks::kReadyPollMs);
-	CHECK(f.capture.sink.count("no update source") == 1);
+	CHECK(f.capture.sink.count("update channel is off") == 1);
 
 	f.settings.set_string(hc::setting::kUpdateUrl, "https://updates.example/hc");
 	f.run_for(LanguagePacks::kReadyPollMs);

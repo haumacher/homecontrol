@@ -249,14 +249,6 @@ void WebServer::ntp_server_changed() {
 	Log::info(kTag, "ntp.server stored; the POSIX build takes the host's clock and does not use it");
 }
 
-bool WebServer::set_update_url(const char* url, const char** error) {
-	if (!store_update_source(controller_.settings(), url, error)) {
-		return false;
-	}
-	Log::info(kTag, "update.url stored (the POSIX build does not update itself)");
-	return true;
-}
-
 HostResult WebServer::system_action_possible(SystemAction action, const char** reason) const {
 	if (!system_handler_) {
 		return WebHost::system_action_possible(action, reason);
@@ -277,6 +269,9 @@ void WebServer::write_update_state(JsonWriter& json) const {
 }
 
 bool WebServer::start() {
+	if (const char* channel = migrate_update_source(controller_.settings())) {
+		Log::info(kTag, "update.url of an older version replaced by the update channel %s", channel);
+	}
 	auth_.start();
 	if (!feed_.start()) {
 		return false;

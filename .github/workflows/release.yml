@@ -175,7 +175,7 @@ jobs:
           NOTES="HomeControl $VERSION for the ESP32-C6 (4 MB flash).
 
           - Install it on a new controller from the browser: https://haumacher.github.io/homecontrol/
-          - Update an installed controller over the air: update source https://haumacher.github.io/homecontrol/stable (Settings, Firmware update)
+          - Update an installed controller over the air: by itself, on the update channel Stable or Beta (Settings, Update channel)
           - Or upload \`homecontrol.bin\` on the controller's Settings page (Install firmware file).
 
           Built and signed by this workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. The update manifest is signed with the release key \`platform/esp/release-key.pub\`."

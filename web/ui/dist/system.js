@@ -46,23 +46,69 @@ function feedbackLine() {
 	return h("p", { class: "hint", role: "status" });
 }
 
+/// Polls the status after "Check" or "Update now" and shows the outcome where the owner clicked: the
+/// check's result (update.last) once it is no longer running, or, when the device restarts into the
+/// updater, that it installs and then the version that runs afterwards.
+async function followUpdate(feedback, lastValue, startedAt) {
+	const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+	let restarting = false;
+	for (let i = 0; i < 300; ++i) {
+		await wait(1000);
+		let status;
+		try {
+			status = await api("GET", "/api/status");
+		} catch (error) {
+			// No answer: the device restarts into the updater (or the network hiccups); keep waiting.
+			restarting = true;
+			feedback.className = "hint";
+			feedback.textContent = t("system.update.installing");
+			continue;
+		}
+		const update = status.update || {};
+		if (restarting) {
+			feedback.className = "hint";
+			feedback.textContent = t("system.update.running", { version: status.device ? status.device.version : "?" });
+			replace(lastValue, update.last || "—");
+			return;
+		}
+		if (update.checking) {
+			feedback.textContent = t("system.update.checking");
+			continue;
+		}
+		// The result of this check: newer than the click (last_ago_s counts from the result).
+		if (update.last_ago_s === undefined || Date.now() - update.last_ago_s * 1000 >= startedAt - 2000) {
+			replace(lastValue, update.last || "—");
+			const failed = /^(check failed|manifest refused|periodic check skipped)/.test(update.last || "");
+			feedback.className = failed ? "error-text" : "hint";
+			feedback.textContent = update.last || t("system.done");
+			return;
+		}
+	}
+	feedback.textContent = t("system.update.no_result");
+}
+
 function updateCard(status, app) {
 	const update = (status && status.update) || {};
 	const feedback = feedbackLine();
 	if (update.available === false) {
 		return card(t("system.update"), h("p", { class: "muted" }, t("status.update.unavailable")));
 	}
+	const lastValue = h("span", null, update.checking ? t("system.update.checking") : (update.last || "—"));
+	const follow = () => {
+		const startedAt = Date.now();
+		followUpdate(feedback, lastValue, startedAt);
+		return t("system.update.checking");
+	};
 	return card(t("system.update"),
 		rows([
-			[t("status.update.last"), update.checking ? t("system.update.checking") : (update.last || "—")],
-			[t("status.update.source"), update.source || t("status.none")],
+			[t("status.update.last"), lastValue],
+			[t("status.update.source"), update.source || t("status.update.off")],
 			update.release_key ? [t("status.update.release_key"), h("code", null, update.release_key)] : null,
 		]),
 		h("div", { class: "actions" },
-			actionButton(t("system.update.check"), feedback, () => api("POST", "/api/system/update/check"),
-				{ done: () => t("system.update.started") }),
+			actionButton(t("system.update.check"), feedback, () => api("POST", "/api/system/update/check"), { done: follow }),
 			actionButton(t("system.update.now"), feedback, () => api("POST", "/api/system/update/now"),
-				{ confirm: () => t("system.update.now.confirm"), done: () => t("system.update.started") })),
+				{ confirm: () => t("system.update.now.confirm"), done: follow })),
 		feedback,
 		uploadSection(status, app));
 }

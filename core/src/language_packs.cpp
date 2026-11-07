@@ -228,7 +228,7 @@ void LanguagePacks::run_pass() {
 	const char* reason = blocked();
 	const char* url_error = nullptr;
 	if (reason == nullptr && !has_source) {
-		reason = "no update source (update.url is off): packs come from the release's update server";
+		reason = "the update channel is off: packs come from the release site";
 	} else if (reason == nullptr && !update_url_valid(source, &url_error)) {
 		reason = "update.url is invalid";
 	}

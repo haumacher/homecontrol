@@ -14,18 +14,23 @@ namespace hc {
 /// The setting keys of the firmware update (doc/ota.md). Persisted names: never rename.
 namespace setting {
 
-/// The update source configured by the user: the base URL under which `manifest.json` and the
-/// image live (console `update url set`). Missing: the release site kDefaultUpdateUrl. The value
-/// kUpdateUrlOff (or an empty one, as stored before the default existed) switches the update source
-/// off: no periodic check, no language packs. Read it through update_source().
+/// The update channel the owner chose (Settings, Firmware update; console `update channel`):
+/// kUpdateChannelStable (also when nothing is stored), kUpdateChannelBeta (the newest release,
+/// pre-releases included) or kUpdateChannelOff (no periodic check, no language packs). The update
+/// source is `<kReleaseSite>/<channel>`, where the release workflow publishes the GitHub releases.
+constexpr const char* kUpdateChannel = "update.channel";
+constexpr const char* kUpdateChannelStable = "stable";
+constexpr const char* kUpdateChannelBeta = "beta";
+constexpr const char* kUpdateChannelOff = "off";
+
+/// The site of the releases (GitHub Pages of the repository; doc/ota.md "Releases and the web
+/// flasher").
+constexpr const char* kReleaseSite = "https://haumacher.github.io/homecontrol";
+
+/// A development update server in place of the channel (console `update url set`, e.g.
+/// scripts/update-server.py on the desk); not shown in the web UI. Before the channels (2026-11-07)
+/// it was the owner's update source; migrate_update_source() turns such a value into a channel.
 constexpr const char* kUpdateUrl = "update.url";
-
-/// The update source of a device that has none stored: the releases of GitHub, as the release
-/// workflow publishes them on the project's Pages site (doc/ota.md "Releases and the web flasher").
-constexpr const char* kDefaultUpdateUrl = "https://haumacher.github.io/homecontrol/stable";
-
-/// The stored value of update.url that switches the update source off.
-constexpr const char* kUpdateUrlOff = "off";
 
 /// The update instruction, written by the application before it boots into the updater and erased
 /// by the application after the next confirmed start. `update.image` is written last and erased
@@ -103,14 +108,29 @@ bool parse_update_manifest(const char* text, size_t length, UpdateManifest& out,
 /// Settings::kMaxStringLength characters, no spaces or control characters.
 bool update_url_valid(const char* url, const char** error = nullptr);
 
-/// The update source in use: the stored update.url, or kDefaultUpdateUrl when none is stored.
-/// False (and `out` empty) when it is switched off (kUpdateUrlOff, an empty value) or unreadable.
+/// Whether `channel` is one of the update channels.
+bool update_channel_valid(const char* channel, const char** error = nullptr);
+
+/// The update channel in use (kUpdateChannelStable when nothing valid is stored).
+const char* update_channel(const Settings& settings);
+
+/// Stores the update channel; false with the reason in `error` for another value or when the
+/// settings refuse.
+bool store_update_channel(Settings& settings, const char* channel, const char** error = nullptr);
+
+/// The update source in use: the development server of update.url if one is stored, otherwise
+/// `<kReleaseSite>/<channel>`. False (and `out` empty) when the channel is off.
 bool update_source(const Settings& settings, char* out, size_t size);
 
-/// Stores the update source the user entered: empty returns to the default (the setting is
-/// erased), kUpdateUrlOff switches it off, anything else must be update_url_valid(). False with the
-/// reason in `error` otherwise or when the settings refuse.
-bool store_update_source(Settings& settings, const char* url, const char** error = nullptr);
+/// Stores the development update server (update.url): empty erases it (back to the channel),
+/// anything else must be update_url_valid().
+bool store_update_url(Settings& settings, const char* url, const char** error = nullptr);
+
+/// Turns an update.url of an older firmware into a channel and erases it: a URL into kReleaseSite
+/// (`.../stable`, `.../beta`, also with a stray `/` or `.` behind it) becomes that channel, an empty
+/// value or `off` the channel off. Another URL stays as the development server. Returns the channel
+/// migrated to, nullptr if nothing changed.
+const char* migrate_update_source(Settings& settings);
 
 /// `<base>/manifest.json` (a trailing slash of `base` is dropped). False if it does not fit.
 bool update_manifest_url(const char* base, char* out, size_t size);

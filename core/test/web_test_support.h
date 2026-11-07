@@ -50,14 +50,6 @@ public:
 	bool mdns_announced() const override { return mdns; }
 	const char* ntp_server() const override { return "pool.ntp.org"; }
 	void ntp_server_changed() override { ++ntp_changes; }
-	bool set_update_url(const char* url, const char** error) override {
-		if (url[0] != '\0' && std::strncmp(url, "http", 4) != 0) {
-			*error = "not an http:// or https:// URL";
-			return false;
-		}
-		update_url = url;
-		return true;
-	}
 	void write_update_state(hc::JsonWriter& json) const override {
 		json.member("available", false).member("source", update_url.c_str());
 	}

@@ -83,7 +83,7 @@ struct SettingInfo {
 constexpr SettingInfo kShownSettings[] = {
 	{setting::kTimeZone, true},
 	{setting::kNtpServer, true},
-	{setting::kUpdateUrl, true},
+	{setting::kUpdateChannel, true},
 	{setting::kUiLang, true},
 	{setting::kWifiPowerSave, true},
 	{setting::kMqttUser, true},
@@ -248,8 +248,9 @@ bool WebApi::ehome_forbidden(const WebRequest& request, const char** reason) {
 		why = "API tokens are managed on site only";
 	} else if (std::strcmp(path, "/api/ehome") == 0 || starts_with(path, "/api/ehome/")) {
 		why = "the enrollment is managed on site only";
-	} else if (request.method != HttpMethod::get && std::strcmp(path, "/api/settings/update.url") == 0) {
-		why = "the firmware source (update.url) is set on site only";
+	} else if (request.method != HttpMethod::get && (std::strcmp(path, "/api/settings/update.channel") == 0 ||
+			std::strcmp(path, "/api/settings/update.url") == 0)) {
+		why = "the firmware source (update.channel) is chosen on site only";
 	} else if (request.method != HttpMethod::get && starts_with(path, "/api/settings/ehome.")) {
 		why = "the E-Home settings are the owner's, on site";
 	}
@@ -1142,8 +1143,10 @@ void WebApi::settings(WebResponse& response) {
 			status = SettingsStatus::ok;
 		} else if (std::strcmp(info.key, setting::kNtpServer) == 0) {
 			fallback = setting::kDefaultNtpServer;
-		} else if (std::strcmp(info.key, setting::kUpdateUrl) == 0) {
-			fallback = setting::kDefaultUpdateUrl;
+		} else if (std::strcmp(info.key, setting::kUpdateChannel) == 0) {
+			fallback = setting::kUpdateChannelStable;
+			std::snprintf(value, sizeof(value), "%s", update_channel(store));
+			status = SettingsStatus::ok;
 		} else if (std::strcmp(info.key, setting::kUiLang) == 0) {
 			fallback = setting::kDefaultUiLang;
 			char lang[setting::kMaxUiLangLength + 1];
@@ -1226,8 +1229,19 @@ bool WebApi::apply_setting(const char* key, const char* value, const char** code
 		host_.ntp_server_changed();
 		return true;
 	}
-	if (std::strcmp(key, setting::kUpdateUrl) == 0) {
-		return host_.set_update_url(value, error);
+	if (std::strcmp(key, setting::kUpdateChannel) == 0) {
+		if (!update_channel_valid(value, error)) {
+			return false;
+		}
+		if (!store_update_channel(controller_.settings(), value, error)) {
+			*code = "settings.storage_error";
+			return false;
+		}
+		Log::info(kTag, "update channel set to %s", value);
+		if (packs_ != nullptr) {
+			packs_->language_changed(); // the packs come from the channel's release
+		}
+		return true;
 	}
 	if (std::strcmp(key, setting::kUiLang) == 0) {
 		if (!ui_lang_valid(value, error)) {

@@ -37,10 +37,6 @@ public:
 	/// ntp.server was changed: restart SNTP if it runs.
 	virtual void ntp_server_changed() = 0;
 
-	/// Validates and stores the update source (update.url); "" erases it. On refusal returns false
-	/// with `error` pointing to the reason (doc/ota.md has the rules).
-	virtual bool set_update_url(const char* url, const char** error) = 0;
-
 	/// Writes the members of the "update" object of /api/status (spec/api.md) into an open object:
 	/// at least "available" (whether the platform updates itself) and, where known, "partition",
 	/// "source", "last" and "next_check_s".

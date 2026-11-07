@@ -142,10 +142,9 @@
 	<ol>
 		<li><strong>Gerätepasswort setzen.</strong> Ein neuer Controller zeigt nur diese Seite: Wer sie
 			zuerst öffnet, legt das Passwort fest (8 bis 64 Zeichen). Erledige das gleich.</li>
-		<li><strong>Updates einschalten.</strong> Settings → Firmware update → <em>Update source</em>
-			(auf Deutsch: Einstellungen → Firmware-Update → Update-Quelle):
-			<pre>https://haumacher.github.io/homecontrol/stable</pre>
-			Der Controller prüft dann einmal am Tag, installiert neue Versionen selbst und lädt das
+		<li><strong>Updates sind eingeschaltet.</strong> Der Controller folgt dem Update-Kanal
+			<em>Stabil</em> (Einstellungen → <em>Update-Kanal</em>; <em>Beta</em> bringt auch die
+			Vorabversionen, <em>Aus</em> beendet die automatischen Updates). Er prüft einmal am Tag, installiert neue Versionen selbst und lädt das
 			Sprachpaket seiner Version (Einstellungen → Sprache, z. B. Deutsch). Jedes Update-Manifest
 			ist signiert; der Controller installiert nur Versionen, die mit dem HomeControl-Release-Schlüssel
 			signiert sind, den er mitbringt.</li>
@@ -171,8 +170,8 @@
 	</div>
 
 	<h2 id="neu-installieren">Neu installieren und aktualisieren</h2>
-	<p>Ein eingerichteter Controller wird am besten <strong>über das Netz</strong> aktualisiert (die
-		Update-Quelle oben) oder mit <strong>Einstellungen → Firmware-Update → Firmware-Datei
+	<p>Ein eingerichteter Controller wird am besten <strong>über das Netz</strong> aktualisiert (der
+		Update-Kanal oben) oder mit <strong>Einstellungen → Firmware-Update → Firmware-Datei
 		installieren</strong> und der Datei <code>homecontrol.bin</code> aus den
 		<a href="https://github.com/haumacher/homecontrol/releases" rel="noopener">Releases</a>.
 		Beides behält alles.</p>

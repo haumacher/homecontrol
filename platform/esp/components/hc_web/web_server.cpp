@@ -314,10 +314,6 @@ void WebServer::ntp_server_changed() {
 	services_.restart_sntp();
 }
 
-bool WebServer::set_update_url(const char* url, const char** error) {
-	return ota_.set_url(url, error);
-}
-
 void WebServer::write_update_state(JsonWriter& json) const {
 	const esp_partition_t* running = esp_ota_get_running_partition();
 	json.member("available", true).member("partition", running != nullptr ? running->label : "?");

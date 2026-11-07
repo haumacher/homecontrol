@@ -591,35 +591,71 @@ bool update_url_valid(const char* url, const char** error) {
 	return true;
 }
 
+bool update_channel_valid(const char* channel, const char** error) {
+	if (channel != nullptr && (std::strcmp(channel, setting::kUpdateChannelStable) == 0 ||
+			std::strcmp(channel, setting::kUpdateChannelBeta) == 0 || std::strcmp(channel, setting::kUpdateChannelOff) == 0)) {
+		return true;
+	}
+	return refuse(error, "the update channel is stable, beta or off");
+}
+
+const char* update_channel(const Settings& settings) {
+	char stored[8] = {};
+	if (settings.get_string(setting::kUpdateChannel, stored, sizeof(stored)) == SettingsStatus::ok) {
+		if (std::strcmp(stored, setting::kUpdateChannelBeta) == 0) {
+			return setting::kUpdateChannelBeta;
+		}
+		if (std::strcmp(stored, setting::kUpdateChannelOff) == 0) {
+			return setting::kUpdateChannelOff;
+		}
+	}
+	return setting::kUpdateChannelStable;
+}
+
+bool store_update_channel(Settings& settings, const char* channel, const char** error) {
+	if (!update_channel_valid(channel, error)) {
+		return false;
+	}
+	SettingsStatus status = settings.set_string(setting::kUpdateChannel, channel);
+	if (status != SettingsStatus::ok) {
+		return refuse(error, settings_status_name(status));
+	}
+	return true;
+}
+
 bool update_source(const Settings& settings, char* out, size_t size) {
 	if (size == 0) {
 		return false;
 	}
 	out[0] = '\0';
 	char stored[Settings::kMaxStringLength + 1] = {};
-	SettingsStatus status = settings.get_string(setting::kUpdateUrl, stored, sizeof(stored));
-	const char* source = nullptr;
-	if (status == SettingsStatus::not_found) {
-		source = setting::kDefaultUpdateUrl;
-	} else if (status == SettingsStatus::ok && stored[0] != '\0' && std::strcmp(stored, setting::kUpdateUrlOff) != 0) {
-		source = stored;
+	if (settings.get_string(setting::kUpdateUrl, stored, sizeof(stored)) == SettingsStatus::ok && stored[0] != '\0' &&
+		update_url_valid(stored)) {
+		if (std::strlen(stored) >= size) {
+			return false;
+		}
+		std::strcpy(out, stored);
+		return true;
 	}
-	if (source == nullptr || std::strlen(source) >= size) {
+	const char* channel = update_channel(settings);
+	if (std::strcmp(channel, setting::kUpdateChannelOff) == 0) {
 		return false;
 	}
-	std::strcpy(out, source);
+	int length = std::snprintf(out, size, "%s/%s", setting::kReleaseSite, channel);
+	if (length < 0 || static_cast<size_t>(length) >= size) {
+		out[0] = '\0';
+		return false;
+	}
 	return true;
 }
 
-bool store_update_source(Settings& settings, const char* url, const char** error) {
+bool store_update_url(Settings& settings, const char* url, const char** error) {
 	SettingsStatus status;
 	if (url == nullptr || url[0] == '\0') {
 		status = settings.erase(setting::kUpdateUrl);
 		if (status == SettingsStatus::not_found) {
 			status = SettingsStatus::ok;
 		}
-	} else if (std::strcmp(url, setting::kUpdateUrlOff) == 0) {
-		status = settings.set_string(setting::kUpdateUrl, setting::kUpdateUrlOff);
 	} else if (!update_url_valid(url, error)) {
 		return false;
 	} else {
@@ -629,6 +665,33 @@ bool store_update_source(Settings& settings, const char* url, const char** error
 		return refuse(error, settings_status_name(status));
 	}
 	return true;
+}
+
+const char* migrate_update_source(Settings& settings) {
+	char stored[Settings::kMaxStringLength + 1] = {};
+	if (settings.get_string(setting::kUpdateUrl, stored, sizeof(stored)) != SettingsStatus::ok) {
+		return nullptr;
+	}
+	const char* channel = nullptr;
+	size_t site = std::strlen(setting::kReleaseSite);
+	if (stored[0] == '\0' || std::strcmp(stored, setting::kUpdateChannelOff) == 0) {
+		channel = setting::kUpdateChannelOff;
+	} else if (std::strncmp(stored, setting::kReleaseSite, site) == 0 && (stored[site] == '/' || stored[site] == '\0')) {
+		const char* rest = stored + site;
+		while (*rest == '/') {
+			++rest;
+		}
+		channel = std::strncmp(rest, setting::kUpdateChannelBeta, std::strlen(setting::kUpdateChannelBeta)) == 0
+			? setting::kUpdateChannelBeta
+			: setting::kUpdateChannelStable;
+	} else {
+		return nullptr; // a development server: stays
+	}
+	if (settings.set_string(setting::kUpdateChannel, channel) != SettingsStatus::ok ||
+		settings.erase(setting::kUpdateUrl) != SettingsStatus::ok) {
+		return nullptr;
+	}
+	return channel;
 }
 
 bool update_manifest_url(const char* base, char* out, size_t size) {

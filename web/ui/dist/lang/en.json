@@ -266,7 +266,6 @@
 	"settings.readonly": "Changed in the System section below (WiFi), with the warning there.",
 	"settings.key.tz": "Time zone (POSIX TZ)",
 	"settings.key.ntp.server": "Time server (NTP)",
-	"settings.key.update.url": "Update source",
 	"settings.key.wifi.ssid": "WiFi network",
 	"settings.key.ui.lang": "Language",
 	"settings.key.wifi.ps": "WiFi power save",
@@ -437,7 +436,6 @@
 	"system.update.now": "Update now",
 	"system.update.now.confirm": "Install the newest firmware now? The device restarts.",
 	"system.update.checking": "checking…",
-	"system.update.started": "Started; the result shows in the log.",
 	"system.upload": "Install firmware file",
 	"system.upload.hint": "Installs a release's homecontrol.bin from this computer.",
 	"system.upload.by_address": "Files are installed only at the device's address (log in there again):",
@@ -646,5 +644,14 @@
 	"blocks.diagnostic": "diagnostics",
 	"blocks.quality.stale": "stale",
 	"blocks.quality.unknown": "unknown",
-	"technology.blocks": "A block"
+	"technology.blocks": "A block",
+	"settings.key.update.channel": "Update channel",
+	"settings.update.channel.stable": "Stable: the releases",
+	"settings.update.channel.beta": "Beta: also the pre-releases",
+	"settings.update.channel.off": "Off: no automatic update",
+	"settings.update.channel.hint": "Where the controller looks for new firmware and language packs once a day. Applied at once.",
+	"status.update.off": "none (update channel off)",
+	"system.update.installing": "Installing the update; the device restarts…",
+	"system.update.running": "Version {version} runs.",
+	"system.update.no_result": "No result yet; it shows under \"Last result\" when the check is done."
 }

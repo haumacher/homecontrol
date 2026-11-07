@@ -101,7 +101,8 @@ renamed.
 
 | Key | Type | Written by | Read by | Meaning |
 |---|---|---|---|---|
-| `update.url` | string | console `update url set <url>\|off`, erased by `update url clear` | application | update source: `<url>/manifest.json`; not stored: the release site `https://haumacher.github.io/homecontrol/stable` (`hc::setting::kDefaultUpdateUrl`); `off` (or empty, as an older firmware stored it): no periodic check, no language packs |
+| `update.channel` | string | Settings (Update channel), console `update channel` | application | `stable` (also when not stored), `beta` or `off`: the update source `https://haumacher.github.io/homecontrol/<channel>` (`hc::setting::kReleaseSite`); `off`: no periodic check, no language packs |
+| `update.url` | string | console `update url set`, erased by `update url clear` | application | a development update server in place of the channel (`<url>/manifest.json`); not in the web UI. An update.url of a firmware before the channels (a URL into the release site, `off`, empty) becomes the channel at the next start (`hc::migrate_update_source`) |
 | `update.image` | string | application (written last) | updater | image URL; its presence marks a complete instruction |
 | `update.version` | string | application | updater, application | version the manifest announced |
 | `update.sha256` | string | application | updater | 64 hex digits of the image |
@@ -194,7 +195,7 @@ metadata does not count). `-dev` (pre-release) builds update to any newer releas
   boots the updater. After confirming, a leftover instruction is reported as `update to X completed`
   (the running version is X) or `update to X abandoned after N attempt(s)` (the updater booted the
   previous image) and erased.
-- **Check.** 15 minutes after start and then every 24 hours, unless the update source is `off`, if the network
+- **Check.** 15 minutes after start and then every 24 hours, unless the update channel is `off`, if the network
   is up (otherwise skipped with a log line), and on the console. The manifest and its signature are
   fetched on the `update` lane of the one fetch worker (doc/external.md "One fetch worker": second
   after the console's image download, 15 s timeout; the worker's task `hc_fetch` has an 8 KB stack; HTTPS verified against the IDF certificate bundle's common CAs, plain
@@ -208,11 +209,11 @@ Console (prompt `hc>`):
 | Command | Effect |
 |---|---|
 | `update status` | version and build, partition and its state, update source, next check, last result |
-| `update check` | checks `update.url` now; installs only a newer version |
-| `update now [<url>]` | fetches `<url>/manifest.json` (default `update.url`) and installs its image whatever the version (development) |
-| `update url set <url>` | stores the update source (`http://` or `https://`, at most 127 characters) |
-| `update url set off` | switches the update source off: no periodic check, no language packs |
-| `update url clear` | erases it: back to the default, the release site |
+| `update check` | checks the update source now; installs only a newer version |
+| `update now [<url>]` | fetches `<url>/manifest.json` (default: the update source) and installs its image whatever the version (development) |
+| `update channel stable\|beta\|off` | chooses the update channel (as the Settings page does) |
+| `update url set <url>` | a development update server in place of the channel (`http://` or `https://`, at most 127 characters) |
+| `update url clear` | erases it: the channel applies again |
 
 ## The updater
 
@@ -499,24 +500,27 @@ run). A release takes about 3.6 MB of the site (the ELF files stay in the releas
 | `/releases.json` | the releases on the site and the stable one (the page's release choice) |
 | `/firmware/<version>/` | the flash parts, `install.json`, `manifest.json` + `manifest.sig`, `SHA256SUMS`, `i18n/` |
 | `/stable/manifest.json`, `/stable/manifest.sig` | the stable release's signed update manifest, byte for byte |
-| `/stable/<version>/i18n/` | the language packs of every release ever published |
+| `/beta/manifest.json`, `/beta/manifest.sig` | the same of the newest release, pre-releases included |
+| `/stable/<version>/i18n/`, `/beta/<version>/i18n/` | the language packs of every release ever published |
 
-The **update source** of an installed controller is `https://haumacher.github.io/homecontrol/stable`,
-the default of `update.url` since 2026-11-07 (before, a controller had none until the owner entered
-it): every controller updates from the GitHub releases unless its owner sets another source or
-`off` (Settings, Update source; console `update url set <url>|off`, `update url clear` for the
-default). The Pages site is the update server for the releases rather than the release downloads
+The **update source** of an installed controller is its **update channel** on this site (Settings,
+Update channel; since 2026-11-07, before which the owner had to enter a URL): `stable` (the default)
+is `https://haumacher.github.io/homecontrol/stable`, `beta` the same with `beta`, `off` none. There
+is no URL to enter, so none to get wrong; a development update server is the console's `update url
+set`. The Pages site is the update server for the GitHub releases rather than the release downloads
 of github.com themselves: `releases/latest/download/manifest.json` answers with two redirects to
 release-assets.githubusercontent.com, whose URLs exceed the 127 characters of an image URL, the
-release assets are flat (no `<version>/i18n/` beside the manifest), and `stable` could not be
-pointed back to an older release. The device reads
-`<update.url>/manifest.json` and `.sig`, the image from `/homecontrol/firmware/<version>/` (the
-leading `/` keeps scheme and host), and its language pack from `<update.url>/<version>/i18n/`.
-Because the image URL is absolute within the site, the same signed bytes serve from `stable/` and
-from `firmware/<version>/`. The stable release is the newest one without a pre-release suffix; the
-workflow run by hand with `stable` = an older version on the site points the channel back to it
-(devices that already updated stay, `hc::check_update` installs only newer versions; devices not
-yet updated stop at the older one, and the flasher offers it). There is no beta channel yet.
+release assets are flat (no `<version>/i18n/` beside the manifest), and a channel could not be
+pointed back to an older release. The device reads `<channel>/manifest.json` and `.sig`, the image
+from `/homecontrol/firmware/<version>/` (the leading `/` keeps scheme and host), and its language
+pack from `<channel>/<version>/i18n/`. Because the image URL is absolute within the site, the same
+signed bytes serve from `stable/`, `beta/` and `firmware/<version>/`. The stable release is the
+newest one without a pre-release suffix; the workflow run by hand with `stable` = an older version
+on the site points the channel back to it (devices that already updated stay, `hc::check_update`
+installs only newer versions; devices not yet updated stop at the older one, and the flasher offers
+it). The beta channel is the newest release, pre-releases (`vX.Y.Z-beta.N`, published as GitHub
+pre-releases) included, and never older than stable: while no pre-release is newer it serves the
+stable release.
 
 **What the web flasher writes, and the erase decision.** The ESP Web Tools manifest has the parts
 bootloader (0x0), partition table (0x8000), updater (0x10000), application (0x100000), the otadata
@@ -580,7 +584,7 @@ asks every server for records of at most 4 KB (RFC 6066 Max Fragment Length,
 |---|---|---|
 | apps.haumacher.de (E-Home) | yes | at most 4 KB |
 | github.com | yes | at most 4 KB (only redirects are fetched there) |
-| haumacher.github.io (GitHub Pages, the update source) | no | 16 401 bytes |
+| haumacher.github.io (GitHub Pages, the update channels) | no | 16 401 bytes |
 | release-assets.githubusercontent.com | no | 16 401 bytes |
 
 The application fetches only small bodies from GitHub: the manifest (at most 1 KB), its signature

@@ -311,7 +311,7 @@ int cmd_settings(ConsoleContext& c, int argc, char** argv) {
 }
 
 int cmd_update(ConsoleContext& c, int argc, char** argv) {
-	const char* kUsage = "update status | update check | update now [<url>] | update url set <url>|off | update url clear";
+	const char* kUsage = "update status | update check | update now [<url>] | update channel stable|beta|off | update url set <url> | update url clear";
 	if (argc < 2) {
 		return usage(kUsage);
 	}
@@ -330,16 +330,20 @@ int cmd_update(ConsoleContext& c, int argc, char** argv) {
 			force ? "fetching the manifest, installing its image whatever its version" : "checking for an update");
 		return 0;
 	}
+	if (std::strcmp(argv[1], "channel") == 0 && argc == 3) {
+		if (!store_update_channel(c.controller.settings(), argv[2], &error)) {
+			std::printf("error: %s\n", error);
+			return 1;
+		}
+		std::printf("update channel %s\n", argv[2]);
+		return 0;
+	}
 	if (std::strcmp(argv[1], "url") == 0 && argc == 4 && std::strcmp(argv[2], "set") == 0) {
 		if (!c.ota.set_url(argv[3], &error)) {
 			std::printf("error: %s\n", error);
 			return 1;
 		}
-		if (std::strcmp(argv[3], setting::kUpdateUrlOff) == 0) {
-			std::printf("update source off: periodic check disabled, no language packs\n");
-		} else {
-			std::printf("update source %s (manifest at <url>/manifest.json, checked daily)\n", argv[3]);
-		}
+		std::printf("development update server %s in place of the channel (manifest at <url>/manifest.json)\n", argv[3]);
 		return 0;
 	}
 	if (std::strcmp(argv[1], "url") == 0 && argc == 3 && std::strcmp(argv[2], "clear") == 0) {
@@ -347,7 +351,7 @@ int cmd_update(ConsoleContext& c, int argc, char** argv) {
 			std::printf("error: cannot erase update.url (%s)\n", error);
 			return 1;
 		}
-		std::printf("update source back to the default %s\n", setting::kDefaultUpdateUrl);
+		std::printf("development update server cleared: the update channel applies\n");
 		return 0;
 	}
 	return usage(kUsage);
@@ -573,7 +577,7 @@ const Command kCommands[] = {
 		&cmd_wifi},
 	{"network", "ntp", "set <server>", "SNTP server (default pool.ntp.org)", &cmd_ntp},
 	{"time", "tz", "set <posix-tz>", "Time zone as a POSIX TZ string (default CET-1CEST,M3.5.0,M10.5.0/3)", &cmd_tz},
-	{"update", "update", "status | check | now [<url>] | url set <url>|off | url clear (back to the default)",
+	{"update", "update", "status | check | now [<url>] | channel stable|beta|off | url set <url> | url clear (a development server in place of the channel)",
 		"Firmware update (doc/ota.md): state, check the update source now, install from a source whatever the "
 		"version (development), set or clear the update source (update.url)",
 		&cmd_update},

@@ -68,9 +68,12 @@ bool OtaService::init(Controller& controller) {
 	next_check_ms_ = now + kFirstCheckMs;
 	loop.schedule_periodic(next_check_ms_, kCheckPeriodMs, Callback::member<OtaService, &OtaService::periodic_check>(this));
 
+	if (const char* channel = migrate_update_source(controller.settings())) {
+		ESP_LOGI(kTag, "update.url of an older firmware replaced by the update channel %s", channel);
+	}
 	char url[Settings::kMaxStringLength + 1];
 	if (!update_source(controller.settings(), url, sizeof(url))) {
-		ESP_LOGI(kTag, "periodic update check disabled: update.url is off (console: update url clear for the default)");
+		ESP_LOGI(kTag, "periodic update check disabled: the update channel is off");
 	} else {
 		ESP_LOGI(kTag, "update source %s, first check in %u min, then daily", url,
 			static_cast<unsigned>(kFirstCheckMs / 60000));
@@ -203,7 +206,7 @@ bool OtaService::check(bool force, const char* base, const char** error) {
 	char stored[Settings::kMaxStringLength + 1];
 	if (base == nullptr || base[0] == '\0') {
 		if (!update_source(controller_->settings(), stored, sizeof(stored))) {
-			*error = "no update source: update.url is off (update url clear for the default, update url set <url>)";
+			*error = "the update channel is off (Settings, Firmware update)";
 			return false;
 		}
 		base = stored;
@@ -437,14 +440,14 @@ void OtaService::restart_into_updater() {
 }
 
 bool OtaService::set_url(const char* url, const char** error) {
-	if (!store_update_source(controller_->settings(), url, error)) {
+	if (!store_update_url(controller_->settings(), url, error)) {
 		return false;
 	}
-	char source[Settings::kMaxStringLength + 1];
-	if (update_source(controller_->settings(), source, sizeof(source))) {
-		ESP_LOGI(kTag, "update source set to %s", source);
+	if (url != nullptr && url[0] != '\0') {
+		ESP_LOGI(kTag, "development update server %s in place of the channel", url);
 	} else {
-		ESP_LOGI(kTag, "update source off: periodic check disabled");
+		ESP_LOGI(kTag, "development update server cleared: the update channel %s applies",
+			update_channel(controller_->settings()));
 	}
 	return true;
 }
@@ -463,12 +466,13 @@ void OtaService::print_status() const {
 		known ? ota_state_name(state) : "unknown", confirmed_ ? "" : ", not yet confirmed");
 	char url[Settings::kMaxStringLength + 1];
 	if (update_source(controller_->settings(), url, sizeof(url))) {
+		std::printf("channel   %s\n", update_channel(controller_->settings()));
 		std::printf("source    %s\n", url);
 		uint64_t now = controller_->clock().monotonic_ms();
 		std::printf("next      in %llu min\n",
 			static_cast<unsigned long long>(next_check_ms_ > now ? (next_check_ms_ - now) / 60000 : 0));
 	} else {
-		std::printf("source    off (update url clear for the default, update url set <url>): periodic check disabled\n");
+		std::printf("source    none: the update channel is off, periodic check disabled\n");
 	}
 	if (busy_.load()) {
 		std::printf("check     running (%s)\n", manifest_url_);

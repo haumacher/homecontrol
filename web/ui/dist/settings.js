@@ -71,7 +71,7 @@ function statusCards(s) {
 	);
 }
 
-/// A setting with a fixed set of values (wifi.ps, knx.nat, led.quiet): a selector, applied on change, with the hint
+/// A setting with a fixed set of values (update.channel, wifi.ps, knx.nat, led.quiet): a selector, applied on change, with the hint
 /// text settings.<key>.hint; the choices are labelled settings.<key>.<value>.
 function choiceRow(setting, choices) {
 	const id = `setting-${setting.key}`;
@@ -96,7 +96,8 @@ function choiceRow(setting, choices) {
 	return h("div", { class: "field" }, h("label", { for: id }, t(`settings.key.${setting.key}`)), select, feedback);
 }
 
-const kChoices = { "wifi.ps": ["none", "min", "max"], "knx.nat": ["off", "on"], "led.quiet": ["off", "on"] };
+const kChoices = { "update.channel": ["stable", "beta", "off"], "wifi.ps": ["none", "min", "max"], "knx.nat": ["off", "on"],
+	"led.quiet": ["off", "on"] };
 
 /// The KNX gateway search beside knx.gateway (spec/api.md "KNX gateway search"): starts it, follows
 /// it until its window closes, and lists the gateways that answered. Choosing one fills `input`
