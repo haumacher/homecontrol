@@ -26,6 +26,7 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/tz.cpp"
 	"${HC_CORE_DIR}/src/version.cpp"
 	"${HC_CORE_DIR}/src/update_check.cpp"
+	"${HC_CORE_DIR}/src/updater_http.cpp"
 	# The web server base (issue #5, doc/web.md)
 	"${HC_CORE_DIR}/src/auth.cpp"
 	"${HC_CORE_DIR}/src/demo.cpp"

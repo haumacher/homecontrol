@@ -49,6 +49,7 @@ Sizes measured on 2026-10-17 (esp32c6, ESP-IDF 5.3):
 | application (`homecontrol.bin`, with the OTA client) | 1,239,776 B (0x12EAE0) | 2752 KB | 56 % |
 | application before this package (single-app table) | 1,034,576 B | | |
 | updater on ESP-IDF 5.5.6 (2026-11-03) | 845,872 B (0xCE430) | 960 KB | 14 % |
+| updater with CORS for the upload (#80, 2026-11-07) | 876,064 B (0xD5E20), +1,376 B over the 874,688 B before it | 960 KB | 11 % |
 | application on ESP-IDF 5.5.6 with Zigbee and E-Home (2026-11-03), 2,355,696 B on 5.3 before | 2,393,856 B (0x248700) | 2752 KB | 15 % |
 
 The updater partition is the measured updater plus about 20 %, rounded up to 64 KB; the 4 MB
@@ -327,13 +328,15 @@ ota_0), so the hand-over goes through the updater, which has WiFi, NVS and the O
    `{"ok": true, "url": "http://<its IP>/", "token": "<hex>", "restart_in_ms": 750, "timeout_s": 600}`.
    It restarts 750 ms later through the API's deferred action (log `restarting into the updater for
    the firmware upload`).
-3. The page stores the token in `sessionStorage` (key `hc.upload.token`), stops its WebSocket and
-   polls `GET /status` at the same origin: connection errors mean "not yet", an answer with
-   `updater` means the updater serves.
+3. The page stores the token in `sessionStorage` of its own origin (key `hc.upload.token`; the
+   tab also keeps it in memory), stops its WebSocket and polls `GET /status` of the updater at the
+   answer's `url`: at its own origin when it was opened under that IP address, else across origins
+   at `http://<IP>/status` (below, "Same origin, other addresses"). Connection errors mean "not
+   yet", an answer with `updater` means the updater serves.
 4. The updater finds the upload instruction, joins WiFi with the application's credentials, logs its
    address and starts `esp_http_server` on port 80. The page sends the file with
-   `PUT /firmware` (`Authorization: Bearer <token>`, an `XMLHttpRequest` for the progress events) and
-   shows the percentage, then "verifying".
+   `PUT /firmware` to the same updater address (`Authorization: Bearer <token>`, an
+   `XMLHttpRequest` for the progress events) and shows the percentage, then "verifying".
 5. The updater checks the first 4 KB before it touches the flash (`hc::check_app_image`: an ESP image
    for this chip whose app descriptor names `homecontrol`; the updater's own binary, another
    project's binary or an error page is refused with 422 and the reason), streams the body into ota_0
@@ -351,26 +354,78 @@ ota_0), so the hand-over goes through the updater, which has WiFi, NVS and the O
 
 | Route | Answer |
 |---|---|
-| `GET /` | the self-contained page (English, inline CSS and JS) for a browser that arrived by a reload: with the token in `sessionStorage` it offers the file chooser and uploads; without, it says that the upload is started from the application's Settings page and offers *Start the application* |
-| `GET /status` | `{"updater": "<descriptor version>", "state": "awaiting_upload" \| "writing" \| "verifying" \| "done" \| "failed", "received": <bytes>, "expected": <bytes>, "remaining_s": <seconds until the old application boots, null without a limit>, "error": "<last failure>"}` |
-| `PUT /firmware` | the raw image with `Authorization: Bearer <token>` and a `Content-Length`. 200 `{"ok": true, "version": "..."}`; 401 `updater.unauthorized` (missing or wrong token, the flash untouched); 409 `updater.busy` (an upload runs or is done); 411 `updater.length_required`; 413 `updater.too_large` (larger than ota_0); 422 `updater.wrong_image` (the header check, flash untouched) or `updater.verify_failed` (`esp_ota_end`, with the reason); 400 `updater.connection` (the body ended early); 500 `updater.flash` |
+| `GET /` | the self-contained page (English, inline CSS and JS) for a browser that arrived by a reload: with the token in `sessionStorage` it offers the file chooser and uploads; without, it says that the upload is started from the application's Settings page, that the token is lost with the tab that started the upload, and offers *Start the application* |
+| `GET /status` | `{"updater": "<descriptor version>", "state": "awaiting_upload" \| "writing" \| "verifying" \| "done" \| "failed", "received": <bytes>, "expected": <bytes>, "remaining_s": <seconds until the old application boots, null without a limit>, "error": "<last failure>"}`; CORS: `Access-Control-Allow-Origin: <the request's Origin>` |
+| `PUT /firmware` | the raw image with `Authorization: Bearer <token>` and a `Content-Length`. 200 `{"ok": true, "version": "..."}`; 401 `updater.unauthorized` (missing or wrong token, the flash untouched); 409 `updater.busy` (an upload runs or is done); 411 `updater.length_required`; 413 `updater.too_large` (larger than ota_0); 422 `updater.wrong_image` (the header check, flash untouched) or `updater.verify_failed` (`esp_ota_end`, with the reason); 400 `updater.connection` (the body ended early); 500 `updater.flash`. Every answer, the 200 and each refusal, carries `Access-Control-Allow-Origin: <the request's Origin>` |
+| `OPTIONS /firmware` | the CORS preflight, for every origin: 204 with `Access-Control-Allow-Origin: <the request's Origin>`, `Access-Control-Allow-Methods: PUT`, `Access-Control-Allow-Headers: Authorization, Content-Type` |
 | `POST /abort` | no token needed: it only boots the old application, which the timeout does anyway. 200 `{"ok": true}`; 409 `updater.no_application` (ota_0 missing or rolled back), `updater.busy` |
 
 A failed upload leaves the instruction and the token in place: the page (or the updater's own page)
-can upload again. After an interrupted write ota_0 is *missing* and the updater serves without a
+can upload again. The Settings page keeps the updater's address and the token for that: after a
+refusal (a wrong `.bin`: 422) or a broken connection, choosing a file again in the same tab asks
+whether to send it to the updater that still waits (`GET /status` says so) and sends it with the same
+token, without a new `POST /api/system/update/upload`. A 401 drops the token; an updater that is gone
+(it booted the application) makes the next choice start a new upload.
+
+The decisions of the updater's request handling (the headers per route, the preflight, the checks of
+`PUT /firmware` before the body: busy, token, length) are in the core (`hc/updater_http.h`,
+host-tested in `core/test/updater_http_test.cpp`); the updater executes them with esp_http_server.
+Every JSON answer goes through one send path that sets the route's headers, so a refusal carries
+CORS like the success. After an interrupted write ota_0 is *missing* and the updater serves without a
 limit.
 
 **The token** lives only in NVS (`update.token`) and in the browser tab's `sessionStorage`; it is never
 logged, compared in constant time (`hc::upload_authorized`) and erased with the instruction - after
 the upload, by the application after a timeout or a cancel, or as part of a corrupt instruction.
 
-**Same origin.** The hand-over through `sessionStorage` works because the updater answers at the same
-origin as the application: the same IP address and port 80. The updater runs no mDNS (it stays
-small), so a page opened as `http://homecontrol-xxxxxx.local/` could not reach it under that name, and
-`sessionStorage` is per origin: the Settings page offers the installation only when it was opened by
-the device's IP address, and otherwise shows the link `http://<IP>/` (log in there again). The DHCP
-lease survives the restart in practice (same MAC, same host name, a few seconds); if the address
-changes anyway, the page says so and the device is found in the router's list.
+**Same origin, other addresses (#80).** The updater answers only at the device's IP address, port
+80: it runs no mDNS (it stays small; mDNS would take a good part of its free flash and fix only the
+`.local` name, not a DNS entry of the router or a reverse proxy). The Settings page may be opened
+under any address. It takes the updater's address from the `url` of the
+`POST /api/system/update/upload` answer:
+
+- Opened under that IP address (same origin), it polls `/status` and sends `/firmware` at its own
+  origin, as before #80; this works with every updater.
+- Opened under another address (`http://homecontrol-xxxxxx.local/`, a router's DNS name), it polls
+  `http://<IP>/status` and sends to `http://<IP>/firmware` across origins. The updater allows every
+  origin (CORS): `OPTIONS /firmware` answers the browser's preflight (the `Authorization` header and
+  the `Content-Type` of the body make the `PUT` a non-simple request), and `GET /status` and every
+  answer of `PUT /firmware` carry `Access-Control-Allow-Origin` with the request's Origin, so the page
+  reads the refusal's reason too. The token authorizes, not the origin: the check
+  (`hc::upload_authorized`) is the same from every origin, and a page of another site learns nothing
+  it could use without the token (no cookies are involved; the updater has none).
+
+The token stays in `sessionStorage` of the page's own origin (`hc.upload.token`), whichever address
+it was opened under; a retry in the same tab uses it (above). **A reload during the upload** loads
+the updater's `GET /` page from the address the tab was opened under: under the IP always, under the
+name only while the name still resolves to the device (the OS and the browser cache it, but the
+updater does not answer mDNS queries). There the page finds the token in the same origin's
+`sessionStorage` and continues. Without the token (another tab, the name no longer resolves and the
+user typed the IP) the updater's page says that the upload is started from the application's
+Settings page, that the token is lost with the tab that started it, and offers *Start the
+application* (`POST /abort`), which boots the old application; the upload is then started again from
+Settings. With ota_0 missing, the button window (below) is the way without a token.
+
+**Older updaters** (before #80, updated over USB only) answer no preflight and send no CORS header,
+so the browser reports a network error for every cross-origin request. Under the IP the page keeps
+the same-origin path and works with them. Under another address the page reports the failure,
+rather than falling back to the link before the upload: the application cannot tell an updater with
+CORS from one without (both carry the build identifier `upload`), and a silent wait would end only
+after 2 minutes with "the device does not answer". While it waits for the updater, the page tells the
+cases apart with a second request in `no-cors` mode, whose opaque answer it cannot read but which
+succeeds whenever the device answers at all: the device gone (both fail) means "not yet"; the device
+answering after it was gone, twice in a row, without a readable `/status` means an updater without
+CORS. The page then says so (`system.upload.no_cors`) with the link `http://<IP>/`: open it, choose
+*Start the application* there, and install the file from the Settings page at the IP. (If the application came back and only its
+name does not resolve yet, the same link leads to it.) The DHCP lease survives the restart in
+practice (same MAC, same host name, a few seconds); if the address changes anyway, the page says so
+and the device is found in the router's list.
+
+**HTTPS.** The device and the updater speak plain HTTP. A Settings page delivered over HTTPS (a
+reverse proxy) may not send to `http://<IP>/` (mixed content): the page says so before it starts the
+upload (`system.upload.insecure`) and links the device's address. A page from a public address that
+sends to the device's private one may make the browser ask the user for access to the local network
+(Chrome's local network access); that is the browser's question, the updater allows the origin.
 
 **Timeouts.** Without a complete upload within 600 s the updater boots ota_0 if it holds a valid image
 (log `boot application: no firmware upload within 10 minutes ...`); the application then reports

@@ -116,11 +116,26 @@ function updateCard(status, app) {
 // ---- Install a firmware file (doc/ota.md "Upload from the browser") -------------------------------
 //
 // The application cannot overwrite itself: it hands over to the updater, which serves PUT /firmware
-// on the same address and port. The one-time token travels in this origin's sessionStorage, where
-// the updater's own page finds it after a reload.
+// at the device's IP address, port 80 (it runs no mDNS). Opened under the IP, the page talks to the
+// updater at its own origin; under any other address (the mDNS name, a DNS entry of the router) it
+// talks to http://<IP>/ across origins, which the updater allows (CORS, #80; the token authorizes,
+// not the origin). The one-time token stays in this origin's sessionStorage, where the updater's own
+// page finds it after a reload of the tab, and a retry in this tab sends to the waiting updater again
+// without a new token.
 
 const TOKEN_KEY = "hc.upload.token";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/// The upload under way in this tab once the updater answered: {url, base}. `base` is "" when the
+/// updater answers at this page's origin, else its origin ("http://<IP>").
+let session = null;
+
+/// "" if `url` (the updater's address from POST /api/system/update/upload) is this page's origin,
+/// else that origin.
+function updaterBase(url) {
+	const origin = new URL(url, window.location.href).origin;
+	return origin === window.location.origin ? "" : origin;
+}
 
 /// The app descriptor of an ESP image (doc/ota.md): {project, version}, or null if `file` is none.
 async function readImage(file) {
@@ -132,14 +147,18 @@ async function readImage(file) {
 	return { version: text(48), project: text(80) };
 }
 
-/// The JSON at `path`; null for an error status or another kind of answer (the application serves its
-/// page for unknown paths). Rejects when the device does not answer at all.
-async function getJson(path) {
-	const options = { cache: "no-store", credentials: "same-origin" };
+function timeout(options) {
 	if (AbortSignal.timeout) {
 		options.signal = AbortSignal.timeout(4000); // a restarting device may leave a request hanging
 	}
-	const response = await fetch(path, options);
+	return options;
+}
+
+/// The JSON at `path`; null for an error status or another kind of answer (the application serves its
+/// page for unknown paths). Rejects when the device does not answer at all - or, across origins,
+/// when the answer lacks the CORS header.
+async function getJson(path) {
+	const response = await fetch(path, timeout({ cache: "no-store", credentials: "same-origin" }));
 	if (!response.ok) {
 		return null;
 	}
@@ -150,25 +169,62 @@ async function getJson(path) {
 	}
 }
 
-/// Waits until the updater answers /status (the application's server is gone meanwhile: connection
-/// errors mean "not yet"). "updater", "application" (it came back instead) or "timeout".
-async function waitForUpdater() {
+/// Whether anything answers at `url`, read without CORS (an opaque answer): tells an updater that
+/// predates CORS, whose answers this page may not read, from a device that does not answer at all.
+async function answers(url) {
+	try {
+		await fetch(url, timeout({ mode: "no-cors", cache: "no-store", credentials: "omit" }));
+		return true;
+	} catch (e) {
+		return false;
+	}
+}
+
+/// Waits until the updater answers `<base>/status` (the application's server is gone meanwhile:
+/// connection errors mean "not yet"). "updater", "application" (it came back instead), "no_cors"
+/// (across origins, the device answers after it was gone, but its answers lack the CORS header: an
+/// updater older than #80) or "timeout".
+async function waitForUpdater(base) {
 	let down = false;
+	let opaque = 0;
 	for (let i = 0; i < 80; i++) {
 		await sleep(1500);
 		try {
-			const s = await getJson("/status");
+			const s = await getJson(`${base}/status`);
 			if (s && s.updater) {
 				return "updater";
 			}
+			opaque = 0;
 			if (down && await getJson("/api/auth/session")) {
 				return "application";
 			}
 		} catch (e) {
-			down = true;
+			if (!base || !await answers(`${base}/status`)) {
+				down = true;
+				opaque = 0;
+				continue;
+			}
+			// Something answers, unreadable: before the restart that is the application; after it, the
+			// application back, or (twice in a row) an updater without CORS.
+			if (down && await getJson("/api/auth/session").catch(() => null)) {
+				return "application";
+			}
+			if (down && ++opaque >= 2) {
+				return "no_cors";
+			}
 		}
 	}
 	return "timeout";
+}
+
+/// Whether the updater that took this tab's upload still waits for a file at `base`.
+async function updaterWaits(base) {
+	try {
+		const s = await getJson(`${base}/status`);
+		return Boolean(s && s.updater && s.state !== "done" && s.state !== "writing" && s.state !== "verifying");
+	} catch (e) {
+		return false;
+	}
 }
 
 /// Waits until the application answers again; its open session answer names version and build.
@@ -187,10 +243,10 @@ async function waitForApplication() {
 	return null;
 }
 
-function putFirmware(file, token, onProgress) {
+function putFirmware(base, file, token, onProgress) {
 	return new Promise((resolve) => {
 		const xhr = new XMLHttpRequest(); // fetch() reports no upload progress
-		xhr.open("PUT", "/firmware");
+		xhr.open("PUT", `${base}/firmware`);
 		xhr.setRequestHeader("Authorization", `Bearer ${token}`);
 		xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((100 * e.loaded) / e.total));
 		xhr.onload = () => {
@@ -209,7 +265,6 @@ function putFirmware(file, token, onProgress) {
 
 function uploadSection(status, app) {
 	const ip = (status && status.network && status.network.ip) || "";
-	const url = `http://${ip}/`;
 	const feedback = feedbackLine();
 	const progress = h("progress", { max: "100", value: "0", hidden: true });
 	const input = h("input", { type: "file", accept: ".bin", hidden: true });
@@ -218,11 +273,12 @@ function uploadSection(status, app) {
 		feedback.className = error ? "error-text" : "hint";
 		replace(feedback, text);
 	};
+	const sayWithLink = (text, url) => say([text, " ", h("a", { href: url }, url)], true);
+	const forget = () => {
+		session = null;
+		sessionStorage.removeItem(TOKEN_KEY);
+	};
 	const leaveGuard = (event) => event.preventDefault();
-	if (ip && window.location.hostname !== ip) {
-		// The updater answers by address only (no mDNS) and sessionStorage is per origin.
-		return h("div", null, h("p", { class: "hint" }, t("system.upload.by_address"), " ", h("a", { href: url }, url)));
-	}
 	button.addEventListener("click", () => input.click());
 	input.addEventListener("change", async () => {
 		const file = input.files[0];
@@ -235,58 +291,80 @@ function uploadSection(status, app) {
 			say(t("system.upload.not_firmware"), true);
 			return;
 		}
-		if (!window.confirm(t("system.upload.confirm", { version: image.version, file: file.name }))) {
+		if (window.location.protocol === "https:" && ip) {
+			// The updater speaks plain HTTP: a page from HTTPS may not send to it (mixed content).
+			sayWithLink(t("system.upload.insecure"), `http://${ip}/`);
+			return;
+		}
+		const retry = session && await updaterWaits(session.base);
+		if (session && !retry) {
+			forget(); // the updater is gone (it booted the application, or the device restarted)
+		}
+		const question = retry ? "system.upload.confirm_retry" : "system.upload.confirm";
+		if (!window.confirm(t(question, { version: image.version, file: file.name }))) {
 			return;
 		}
 		button.disabled = true;
 		window.addEventListener("beforeunload", leaveGuard);
 		try {
-			await install(file);
+			await install(file, retry);
 		} finally {
 			window.removeEventListener("beforeunload", leaveGuard);
 			button.disabled = false;
 		}
 	});
-	async function install(file) {
-		let started;
-		try {
-			started = await api("POST", "/api/system/update/upload");
-		} catch (error) {
-			say(errorText(error), true);
-			return;
+	async function install(file, retry) {
+		if (!retry) {
+			let started;
+			try {
+				started = await api("POST", "/api/system/update/upload");
+			} catch (error) {
+				say(errorText(error), true);
+				return;
+			}
+			sessionStorage.setItem(TOKEN_KEY, started.token);
+			app.live.stop(); // the application goes away; its WebSocket would only report that
+			say(t("system.upload.restarting"));
+			const base = updaterBase(started.url);
+			const reached = await waitForUpdater(base);
+			if (reached === "no_cors") {
+				forget();
+				sayWithLink(t("system.upload.no_cors"), started.url);
+				return;
+			}
+			if (reached !== "updater") {
+				forget();
+				say(t(reached === "application" ? "system.upload.no_updater" : "system.upload.lost", { url: started.url }), true);
+				return;
+			}
+			session = { url: started.url, base };
 		}
-		sessionStorage.setItem(TOKEN_KEY, started.token);
-		app.live.stop(); // the application goes away; its WebSocket would only report that
-		say(t("system.upload.restarting"));
-		const reached = await waitForUpdater();
-		if (reached !== "updater") {
-			sessionStorage.removeItem(TOKEN_KEY);
-			say(t(reached === "application" ? "system.upload.no_updater" : "system.upload.lost", { url: started.url }), true);
-			return;
-		}
+		const { url, base } = session;
+		progress.value = 0;
 		progress.hidden = false;
-		const result = await putFirmware(file, started.token, (percent) => {
+		const result = await putFirmware(base, file, sessionStorage.getItem(TOKEN_KEY) || "", (percent) => {
 			progress.value = percent;
 			say(percent < 100 ? t("system.upload.progress", { percent }) : t("system.upload.verifying"));
 		});
 		progress.hidden = true;
 		if (result.status === 401) {
-			say(t("system.upload.unauthorized", { url: started.url }), true);
+			forget();
+			say(t("system.upload.unauthorized", { url }), true);
 			return;
 		}
 		if (result.status === 0) {
-			say(t("system.upload.network", { url: started.url }), true);
+			say(t("system.upload.network", { url }), true); // the session stays: the updater may still wait
 			return;
 		}
 		if (result.status !== 200) {
-			say(t("system.upload.refused", { reason: result.body.error || `HTTP ${result.status}`, url: started.url }), true);
+			say(t("system.upload.refused", { reason: result.body.error || `HTTP ${result.status}`, url }), true);
 			return;
 		}
-		sessionStorage.removeItem(TOKEN_KEY);
+		forget();
 		say(t("system.upload.installed", { version: result.body.version }));
 		const running = await waitForApplication();
 		if (!running) {
-			say(t("system.upload.lost", { url: started.url }), true);
+			say(t("system.upload.lost", { url }), true);
 			return;
 		}
 		say([t("system.upload.done", { version: running.version, build: running.build || "?" }), " ",

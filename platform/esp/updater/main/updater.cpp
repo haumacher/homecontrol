@@ -48,6 +48,7 @@
 #include "hc/network_settings.h"
 #include "esp_status_light.h"
 #include "hc/update_check.h"
+#include "hc/updater_http.h"
 #include "hc/updater_led.h"
 #include "hc/version.h"
 #include "nvs_settings.h"
@@ -683,7 +684,8 @@ const esp_partition_t* g_upload_app = nullptr;
 
 /// The page for a browser that arrives at the updater by itself (a reload during the upload, a
 /// bookmark): self-contained, English. The application's Settings page drives the normal upload and
-/// leaves the token in this origin's sessionStorage (same IP, port 80).
+/// leaves the token in the sessionStorage of the origin it was opened under (the IP or, while it
+/// still resolves to the device, the name); a reload there finds it (#80).
 const char kUploadPage[] = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>HomeControl updater</title>
@@ -783,17 +785,44 @@ state().then((s) => {
 	if (s && s.state === "done") { say("The image is installed; the device restarts…"); waitForApplication("Installed."); return; }
 	if (token) { $("upload").style.display = "block"; return; }
 	say(s && s.remaining_s === null
-		? "This device waits for a firmware file and has no application to start. The upload is started from the Settings page of the application, which leaves its access key in that browser tab; this tab has none. Without it: hold the device's button for 3 s, then choose the file here within 5 minutes."
-		: "This device waits for a firmware file. The upload is started from the Settings page of the application, which leaves its access key in that browser tab; this tab has none. Start the application to return.");
+		? "This device waits for a firmware file and has no application to start. The upload is started from the Settings page of the application, which leaves its access key in that browser tab; this tab has none (the key is lost with the tab that started the upload). Without it: hold the device's button for 3 s, then choose the file here within 5 minutes."
+		: "This device waits for a firmware file. The upload is started from the Settings page of the application, which leaves its access key in that browser tab; this tab has none (the key is lost with the tab that started the upload). Start the application to return, then start the upload again.");
 });
 setInterval(() => { if ($("send").disabled === false) state(); }, 5000);
 </script></body></html>
 )HTML";
 
+/// The route a request came in on: the user context of its registration (start_upload_server).
+hc::UpdaterRoute route_of(httpd_req_t* request) {
+	return *static_cast<const hc::UpdaterRoute*>(request->user_ctx);
+}
+
+/// The request's Origin header into `origin`: "" without one or with one longer than the buffer
+/// (then no Access-Control-Allow-Origin is sent, hc::cors_origin_echoable).
+void read_origin(httpd_req_t* request, char (&origin)[hc::kMaxCorsOrigin + 1]) {
+	origin[0] = '\0';
+	size_t length = httpd_req_get_hdr_value_len(request, "Origin");
+	if (length == 0 || length >= sizeof(origin) ||
+		httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin)) != ESP_OK) {
+		origin[0] = '\0';
+	}
+}
+
+/// Sets the headers the core decided (they point into the caller's frame: send before it returns).
+void set_headers(httpd_req_t* request, const hc::UpdaterHeaders& headers) {
+	for (size_t i = 0; i < headers.count; ++i) {
+		httpd_resp_set_hdr(request, headers.items[i].name, headers.items[i].value);
+	}
+}
+
+/// Every JSON answer, success or refusal, with the headers of its route (hc::updater_response_headers:
+/// CORS on /status and /firmware, whatever the status).
 void send_json(httpd_req_t* request, const char* status, const char* body, size_t length) {
+	char origin[hc::kMaxCorsOrigin + 1];
+	read_origin(request, origin);
 	httpd_resp_set_status(request, status);
 	httpd_resp_set_type(request, "application/json");
-	httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+	set_headers(request, hc::updater_response_headers(route_of(request), origin));
 	httpd_resp_send(request, body, static_cast<ssize_t>(length));
 }
 
@@ -813,8 +842,20 @@ esp_err_t refuse(httpd_req_t* request, const char* status, const char* code, con
 
 esp_err_t handle_page(httpd_req_t* request) {
 	httpd_resp_set_type(request, "text/html; charset=utf-8");
-	httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+	set_headers(request, hc::updater_response_headers(hc::UpdaterRoute::page, nullptr));
 	httpd_resp_send(request, kUploadPage, static_cast<ssize_t>(sizeof(kUploadPage) - 1));
+	return ESP_OK;
+}
+
+/// OPTIONS /firmware: the CORS preflight of a Settings page opened under another address than the
+/// IP (#80). Every origin is allowed; the token authorizes the PUT.
+esp_err_t handle_preflight(httpd_req_t* request) {
+	char origin[hc::kMaxCorsOrigin + 1];
+	read_origin(request, origin);
+	hc::UpdaterPreflight answer = hc::updater_preflight(origin);
+	httpd_resp_set_status(request, answer.status);
+	set_headers(request, answer.headers);
+	httpd_resp_send(request, nullptr, 0);
 	return ESP_OK;
 }
 
@@ -887,38 +928,35 @@ esp_err_t upload_failed(httpd_req_t* request, const char* status, const char* co
 }
 
 esp_err_t handle_firmware(httpd_req_t* request) {
+	// The checks before the body is read (hc::decide_firmware_request); the origin plays no part.
 	UploadState state = g_upload_state.load();
-	if (state == UploadState::writing || state == UploadState::verifying || state == UploadState::done) {
-		return refuse(request, "409 Conflict", "updater.busy",
-			state == UploadState::done ? "the image is installed; the device restarts" : "an upload is running");
-	}
 	char authorization[64] = {};
 	size_t header = httpd_req_get_hdr_value_len(request, "Authorization");
-	bool by_token = header != 0 && header < sizeof(authorization) &&
-		httpd_req_get_hdr_value_str(request, "Authorization", authorization, sizeof(authorization)) == ESP_OK &&
-		g_upload_token[0] != '\0' && hc::upload_authorized(g_upload_token, authorization);
-	bool by_button = !by_token && button_window_open() && (kTestButtonWindow || inspect(g_upload_app) != hc::AppImageState::valid);
-	if (!by_token && !by_button) {
-		std::memset(authorization, 0, sizeof(authorization));
-		return refuse(request, "401 Unauthorized", "updater.unauthorized",
-			inspect(g_upload_app) == hc::AppImageState::valid
-				? "missing or wrong upload token: start the upload from the application's Settings page"
-				: "missing or wrong upload token: start the upload from the application's Settings page, or, as "
-				  "ota_0 holds no application, hold the device's button for 3 s and send the image within 5 minutes");
+	bool readable = header != 0 && header < sizeof(authorization) &&
+		httpd_req_get_hdr_value_str(request, "Authorization", authorization, sizeof(authorization)) == ESP_OK;
+	hc::FirmwareRequest checked;
+	checked.installing = state == UploadState::writing || state == UploadState::verifying;
+	checked.installed = state == UploadState::done;
+	checked.token = g_upload_token;
+	checked.authorization = readable ? authorization : nullptr;
+	checked.button_window = button_window_open();
+	// ota_0 is inspected (esp_image_verify hashes the whole image) only when the answer depends on it:
+	// a request that is busy or bears the token is decided without it, as before #80.
+	checked.app_valid = checked.installing || checked.installed ||
+		(checked.authorization != nullptr && hc::upload_authorized(g_upload_token, checked.authorization)) ||
+		inspect(g_upload_app) == hc::AppImageState::valid;
+	checked.test_button_window = kTestButtonWindow;
+	checked.content_length = request->content_len;
+	checked.partition_size = g_upload_app->size;
+	hc::FirmwareDecision decision = hc::decide_firmware_request(checked);
+	std::memset(authorization, 0, sizeof(authorization));
+	if (!decision.accept) {
+		return refuse(request, decision.status, decision.code, decision.why);
 	}
-	if (by_button) {
+	if (decision.by_button) {
 		ESP_LOGW(kTag, "upload authorized by the button");
 	}
-	std::memset(authorization, 0, sizeof(authorization));
 	size_t total = request->content_len;
-	if (total == 0) {
-		return refuse(request, "411 Length Required", "updater.length_required", "the image must be sent with a Content-Length");
-	}
-	if (total > g_upload_app->size) {
-		return refuse(request, "413 Content Too Large", "updater.too_large",
-			reason("the image has %u bytes, the application partition %lu", static_cast<unsigned>(total),
-				static_cast<unsigned long>(g_upload_app->size)));
-	}
 	g_upload_error[0] = '\0';
 	g_upload_expected.store(static_cast<uint32_t>(total));
 	g_upload_received.store(0);
@@ -1020,14 +1058,23 @@ bool start_upload_server(const char*& why) {
 		why = reason("HTTP server not started: %s", esp_err_to_name(err));
 		return false;
 	}
+	// The user context names the route for the answer's headers (route_of, hc::updater_response_headers).
+	static const hc::UpdaterRoute kPage = hc::UpdaterRoute::page;
+	static const hc::UpdaterRoute kStatus = hc::UpdaterRoute::status;
+	static const hc::UpdaterRoute kFirmware = hc::UpdaterRoute::firmware;
+	static const hc::UpdaterRoute kAbort = hc::UpdaterRoute::abort;
 	static const httpd_uri_t kRoutes[] = {
-		{"/", HTTP_GET, &handle_page, nullptr},
-		{"/status", HTTP_GET, &handle_status, nullptr},
-		{"/firmware", HTTP_PUT, &handle_firmware, nullptr},
-		{"/abort", HTTP_POST, &handle_abort, nullptr},
+		{"/", HTTP_GET, &handle_page, const_cast<hc::UpdaterRoute*>(&kPage)},
+		{"/status", HTTP_GET, &handle_status, const_cast<hc::UpdaterRoute*>(&kStatus)},
+		{"/firmware", HTTP_PUT, &handle_firmware, const_cast<hc::UpdaterRoute*>(&kFirmware)},
+		{"/firmware", HTTP_OPTIONS, &handle_preflight, const_cast<hc::UpdaterRoute*>(&kFirmware)},
+		{"/abort", HTTP_POST, &handle_abort, const_cast<hc::UpdaterRoute*>(&kAbort)},
 	};
 	for (const httpd_uri_t& route : kRoutes) {
-		httpd_register_uri_handler(server, &route);
+		err = httpd_register_uri_handler(server, &route);
+		if (err != ESP_OK) {
+			ESP_LOGE(kTag, "route %s not served: %s", route.uri, esp_err_to_name(err));
+		}
 	}
 	return true;
 }

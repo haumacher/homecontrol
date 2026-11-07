@@ -351,9 +351,29 @@ drive them the same way as the browser):
   `updater.busy`, 411 `updater.length_required`, 413 `updater.too_large`, 422 `updater.wrong_image`
   (not the application for this chip; the flash is untouched), 422 `updater.verify_failed`, 400
   `updater.connection`, 500 `updater.flash`.
+- `OPTIONS /firmware`: the CORS preflight (below). 204 for every origin.
 - `POST /abort` (no token): boots the previous application. 200 `{"ok": true}`; 409
   `updater.no_application`, `updater.busy`.
 - `GET /`: a small page that finishes an upload after a reload of the browser tab.
+
+The updater answers only at the device's IP address (`url` above; it runs no mDNS), while a client
+may come from a page of another origin (the Settings page opened under the device's name). Its
+routes therefore speak CORS (#80, doc/ota.md "Same origin, other addresses"):
+
+- `GET /status` and every answer of `PUT /firmware` - the 200 and each refusal - carry
+  `Access-Control-Allow-Origin: <the request's Origin>` and `Vary: Origin`, so a page of any origin
+  reads the state and the refusal's reason.
+- `OPTIONS /firmware` answers the preflight of the `PUT` (non-simple through `Authorization` and
+  `Content-Type`) with 204, `Access-Control-Allow-Origin: <the request's Origin>`,
+  `Access-Control-Allow-Methods: PUT` and `Access-Control-Allow-Headers: Authorization, Content-Type`.
+- Every origin is allowed: the token authorizes, not the origin. A missing or wrong token is 401
+  `updater.unauthorized` from every origin. No credentials mode (cookies) is used or allowed.
+- An Origin the updater cannot echo (longer than 270 characters, or with a space or a control
+  character) gets no `Access-Control-Allow-Origin`; a request without an Origin (curl, E-Home) needs
+  none. `GET /` and `POST /abort` are same-origin only (no CORS headers).
+- Updaters before #80 send no CORS headers and answer `OPTIONS` with 405: a client of another origin
+  sees a network error; a same-origin client (a page opened under the IP, or any non-browser client)
+  is not affected.
 
 ### `GET` and `PUT /api/system/log-level`
 
