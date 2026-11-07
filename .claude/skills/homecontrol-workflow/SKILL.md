@@ -34,10 +34,21 @@ Work is a pipeline, not a pile:
 4. **Review with a novel probe** (§4). Non-negotiable.
 5. **Gate** (§5), **commit to master and push** (§6), **flash and watch** (§7), close the issue
    with the fixing commit plus a summary comment naming the regression test.
-6. **Before ever finishing: `gh issue list -R haumacher/homecontrol`.** Stop only when the issue
-   list holds nothing actionable. Anything you defer becomes an issue, so a crashed session loses
-   nothing. A direction-level decision taken on the way goes into `ROADMAP.md`'s decisions log in
-   the same commit.
+6. **Loop back to step 1 — immediately, in the same turn.** A closed issue is the start of the
+   next package, not the end of a pass: re-read `gh issue list -R haumacher/homecontrol` (and
+   `haumacher/ehome` for the contract between the two) and take the next actionable issue without
+   waiting for the user. Anything you defer becomes an issue, so a crashed session loses nothing.
+   A direction-level decision taken on the way goes into `ROADMAP.md`'s decisions log in the same
+   commit.
+
+**When a pass ends.** Only when no issue is actionable — never earlier. Not reasons to end the
+turn: a package was pushed or a run notice written (a progress line, not a hand-off); a number of
+issues is done or the session ran long (the context is summarized automatically); the next issue is
+large or needs the board; a background agent still runs; an issue needs the user's decision (ask
+in the issue with options and a recommendation, take a sensible default where there is one, and
+move on). An issue is not actionable only if it waits on an answer the user has to give, an
+upstream fix, or a physical action only the user can do. The final message of a pass lists every
+open issue that remains with that one reason.
 
 Track packages with TaskCreate/TaskUpdate; keep statuses honest (in_progress on dispatch,
 completed only after the commit is pushed).
