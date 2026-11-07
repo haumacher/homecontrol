@@ -250,20 +250,7 @@ void WebServer::ntp_server_changed() {
 }
 
 bool WebServer::set_update_url(const char* url, const char** error) {
-	if (url[0] == '\0') {
-		SettingsStatus status = controller_.settings().erase(setting::kUpdateUrl);
-		if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
-			*error = settings_status_name(status);
-			return false;
-		}
-		return true;
-	}
-	if (!update_url_valid(url, error)) {
-		return false;
-	}
-	SettingsStatus status = controller_.settings().set_string(setting::kUpdateUrl, url);
-	if (status != SettingsStatus::ok) {
-		*error = settings_status_name(status);
+	if (!store_update_source(controller_.settings(), url, error)) {
 		return false;
 	}
 	Log::info(kTag, "update.url stored (the POSIX build does not update itself)");
@@ -285,7 +272,7 @@ void WebServer::system_action(SystemAction action) {
 
 void WebServer::write_update_state(JsonWriter& json) const {
 	char url[Settings::kMaxStringLength + 1] = {};
-	controller_.settings().get_string(setting::kUpdateUrl, url, sizeof(url));
+	update_source(controller_.settings(), url, sizeof(url));
 	json.member("available", false).member("source", url).member("last", "the POSIX build does not update itself");
 }
 

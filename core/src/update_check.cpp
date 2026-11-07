@@ -591,6 +591,46 @@ bool update_url_valid(const char* url, const char** error) {
 	return true;
 }
 
+bool update_source(const Settings& settings, char* out, size_t size) {
+	if (size == 0) {
+		return false;
+	}
+	out[0] = '\0';
+	char stored[Settings::kMaxStringLength + 1] = {};
+	SettingsStatus status = settings.get_string(setting::kUpdateUrl, stored, sizeof(stored));
+	const char* source = nullptr;
+	if (status == SettingsStatus::not_found) {
+		source = setting::kDefaultUpdateUrl;
+	} else if (status == SettingsStatus::ok && stored[0] != '\0' && std::strcmp(stored, setting::kUpdateUrlOff) != 0) {
+		source = stored;
+	}
+	if (source == nullptr || std::strlen(source) >= size) {
+		return false;
+	}
+	std::strcpy(out, source);
+	return true;
+}
+
+bool store_update_source(Settings& settings, const char* url, const char** error) {
+	SettingsStatus status;
+	if (url == nullptr || url[0] == '\0') {
+		status = settings.erase(setting::kUpdateUrl);
+		if (status == SettingsStatus::not_found) {
+			status = SettingsStatus::ok;
+		}
+	} else if (std::strcmp(url, setting::kUpdateUrlOff) == 0) {
+		status = settings.set_string(setting::kUpdateUrl, setting::kUpdateUrlOff);
+	} else if (!update_url_valid(url, error)) {
+		return false;
+	} else {
+		status = settings.set_string(setting::kUpdateUrl, url);
+	}
+	if (status != SettingsStatus::ok) {
+		return refuse(error, settings_status_name(status));
+	}
+	return true;
+}
+
 bool update_manifest_url(const char* base, char* out, size_t size) {
 	size_t length = std::strlen(base);
 	while (length > 0 && base[length - 1] == '/') {

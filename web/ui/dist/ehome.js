@@ -26,9 +26,13 @@ function stateLine(e) {
 	return h("div", { class: "ehome-state", role: "status" }, parts);
 }
 
+/// The E-Home address the form proposes: the public E-Home installation. The owner of another
+/// installation (or of a development app on the desk) replaces it.
+const kDefaultEhomeUrl = "https://apps.haumacher.de/ehome/";
+
 function connectForm(onDone) {
 	const url = h("input", { type: "url", id: "ehome-url", required: true, spellcheck: "false", autocomplete: "off",
-		placeholder: "https://ehome.example" });
+		placeholder: kDefaultEhomeUrl, value: kDefaultEhomeUrl });
 	const code = h("input", { type: "text", id: "ehome-code", required: true, spellcheck: "false", autocomplete: "off",
 		maxlength: 32 });
 	const feedback = h("p", { class: "hint", role: "status" }, t("ehome.connect.hint"));

@@ -167,7 +167,7 @@ Members only `GET /api/status` carries (not the WebSocket's `status` message, wh
 Each appears when the build has the service.
 
 `update` is platform-specific: always `available` (whether the device updates itself), the ESP
-build adds `partition`, `confirmed`, `checking`, `source` (update.url, `""` if none), `last`,
+build adds `partition`, `confirmed`, `checking`, `source` (the update source in use: update.url, or its default when none is stored; `""` when it is `off`), `last`,
 `last_ago_s`, with a source `next_check_s`, and `release_key`: the fingerprint of the release key
 the firmware accepts manifests from (doc/ota.md "Manifest signature"; an unsigned or mis-signed
 manifest shows in `last` as `manifest refused: <reason>`).
@@ -249,7 +249,7 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
 ```json
 {"settings": [{"key": "tz", "value": "CET-1CEST,M3.5.0,M10.5.0/3", "default": "CET-1CEST,M3.5.0,M10.5.0/3", "editable": true},
               {"key": "ntp.server", "value": null, "default": "pool.ntp.org", "editable": true},
-              {"key": "update.url", "value": null, "default": "", "editable": true},
+              {"key": "update.url", "value": null, "default": "https://haumacher.github.io/homecontrol/stable", "editable": true},
               {"key": "ui.lang", "value": "de", "default": "en", "editable": true},
               {"key": "wifi.ps", "value": "min", "default": "min", "editable": true},
               {"key": "mqtt.user", "value": null, "default": "", "editable": true},
@@ -274,8 +274,8 @@ retry follows); `offered` the languages the release's manifest lists, by their o
 
 ### `PUT /api/settings/<key>`
 
-Body `{"value": "<string, at most 127 bytes>"}`; `""` erases `update.url`. Validated as on the
-console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.url` an http(s) URL; doc/ota.md;
+Body `{"value": "<string, at most 127 bytes>"}`; `""` erases `update.url` (back to its default). Validated as on the
+console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.url` an http(s) URL or `off`; doc/ota.md;
 `ui.lang` a language tag `[a-z]{2}(-[A-Z]{2})?`, doc/i18n.md; `wifi.ps` one of `none`, `min`, `max`,
 doc/network.md; `mqtt.user` and `mqtt.password` 1 to 63 bytes, `""` removes them; `knx.gateway` a host or IPv4
 address with an optional `:port`, `""` removes it; `knx.nat` `on` or `off`, doc/knx.md; `led.quiet` `on` or `off`, also `true` or

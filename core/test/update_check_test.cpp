@@ -452,3 +452,45 @@ TEST_CASE("UpdateCheck.UpdaterDecisionTable") {
 	CHECK(step.delay_ms == hc::kUpdateIdleRetryMs);
 	CHECK(std::string(step.reason).find("every 5 minutes") != std::string::npos);
 }
+
+TEST_CASE("Update source: the release site by default, off on request, the user's URL otherwise") {
+	hc_test::FakeSettings settings;
+	char source[hc::Settings::kMaxStringLength + 1];
+	// Nothing stored: the releases on the Pages site.
+	REQUIRE(hc::update_source(settings, source, sizeof(source)));
+	CHECK(std::string(source) == "https://haumacher.github.io/homecontrol/stable");
+	CHECK(std::string(source) == hc::setting::kDefaultUpdateUrl);
+	CHECK(hc::update_url_valid(source));
+
+	const char* error = nullptr;
+	REQUIRE(hc::store_update_source(settings, "https://updates.example/hc", &error));
+	REQUIRE(hc::update_source(settings, source, sizeof(source)));
+	CHECK(std::string(source) == "https://updates.example/hc");
+
+	REQUIRE(hc::store_update_source(settings, "off", &error));
+	CHECK(settings.entries.at(hc::setting::kUpdateUrl).text == "off");
+	CHECK_FALSE(hc::update_source(settings, source, sizeof(source)));
+	CHECK(std::string(source).empty());
+
+	// Empty returns to the default: the setting is erased (also when nothing is stored).
+	REQUIRE(hc::store_update_source(settings, "", &error));
+	CHECK(settings.entries.count(hc::setting::kUpdateUrl) == 0);
+	REQUIRE(hc::store_update_source(settings, nullptr, &error));
+	REQUIRE(hc::update_source(settings, source, sizeof(source)));
+	CHECK(std::string(source) == hc::setting::kDefaultUpdateUrl);
+
+	// An empty value stored by an older firmware's "update url set" meant "no source": it stays off.
+	settings.set_string(hc::setting::kUpdateUrl, "");
+	CHECK_FALSE(hc::update_source(settings, source, sizeof(source)));
+
+	// Anything else must be a URL; a refusal leaves the stored source alone.
+	REQUIRE(hc::store_update_source(settings, "https://updates.example/hc", &error));
+	CHECK_FALSE(hc::store_update_source(settings, "ftp://updates.example/hc", &error));
+	CHECK(std::string(error).find("http") != std::string::npos);
+	REQUIRE(hc::update_source(settings, source, sizeof(source)));
+	CHECK(std::string(source) == "https://updates.example/hc");
+
+	// A buffer too small for the source gives none rather than a truncated URL.
+	char small[8];
+	CHECK_FALSE(hc::update_source(settings, small, sizeof(small)));
+}

@@ -101,7 +101,7 @@ renamed.
 
 | Key | Type | Written by | Read by | Meaning |
 |---|---|---|---|---|
-| `update.url` | string | console `update url set`, erased by `update url clear` | application | update source: `<url>/manifest.json`; empty: no periodic check |
+| `update.url` | string | console `update url set <url>\|off`, erased by `update url clear` | application | update source: `<url>/manifest.json`; not stored: the release site `https://haumacher.github.io/homecontrol/stable` (`hc::setting::kDefaultUpdateUrl`); `off` (or empty, as an older firmware stored it): no periodic check, no language packs |
 | `update.image` | string | application (written last) | updater | image URL; its presence marks a complete instruction |
 | `update.version` | string | application | updater, application | version the manifest announced |
 | `update.sha256` | string | application | updater | 64 hex digits of the image |
@@ -194,7 +194,7 @@ metadata does not count). `-dev` (pre-release) builds update to any newer releas
   boots the updater. After confirming, a leftover instruction is reported as `update to X completed`
   (the running version is X) or `update to X abandoned after N attempt(s)` (the updater booted the
   previous image) and erased.
-- **Check.** 15 minutes after start and then every 24 hours, if `update.url` is set and the network
+- **Check.** 15 minutes after start and then every 24 hours, unless the update source is `off`, if the network
   is up (otherwise skipped with a log line), and on the console. The manifest and its signature are
   fetched on the `update` lane of the one fetch worker (doc/external.md "One fetch worker": second
   after the console's image download, 15 s timeout; the worker's task `hc_fetch` has an 8 KB stack; HTTPS verified against the IDF certificate bundle's common CAs, plain
@@ -211,7 +211,8 @@ Console (prompt `hc>`):
 | `update check` | checks `update.url` now; installs only a newer version |
 | `update now [<url>]` | fetches `<url>/manifest.json` (default `update.url`) and installs its image whatever the version (development) |
 | `update url set <url>` | stores the update source (`http://` or `https://`, at most 127 characters) |
-| `update url clear` | erases it: no periodic check |
+| `update url set off` | switches the update source off: no periodic check, no language packs |
+| `update url clear` | erases it: back to the default, the release site |
 
 ## The updater
 
@@ -500,8 +501,15 @@ run). A release takes about 3.6 MB of the site (the ELF files stay in the releas
 | `/stable/manifest.json`, `/stable/manifest.sig` | the stable release's signed update manifest, byte for byte |
 | `/stable/<version>/i18n/` | the language packs of every release ever published |
 
-The **update source** of an installed controller is `https://haumacher.github.io/homecontrol/stable`
-(Settings, Firmware update, Update source; console `update url set ...`): the device reads
+The **update source** of an installed controller is `https://haumacher.github.io/homecontrol/stable`,
+the default of `update.url` since 2026-11-07 (before, a controller had none until the owner entered
+it): every controller updates from the GitHub releases unless its owner sets another source or
+`off` (Settings, Update source; console `update url set <url>|off`, `update url clear` for the
+default). The Pages site is the update server for the releases rather than the release downloads
+of github.com themselves: `releases/latest/download/manifest.json` answers with two redirects to
+release-assets.githubusercontent.com, whose URLs exceed the 127 characters of an image URL, the
+release assets are flat (no `<version>/i18n/` beside the manifest), and `stable` could not be
+pointed back to an older release. The device reads
 `<update.url>/manifest.json` and `.sig`, the image from `/homecontrol/firmware/<version>/` (the
 leading `/` keeps scheme and host), and its language pack from `<update.url>/<version>/i18n/`.
 Because the image URL is absolute within the site, the same signed bytes serve from `stable/` and
@@ -559,6 +567,27 @@ A bench trap: pyserial (esptool, miniterm) leaves `VMIN=0` on the tty, and the k
 setting for the device node across opens and re-plugs. Chrome opens the port non-blocking without
 setting `VMIN`, so every quiet moment reads as end of stream, which Chrome reports as "The device
 has been lost". After any pyserial use on the node: `stty -F /dev/ttyACMx min 1 time 0`.
+
+## TLS records
+
+TLS sends a body in records of up to 16 KB. With `CONFIG_MBEDTLS_DYNAMIC_BUFFER`
+(`sdkconfig.defaults.app`, doc/ehome.md) the application allocates its receive buffer at the size of
+each record, so a 16 KB record needs a free block of about 16.7 KB while it is read. The application
+asks every server for records of at most 4 KB (RFC 6066 Max Fragment Length,
+`platform/esp/main/tls_fragment.c`, as the PhoneBlock dongle does); measured on 2026-11-07:
+
+| Server | Honours 4 KB | Records of a large body |
+|---|---|---|
+| apps.haumacher.de (E-Home) | yes | at most 4 KB |
+| github.com | yes | at most 4 KB (only redirects are fetched there) |
+| haumacher.github.io (GitHub Pages, the update source) | no | 16 401 bytes |
+| release-assets.githubusercontent.com | no | 16 401 bytes |
+
+So the receive buffer stays at the 16 KB of the default (`CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384`):
+a smaller one fails on the first full record from GitHub's servers (`MBEDTLS_ERR_SSL_INVALID_RECORD`).
+The manifest (at most 1 KB) and its signature arrive in one small record each; a language pack from
+the Pages site needs the 16.7 KB block. The updater downloads the image with the static buffers of
+`sdkconfig.defaults` (16 KB + 4 KB), with the application not running.
 
 ## Development procedure
 

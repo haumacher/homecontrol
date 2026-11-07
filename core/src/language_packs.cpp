@@ -224,11 +224,11 @@ void LanguagePacks::run_pass() {
 		base_pruned_ = true;
 	}
 	char source[Settings::kMaxStringLength + 1] = {};
-	SettingsStatus status = settings_.get_string(setting::kUpdateUrl, source, sizeof(source));
+	bool has_source = update_source(settings_, source, sizeof(source));
 	const char* reason = blocked();
 	const char* url_error = nullptr;
-	if (reason == nullptr && (status != SettingsStatus::ok || source[0] == '\0')) {
-		reason = "no update source (update.url): packs come from the release's update server";
+	if (reason == nullptr && !has_source) {
+		reason = "no update source (update.url is off): packs come from the release's update server";
 	} else if (reason == nullptr && !update_url_valid(source, &url_error)) {
 		reason = "update.url is invalid";
 	}

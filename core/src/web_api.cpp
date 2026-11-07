@@ -1142,6 +1142,8 @@ void WebApi::settings(WebResponse& response) {
 			status = SettingsStatus::ok;
 		} else if (std::strcmp(info.key, setting::kNtpServer) == 0) {
 			fallback = setting::kDefaultNtpServer;
+		} else if (std::strcmp(info.key, setting::kUpdateUrl) == 0) {
+			fallback = setting::kDefaultUpdateUrl;
 		} else if (std::strcmp(info.key, setting::kUiLang) == 0) {
 			fallback = setting::kDefaultUiLang;
 			char lang[setting::kMaxUiLangLength + 1];

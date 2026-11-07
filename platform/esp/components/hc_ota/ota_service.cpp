@@ -69,8 +69,8 @@ bool OtaService::init(Controller& controller) {
 	loop.schedule_periodic(next_check_ms_, kCheckPeriodMs, Callback::member<OtaService, &OtaService::periodic_check>(this));
 
 	char url[Settings::kMaxStringLength + 1];
-	if (controller.settings().get_string(setting::kUpdateUrl, url, sizeof(url)) != SettingsStatus::ok || url[0] == '\0') {
-		ESP_LOGI(kTag, "periodic update check disabled: no update.url (console: update url set <url>)");
+	if (!update_source(controller.settings(), url, sizeof(url))) {
+		ESP_LOGI(kTag, "periodic update check disabled: update.url is off (console: update url clear for the default)");
 	} else {
 		ESP_LOGI(kTag, "update source %s, first check in %u min, then daily", url,
 			static_cast<unsigned>(kFirstCheckMs / 60000));
@@ -173,7 +173,7 @@ void OtaService::report_upload(Settings& settings) {
 void OtaService::periodic_check() {
 	next_check_ms_ = controller_->clock().monotonic_ms() + kCheckPeriodMs;
 	char url[Settings::kMaxStringLength + 1];
-	if (controller_->settings().get_string(setting::kUpdateUrl, url, sizeof(url)) != SettingsStatus::ok || url[0] == '\0') {
+	if (!update_source(controller_->settings(), url, sizeof(url))) {
 		return; // disabled; said so at start
 	}
 	const char* error = nullptr;
@@ -202,9 +202,8 @@ bool OtaService::check(bool force, const char* base, const char** error) {
 	}
 	char stored[Settings::kMaxStringLength + 1];
 	if (base == nullptr || base[0] == '\0') {
-		SettingsStatus status = controller_->settings().get_string(setting::kUpdateUrl, stored, sizeof(stored));
-		if (status != SettingsStatus::ok || stored[0] == '\0') {
-			*error = "no update source: update url set <url>";
+		if (!update_source(controller_->settings(), stored, sizeof(stored))) {
+			*error = "no update source: update.url is off (update url clear for the default, update url set <url>)";
 			return false;
 		}
 		base = stored;
@@ -438,25 +437,15 @@ void OtaService::restart_into_updater() {
 }
 
 bool OtaService::set_url(const char* url, const char** error) {
-	Settings& settings = controller_->settings();
-	if (url == nullptr || url[0] == '\0') {
-		SettingsStatus status = settings.erase(setting::kUpdateUrl);
-		if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
-			*error = settings_status_name(status);
-			return false;
-		}
-		ESP_LOGI(kTag, "update source cleared: periodic check disabled");
-		return true;
-	}
-	if (!update_url_valid(url, error)) {
+	if (!store_update_source(controller_->settings(), url, error)) {
 		return false;
 	}
-	SettingsStatus status = settings.set_string(setting::kUpdateUrl, url);
-	if (status != SettingsStatus::ok) {
-		*error = settings_status_name(status);
-		return false;
+	char source[Settings::kMaxStringLength + 1];
+	if (update_source(controller_->settings(), source, sizeof(source))) {
+		ESP_LOGI(kTag, "update source set to %s", source);
+	} else {
+		ESP_LOGI(kTag, "update source off: periodic check disabled");
 	}
-	ESP_LOGI(kTag, "update source set to %s", url);
 	return true;
 }
 
@@ -473,13 +462,13 @@ void OtaService::print_status() const {
 	std::printf("partition %s, state %s%s\n", running != nullptr ? running->label : "?",
 		known ? ota_state_name(state) : "unknown", confirmed_ ? "" : ", not yet confirmed");
 	char url[Settings::kMaxStringLength + 1];
-	if (controller_->settings().get_string(setting::kUpdateUrl, url, sizeof(url)) == SettingsStatus::ok && url[0] != '\0') {
+	if (update_source(controller_->settings(), url, sizeof(url))) {
 		std::printf("source    %s\n", url);
 		uint64_t now = controller_->clock().monotonic_ms();
 		std::printf("next      in %llu min\n",
 			static_cast<unsigned long long>(next_check_ms_ > now ? (next_check_ms_ - now) / 60000 : 0));
 	} else {
-		std::printf("source    none (update url set <url>): periodic check disabled\n");
+		std::printf("source    off (update url clear for the default, update url set <url>): periodic check disabled\n");
 	}
 	if (busy_.load()) {
 		std::printf("check     running (%s)\n", manifest_url_);

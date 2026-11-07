@@ -15,8 +15,9 @@ settings), one request at a time.
 ## Switching it on
 
 1. In E-Home, add the controller to the installation: E-Home shows a one-time code (15 minutes).
-2. On the controller's Settings page, card **E-Home**: enter the E-Home address
-   (`https://ehome.example`) and the code, **Connect to E-Home**. The controller calls E-Home's
+2. On the controller's Settings page, card **E-Home**: enter the E-Home address (the form
+   proposes the public installation `https://apps.haumacher.de/ehome/`; a trailing slash is
+   dropped; another installation, e.g. `https://ehome.example`, replaces it) and the code, **Connect to E-Home**. The controller calls E-Home's
    enrollment, stores what E-Home answers (`ehome.url`, `ehome.id`, `ehome.name`, `ehome.secret`,
    `ehome.socket`) with `ehome.enabled` true and connects. A refusal (unknown or expired code,
    enrolled elsewhere, E-Home unreachable) appears under the form with its reason.

@@ -267,6 +267,7 @@ TEST_CASE("Lang: blob names and manifest URLs") {
 TEST_CASE("Lang: nothing is fetched before the network, the clock and an update source are there") {
 	Fixture f(false);
 	f.settings.set_string(hc::setting::kUiLang, "de");
+	f.settings.set_string(hc::setting::kUpdateUrl, hc::setting::kUpdateUrlOff);
 	f.boot();
 	CHECK(f.fetcher.urls.empty());
 	CHECK(f.packs.state() == LanguagePackState::waiting);

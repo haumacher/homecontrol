@@ -15,8 +15,17 @@ namespace hc {
 namespace setting {
 
 /// The update source configured by the user: the base URL under which `manifest.json` and the
-/// image live (console `update url set`). Empty or missing: the periodic check is disabled.
+/// image live (console `update url set`). Missing: the release site kDefaultUpdateUrl. The value
+/// kUpdateUrlOff (or an empty one, as stored before the default existed) switches the update source
+/// off: no periodic check, no language packs. Read it through update_source().
 constexpr const char* kUpdateUrl = "update.url";
+
+/// The update source of a device that has none stored: the releases of GitHub, as the release
+/// workflow publishes them on the project's Pages site (doc/ota.md "Releases and the web flasher").
+constexpr const char* kDefaultUpdateUrl = "https://haumacher.github.io/homecontrol/stable";
+
+/// The stored value of update.url that switches the update source off.
+constexpr const char* kUpdateUrlOff = "off";
 
 /// The update instruction, written by the application before it boots into the updater and erased
 /// by the application after the next confirmed start. `update.image` is written last and erased
@@ -93,6 +102,15 @@ bool parse_update_manifest(const char* text, size_t length, UpdateManifest& out,
 /// An update source or image URL: `http://` or `https://`, a host, at most
 /// Settings::kMaxStringLength characters, no spaces or control characters.
 bool update_url_valid(const char* url, const char** error = nullptr);
+
+/// The update source in use: the stored update.url, or kDefaultUpdateUrl when none is stored.
+/// False (and `out` empty) when it is switched off (kUpdateUrlOff, an empty value) or unreadable.
+bool update_source(const Settings& settings, char* out, size_t size);
+
+/// Stores the update source the user entered: empty returns to the default (the setting is
+/// erased), kUpdateUrlOff switches it off, anything else must be update_url_valid(). False with the
+/// reason in `error` otherwise or when the settings refuse.
+bool store_update_source(Settings& settings, const char* url, const char** error = nullptr);
 
 /// `<base>/manifest.json` (a trailing slash of `base` is dropped). False if it does not fit.
 bool update_manifest_url(const char* base, char* out, size_t size);

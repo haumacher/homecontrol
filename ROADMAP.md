@@ -262,3 +262,13 @@ outside world (weather, external services).
   not answer Improv as HomeControl and updates one that does without erasing, so a reinstall keeps
   WiFi, password, enrollment and the Zigbee network but loses the deployed image, the values and the
   history. Only the 4 MB layout is offered.
+- **2026-11-07 — Defaults for the update source and the E-Home address; 4 KB TLS records where the
+  server allows.** A controller without a stored `update.url` updates from the GitHub releases as
+  the release workflow publishes them on the Pages site (`https://haumacher.github.io/homecontrol/stable`,
+  `hc::setting::kDefaultUpdateUrl`); `off` switches the source off, `update url clear` returns to the
+  default. Pages rather than github.com's release downloads: those answer with two redirects to URLs
+  longer than an image URL may be, have no `<version>/i18n/` beside the manifest, and `stable` could
+  no longer be pointed back. The E-Home card proposes `https://apps.haumacher.de/ehome/`. Every TLS
+  client asks for 4 KB records (Max Fragment Length, as the PhoneBlock dongle does); E-Home's server
+  and github.com honour it, GitHub Pages and the release assets send 16 KB records regardless, so the
+  receive buffer stays at 16 KB (doc/ota.md "TLS records").

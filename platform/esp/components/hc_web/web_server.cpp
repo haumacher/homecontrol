@@ -323,8 +323,7 @@ void WebServer::write_update_state(JsonWriter& json) const {
 	json.member("available", true).member("partition", running != nullptr ? running->label : "?");
 	json.member("confirmed", ota_.confirmed()).member("checking", ota_.checking());
 	char url[Settings::kMaxStringLength + 1] = {};
-	bool has_url = controller_.settings().get_string(setting::kUpdateUrl, url, sizeof(url)) == SettingsStatus::ok &&
-		url[0] != '\0';
+	bool has_url = update_source(controller_.settings(), url, sizeof(url));
 	json.member("source", has_url ? url : "");
 	json.member("last", ota_.last_result());
 	// The release key the firmware trusts for manifests (doc/ota.md "Manifest signature").
