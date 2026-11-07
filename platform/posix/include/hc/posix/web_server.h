@@ -114,6 +114,8 @@ public:
 	void set_mqtt(Mqtt* mqtt) { api_.set_mqtt(mqtt); }
 	/// The KNX tunnel and its telegram log: the "knx" status, knx.gateway and knx.nat applied to it.
 	void set_knx(knx::KnxTunnel* tunnel, const knx::TelegramLog* telegrams) { api_.set_knx(tunnel, telegrams); }
+	/// The KNX gateway search behind /api/knx/search.
+	void set_knx_search(knx::GatewaySearch* search) { api_.set_knx_search(search); }
 	/// The external values behind POST /api/external/<id>/fetch and the "external" status.
 	void set_external(ExternalValues* external) { api_.set_external(external); }
 	/// The storage figures of the "storage" status (homecontrol #74).

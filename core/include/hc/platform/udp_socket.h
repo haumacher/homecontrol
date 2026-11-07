@@ -67,6 +67,25 @@ protected:
 	~UdpSocket() = default;
 };
 
+/// UDP sockets for a short use (the KNX gateway search, a few seconds a few times in a device's
+/// life): created on the heap with whatever the platform needs to receive (the ESP a reader task)
+/// and given back when done, so that nothing of them is held while idle.
+///
+/// Every call is made on the event loop's thread.
+class UdpSocketFactory {
+public:
+	/// A new socket (closed; open() it), or nullptr with `error` (valid until the next call): not
+	/// enough memory, no task. The caller gives it back with release().
+	virtual UdpSocket* create(const char** error) = 0;
+
+	/// Closes `socket` and frees it (on the ESP once its reader has stopped, shortly after). The
+	/// receiver is not called any more after this call. nullptr is harmless.
+	virtual void release(UdpSocket* socket) = 0;
+
+protected:
+	~UdpSocketFactory() = default;
+};
+
 } // namespace hc
 
 #endif // HC_PLATFORM_UDP_SOCKET_H

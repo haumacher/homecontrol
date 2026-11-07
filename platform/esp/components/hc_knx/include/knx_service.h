@@ -6,11 +6,13 @@
 
 #include <cstdint>
 
+#include "esp_transient_socket.h"
 #include "esp_udp_socket.h"
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/dpt.h"
 #include "hc/knx/adapter.h"
+#include "hc/knx/gateway_search.h"
 #include "hc/knx/telegram_log.h"
 #include "hc/monitor_feed.h"
 #include "hc/knx/tunnel.h"
@@ -19,7 +21,8 @@
 namespace hc {
 namespace esp {
 
-/// KNX on the device: the lwIP UDP socket and the core's KnxTunnel, KnxAdapter and TelegramLog,
+/// KNX on the device: the lwIP UDP socket and the core's KnxTunnel, KnxAdapter and TelegramLog, and
+/// the GatewaySearch (its socket and reader task exist only while a search runs),
 /// wired to the controller's event loop and network, configured from the settings knx.gateway and
 /// knx.nat (doc/knx.md). The objects are statically allocated inside it.
 ///
@@ -60,6 +63,8 @@ public:
 
 	knx::KnxTunnel& tunnel() { return tunnel_; }
 	knx::KnxAdapter& adapter() { return adapter_; }
+	/// The gateway search of the Settings page (/api/knx/search), on a transient socket of its own.
+	knx::GatewaySearch& search() { return search_; }
 	knx::TelegramLog& telegrams() { return telegrams_; }
 	/// The monitor stream that keeps the telegrams (`knx log` reads them there, issue #45 item 10);
 	/// nullptr until the web server's live feed is set.
@@ -84,6 +89,8 @@ private:
 	const MonitorFeed* monitor_ = nullptr;
 	knx::KnxTunnel tunnel_;
 	knx::KnxAdapter adapter_;
+	EspUdpSocketFactory search_sockets_;
+	knx::GatewaySearch search_;
 	uint32_t write_token_ = 0;
 	uint32_t read_token_ = 0;
 	bool reading_ = false;

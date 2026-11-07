@@ -98,6 +98,67 @@ function choiceRow(setting, choices) {
 
 const kChoices = { "wifi.ps": ["none", "min", "max"], "knx.nat": ["off", "on"], "led.quiet": ["off", "on"] };
 
+/// The KNX gateway search beside knx.gateway (spec/api.md "KNX gateway search"): starts it, follows
+/// it until its window closes, and lists the gateways that answered. Choosing one fills `input`
+/// ("host", or "host:port" off the default port 3671) without saving; a gateway without tunnelling
+/// is listed but cannot be chosen.
+function gatewaySearch(input, feedback) {
+	const results = h("div", { class: "gateway-search", role: "status", hidden: true });
+	const show = (...children) => {
+		results.hidden = false;
+		replace(results, ...children);
+	};
+	const choose = (gateway) => {
+		input.value = gateway.port === 3671 ? gateway.host : `${gateway.host}:${gateway.port}`;
+		input.focus();
+		feedback.className = "hint";
+		feedback.textContent = t("knx.search.chosen", { name: gateway.name || gateway.host });
+	};
+	const list = (data) => {
+		const gateways = data.gateways || [];
+		if (!gateways.length) {
+			show(h("p", { class: "hint" }, t("knx.search.none")));
+			return;
+		}
+		show(h("ul", { class: "gateway-list" }, gateways.map((g) => {
+			const where = `${g.host}:${g.port}`;
+			const label = [h("span", { class: "gateway-name" }, g.name || t("knx.search.unnamed")),
+				h("span", { class: "hint" }, t("knx.search.where", { endpoint: where, address: g.individual_address }))];
+			return h("li", null, g.tunnelling
+				? h("button", { type: "button", class: "button secondary gateway-choice", title: t("knx.search.choose"),
+					onclick: () => choose(g) }, label)
+				: h("div", { class: "gateway-choice unavailable" }, label,
+					h("span", { class: "badge warn" }, t("knx.search.no_tunnelling"))));
+		})), data.overflow > 0 ? h("p", { class: "hint" }, t("knx.search.overflow", { count: data.overflow })) : null);
+	};
+	let polls = 0;
+	const follow = async (button, data) => {
+		// While it runs: look again every 500 ms (the window is 3 s; bounded in case the device stalls).
+		while (data.state === "running" && polls++ < 20 && results.isConnected) {
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			data = await api("GET", "/api/knx/search");
+		}
+		if (data.state === "running") {
+			show(h("p", { class: "error-text" }, t("knx.search.stalled")));
+		} else {
+			list(data);
+		}
+		button.disabled = false;
+	};
+	const button = h("button", { type: "button", class: "button secondary", onclick: async () => {
+		button.disabled = true;
+		polls = 0;
+		show(h("p", { class: "hint" }, t("knx.search.running")));
+		try {
+			await follow(button, await api("POST", "/api/knx/search", {}));
+		} catch (error) {
+			show(h("p", { class: "error-text" }, errorText(error)));
+			button.disabled = false;
+		}
+	} }, t("knx.search"));
+	return { button, results };
+}
+
 function settingRow(setting, onSaved) {
 	const id = `setting-${setting.key}`;
 	const label = has(`settings.key.${setting.key}`) ? t(`settings.key.${setting.key}`) : setting.key;
@@ -110,6 +171,7 @@ function settingRow(setting, onSaved) {
 		: setting.secret ? t("settings.secret.hint")
 		: (setting.default ? t("settings.default", { value: setting.default }) : ""));
 	const save = h("button", { class: "button", type: "submit", disabled: !setting.editable }, t("settings.save"));
+	const search = setting.key === "knx.gateway" && setting.editable ? gatewaySearch(input, feedback) : null;
 	return h(
 		"form",
 		{
@@ -131,8 +193,9 @@ function settingRow(setting, onSaved) {
 			},
 		},
 		h("label", { for: id }, label),
-		h("div", { class: "input-row" }, input, setting.editable ? save : null),
+		h("div", { class: "input-row" }, input, setting.editable ? save : null, search ? search.button : null),
 		feedback,
+		search ? search.results : null,
 	);
 }
 

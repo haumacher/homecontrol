@@ -16,7 +16,8 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   (`Connectivity`, `Backoff`), Improv Wi-Fi serial provisioning (`Improv`, `ImprovReader`), status
   LED patterns, settings keys and validators, the datapoint model (`DatapointModel`, `Technology`)
   and the KNX DPT codecs (`doc/datapoints.md`), KNXnet/IP tunnelling (`hc::knx`: `KnxTunnel`,
-  `KnxAdapter`, the telegram tap `TelegramLog` over the platform's `UdpSocket`, `doc/knx.md`), the time service,
+  `KnxAdapter`, the telegram tap `TelegramLog`, the gateway search `GatewaySearch` over the platform's
+  `UdpSocket`, `doc/knx.md`), the time service,
   astronomy and the scheduler (`doc/time.md`), the KNX time master, last-value persistence and
   short-term history over the platform's `BlobStore` (`ValueStore`, `History`, `doc/persistence.md`),
   the storage figures the status reports, measured off the loop after each change (`StorageStats`),

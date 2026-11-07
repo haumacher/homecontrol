@@ -459,6 +459,10 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		mqtt_discovery(request, response);
 		return;
 	}
+	if (std::strcmp(path, "/api/knx/search") == 0) {
+		knx_search(request, response);
+		return;
+	}
 	if (std::strcmp(path, "/api/ehome") == 0 || starts_with(path, "/api/ehome/")) { // ehome_link.cpp
 		if (ehome_ == nullptr) {
 			refuse(response, 501, "ehome.unavailable", "this build has no E-Home connection");

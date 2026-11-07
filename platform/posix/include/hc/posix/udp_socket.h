@@ -18,7 +18,7 @@ namespace posix {
 /// the waiting datagrams to the receiver on the loop's thread. resolve() calls getaddrinfo (it
 /// blocks the loop while the name server answers, acceptable for the host build) and delivers the
 /// result through EventLoop::post().
-class PosixUdpSocket : public UdpSocket {
+class PosixUdpSocket final : public UdpSocket {
 public:
 	explicit PosixUdpSocket(EventLoop& loop);
 	~PosixUdpSocket();
@@ -55,6 +55,27 @@ private:
 	char resolve_error_[96] = {};
 	uint32_t resolve_generation_ = 0;
 	uint32_t resolve_posted_ = 0;
+};
+
+/// The sockets of the gateway search: one PosixUdpSocket at a time, created on the heap by create()
+/// and deleted by release(). The main loop polls current() beside the tunnel's socket.
+class PosixUdpSocketFactory : public UdpSocketFactory {
+public:
+	explicit PosixUdpSocketFactory(EventLoop& loop) : loop_(loop) {}
+	~PosixUdpSocketFactory();
+
+	PosixUdpSocketFactory(const PosixUdpSocketFactory&) = delete;
+	PosixUdpSocketFactory& operator=(const PosixUdpSocketFactory&) = delete;
+
+	UdpSocket* create(const char** error) override;
+	void release(UdpSocket* socket) override;
+
+	/// The socket given out, nullptr while none is.
+	PosixUdpSocket* current() const { return current_; }
+
+private:
+	EventLoop& loop_;
+	PosixUdpSocket* current_ = nullptr;
 };
 
 } // namespace posix

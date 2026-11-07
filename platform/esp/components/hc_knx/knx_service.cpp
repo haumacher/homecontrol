@@ -22,7 +22,9 @@ KnxService::KnxService(Controller& controller, LoopQueue& queue, DatapointModel&
 	  socket_(queue),
 	  telegrams_(controller.clock()),
 	  tunnel_(controller.loop(), controller.clock(), controller.connectivity(), socket_),
-	  adapter_(controller.loop(), controller.clock(), model, tunnel_, &telegrams_) {}
+	  adapter_(controller.loop(), controller.clock(), model, tunnel_, &telegrams_),
+	  search_sockets_(queue),
+	  search_(controller.loop(), controller.clock(), controller.connectivity(), search_sockets_) {}
 
 void KnxService::init() {
 	socket_.init();

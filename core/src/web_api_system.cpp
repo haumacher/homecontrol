@@ -8,6 +8,7 @@
 
 #include "hc/diagnostics.h"
 #include "hc/external_values.h"
+#include "hc/knx/gateway_search.h"
 #include "hc/knx/telegram_log.h"
 #include "hc/knx/tunnel.h"
 #include "hc/language_packs.h"
@@ -811,6 +812,64 @@ void WebApi::mqtt_discovery(const WebRequest& request, WebResponse& response) {
 	}
 	Log::info(kTag, "MQTT discovery publish requested over the API");
 	ok(response);
+}
+
+void WebApi::knx_search(const WebRequest& request, WebResponse& response) {
+	if (request.method != HttpMethod::get && !method_is(request, response, HttpMethod::post)) {
+		return;
+	}
+	if (knx_search_ == nullptr) {
+		decline(request, response, 501, "system.unavailable", "this build has no KNX gateway search");
+		return;
+	}
+	bool started = false;
+	if (request.method == HttpMethod::post) {
+		const char* error = nullptr;
+		if (!knx_search_->start(&error, &started)) {
+			decline(request, response, 409, "knx.search_refused", error);
+			return;
+		}
+		if (started) {
+			Log::info(kTag, "KNX gateway search requested over the API from %s", request.source);
+		}
+	}
+	JsonWriter json(response.body, response.capacity);
+	write_knx_search(json, started);
+	finish(response, json);
+}
+
+void WebApi::write_knx_search(JsonWriter& json, bool started) {
+	const knx::GatewaySearch& search = *knx_search_;
+	uint64_t now = controller_.clock().monotonic_ms();
+	json.begin_object().member("state", knx::search_state_name(search.state())).member("started", started);
+	if (search.started_ms() != 0) {
+		json.member("now_ms", now).member("started_ms", search.started_ms()).member("ends_ms", search.ends_ms());
+	}
+	json.member("window_ms", knx::GatewaySearch::kWindowMs);
+	json.key("gateways").begin_array();
+	for (size_t i = 0; i < search.count(); ++i) {
+		const knx::FoundGateway& gateway = search.gateway(i);
+		char host[kMaxIpv4Text];
+		char address[knx::IndividualAddress::kMaxText];
+		char mac[18];
+		char serial[14];
+		std::snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", gateway.mac[0], gateway.mac[1], gateway.mac[2],
+			gateway.mac[3], gateway.mac[4], gateway.mac[5]);
+		std::snprintf(serial, sizeof(serial), "%02x%02x:%02x%02x%02x%02x", gateway.serial[0], gateway.serial[1],
+			gateway.serial[2], gateway.serial[3], gateway.serial[4], gateway.serial[5]);
+		json.begin_object()
+			.member("name", gateway.name)
+			.member("host", format_ipv4(gateway.control.address, host, sizeof(host)))
+			.member("port", static_cast<uint32_t>(gateway.control.port))
+			.member("individual_address", gateway.address.format(address, sizeof(address)))
+			.member("mac", mac)
+			.member("serial", serial)
+			.member("tunnelling", gateway.tunnelling)
+			.member("routing", gateway.routing)
+			.end_object();
+	}
+	json.end_array();
+	json.member("overflow", search.overflow()).member("ignored", search.ignored()).end_object();
 }
 
 // ---- The status members of the console's status commands ----------------------------------------

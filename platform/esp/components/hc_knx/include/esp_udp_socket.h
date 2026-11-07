@@ -18,6 +18,11 @@
 namespace hc {
 namespace esp {
 
+/// The endpoint a peer at `remote` sees for the socket `fd` (UdpSocket::local_endpoint()): the BSD
+/// way, else (lwIP leaves a socket bound to any address at 0.0.0.0) the address of the interface
+/// whose subnet holds `remote`, or of the default interface. Event loop only.
+bool esp_local_endpoint(int fd, const Ipv4Endpoint& remote, Ipv4Endpoint& local, const char** error);
+
 /// hc::UdpSocket over lwIP's BSD sockets. The event loop opens, sends and closes; the reader task
 /// `hc_udp` waits on the socket (select, 100 ms), receives each datagram straight into the next
 /// free one of a ring of kRing slots of kMaxDatagram octets and posts one message through the LoopQueue, whose handler hands the ring's datagrams to the

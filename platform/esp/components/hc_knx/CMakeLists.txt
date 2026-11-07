@@ -6,9 +6,9 @@
 # telegram log, and the body of the console command `knx`.
 
 idf_component_register(
-	SRCS "esp_udp_socket.cpp" "knx_service.cpp" "knx_console.cpp" "../../../common/src/bsd_udp.cpp"
+	SRCS "esp_udp_socket.cpp" "esp_transient_socket.cpp" "knx_service.cpp" "knx_console.cpp" "../../../common/src/bsd_udp.cpp"
 	INCLUDE_DIRS "include" "../../../common/include"
 	REQUIRES hc_core hc_platform
-	PRIV_REQUIRES lwip freertos log esp_netif)
+	PRIV_REQUIRES lwip freertos log esp_netif heap)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)

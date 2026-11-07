@@ -483,6 +483,43 @@ Publishes the Home Assistant discovery messages again (the console's `mqtt disco
 doc/mqtt.md). 200 `{"ok": true}`. Refusals: 409 `mqtt.refused` (not connected, discovery off),
 501 `system.unavailable`.
 
+### `GET` and `POST /api/knx/search`
+
+The KNX gateway search (doc/knx.md "Gateway search") behind the Settings page's "Search…" beside
+`knx.gateway`: a KNXnet/IP SEARCH_REQUEST to the multicast group 224.0.23.12:3671, sent twice (at
+the start and after 1 s), and the SEARCH_RESPONSEs collected for `window_ms` (3 s). It only offers:
+nothing is stored and the tunnel is not touched; the client puts a chosen gateway into
+`knx.gateway` with `PUT /api/settings/knx.gateway` as usual. Session or token like every route
+(the CSRF header with the cookie on `POST`); the E-Home principal may use it.
+
+`POST` (no body, or `{}`) starts a search and answers at once; while one runs it starts none and
+answers with the running one (`started` false). `GET` reads the state at any time:
+
+```json
+{"state": "done", "started": false, "now_ms": 815100, "started_ms": 812000, "ends_ms": 815000,
+ "window_ms": 3000,
+ "gateways": [{"name": "IP-Router Küche", "host": "192.0.2.30", "port": 3671, "individual_address": "1.1.0",
+               "mac": "00:24:6d:01:02:03", "serial": "0083:12345678", "tunnelling": true, "routing": true}],
+ "overflow": 0, "ignored": 0}
+```
+
+`state` is `idle` (no search since the start), `running` (the window is open; `gateways` holds the
+answers so far) or `done` (the result stays until the next `POST`). `started` is true only in the
+answer of the `POST` that started the search. `now_ms`, `started_ms` and `ends_ms` are absent before
+the first search. Per gateway, from its SEARCH_RESPONSE: `name` the friendly name (UTF-8, converted
+from the ISO 8859-1 the frame carries), `host` and `port` its control endpoint (a gateway behind NAT
+that names 0.0.0.0:0 gets the address it answered from), `individual_address`, `mac`, `serial` (the
+KNX serial number, manufacturer:number), `tunnelling` and `routing` whether its supported service
+families list tunnelling (0x04) and routing (0x05). A gateway without tunnelling cannot carry the
+controller's tunnel: the UI lists it but does not offer it. The gateways are deduplicated by control
+endpoint, at most 16; `overflow` counts the answers of further ones. `ignored` counts the datagrams
+that were not a well-formed SEARCH_RESPONSE.
+
+Refusals: 409 `knx.search_refused` (with the reason: the network is not up, not enough memory for
+the search (the device keeps a heap reserve), no socket, no local address, the request could not
+be sent), 405 `api.method_not_allowed`, 501 `system.unavailable`
+(a build without the search).
+
 ## Zigbee
 
 The coordinator's network and devices (doc/zigbee.md, spec/zigbee.md). Without a coordinator

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -162,6 +163,55 @@ public:
 	hc::UdpReceiver* resolver = nullptr;
 	std::vector<std::string> resolves;
 	std::vector<Datagram> sent;
+
+private:
+	const FakeClock& clock_;
+};
+
+/// Creates FakeUdpSockets for a GatewaySearch and keeps every one (released ones too) for the test
+/// to inspect; counts what was created and released, so that a test can see a leak.
+class FakeUdpSocketFactory : public hc::UdpSocketFactory {
+public:
+	explicit FakeUdpSocketFactory(const FakeClock& clock) : clock_(clock) {}
+
+	hc::UdpSocket* create(const char** error) override {
+		if (fail_create) {
+			*error = "not enough memory";
+			return nullptr;
+		}
+		sockets.emplace_back(new FakeUdpSocket(clock_));
+		sockets.back()->fail_open = fail_open;
+		++created;
+		return sockets.back().get();
+	}
+
+	void release(hc::UdpSocket* socket) override {
+		if (socket == nullptr) {
+			return;
+		}
+		socket->close();
+		++released;
+		for (auto& s : sockets) {
+			if (s.get() == socket) {
+				return;
+			}
+		}
+		FAIL("released a socket this factory did not create");
+	}
+
+	/// The socket created last.
+	FakeUdpSocket& last() {
+		REQUIRE(!sockets.empty());
+		return *sockets.back();
+	}
+
+	int live() const { return created - released; }
+
+	bool fail_create = false;
+	bool fail_open = false;
+	int created = 0;
+	int released = 0;
+	std::vector<std::unique_ptr<FakeUdpSocket>> sockets;
 
 private:
 	const FakeClock& clock_;

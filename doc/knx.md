@@ -12,6 +12,7 @@ move UDP datagrams.
 | cEMI L_Data frames, group services | `core/include/hc/knx/cemi.h` |
 | KNXnet/IP frames (header, HPAI, CRI/CRD, connect, heartbeat, disconnect, tunnelling, search response) | `core/include/hc/knx/knxnetip.h` |
 | The tunnel's state machine | `core/include/hc/knx/tunnel.h` |
+| The gateway search (SEARCH_REQUEST, the responses of a 3 s window) | `core/include/hc/knx/gateway_search.h` |
 | The adapter (group addresses to datapoints) | `core/include/hc/knx/adapter.h` |
 | The telegram log | `core/include/hc/knx/telegram_log.h` |
 | The time master (DPT 10, 11, 19 broadcasts) | `core/include/hc/knx/time_master.h` |
@@ -124,8 +125,46 @@ _RESPONSE, TUNNELING_REQUEST and _ACK and SEARCH_REQUEST, and parses the header 
 length must equal the datagram), CONNECT_RESPONSE, CONNECTIONSTATE_RESPONSE, DISCONNECT_REQUEST and
 _RESPONSE, TUNNELING_REQUEST and _ACK, and SEARCH_RESPONSE with the device information DIB (medium,
 status, individual address, installation id, serial number, routing multicast address, MAC, friendly
-name) and the supported service families. The gateway search itself is a follow-up: a gateway is
-never chosen from a discovery automatically.
+name) and the supported service families; the gateway search below uses them.
+
+## Gateway search
+
+`hc::knx::GatewaySearch` (`gateway_search.h`) is the KNXnet/IP discovery of KNX 03.08.02 behind the
+Settings page's "Search…" beside `knx.gateway` (`GET`/`POST /api/knx/search`, spec/api.md "KNX
+gateway search"). `start()` takes a UDP socket of its own from the platform's `UdpSocketFactory`
+(not the tunnel's: a search must not disturb a running tunnel, and the tunnel's socket is opened and
+closed with each connection), asks it for the local endpoint towards the group, and sends a SEARCH_REQUEST with that HPAI to the system
+multicast group 224.0.23.12:3671 (`06 10 02 01 00 0E 08 01 <ip> <port>`). The gateways answer to
+that endpoint by unicast, so the socket joins no group; sending to a group needs nothing beyond a
+plain `send_to()` on either platform (Linux and lwIP route it through the default interface), so
+`UdpSocket` is unchanged. The request is repeated after `kRepeatMs` (1 s) against a datagram lost
+on the WiFi; the window closes after `kWindowMs` (3 s) on an event loop timer, and the socket goes
+back to the factory. Nothing blocks: the answers arrive as datagrams on the loop like the tunnel's.
+
+Memory: a feature used a few times in a device's life costs nothing while idle. The socket (on the
+ESP with its reader task) exists only during the window. The table of 16 gateways (about 1.4 KB) is
+allocated at the start, shrunk to the gateways found when the window closes (freed when none
+answered), and kept until the next search. Each allocation that fails refuses the start with the
+reason; the ESP's factory also refuses below a heap floor.
+
+- Each datagram goes through `parse_search_response()` (bounds-checked: the total length must equal
+  the datagram, every DIB must fit, the device information DIB is 54 octets, both it and the
+  supported service families DIB must be there). Anything else is counted in `ignored()` and
+  dropped (a debug line), never a crash.
+- The answers are deduplicated by control endpoint (both requests are answered); a gateway behind
+  NAT that names 0.0.0.0:0 gets the endpoint it answered from. At most `kCapacity` (16) are kept,
+  further ones are counted in `overflow()`. The friendly name is converted from ISO 8859-1 to UTF-8.
+- One search at a time: `start()` while one runs leaves it running (`started` false). A new search
+  forgets the previous result, which otherwise stays until then. Refused (with the reason, logged
+  and answered 409 `knx.search_refused`): the network is down, no memory (the table, the socket, the
+  ESP's heap floor), the socket does not open, no local address, the request is not sent.
+- It only offers. Nothing is stored and no gateway is ever chosen automatically: the page fills the
+  field (`host`, or `host:port` off 3671) and the user saves it as every setting. A gateway whose
+  service families lack tunnelling (a pure routing device) is listed but cannot be chosen.
+
+The SEARCH_REQUEST is a read-only broadcast every KNXnet/IP device on the LAN answers; it changes
+nothing on a bus. Tests never send it into a network: the core tests run on the fake socket, the
+POSIX test points the search (its `target` parameter) at a fake gateway on the loopback interface.
 
 ## The adapter
 
@@ -328,7 +367,15 @@ bsd_udp.cpp`, compiled by both builds.
   `getaddrinfo`. The loop retires a closed descriptor to the reader, which closes it (never one it
   may be waiting on); datagrams of a closed socket are dropped by a generation count.
   `hc::esp::KnxService` owns the socket, the tunnel, the adapter and the log, reads the settings and
-  starts the tunnel.
+  starts the tunnel. It also owns the gateway search, whose socket comes from
+  `hc::esp::EspUdpSocketFactory`: an `EspTransientSocket` on the heap with its own reader task
+  `hc_udp_tmp` (2.5 KB stack, a ring of 4 datagram slots), about 4.5 KB in all, only while a search
+  runs. The factory refuses while less than 20 KB of heap would be left (`kHeapFloor`). On release
+  the reader closes the descriptor, posts its exit through the LoopQueue and deletes its task; the
+  exit message, behind everything the reader posted before, frees the socket on the loop. At debug
+  level the reader logs its unused stack when it ends.
+- **POSIX** search sockets: `hc::posix::PosixUdpSocketFactory` hands out one `PosixUdpSocket` at a
+  time on the heap; the main loop polls it beside the tunnel's while it exists.
 
 ### Console (ESP)
 
@@ -369,5 +416,3 @@ broke). Use it only against the test system (CLAUDE.md, "KNX during development"
   next tick sends within the interval).
 
 - Routing (KNXnet/IP multicast) as a second transport beside the tunnel.
-- Gateway search (SEARCH_REQUEST on 224.0.23.12:3671; the response decoding exists), offered to the
-  user, never chosen automatically.

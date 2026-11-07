@@ -221,6 +221,7 @@ void loop_task(void*) {
 	web.set_language_packs(&i18n().packs());
 	web.set_mqtt(&mqtt().mqtt());
 	web.set_knx(&knx().tunnel(), &knx().telegrams());
+	web.set_knx_search(&knx().search());
 	web.set_zigbee(zigbee().adapter(), zigbee().unavailable_reason());
 	web.set_external(&external().values());
 	web.set_blob_store(&g_blobs);

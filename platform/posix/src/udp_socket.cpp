@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <ctime>
+#include <new>
 
 #include "hc/common/bsd_udp.h"
 #include "hc/log.h"
@@ -127,6 +128,30 @@ void PosixUdpSocket::drain() {
 		}
 		receiver_->udp_received(buffer, static_cast<size_t>(length), from);
 	}
+}
+
+PosixUdpSocketFactory::~PosixUdpSocketFactory() {
+	delete current_;
+}
+
+UdpSocket* PosixUdpSocketFactory::create(const char** error) {
+	if (current_ != nullptr) {
+		*error = "a socket of the factory is in use";
+		return nullptr;
+	}
+	current_ = new (std::nothrow) PosixUdpSocket(loop_);
+	if (current_ == nullptr) {
+		*error = "not enough memory";
+	}
+	return current_;
+}
+
+void PosixUdpSocketFactory::release(UdpSocket* socket) {
+	if (socket == nullptr || socket != current_) {
+		return;
+	}
+	delete current_; // closes it
+	current_ = nullptr;
 }
 
 } // namespace posix

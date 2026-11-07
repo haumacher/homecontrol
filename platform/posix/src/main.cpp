@@ -46,6 +46,7 @@
 #include "hc/posix/websocket_client.h"
 #include "hc/image/memory_blob_store.h"
 #include "hc/knx/adapter.h"
+#include "hc/knx/gateway_search.h"
 #include "hc/knx/knx_settings.h"
 #include "hc/knx/telegram_log.h"
 #include "hc/knx/tunnel.h"
@@ -146,12 +147,19 @@ void print_usage(const char* program) {
 
 } // namespace
 
-/// Sleeps up to `ms` or until the web executor has a job or the KNX socket a datagram, then runs
+/// The UDP sockets the main loop polls: the KNX tunnel's and the gateway search's.
+struct UdpSockets {
+	hc::posix::PosixUdpSocket& tunnel;
+	const hc::posix::PosixUdpSocketFactory& search; ///< A socket only while a search runs.
+};
+
+/// Sleeps up to `ms` or until the web executor has a job or a UDP socket a datagram, then runs
 /// the jobs and delivers the datagrams on this (the loop's) thread; their run time counts as a turn
 /// of the loop (EventLoop::account_turn(), the System page).
-void sleep_until_work(hc::posix::LoopExecutor& executor, hc::posix::PosixUdpSocket& knx_socket, uint64_t ms,
+void sleep_until_work(hc::posix::LoopExecutor& executor, UdpSockets sockets, uint64_t ms,
 	hc::EventLoop& loop, const hc::Clock& clock) {
-	pollfd entries[2];
+	pollfd entries[3];
+	hc::posix::PosixUdpSocket* owners[3] = {};
 	nfds_t count = 0;
 	if (executor.wake_fd() >= 0) {
 		entries[count].fd = executor.wake_fd();
@@ -159,11 +167,14 @@ void sleep_until_work(hc::posix::LoopExecutor& executor, hc::posix::PosixUdpSock
 		entries[count].revents = 0;
 		++count;
 	}
-	if (knx_socket.fd() >= 0) {
-		entries[count].fd = knx_socket.fd();
-		entries[count].events = POLLIN;
-		entries[count].revents = 0;
-		++count;
+	for (hc::posix::PosixUdpSocket* socket : {&sockets.tunnel, sockets.search.current()}) {
+		if (socket != nullptr && socket->fd() >= 0) {
+			entries[count].fd = socket->fd();
+			entries[count].events = POLLIN;
+			entries[count].revents = 0;
+			owners[count] = socket;
+			++count;
+		}
 	}
 	if (count == 0) {
 		executor.wait(ms);
@@ -180,8 +191,8 @@ void sleep_until_work(hc::posix::LoopExecutor& executor, hc::posix::PosixUdpSock
 		if ((entries[i].revents & (POLLIN | POLLERR | POLLHUP)) == 0) {
 			continue;
 		}
-		if (entries[i].fd == knx_socket.fd()) {
-			knx_socket.drain();
+		if (owners[i] != nullptr) {
+			owners[i]->drain();
 		} else {
 			executor.run_pending();
 		}
@@ -289,6 +300,10 @@ int main(int argc, char** argv) {
 	hc::knx::TelegramLog telegrams(clock);
 	hc::knx::KnxTunnel tunnel(controller.loop(), clock, controller.connectivity(), knx_socket);
 	hc::knx::KnxAdapter adapter(controller.loop(), clock, model, tunnel, &telegrams);
+	// The gateway search of the Settings page (/api/knx/search), on a socket of its own while it runs.
+	hc::posix::PosixUdpSocketFactory search_sockets(controller.loop());
+	hc::knx::GatewaySearch gateway_search(controller.loop(), clock, controller.connectivity(), search_sockets);
+	const UdpSockets udp{knx_socket, search_sockets};
 	hc::posix::FileBlobStore blobs(hc::posix::FileBlobStore::directory_for_settings(settings_path));
 	hc::image::ImageService image(controller, model, blobs, adapter, &tunnel);
 	// The image's store off the loop (#68); declared after the service, so it ends first.
@@ -381,6 +396,7 @@ int main(int argc, char** argv) {
 			web->set_storage_stats(&storage);
 		}
 		web->set_knx(&tunnel, &telegrams);
+		web->set_knx_search(&gateway_search);
 		// Restart and factory reset over the API: the process stops (a supervisor such as systemd with
 		// Restart=always starts it again); the reset first erases the settings and the blobs.
 		web->set_system_handler([&settings, &blobs](hc::SystemAction action) {
@@ -416,12 +432,12 @@ int main(int argc, char** argv) {
 		uint64_t wait = deadline <= now ? 0 : deadline - now;
 		// Sleeps until the deadline, a job from a web server thread, or a datagram for the KNX tunnel
 		// (a signal interrupts the sleep; the loop then checks g_stop).
-		sleep_until_work(executor, knx_socket, wait < kMaxSleepMs ? wait : kMaxSleepMs, controller.loop(), clock);
+		sleep_until_work(executor, udp, wait < kMaxSleepMs ? wait : kMaxSleepMs, controller.loop(), clock);
 	}
 	mqtt.stop(); // offline on the status topic; the retained configs stay for the next run
 	for (int i = 0; i < 30 && mqtt.state() != hc::MqttState::disabled; ++i) {
 		controller.run_once(); // the retirement drains the queue and disconnects (at most kRetireMs)
-		sleep_until_work(executor, knx_socket, 100, controller.loop(), clock);
+		sleep_until_work(executor, udp, 100, controller.loop(), clock);
 	}
 	executor.stop();
 	if (web) {

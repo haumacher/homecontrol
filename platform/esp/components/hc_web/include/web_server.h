@@ -106,6 +106,8 @@ public:
 	void set_mqtt(Mqtt* mqtt) { api_.set_mqtt(mqtt); }
 	/// The KNX tunnel and its telegram log: the "knx" status, knx.gateway and knx.nat applied to it.
 	void set_knx(knx::KnxTunnel* tunnel, const knx::TelegramLog* telegrams) { api_.set_knx(tunnel, telegrams); }
+	/// The KNX gateway search behind /api/knx/search.
+	void set_knx_search(knx::GatewaySearch* search) { api_.set_knx_search(search); }
 	/// The Zigbee coordinator behind /api/zigbee; nullptr with the reason when it does not run.
 	void set_zigbee(zigbee::ZigbeeAdapter* adapter, const char* reason) { api_.set_zigbee(adapter, reason); }
 	/// The external values behind POST /api/external/<id>/fetch and the "external" status.

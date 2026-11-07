@@ -27,6 +27,7 @@ class Mqtt;
 class LiveFeed;
 
 namespace knx {
+class GatewaySearch;
 class KnxTunnel;
 class TelegramLog;
 }
@@ -167,6 +168,9 @@ public:
 		knx_ = tunnel;
 		telegrams_ = telegrams;
 	}
+	/// The KNX gateway search behind /api/knx/search (spec/api.md "KNX gateway search"); without one
+	/// the route answers 501.
+	void set_knx_search(knx::GatewaySearch* search) { knx_search_ = search; }
 	/// The Zigbee coordinator behind /api/zigbee (pairing, spec/api.md "Zigbee"); its events reach the
 	/// live feed. nullptr with the reason when the platform has none (the routes answer 501).
 	void set_zigbee(zigbee::ZigbeeAdapter* adapter, const char* unavailable_reason = nullptr);
@@ -298,6 +302,8 @@ private:
 	void external_fetch(const char* rest, const WebRequest& request, WebResponse& response);
 	void lang_sync(const WebRequest& request, WebResponse& response);
 	void mqtt_discovery(const WebRequest& request, WebResponse& response);
+	void knx_search(const WebRequest& request, WebResponse& response);
+	void write_knx_search(JsonWriter& json, bool started);
 	void diagnostics(const WebRequest& request, WebResponse& response); // the System page (web_api_diagnostics.cpp)
 	void action_due();
 	bool parse_body(const WebRequest& request, WebResponse& response, JsonSpan& body, bool optional = false);
@@ -320,6 +326,7 @@ private:
 	Mqtt* mqtt_ = nullptr;
 	knx::KnxTunnel* knx_ = nullptr;
 	const knx::TelegramLog* telegrams_ = nullptr;
+	knx::GatewaySearch* knx_search_ = nullptr;
 	zigbee::ZigbeeAdapter* zigbee_ = nullptr;
 	const char* zigbee_reason_ = nullptr;
 	ExternalValues* external_ = nullptr;

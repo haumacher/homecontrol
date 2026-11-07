@@ -243,6 +243,7 @@ Every task that may print keeps at least 1.3 KB over its high-water mark.
 | `hc_ehome_ws` | 5120 (6144) | 2612 (TLS to the development CA) | the handshake with a public RSA chain through the certificate bundle |
 | `hc_zigbee` | 4608 (6144) | 2236 | a join with the key exchange, an interview |
 | `hc_udp` | 3072 (4096) | 784 (gateway by address) | `getaddrinfo` for a gateway by name |
+| `hc_udp_tmp` | 2560 (new; on the heap only while a KNX gateway search runs) | not measured yet (select, recvfrom, no `getaddrinfo`; logged at debug level when it ends) | a ring-full warning |
 | `hc_console` | 3584 (4096) | 1832 | editing a line with the history; its commands print |
 | `hc_out` | 2048 (unchanged; 1536 overflowed, #48) | 304 | |
 | `mdns` | 3584 (4096) | 1712; 2120 (2026-10-18) | a name conflict |

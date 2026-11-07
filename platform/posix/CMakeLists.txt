@@ -136,6 +136,7 @@ target_link_libraries(knxtool PRIVATE hc_posix)
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/knx_frames_test.cpp"
 	"${HC_REPO_DIR}/core/test/knx_tunnel_test.cpp"
+	"${HC_REPO_DIR}/core/test/knx_search_test.cpp"
 	"${HC_REPO_DIR}/core/test/knx_adapter_test.cpp"
 	"${HC_REPO_DIR}/core/test/knx_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/knx_hold_test.cpp"
