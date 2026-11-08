@@ -274,7 +274,7 @@ mDNS name, then open the device's web UI in the Playwright browser when the pack
 
 **Application builds go to the board through the browser, not USB** (since #39, 2026-10-18): on the
 device's Settings page, opened by IP address, System → "Install firmware file" → pick
-`platform/esp/build-esp32c6/homecontrol.bin` (Playwright: click the button, `browser_file_upload`,
+`platform/esp/build-esp32c6-devtls/homecontrol.bin` (Playwright: click the button, `browser_file_upload`,
 accept the confirm dialog), then wait for the status line "<version> (<build>) läuft"; the serial
 capture shows `hc.updater` writing the image and `hc.ota ... completed (uploaded from the browser)`.
 About 40 s all in, the stored image and the Zigbee database stay in place, and the page shows the
@@ -282,6 +282,11 @@ build id to compare with `hc_generated/hc_build_id.h`. USB (`esptool.py ... writ
 the updater (`0x10000 hc_updater.bin`), the bootloader, the partition table, and the empty file
 system `storage.bin` (which wipes the stored runtime image and persisted values: redeploy
 afterwards). The web UI is compiled into the application and comes with every OTA update.
+**The desk board runs the development build** `build-esp32c6-devtls` (configured with
+`-DHC_EXTRA_CA=$HOME/.config/ehome/dev-tls/ca.pem`, `doc/ehome.md` "TLS during development"; build
+it with `source ~/tools/esp/esp-idf-v5.5/export.sh`, the IDF it was configured with): it trusts the
+local CA of E-Home's TLS proxy. A build without it (`build-esp32c6`) runs, but its E-Home link fails
+with `ESP_ERR_MBEDTLS_SSL_HANDSHAKE_FAILED` and E-Home cannot deploy (2026-11-08).
 Only the C6 is flashed, at the node its id resolves to (it moves between ttyACM0 and ttyACM1); the S3 is another project's board.
 Tell the user the commit hash and what to try. Never leave a broken build on the board — it is the
 shared reference for bug reports.
