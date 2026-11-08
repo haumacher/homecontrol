@@ -831,3 +831,32 @@ TEST_CASE("Lang: every committed pack has exactly the keys and placeholders of t
 	}
 	CHECK(german);
 }
+
+TEST_CASE("Lang: every text key the UI names literally is in the English base") {
+	// The UI's modules look their texts up with t("<key>") and index.html with data-i18n="<key>";
+	// a key removed from the base (or a typo) would show the bare key. Keys composed at run time
+	// (t(`role.${role}`), tv()) are checked where they are composed, not here.
+	const std::filesystem::path dist(std::filesystem::path(HC_WEB_DIR) / "ui" / "dist");
+	Json base = read_pack(dist / "lang" / "en.json");
+	static const std::regex kLookup("(^|[^\\w.])t\\(\"([^\"]+)\"");
+	static const std::regex kAttribute("data-i18n(-[a-z]+)?=\"([^\"]+)\"");
+	size_t keys = 0;
+	auto check = [&](const std::filesystem::path& file, const std::regex& pattern) {
+		std::string text = read_file(file);
+		for (auto it = std::sregex_iterator(text.begin(), text.end(), pattern); it != std::sregex_iterator(); ++it) {
+			std::string key = (*it)[2].str();
+			++keys;
+			CHECK_MESSAGE(base.has(key), file.filename().string() << " names " << key << ", which en.json lacks");
+		}
+	};
+	for (const auto& file : std::filesystem::directory_iterator(dist)) {
+		if (file.path().extension() == ".js") {
+			check(file.path(), kLookup);
+		}
+	}
+	check(dist / "index.html", kAttribute);
+	CHECK(keys > 500);
+	// homecontrol #82: the Rules page's texts.
+	CHECK(base.has("rules.last_triggered"));
+	CHECK(base.has("rules.errors_details"));
+}

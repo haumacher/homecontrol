@@ -1014,11 +1014,6 @@ select:focus-visible,
 	display: block;
 }
 
-.sheet code {
-	font: 12.5px var(--mono);
-	color: var(--text-2);
-}
-
 @media (max-width: 760px) {
 	.sheet {
 		width: 100vw;
@@ -1126,6 +1121,23 @@ select:focus-visible,
 
 .rule .rows {
 	margin-bottom: 8px;
+}
+
+/* The System page's section "Rules" (diagnostics.js): the rule's id beside its name, the printer's
+   texts wrapped anywhere (they carry ids without spaces). */
+.rule-diag .section-sub {
+	color: var(--text-2);
+	font: 12.5px var(--mono);
+}
+
+.rule-diag dd {
+	overflow-wrap: anywhere;
+}
+
+/* A section's title in a grid of cards (the System page's rules and blocks) spans the grid. */
+.cards > .section-title {
+	grid-column: 1 / -1;
+	margin-bottom: 0;
 }
 
 .params {

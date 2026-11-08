@@ -2,13 +2,14 @@
 // The Overview: the dashboard of the deployed image, its rooms as sections (in the image's location
 // order, under their floor's name) and each function a tile by kind (tiles.js); functions without a
 // room under "Elsewhere". Without an image, or in a build without images, every datapoint is a
-// plain tile with its live value (a writable boolean toggles on a tap) and a hint says why.
+// plain tile with its live value (a writable boolean toggles on a tap) and a hint says why. A
+// datapoint is named by its label, its id only without one (dpLabel).
 
 import { api, errorText } from "/api.js";
 import { h, icon, icons, replace } from "/dom.js";
 import { formatValue } from "/format.js";
 import { t } from "/i18n.js";
-import { label, loadModel } from "/model.js";
+import { dpLabel, label, loadModel } from "/model.js";
 import { functionTile } from "/tiles.js";
 import { openSheet } from "/sheet.js";
 
@@ -36,8 +37,9 @@ function iconFor(dp) {
 	}
 }
 
-/// Every datapoint as a tile (no image, or an image without functions).
-function flatTiles(live, show) {
+/// Every datapoint as a tile (no image, or an image without functions); `model` gives the labels
+/// (null or not loaded: the ids).
+function flatTiles(live, model, show) {
 	const grid = h("div", { class: "tiles" });
 	const tiles = new Map();
 	const pending = new Set();
@@ -68,7 +70,7 @@ function flatTiles(live, show) {
 		const tile = h(toggle ? "button" : "div", {
 			class: "tile flat",
 			type: toggle ? "button" : undefined,
-			title: dp.name,
+			title: dpLabel(model, dp.id, live),
 			onclick: toggle ? async () => {
 				const current = live.datapoints.get(dp.id);
 				if (!current || pending.has(dp.id)) {
@@ -79,7 +81,7 @@ function flatTiles(live, show) {
 				try {
 					await live.command(dp.id, !(current.value === true));
 				} catch (error) {
-					show(`${current.name}: ${errorText(error)}`);
+					show(`${dpLabel(model, current.id, live)}: ${errorText(error)}`);
 				} finally {
 					pending.delete(dp.id);
 					update(tile, live.datapoints.get(dp.id) || current);
@@ -87,7 +89,7 @@ function flatTiles(live, show) {
 			} : undefined,
 		},
 		h("span", { class: "tile-icon" }, icon(iconFor(dp))),
-		h("span", { class: "tile-text" }, h("span", { class: "tile-name" }, dp.name), h("span", { class: "tile-state" })));
+		h("span", { class: "tile-text" }, h("span", { class: "tile-name" }, dpLabel(model, dp.id, live)), h("span", { class: "tile-state" })));
 		update(tile, dp);
 		return tile;
 	}
@@ -237,7 +239,7 @@ export function renderOverview(content, ctx) {
 	function flat(hintKey, params) {
 		hint.textContent = t(hintKey, params);
 		hint.hidden = false;
-		view = flatTiles(live, show);
+		view = flatTiles(live, model, show);
 		replace(body, h("h2", { class: "section-title" }, t("overview.datapoints")), view.element);
 	}
 

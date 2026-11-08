@@ -1,8 +1,10 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
-// Rules: each rule of the image with its state, last trigger, last action and errors (the
-// diagnostics of spec/rules.md 9.1), its enable switch and the parameters it declares adjustable,
-// each edited within its declared range and reset to the image's default. Polled every 10 s; a
-// card being edited is not redrawn.
+// Rules: each rule of the image with its state, when it was last triggered and the count of its
+// problems, its enable switch and the parameters it declares adjustable, each edited within its
+// declared range and reset to the image's default. Polled every 10 s; a card being edited is not
+// redrawn. The page is the inhabitant's: the printer's texts of the last trigger, action and error
+// (spec/rules.md 9.1, technical ids) are shown in the section "Rules" of the System page
+// (diagnostics.js, homecontrol #82), which a problem count links to.
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
@@ -116,14 +118,13 @@ function ruleCard(rule, nowMs, commit) {
 	if (rule.state) {
 		rows.push([t("rules.state"), rule.state]);
 	}
-	rows.push([t("rules.last_trigger"), rule.lastTrigger ? `${rule.lastTrigger.text} · ${ago(rule.lastTrigger.ms)}` : t("rules.never")]);
-	rows.push([t("rules.last_action"), rule.lastAction ? `${rule.lastAction.text} · ${ago(rule.lastAction.ms)}` : t("rules.never")]);
+	rows.push([t("rules.last_triggered"), rule.lastTrigger ? ago(rule.lastTrigger.ms) : t("rules.never")]);
 	for (const timer of rule.timers || []) {
 		rows.push([t("rules.timer", { id: timer.id }), t("rules.timer_left", { duration: formatDurationShort(timer.remaining_ms / 1000) })]);
 	}
 	if (rule.errors > 0) {
-		rows.push([t("rules.errors"), h("span", { class: "error-text" }, t("rules.errors_value", { count: rule.errors }),
-			rule.lastError ? ` · ${rule.lastError.text} (${ago(rule.lastError.ms)})` : "")]);
+		rows.push([t("rules.errors"), [h("span", { class: "error-text" }, t("rules.errors_value", { count: rule.errors })), " · ",
+			h("a", { href: "/system", "data-route": "/system", class: "rule-details" }, t("rules.errors_details", { page: t("settings.system") }))]]);
 	}
 	const enable = rule.enabledAdjustable
 		? switchControl(rule.enabled, rule.enabled ? t("rules.enabled") : t("rules.disabled"), (on) => commit("enabled", { value: on }).catch((error) => {

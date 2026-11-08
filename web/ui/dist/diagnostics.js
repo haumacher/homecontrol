@@ -1,7 +1,9 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
 // The System page (issue #42): what the console's `status` prints and what else helps with a
 // complaint - memory, die temperature, chip and firmware, the event loop, the network link, storage,
-// the buses and every task - from GET /api/system/diagnostics, polled every 5 s while the page is open.
+// the buses and every task - from GET /api/system/diagnostics, polled every 5 s while the page is open;
+// then the rules with the printer's texts of their last trigger, action and problem (GET /api/rules)
+// and the blocks (GET /api/blocks).
 // Abbreviations and names that read the same in every language (SoC, CPU, Heap, Flash, SSID, RSSI, MAC,
 // DNS, NVS, OTA, KNX, Zigbee) and the device's own words (the reset reason, a refusal's reason, the
 // power-save mode none/min/max as the setting wifi.ps names it) are shown as they are; every other word
@@ -272,6 +274,46 @@ async function blockCards() {
 	return [h("h2", { class: "section-title" }, t("blocks.title")), ...all.map((b) => blockCard(b, nowMs, change))];
 }
 
+/// One rule as the engine reports it (spec/rules.md 9.1, GET /api/rules): the printer's texts of
+/// the last trigger, the last action and the last problem with their age; the Rules page shows
+/// the inhabitant only when it was last triggered and the problem count (homecontrol #82).
+function ruleCard(rule, nowMs) {
+	const ago = (ms) => formatAgo(nowMs - ms);
+	const event = (e) => (e ? `${e.text} · ${ago(e.ms)}` : t("rules.never"));
+	const name = label(rule.name, "");
+	return h("section", { class: "card rule-diag", "data-rule": rule.id },
+		h("div", { class: "card-head" },
+			h("h2", null, name || rule.id, name && name !== rule.id ? h("span", { class: "section-sub" }, rule.id) : null),
+			badge(rule.enabled, rule.enabled ? t("rules.enabled") : t("rules.disabled"))),
+		rows([
+			rule.state ? [t("rules.state"), rule.state] : null,
+			[t("rules.last_trigger"), event(rule.lastTrigger)],
+			[t("rules.last_action"), event(rule.lastAction)],
+			[t("rules.errors"), rule.errors > 0
+				? h("span", { class: "error-text" }, t("rules.errors_value", { count: rule.errors }),
+					rule.lastError ? ` · ${rule.lastError.code}: ${rule.lastError.text} (${ago(rule.lastError.ms)})` : "")
+				: String(rule.errors ?? 0)],
+		]));
+}
+
+/// The section "Rules": nothing without rules.
+async function ruleCards() {
+	const all = [];
+	let nowMs = 0;
+	try {
+		await pages("/api/rules", (page) => {
+			all.push(...page.rules);
+			nowMs = page.now_ms;
+		});
+	} catch (error) {
+		return error && error.code === "image.unavailable" ? [] : [card(t("rules.title"), h("p", { class: "error-text" }, errorText(error)))];
+	}
+	if (!all.length) {
+		return [];
+	}
+	return [h("h2", { class: "section-title" }, t("rules.title")), ...all.map((r) => ruleCard(r, nowMs))];
+}
+
 export function renderDiagnostics(content) {
 	const cards = h("div", { class: "cards" }, h("p", { class: "muted" }, t("app.loading")));
 	const message = h("p", { class: "message error", role: "alert", hidden: true });
@@ -281,13 +323,14 @@ export function renderDiagnostics(content) {
 	async function poll() {
 		try {
 			const d = await api("GET", "/api/system/diagnostics");
+			const rules = await ruleCards();
 			const blocks = await blockCards();
 			if (stopped) {
 				return;
 			}
 			message.hidden = true;
 			replace(cards, memoryCard(d), loopCard(d), chipCard(d), firmwareCard(d), networkCard(d), storageCard(d),
-				busCard(d), statusCard(d), taskCard(d), ...blocks);
+				busCard(d), statusCard(d), taskCard(d), ...rules, ...blocks);
 		} catch (error) {
 			message.textContent = errorText(error);
 			message.hidden = false;

@@ -75,11 +75,14 @@ export async function loadModel() {
 	throw { code: "model.changing" };
 }
 
-/// The datapoint's label from the model, else its name.
+/// How the inhabitant's pages name a datapoint: its label from the model, else (no label, or an
+/// empty one) its id in the image (`name`, e.g. a group address). Only the technical pages
+/// (System, Log, Zigbee) show the id beside the label.
 export function dpLabel(model, id, live) {
 	const info = model && model.datapoints.get(id);
-	if (info && info.label !== undefined) {
-		return label(info.label, info.name);
+	const text = info ? label(info.label, "") : "";
+	if (text) {
+		return text;
 	}
 	const dp = live && live.datapoints.get(id);
 	return info ? info.name : dp ? dp.name : String(id);

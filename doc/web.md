@@ -257,11 +257,11 @@ are all local).
   page in image order, with its label and icon; the first is the start page `/`, the others are
   `/page/<id>`; the Overview entry is hidden then.
 - **Overview**: the dashboard (below), the start page when the image has no control pages. Without an image, in a build without images (POSIX `--demo`)
-  or for an image without functions: one plain tile per datapoint with its live value, a writable
-  boolean toggles on a tap, and a line says why there is no dashboard.
+  or for an image without functions: one plain tile per datapoint (its label, else its id) with its
+  live value, a writable boolean toggles on a tap, and a line says why there is no dashboard.
 - **Rules**: one card per rule: the enable switch (or a badge when the image fixes it), the state,
-  the last trigger and the last action with their age, running timers, the problem count with the
-  last error; then the adjustable parameters: a slider within min..max (step as declared, arrow
+  when it was last triggered ("3 min ago"), running timers, the problem count with a link to the
+  System page; then the adjustable parameters: a slider within min..max (step as declared, arrow
   keys send once the value rests), a switch for booleans, a select for choices, a time input for a
   time of day, a number input without a range; durations in the parameter's unit (`min`, `s`, `h`).
   A changed parameter shows its default and a "Reset" button; a refusal shows its reason under
@@ -309,7 +309,17 @@ are all local).
   reconnects, SSID, channel, RSSI, transmit power limit, power save, MAC, gateway, DNS), storage
   (LittleFS, NVS entries), the connections (KNX state, channel, telegrams, reconnects; the Zigbee
   network and its devices), the console's status lines (LED, time, Improv) and every task (name,
-  state, priority, stack never used, CPU share). What the platform lacks shows its reason.
+  state, priority, stack never used, CPU share). What the platform lacks shows its reason. Then the
+  section **Rules** (`GET /api/rules`, nothing without rules): per rule its name and id, on or off,
+  the state, the last trigger, the last action and the problem count with the last problem's code
+  and text, each with its age, in the printer's words (spec/rules.md 9.1); and the section
+  **Blocks** (doc/blocks.md).
+
+**Names on the inhabitant's pages** (homecontrol #82): the control pages, the Overview, the detail
+sheet, Rules and Schedules name a datapoint by its label (`dpLabel` in `model.js`), by its id
+(the image's datapoint name, often a group address) only when it has no label; they show no
+bindings and none of the rule engine's composed texts. The technical pages (System, Log, Zigbee)
+show the ids, addresses, bindings and the printer's texts.
 
 ### The dashboard
 
@@ -338,10 +348,10 @@ boolean). The tiles update from the WebSocket feed; a status with another image 
 the model.
 
 The **detail sheet** (a modal `<dialog>`: Escape and the backdrop close it, a bottom sheet on a
-phone) lists the function's datapoints by role with their value, quality and age (live), a chart
-over 24 h or 7 days for each datapoint that keeps a history (the line of the buckets' last values,
-the min/max band, a read-out under the pointer), and the technology binding of each datapoint
-(KNX: DPT, sending and listening addresses).
+phone) lists the function's datapoints by role and label with their value, quality and age
+(live), and a chart over 24 h or 7 days for each datapoint that keeps a history (the line of the
+buckets' last values, the min/max band, a read-out under the pointer). The technology bindings are
+not shown there (homecontrol #82); `GET /api/model` still delivers them.
 
 The dashboard reads `GET /api/model` once (paged), the live values from the WebSocket, the history
 from `GET /api/history`; nothing about the image is parsed in the browser. Rejected: a layout
@@ -428,7 +438,8 @@ JSON text, the roles resolved to the model's datapoint ids. It stays in RAM whil
 labelled datapoint with a KNX binding and per function, so about 40 KB for a house of 300
 datapoints and 100 functions and up to some 150 KB at the image limits (1024 datapoints, 512
 functions), which the C6 cannot afford beside everything else; the bindings are the largest part
-and the first thing to drop (or to fetch on demand for the detail sheet) if real images come close.
+and the first thing to drop if real images come close (the device UI no longer shows them,
+homecontrol #82).
 When the heap is exhausted the image still runs and `GET /api/model` refuses with
 `model.no_memory`.
 

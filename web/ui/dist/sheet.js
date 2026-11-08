@@ -1,7 +1,8 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
 // The detail sheet of a function (a modal <dialog>: Escape closes it, focus stays inside): the
 // values of its datapoints with quality and age, the history over 24 h or 7 days for the
-// datapoints that keep one, and how each datapoint is bound to its technology.
+// datapoints that keep one. Each datapoint is named by its role and its label (its id only without a
+// label); the technical name and the binding are the technical pages' business (homecontrol #82).
 
 import { api, errorText } from "/api.js";
 import { h, icon, icons, replace } from "/dom.js";
@@ -14,38 +15,6 @@ const RANGES = [
 	{ key: "history.day", seconds: 86400, points: 96 },
 	{ key: "history.week", seconds: 7 * 86400, points: 140 },
 ];
-
-/// "KNX · DPT 9.001 · sends 1/3/2 · listens 1/3/1", or the binding's JSON for other technologies.
-function bindingText(info) {
-	if (!info) {
-		return "";
-	}
-	const parts = [];
-	const binding = info.binding || {};
-	if (binding.knx) {
-		const knx = binding.knx;
-		parts.push(t("binding.knx"));
-		if (knx.dpt) {
-			parts.push(t("binding.dpt", { dpt: knx.dpt }));
-		}
-		if (knx.send) {
-			parts.push(t("binding.send", { address: knx.send }));
-		}
-		if (knx.listen && knx.listen.length) {
-			parts.push(t("binding.listen", { addresses: knx.listen.join(", ") }));
-		}
-	}
-	for (const [name, value] of Object.entries(binding)) {
-		if (name === "knx") {
-			continue;
-		}
-		parts.push(name === "virtual" ? t("binding.virtual") : `${name} ${JSON.stringify(value)}`);
-	}
-	if (!parts.length && info.technology) {
-		parts.push(has(`binding.${info.technology}`) ? t(`binding.${info.technology}`) : info.technology);
-	}
-	return parts.join(" · ") || t("binding.none");
-}
 
 function roleName(role) {
 	return has(`role.${role}`) ? t(`role.${role}`) : role;
@@ -83,11 +52,6 @@ export function openSheet(fn, env) {
 		const value = h("dd", null, valueText(id));
 		rows.set(id, value);
 		return [h("dt", null, roleName(role), h("small", { class: "muted block" }, dpLabel(model, id, live))), value];
-	}));
-
-	const bindings = h("dl", { class: "rows" }, roles.map(([role, id]) => {
-		const info = model.datapoints.get(id);
-		return [h("dt", null, roleName(role)), h("dd", null, h("code", null, info ? info.name : String(id)), " ", bindingText(info))];
 	}));
 
 	// History: every datapoint of the function that keeps one (each id once).
@@ -132,7 +96,6 @@ export function openSheet(fn, env) {
 			h("button", { type: "button", class: "icon-button", "aria-label": t("sheet.close"), onclick: close }, icon(icons.close))),
 		h("section", null, h("h3", { class: "sheet-subtitle" }, t("sheet.values")), values),
 		historyIds.length ? h("section", null, h("div", { class: "sheet-row" }, h("h3", { class: "sheet-subtitle" }, t("sheet.history")), tabs), historyBody) : null,
-		h("section", null, h("h3", { class: "sheet-subtitle" }, t("sheet.binding")), bindings),
 	));
 
 	const onDatapoints = (event) => {

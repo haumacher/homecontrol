@@ -170,7 +170,7 @@ export function valueTile(el, env) {
 		icon(type === "boolean" ? icons.toggle : numeric ? icons.gauge : type === "string" ? icons.text
 			: type === "color" ? icons.palette : type.includes("date") || type.includes("time") ? icons.clock : icons.data));
 	element.append(h("div", { class: "tile-head" }, iconElement,
-		h("div", { class: "tile-main static" }, h("span", { class: "tile-name", title: info.name }, name), stateText)));
+		h("div", { class: "tile-main static" }, h("span", { class: "tile-name", title: name }, name), stateText)));
 	if (controls.length) {
 		element.appendChild(h("div", { class: "tile-controls" }, controls));
 	}
