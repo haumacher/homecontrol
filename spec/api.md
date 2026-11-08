@@ -107,7 +107,7 @@ sessions are ended until the restart). The console's `web session clear` does th
 
 ```json
 {"device": {"name": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "...", "ui": "3c0dcd52e390bb91",
-            "schema": "1.3"},
+            "schema": "1.5"},
  "uptime_s": 5321,
  "network": {"state": "up", "ip": "192.0.2.10", "mode": "normal", "pairing": false, "mdns": "homecontrol-a1b2c3.local",
              "mdns_announced": true},
@@ -126,7 +126,9 @@ sessions are ended until the restart). The console's `web session clear` does th
 
 `device.schema` is the newest runtime image schema the firmware reads (`spec/runtime-image.md` I4,
 section 8): E-Home warns before deploying an image of a newer one, and refuses to deploy an image
-with `blocks` to a controller below 1.3 (`spec/blocks.md` B1).
+with `blocks` to a controller below 1.3 (`spec/blocks.md` B1), one with an enumeration press below
+1.4, and one with a rule parameter whose id is not an identifier (`$"max-helligkeit"`,
+`spec/rules.md` 2.1) below 1.5.
 
 `web.sessions` counts the alive sessions of both kinds, `web.remembered` (firmware from 2026-11)
 those of them that stay logged in.
@@ -1070,7 +1072,7 @@ With `ehome.enabled` true the controller opens the WebSocket of `socket` (TLS) a
 
 ```
 E-Home → {"type": "challenge", "nonce": "<32 to 128 hex digits>"}
-device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "schema": "1.3", "key": "ce7d 4a41 a476 9ee3"}
+device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "schema": "1.5", "key": "ce7d 4a41 a476 9ee3"}
 E-Home → {"type": "ready", "installation": "<name>"}        or {"type": "refused", "code": "...", "error": "..."} and the close
 ```
 

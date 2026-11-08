@@ -1,0 +1,8 @@
+{"comment": "A parameter id outside the rule-id characters (spec/rules.md 2.1, 10.1, issue #81): a slash would break the persistence key <ruleId>/<parameterId> and the datapoint name rule/<ruleId>/<parameterId>.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "rules[0].parameters[0].id", "reason": "rule 'r': malformed: parameter id 'max/helligkeit' is not 1..24 characters of A-Z a-z 0-9 _ -"}]},
+ "image": {"schemaVersion": "1.5", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "light", "type": "real", "writable": true, "virtual": {}}],
+ "rules": [{"id": "r", "name": "R", "parameters": [{"id": "max/helligkeit", "label": "Max", "type": "real", "default": 80.0}],
+   "reactions": [{"triggers": [{"kind": "start"}],
+     "actions": [{"kind": "write", "datapoint": "light", "value": {"kind": "parameter", "id": "max/helligkeit"}}]}]}]}

@@ -1,0 +1,16 @@
+{"comment": "Parameter ids of the rule-id characters (1.5, issue #81, spec/rules.md 2.1): max-helligkeit beside the identifier max_helligkeit, referenced in a condition and a value ($\"max-helligkeit\" in the text), its datapoint rule/hall/max-helligkeit read by another rule; an id of 24 characters starting with a digit.",
+ "expect": {"valid": true},
+ "image": {"schemaVersion": "1.5", "projectId": "case", "revision": 1},
+ "datapoints": [{"id": "lux", "type": "real", "virtual": {}}, {"id": "light", "type": "real", "writable": true, "virtual": {}}],
+ "rules": [
+   {"id": "hall", "name": "Hall",
+    "parameters": [{"id": "max-helligkeit", "label": "Maximale Helligkeit", "type": "real", "default": 80.0, "min": 0.0, "max": 100.0},
+                   {"id": "max_helligkeit", "label": "Other", "type": "real", "default": 10.0},
+                   {"id": "2nd-level-0123456789-abc", "label": "Second", "type": "real", "default": 20.0}],
+    "reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "lux"}, {"kind": "parameter", "parameter": "max-helligkeit"}],
+      "condition": {"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "lux"}, "right": {"kind": "parameter", "id": "max-helligkeit"}},
+      "actions": [{"kind": "write", "datapoint": "light", "value": {"kind": "parameter", "id": "2nd-level-0123456789-abc"}},
+                  {"kind": "setParameter", "parameter": "max-helligkeit", "value": {"kind": "parameter", "id": "max_helligkeit"}}]}]},
+   {"id": "watch", "name": "Watch",
+    "reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "rule/hall/max-helligkeit"}],
+      "actions": [{"kind": "log", "level": "info", "message": ["max ", {"kind": "datapoint", "name": "rule/hall/max-helligkeit"}]}]}]}]}

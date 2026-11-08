@@ -22,6 +22,10 @@ size_t print_expression(const RuleSet& set, const DatapointModel& model, size_t 
 /// Whether `name` can be written as a bare datapoint reference (`@a.b`) rather than `@"..."`.
 bool bare_datapoint_name(const char* name);
 
+/// Whether the parameter id can be written as a bare parameter reference (`$timeout`, an identifier
+/// that is not a keyword) rather than `$"max-helligkeit"` (spec/rules.md 4.3, issue #81).
+bool bare_parameter_id(const char* id);
+
 } // namespace hc::rules
 
 #endif // HC_RULES_PRINTER_H

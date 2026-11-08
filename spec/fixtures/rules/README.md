@@ -158,6 +158,13 @@ Reals compare with a relative tolerance of 1e-9; everything else compares exactl
 | `62-sun-position-no-location` | No value without a location while `time()` has its value. |
 | `63-load-refused-match-sun` | Load refusal `forbidden`: `sunElevation()` in a `match` condition (a rule cannot trigger on the sun's position). |
 | `64-sun-follow-timer` | Following the sun with a timer that restarts itself (the pattern of `spec/rules.md` 4.7): `onlyOnChange` writes when the sun comes onto a facade and leaves it. |
+| `65-parameter-id-quoted` | A parameter id with a hyphen, `$"max-helligkeit"` in the text (issue #81, schema 1.5): in a condition and a value, a `setParameter` action, a parameter trigger, its datapoint `rule/dimmer/max-helligkeit` read by another rule, a refused command to it, the persisted override across a reboot; the identifier `max_helligkeit` beside it is another parameter. |
+| `66-load-refused-parameter-id-slash` | Load refusal `malformed`: a parameter id with `/` (spec/rules.md 2.1). |
+| `67-load-refused-parameter-id-space` | Load refusal `malformed`: a parameter id with a space. |
+| `68-load-refused-parameter-id-umlaut` | Load refusal `malformed`: a parameter id with an umlaut. |
+| `69-load-refused-parameter-id-length` | Load refusal `malformed`: a parameter id of 25 characters. |
+| `70-load-refused-parameter-id-enabled` | Load refusal `duplicateId`: a declared parameter `enabled` (reserved for the enable switch). |
+| `71-load-refused-parameter-id-keyword` | Load refusal `malformed`: a parameter id that is a keyword (`not`). |
 
 The expected outputs were computed by hand and cross-checked against a throw-away executable model of
 the specification. The sun's positions of cases 59 to 64 come from the throw-away executable model of

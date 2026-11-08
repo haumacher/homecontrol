@@ -240,6 +240,14 @@ private:
 			kind_ = Tok::datapoint;
 			return;
 		}
+		if (c == '$' && pos_ + 1 < text_.size() && text_[pos_ + 1] == '"') {
+			// A parameter id that is not an identifier: $"max-helligkeit" (spec/rules.md 4.3).
+			++pos_;
+			string_token();
+			tok_ = unquote(tok_);
+			kind_ = Tok::parameter;
+			return;
+		}
 		if (c == '$' || std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
 			size_t s = c == '$' ? pos_ + 1 : pos_;
 			size_t e = s;
@@ -703,6 +711,76 @@ TEST_CASE("RulesPrinter bare datapoint names") {
 	CHECK_FALSE(hc::rules::bare_datapoint_name("a..b"));
 	CHECK_FALSE(hc::rules::bare_datapoint_name("a-b"));
 	CHECK_FALSE(hc::rules::bare_datapoint_name("1a"));
+}
+
+TEST_CASE("RulesPrinter parameter references: $id for an identifier, else $\"id\" (issue #81)") {
+	CHECK(hc::rules::bare_parameter_id("x"));
+	CHECK(hc::rules::bare_parameter_id("max_helligkeit"));
+	CHECK(hc::rules::bare_parameter_id("mon"));
+	CHECK_FALSE(hc::rules::bare_parameter_id("x-y"));
+	CHECK_FALSE(hc::rules::bare_parameter_id("2nd"));
+	CHECK_FALSE(hc::rules::bare_parameter_id("a.b"));
+	CHECK_FALSE(hc::rules::bare_parameter_id("and"));
+	Bench bench;
+	std::string parameters = R"("parameters": [
+		{"id": "x", "label": "X", "type": "real", "default": 1.0},
+		{"id": "x-y", "label": "X-Y", "type": "real", "default": 2.0},
+		{"id": "x_y", "label": "X_Y", "type": "real", "default": 3.0},
+		{"id": "2nd", "label": "2nd", "type": "real", "default": 4.0},
+		{"id": "-", "label": "Minus", "type": "real", "default": 5.0}])";
+	auto param = [](const char* id) { return std::string(R"({"kind": "parameter", "id": ")") + id + R"("})"; };
+	CHECK(print_condition(bench, bin("<", dp("r"), param("x")), parameters) == "@r < $x");
+	CHECK(print_condition(bench, bin("<", dp("r"), param("x-y")), parameters) == R"(@r < $"x-y")");
+	CHECK(print_condition(bench, bin("<", param("x_y"), param("x-y")), parameters) == R"($x_y < $"x-y")");
+	CHECK(print_condition(bench, bin("==", un("-", param("2nd")), param("-")), parameters) == R"(-$"2nd" == $"-")");
+	// The printed text parses back to the same tree.
+	std::string printed = print_condition(bench, bin("<", bin("-", dp("r"), param("x-y")), param("-")), parameters);
+	CHECK(printed == R"(@r - $"x-y" < $"-")");
+	std::string parsed, error;
+	TextParser parser(printed);
+	REQUIRE_MESSAGE(parser.parse(parsed, error), error);
+	CHECK(parsed == R"((< (- @r $x-y) $-))");
+}
+
+TEST_CASE("RulesLoader parameter ids: the characters of a rule id, 1..24, not a keyword, not enabled (issue #81)") {
+	Bench bench;
+	auto load = [&](const std::string& id, LoadResult& result) {
+		RuleSet set;
+		std::string parameters = R"("parameters": [{"id": ")" + id + R"(", "label": "P", "type": "real", "default": 1.0}])";
+		result = bench.load(image(rule_json(
+			R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "actions": []})", parameters)), set);
+	};
+	LoadResult result;
+	for (const char* ok : {"max-helligkeit", "a", "2nd", "-", "_", "Max_Helligkeit-2", "abcdefghijklmnopqrstuvwx", "mon"}) {
+		CAPTURE(ok);
+		load(ok, result);
+		CHECK_MESSAGE(result.ok(), std::string(result.path) << ": " << std::string(result.text));
+	}
+	struct Refusal {
+		const char* id;
+		hc::rules::LoadError error;
+		const char* text;
+	};
+	const Refusal refusals[] = {
+		{"a/b", hc::rules::LoadError::malformed, "parameter id 'a/b' is not 1..24 characters of A-Z a-z 0-9 _ -"},
+		{"max helligkeit", hc::rules::LoadError::malformed,
+			"parameter id 'max helligkeit' is not 1..24 characters of A-Z a-z 0-9 _ -"},
+		{"gr\u00f6\u00dfe", hc::rules::LoadError::malformed,
+			"parameter id 'gr\xc3\xb6\xc3\x9f" "e' is not 1..24 characters of A-Z a-z 0-9 _ -"},
+		{"a.state", hc::rules::LoadError::malformed, "parameter id 'a.state' is not 1..24 characters of A-Z a-z 0-9 _ -"},
+		{"abcdefghijklmnopqrstuvwxy", hc::rules::LoadError::malformed, "'id' must have 1..24 bytes"},
+		{"and", hc::rules::LoadError::malformed, "parameter id 'and' is a keyword"},
+		{"true", hc::rules::LoadError::malformed, "parameter id 'true' is a keyword"},
+		{"enabled", hc::rules::LoadError::duplicate_id, "the parameter id 'enabled' is reserved for the enable switch"},
+	};
+	for (const Refusal& r : refusals) {
+		CAPTURE(r.id);
+		load(r.id, result);
+		CHECK_FALSE(result.ok());
+		CHECK(result.error == r.error);
+		CHECK(std::string(result.text) == r.text);
+		CHECK(std::string(result.path) == "rules[0].parameters[0].id");
+	}
 }
 
 // ------------------------------------------------------------------------------------------

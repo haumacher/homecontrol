@@ -1,0 +1,81 @@
+{
+	"title": "A parameter id with a hyphen, $\"max-helligkeit\": a condition and a value, a setParameter action, a parameter trigger, its datapoint, persistence",
+	"description": "Issue #81: a parameter id has the characters of a rule id (spec/rules.md 2.1); one that is not an identifier is written $\"max-helligkeit\" in the text (4.3). The case runs every use of such a parameter: the condition @lamp.dim > $\"max-helligkeit\" and the write of its value, the setParameter action at 3000 (a derived change: the parameter trigger logs, then the datapoint rule/dimmer/max-helligkeit updates and watch logs), the API change at 5000, a refused command to its datapoint at 6000, the persisted override across the reboot at 7000. The identifier parameter max_helligkeit beside it is another parameter: its value never changes.",
+	"datapoints": [
+		{"name": "lamp.dim", "type": "real"},
+		{"name": "lamp.set", "type": "real"},
+		{"name": "btn.learn", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "dimmer",
+			"name": "Dimmer limit",
+			"parameters": [
+				{"id": "max-helligkeit", "label": "Maximale Helligkeit", "type": "real", "default": 80.0, "min": 0.0, "max": 100.0, "unit": "%"},
+				{"id": "max_helligkeit", "label": "Other", "type": "real", "default": 10.0, "min": 0.0, "max": 100.0}
+			],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "lamp.dim"}],
+					"condition": {"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "lamp.dim"}, "right": {"kind": "parameter", "id": "max-helligkeit"}},
+					"actions": [{"kind": "write", "datapoint": "lamp.set", "value": {"kind": "parameter", "id": "max-helligkeit"}}]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "btn.learn", "on": "update"}],
+					"actions": [{"kind": "setParameter", "parameter": "max-helligkeit", "value": {"kind": "datapoint", "name": "lamp.dim"}}]
+				},
+				{
+					"triggers": [{"kind": "parameter", "parameter": "max-helligkeit"}],
+					"actions": [
+						{
+							"kind": "log",
+							"level": "info",
+							"message": ["max now ", {"kind": "parameter", "id": "max-helligkeit"}, ", other ", {"kind": "binary", "op": "-", "left": {"kind": "parameter", "id": "max_helligkeit"}, "right": {"kind": "parameter", "id": "max-helligkeit"}}]
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "watch",
+			"name": "Watch",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "rule/dimmer/max-helligkeit"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["watched ", {"kind": "datapoint", "name": "rule/dimmer/max-helligkeit"}]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "lamp.dim", "value": 90.0}},
+		{"at": 2000, "report": {"datapoint": "lamp.dim", "value": 60.0}},
+		{"at": 3000, "report": {"datapoint": "btn.learn", "value": true}},
+		{"at": 4000, "report": {"datapoint": "lamp.dim", "value": 70.0}},
+		{"at": 5000, "setParameter": {"rule": "dimmer", "parameter": "max-helligkeit", "value": 75.0}},
+		{"at": 6000, "command": {"datapoint": "rule/dimmer/max-helligkeit", "value": 150.0, "refused": true}},
+		{"at": 6500, "check": {"parameters": {"dimmer/max-helligkeit": 75.0, "dimmer/max_helligkeit": 10.0}, "datapoints": {"rule/dimmer/max-helligkeit": 75.0, "rule/dimmer/max_helligkeit": 10.0}}},
+		{"at": 7000, "reboot": true},
+		{"at": 8000, "report": {"datapoint": "lamp.dim", "value": 76.0}}
+	],
+	"end": 9000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "dimmer", "datapoint": "lamp.set", "value": 80.0},
+			{"at": 4000, "rule": "dimmer", "datapoint": "lamp.set", "value": 60.0},
+			{"at": 8000, "rule": "dimmer", "datapoint": "lamp.set", "value": 75.0}
+		],
+		"logs": [
+			{"at": 3000, "rule": "dimmer", "code": "log", "level": "info", "message": "max now 60, other -50"},
+			{"at": 3000, "rule": "watch", "code": "log", "level": "info", "message": "watched 60"},
+			{"at": 5000, "rule": "dimmer", "code": "log", "level": "info", "message": "max now 75, other -65"},
+			{"at": 5000, "rule": "watch", "code": "log", "level": "info", "message": "watched 75"},
+			{"at": 6000, "rule": "dimmer", "code": "parameterRefused"}
+		],
+		"final": {
+			"parameters": {"dimmer/max-helligkeit": 75.0, "dimmer/max_helligkeit": 10.0},
+			"datapoints": {"rule/dimmer/max-helligkeit": 75.0, "lamp.set": 75.0},
+			"persisted": {"dimmer/max-helligkeit": 75.0}
+		}
+	}
+}

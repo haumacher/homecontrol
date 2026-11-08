@@ -66,7 +66,15 @@ literal        = "true" | "false"
 
 datapoint reference = "@" , ( datapoint name | string literal ) ;         (* lexical *)
 
-parameter reference = "$" , identifier ;                                  (* lexical *)
+parameter reference = "$" , ( identifier | string literal ) ;            (* lexical; the string
+                                                                              for a parameter id
+                                                                              that is not an
+                                                                              identifier: 1..24
+                                                                              characters of
+                                                                              A-Z a-z 0-9 _ -,
+                                                                              $"max-helligkeit"
+                                                                              (spec/rules.md 2.1,
+                                                                              4.3; schema 1.5) *)
 
 (* ---------------------------------------------------------------- lexical *)
 

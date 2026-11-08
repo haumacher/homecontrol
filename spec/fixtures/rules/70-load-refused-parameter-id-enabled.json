@@ -1,0 +1,20 @@
+{
+	"title": "Load refusal: a declared parameter named enabled",
+	"description": "The parameter id enabled is reserved for the enable switch (spec/rules.md 2.1, 8.3), also with the wider characters of issue #81.",
+	"datapoints": [{"name": "in.x", "type": "boolean"}, {"name": "out.y", "type": "real"}],
+	"rules": [
+		{
+			"id": "bad",
+			"name": "Bad",
+			"parameters": [{"id": "enabled", "label": "Level", "type": "real", "default": 1.0}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.x"}],
+					"actions": [{"kind": "write", "datapoint": "out.y", "value": {"kind": "parameter", "id": "enabled"}}]
+				}
+			]
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "duplicateId"}
+}

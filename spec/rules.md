@@ -147,9 +147,18 @@ kind `datapoint` and an expression node of kind `datapoint` are different things
 | What | Form | Unique within |
 |---|---|---|
 | rule id | 1..32 characters of `A-Z a-z 0-9 _ -` | the image |
-| parameter, timer and state id | an *identifier*: 1..24 characters, `[A-Za-z_][A-Za-z0-9_]*`, not a keyword | the rule (each kind separately) |
+| parameter id | 1..24 characters of `A-Z a-z 0-9 _ -` (those of a rule id), not a keyword (schema 1.5, issue #81) | the rule |
+| timer and state id | an *identifier*: 1..24 characters, `[A-Za-z_][A-Za-z0-9_]*`, not a keyword | the rule (each kind separately) |
 | schedule id | the id of a schedule entry of the image (issue #10), same form as a rule id | the image |
 | datapoint name | as in the datapoint model: 1..63 printable bytes | the image |
+
+The keywords are `and`, `or`, `not`, `true` and `false`. A parameter id that is not an identifier
+(`max-helligkeit`, `2nd`) is written `$"max-helligkeit"` in the text (4.3); the length of 24 keeps
+the parameter's datapoint name `rule/<ruleId>/<parameterId>` within 63 bytes (5 + 32 + 1 + 24 = 62,
+8.6), and `/` stays excluded because it separates the parts of that name and of the persistence key
+(8.4). Umlauts and spaces belong in the label. An image with a parameter id that is not an
+identifier needs a firmware that reads schema 1.5 (`spec/runtime-image.md` section 8): an older one
+refuses it.
 
 The parameter id `enabled` is reserved for the enable switch (section 8.3). Datapoint names that
 start with `rule/` are reserved for the datapoints of the rule parameters (section 8.6), those that
@@ -392,7 +401,7 @@ always puts spaces around binary operators), `30min` is a duration, `30 min` an 
 | Text | Meaning | Type |
 |---|---|---|
 | `@living.light`, `@"Living room light 1"` | The current value of the datapoint (no value unless the quality is good). A name that is not an identifier with dot-separated parts is written as a string. | from the datapoint type (section 3.1) |
-| `$timeout` | The current value of the rule's parameter. | the parameter's type |
+| `$timeout`, `$"max-helligkeit"` | The current value of the rule's parameter. An id that is not an identifier (2.1) is written as a string, with the escapes of a string literal (4.2), like a datapoint name. | the parameter's type |
 | `running(off)`, `remaining(off)` | Whether the rule's timer runs; the time until it expires (no value when stopped). | boolean; duration |
 | `state()`, `state("stairs")` | The current state id of this rule, or of the rule with the given id (a literal; that rule must have states). | string |
 
@@ -573,6 +582,10 @@ E-Home prints every AST in exactly one way, and parsing the printed text gives t
 
 - binary operators with one space on each side; `not` followed by one space; prefix `-` without a
   space; `f(a, b)` with a space after each comma; references and literals as in 4.2 and 4.3;
+- a datapoint reference bare (`@hall.light`) when its name is an identifier with dot-separated
+  parts, else quoted (`@"1/2/3"`); a parameter reference bare (`$timeout`) when its id is an
+  identifier, else quoted (`$"max-helligkeit"`); inside the quotes `"` and `\` are escaped
+  (`\"`, `\\`), as in a string literal;
 - parentheses only where needed: around an operand of lower level than its operator; around the
   right operand of a left-associative operator at the same level (`a - (b - c)`, `a or (b or c)`);
   around a comparison that is an operand of a comparison; around the operand of prefix `-` when it
@@ -899,7 +912,7 @@ following actions still run. A read of a datapoint no technology can read at all
 
 | Member | Type | Required | Meaning |
 |---|---|---|---|
-| `id` | identifier | yes | Unique in the rule; not `enabled`. |
+| `id` | parameter id (2.1) | yes | Unique in the rule; not `enabled`. |
 | `label` | label (2.2) | yes | Shown in the device UI. |
 | `type` | `boolean`, `integer`, `real`, `string`, `duration`, `timeOfDay`, `enumeration`, `color` | yes | |
 | `default` | JSON value of the type (3.1) | yes | Must itself be valid. |
@@ -970,7 +983,8 @@ After a swap that reset the state, the rule's new state is persisted like any ch
 
 Every parameter of every rule, the enable switch included, is also a datapoint of the device: its
 name is `rule/<ruleId>/<parameterId>` (`rule/hall-presence-light/timeout`,
-`rule/hall-presence-light/enabled`). The device derives these datapoints from the `rules` member
+`rule/hall-presence-light/enabled`, `rule/hall-presence-light/max-helligkeit` for the parameter
+`$"max-helligkeit"`). The device derives these datapoints from the `rules` member
 when it loads the image, after the image's own datapoints and the time master's, in rule order and
 within a rule the enable switch first, then the parameters in their order; the image declares none
 (the prefix `rule/` is reserved, 2.1). Their value types:
@@ -1065,7 +1079,7 @@ failure refuses the whole image with the rule id, the JSON path and one of these
 
 | Reason | Examples |
 |---|---|
-| `malformed` | wrong JSON type, missing or unknown member, unknown `kind`, `function` or `op` |
+| `malformed` | wrong JSON type, missing or unknown member, unknown `kind`, `function` or `op`; an id outside its form (2.1): `parameter id 'max/helligkeit' is not 1..24 characters of A-Z a-z 0-9 _ -`, `parameter id 'not' is a keyword`, `timer id 'x-y' is not an identifier` |
 | `duplicateId` | two rules, or two parameters/timers/states of one rule, with the same id |
 | `unknownReference` | a datapoint, schedule, parameter, timer, state or rule (in `state("id")`) that does not exist; a `state("id")` literal whose value is not a JSON string or is longer than 32 bytes (it names no rule) |
 | `typeError` | operand or argument types (4.4–4.7), a condition that is not boolean, a write value that does not convert to the datapoint type (3.2), a timer duration that is not a duration |

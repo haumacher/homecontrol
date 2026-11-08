@@ -28,18 +28,19 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
   more than about 100 KB may find no free heap block of its size; the device then answers 507
   and keeps its image.
 - **I4. Versioned by `image.schemaVersion`, `<major>.<minor>`.** A newer major version is refused
-  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.4)`); a
+  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.5)`); a
   newer minor version of a known major loads, and an older minor version too. Where a newer minor
   meets the strict objects of I5 (a rule, schedule or block member this firmware does not know),
   the refusal adds that the firmware is older than the image, from firmware 1.2 on:
-  `malformed: unknown member 'jitter' (the image's schema 1.5 is newer than this firmware reads, up
-  to 1.4: update the firmware)`. The device reports the newest version it reads as `schema` in
+  `malformed: unknown member 'jitter' (the image's schema 1.6 is newer than this firmware reads, up
+  to 1.5: update the firmware)`. The device reports the newest version it reads as `schema` in
   `GET /api/status` and in the E-Home connection's `auth` (`spec/api.md`), so E-Home can warn
   before a deploy, and refuses to deploy what the controller cannot run: an image with `blocks` to
   a controller below 1.3 (`spec/blocks.md` B1; one that reports no schema counts as at most 1.1),
   because an older firmware would ignore the member and run no blocks; and an image with a button
 whose press is an enumeration (3.5) to a controller below 1.4, because an older firmware refuses the
-whole image for it. *Alternative:* a feature
+whole image for it; and an image with a rule parameter whose id is not an identifier
+(`max-helligkeit`, `spec/rules.md` 2.1) to a controller below 1.5, for the same reason. *Alternative:* a feature
   list (more precise, but E-Home would have to know which features a firmware has).
 - **I5. Unknown members are ignored, except in `rules`, `schedules` and `blocks`.** A minor version
   may add members; an older firmware loads the image without them. The rule, schedule and block
@@ -104,7 +105,7 @@ Strings are 1..N bytes of valid UTF-8 without control characters; N is given per
 
 | Member | Type | Required | Meaning |
 |---|---|---|---|
-| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.4` (section 8). |
+| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.5` (section 8). |
 | `projectId` | string, 1..63 | yes | E-Home's project. Shown in the status. |
 | `revision` | integer 0..4294967295 | yes | E-Home's deployment counter, shown in the status and returned by PUT. The device does not refuse an older revision: rolling back is a deployment like any other. |
 | `generatedAt` | string, 1..31 | no | ISO 8601 time of the export. |
@@ -637,3 +638,16 @@ persisted values and history rings: the device returns to setup.
   controlled`), so the whole image: E-Home deploys an image with an enumeration press only to a
   controller that reports 1.4 or newer (I4), as it does with blocks for 1.3; an image without one
   loads on 1.3 as before (`presses` elsewhere is an unknown member, ignored).
+- 1.5 (issue #81, haumacher/ehome #110): a rule parameter's id has the characters of a rule id,
+  1..24 of `A-Z a-z 0-9 _ -`, not a keyword, not `enabled` (`spec/rules.md` 2.1); the text writes
+  one that is not an identifier `$"max-helligkeit"` (4.3, 4.8), the JSON AST is unchanged
+  (`{"kind": "parameter", "id": "max-helligkeit"}`), its datapoint is
+  `rule/<ruleId>/max-helligkeit` and its persistence key `<ruleId>/max-helligkeit` (8.4, 8.6).
+  Corpus cases `spec/fixtures/rules/` 65 to 71, image cases `accept-parameter-ids`,
+  `refuse-parameter-id`. E-Home writes 1.5. An image of 1.0 to 1.4 loads unchanged. A firmware
+  that reads only up to 1.4 refuses an image with such a parameter id (`rule 'r': malformed:
+  parameter id 'max-helligkeit' is not an identifier`, without the hint of I4, which that firmware
+  adds only to an unknown member), so the whole image: E-Home deploys an image with a parameter id
+  that is not an identifier only to a controller that reports 1.5 or newer (I4), as with the
+  enumeration press for 1.4; an image whose parameter ids are all identifiers loads on 1.4 as
+  before.

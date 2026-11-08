@@ -1,0 +1,20 @@
+{
+	"title": "Load refusal: a parameter id with an umlaut",
+	"description": "An umlaut is not among the characters of a parameter id, A-Z a-z 0-9 _ - (spec/rules.md 2.1, issue #81): it belongs in the label; the id stays one byte per character.",
+	"datapoints": [{"name": "in.x", "type": "boolean"}, {"name": "out.y", "type": "real"}],
+	"rules": [
+		{
+			"id": "bad",
+			"name": "Bad",
+			"parameters": [{"id": "max-helligkeit-über", "label": "Level", "type": "real", "default": 1.0}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.x"}],
+					"actions": [{"kind": "write", "datapoint": "out.y", "value": {"kind": "parameter", "id": "max-helligkeit-über"}}]
+				}
+			]
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "malformed"}
+}

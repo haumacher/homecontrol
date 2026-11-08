@@ -1,0 +1,20 @@
+{
+	"title": "Load refusal: a parameter id of 25 characters",
+	"description": "A parameter id has 1..24 characters (spec/rules.md 2.1, issue #81): rule/ + a rule id of 32 + / + 24 = 62 bytes, within the 63 of a datapoint name.",
+	"datapoints": [{"name": "in.x", "type": "boolean"}, {"name": "out.y", "type": "real"}],
+	"rules": [
+		{
+			"id": "bad",
+			"name": "Bad",
+			"parameters": [{"id": "max-helligkeit-0123456789", "label": "Level", "type": "real", "default": 1.0}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.x"}],
+					"actions": [{"kind": "write", "datapoint": "out.y", "value": {"kind": "parameter", "id": "max-helligkeit-0123456789"}}]
+				}
+			]
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "malformed"}
+}

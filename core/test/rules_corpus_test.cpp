@@ -1259,10 +1259,17 @@ HC_RULE_CASE("61", "sun-position-no-clock")
 HC_RULE_CASE("62", "sun-position-no-location")
 HC_RULE_CASE("63", "load-refused-match-sun")
 HC_RULE_CASE("64", "sun-follow-timer")
+HC_RULE_CASE("65", "parameter-id-quoted")
+HC_RULE_CASE("66", "load-refused-parameter-id-slash")
+HC_RULE_CASE("67", "load-refused-parameter-id-space")
+HC_RULE_CASE("68", "load-refused-parameter-id-umlaut")
+HC_RULE_CASE("69", "load-refused-parameter-id-length")
+HC_RULE_CASE("70", "load-refused-parameter-id-enabled")
+HC_RULE_CASE("71", "load-refused-parameter-id-keyword")
 
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
-	CHECK(files.size() == 64);
+	CHECK(files.size() == 71);
 }
 
 // The block conformance corpus (spec/fixtures/blocks/README.md), run by the same runner.

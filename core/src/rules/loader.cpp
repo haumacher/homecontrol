@@ -103,6 +103,24 @@ bool valid_identifier(const char* text) {
 	return !is_keyword(text);
 }
 
+/// A parameter id (spec/rules.md 2.1, issue #81): 1..24 characters of a rule id (`A-Z a-z 0-9 _ -`),
+/// not a keyword. A parameter id that is not an identifier is written `$"max-helligkeit"` in the text.
+bool parameter_id_characters(const char* text) {
+	size_t n = std::strlen(text);
+	if (n < 1 || n > 24) {
+		return false;
+	}
+	for (size_t i = 0; i < n; ++i) {
+		char c = text[i];
+		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool valid_parameter_id(const char* text) { return parameter_id_characters(text) && !is_keyword(text); }
+
 bool valid_rule_id(const char* text) {
 	size_t n = std::strlen(text);
 	if (n < 1 || n > 32) {
@@ -1049,9 +1067,13 @@ bool Builder::parameter(const JsonValue& json, RuleScope& rs, Parameter* out) {
 	if (!string_member(json, "id", true, id, sizeof(id), 1, 24, present)) {
 		return false;
 	}
-	if (!valid_identifier(id)) {
+	if (!parameter_id_characters(id)) {
 		PathScope scope(*this, ".id");
-		return fail(LoadError::malformed, "parameter id '%s' is not an identifier", id);
+		return fail(LoadError::malformed, "parameter id '%s' is not 1..24 characters of A-Z a-z 0-9 _ -", id);
+	}
+	if (is_keyword(id)) {
+		PathScope scope(*this, ".id");
+		return fail(LoadError::malformed, "parameter id '%s' is a keyword", id);
 	}
 	if (std::strcmp(id, "enabled") == 0) {
 		PathScope scope(*this, ".id");
@@ -2853,7 +2875,7 @@ size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, siz
 			char pid[25];
 			char type_text[24];
 			if (!p.is(JsonKind::object) || !p.member("id", member) || !member.get_string(pid, sizeof(pid)) ||
-				!valid_identifier(pid) || std::strcmp(pid, "enabled") == 0 || !p.member("type", member) ||
+				!valid_parameter_id(pid) || std::strcmp(pid, "enabled") == 0 || !p.member("type", member) ||
 				!member.get_string(type_text, sizeof(type_text))) {
 				continue;
 			}

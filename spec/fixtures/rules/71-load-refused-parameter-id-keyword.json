@@ -1,0 +1,20 @@
+{
+	"title": "Load refusal: a parameter id that is a keyword",
+	"description": "A parameter id is not a keyword, and, or, not, true, false (spec/rules.md 2.1, issue #81), although its characters are allowed: a keyword is never a bare reference, and the canonical text stays unambiguous.",
+	"datapoints": [{"name": "in.x", "type": "boolean"}, {"name": "out.y", "type": "real"}],
+	"rules": [
+		{
+			"id": "bad",
+			"name": "Bad",
+			"parameters": [{"id": "not", "label": "Level", "type": "real", "default": 1.0}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.x"}],
+					"actions": [{"kind": "write", "datapoint": "out.y", "value": {"kind": "parameter", "id": "not"}}]
+				}
+			]
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "malformed"}
+}

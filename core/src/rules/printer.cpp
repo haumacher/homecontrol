@@ -109,10 +109,16 @@ struct Printer {
 				}
 				break;
 			}
-			case NodeKind::parameter:
+			case NodeKind::parameter: {
+				const char* id = set.str(set.parameter(rule.first_parameter + node.a).id);
 				put('$');
-				put(set.str(set.parameter(rule.first_parameter + node.a).id));
+				if (bare_parameter_id(id)) {
+					put(id);
+				} else {
+					put_quoted(id);
+				}
 				break;
+			}
 			case NodeKind::timer: put(set.str(set.timer(rule.first_timer + node.a).id)); break;
 			case NodeKind::unary: {
 				const Node& child = set.node(node.a);
@@ -162,11 +168,8 @@ struct Printer {
 bool letter(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
 bool digit(char c) { return c >= '0' && c <= '9'; }
 
-} // namespace
-
-bool bare_datapoint_name(const char* name) {
-	// identifier { "." (letter | digit | "_")+ }, the identifier not a keyword.
-	const char* p = name;
+/// Skips an identifier at `p` (`[A-Za-z_][A-Za-z0-9_]*`, not a keyword); false when there is none.
+bool skip_identifier(const char*& p) {
 	if (!(letter(*p) || *p == '_')) {
 		return false;
 	}
@@ -180,6 +183,22 @@ bool bare_datapoint_name(const char* name) {
 		if (std::strlen(keyword) == n && std::strncmp(start, keyword, n) == 0) {
 			return false;
 		}
+	}
+	return true;
+}
+
+} // namespace
+
+bool bare_parameter_id(const char* id) {
+	const char* p = id;
+	return skip_identifier(p) && *p == '\0';
+}
+
+bool bare_datapoint_name(const char* name) {
+	// identifier { "." (letter | digit | "_")+ }, the identifier not a keyword.
+	const char* p = name;
+	if (!skip_identifier(p)) {
+		return false;
 	}
 	while (*p == '.') {
 		++p;

@@ -963,7 +963,7 @@ std::string with_block(const std::string& block) {
 
 TEST_CASE("Image.Blocks: schema 1.3; mirrors behind the image's datapoints; refusals with their paths") {
 	DashboardFixture f;
-	CHECK(std::string(hc::image::schema_version_text()) == "1.4");
+	CHECK(std::string(hc::image::schema_version_text()) == "1.5");
 	f.load(kBlocksImage);
 	f.controller.run_once();
 	f.controller.run_once();
@@ -1034,7 +1034,9 @@ TEST_CASE("Image.Blocks: schema 1.3; mirrors behind the image's datapoints; refu
 	// Strict inside (B1): an unknown member of a newer minor schema names the firmware's version (I4).
 	{
 		std::string text = with_block(R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "wasm": "abc"})");
-		text.replace(text.find("\"1.3\""), 5, "\"1.5\"");
+		std::string newer = "\"" + std::to_string(hc::image::kSchemaMajor) + "." +
+			std::to_string(hc::image::kSchemaMinor + 1) + "\""; // a minor newer than this firmware reads
+		text.replace(text.find("\"1.3\""), 5, newer);
 		text.replace(text.find(R"(,
 		               {"id": "block/x", "type": "real", "virtual": {}})"), std::strlen(R"(,
 		               {"id": "block/x", "type": "real", "virtual": {}})"), "");
@@ -1055,7 +1057,7 @@ TEST_CASE("WebApi.Blocks: list, types, changes applied whole or refused whole, r
 	f.controller.run_once();
 	auto status = f.get("/api/status", f.cookie);
 	REQUIRE(status.status == 200);
-	CHECK(status.json["device"]["schema"].text == "1.4");
+	CHECK(status.json["device"]["schema"].text == "1.5");
 	CHECK(status.json["image"]["blocks"].number == 1);
 	auto r = f.get("/api/blocks", f.cookie);
 	REQUIRE(r.status == 200);

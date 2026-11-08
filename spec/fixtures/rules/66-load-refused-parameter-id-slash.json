@@ -1,0 +1,20 @@
+{
+	"title": "Load refusal: a parameter id with a slash",
+	"description": "A parameter id has the characters of a rule id, A-Z a-z 0-9 _ - (spec/rules.md 2.1, issue #81); a slash would break the persistence key <ruleId>/<parameterId> and the datapoint rule/<ruleId>/<parameterId>.",
+	"datapoints": [{"name": "in.x", "type": "boolean"}, {"name": "out.y", "type": "real"}],
+	"rules": [
+		{
+			"id": "bad",
+			"name": "Bad",
+			"parameters": [{"id": "max/helligkeit", "label": "Level", "type": "real", "default": 1.0}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.x"}],
+					"actions": [{"kind": "write", "datapoint": "out.y", "value": {"kind": "parameter", "id": "max/helligkeit"}}]
+				}
+			]
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "malformed"}
+}

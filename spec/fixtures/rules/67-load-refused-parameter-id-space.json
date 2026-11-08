@@ -1,0 +1,20 @@
+{
+	"title": "Load refusal: a parameter id with a space",
+	"description": "A space is not among the characters of a parameter id (spec/rules.md 2.1, issue #81): spaces belong in the label.",
+	"datapoints": [{"name": "in.x", "type": "boolean"}, {"name": "out.y", "type": "real"}],
+	"rules": [
+		{
+			"id": "bad",
+			"name": "Bad",
+			"parameters": [{"id": "max helligkeit", "label": "Level", "type": "real", "default": 1.0}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.x"}],
+					"actions": [{"kind": "write", "datapoint": "out.y", "value": {"kind": "parameter", "id": "max helligkeit"}}]
+				}
+			]
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "malformed"}
+}
