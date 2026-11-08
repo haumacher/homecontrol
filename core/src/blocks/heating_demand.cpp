@@ -46,7 +46,7 @@ constexpr double kMinute = 60000;
 
 // id, type, label, unit, default, has_min, min, has_max, max, step, choices, count, adjustable
 constexpr ParamDecl kParams[] = {
-	{"mode", ParamType::enumeration, "Demand level", "", 0, false, 0, false, 0, 0, kModes, 2, false},
+	{"mode", ParamType::enumeration, "Demand mode", "", 0, false, 0, false, 0, 0, kModes, 2, false},
 	{"topCount", ParamType::integer, "Valves averaged", "", 3, true, 1, true, 32, 1, nullptr, 0, false},
 	{"onThreshold", ParamType::real, "Switch-on level", "%", 20, true, 0, true, 100, 1, nullptr, 0, false},
 	{"offThreshold", ParamType::real, "Switch-off level", "%", 5, true, 0, true, 100, 1, nullptr, 0, false},

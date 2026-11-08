@@ -89,7 +89,7 @@ constexpr ParamDecl kParams[] = {
 		kMinute, nullptr, 0, false},
 	{"shadePosition", ParamType::real, "Shading position", "%", 100, true, 0, true, 100, 5, nullptr, 0, true},
 	{"slatMode", ParamType::enumeration, "Slats while shading", "", 0, false, 0, false, 0, 0, kSlatModes, 2, false},
-	{"shadeSlat", ParamType::real, "Slat position", "%", 75, true, 0, true, 100, 5, nullptr, 0, false},
+	{"shadeSlat", ParamType::real, "Slat position when shading", "%", 75, true, 0, true, 100, 5, nullptr, 0, false},
 	{"slatRatio", ParamType::real, "Slat spacing to width", "", 0.9, true, 0.2, true, 1, 0.01, nullptr, 0, false},
 	{"slatOpen", ParamType::real, "Slat position when horizontal", "%", 0, true, 0, true, 90, 5, nullptr, 0, false},
 	{"slatStep", ParamType::real, "Slat step", "%", 10, true, 1, true, 50, 1, nullptr, 0, false},

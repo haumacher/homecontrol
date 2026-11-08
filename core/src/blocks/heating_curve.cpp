@@ -57,7 +57,7 @@ constexpr ParamDecl kParams[] = {
 	{"designOutside", ParamType::real, "Design outside temperature", "°C", -12, true, -30, true, 10, 1, nullptr, 0,
 		false},
 	{"designFlow", ParamType::real, "Design flow temperature", "°C", 55, true, 20, true, 90, 1, nullptr, 0, false},
-	{"pointCount", ParamType::integer, "Points", "", 6, true, 2, true, 6, 1, nullptr, 0, false},
+	{"pointCount", ParamType::integer, "Number of points", "", 6, true, 2, true, 6, 1, nullptr, 0, false},
 	HC_POINT(1, -15, 60),
 	HC_POINT(2, -10, 55),
 	HC_POINT(3, -5, 49),
