@@ -183,10 +183,37 @@ jobs:
             --title "HomeControl $VERSION" --notes "$(printf '%s\n' "$NOTES" | sed 's/^          //')" --generate-notes \
             assets/*
 
+  # The site is deployed by pages.yml on master: GitHub Pages serves the deployments of the
+  # publishing branch, a deployment made under the tag ref is recorded but not served (#83).
+  # workflow_dispatch is one of the events GITHUB_TOKEN may start.
   pages:
     needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
+      actions: write
       contents: read
-      pages: write
-      id-token: write
-    uses: ./.github/workflows/pages.yml
+    steps:
+      - name: Deploy the site from master
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh workflow run pages.yml --repo "$REPO" --ref master
+          # The run appears in the list after a moment.
+          sleep 10
+          id=$(gh run list --repo "$REPO" --workflow pages.yml --event workflow_dispatch --limit 1 --json databaseId -q '.[0].databaseId')
+          gh run watch "$id" --repo "$REPO" --exit-status
+      - name: Check the stable channel
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          want="${VERSION#v}"
+          case "$want" in *-*) echo "pre-release: the stable channel keeps its version"; exit 0 ;; esac
+          for i in $(seq 1 40); do
+            got=$(curl -fsS "https://haumacher.github.io/homecontrol/stable/manifest.json?n=$i$RANDOM" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' || true)
+            if [ "$got" = "$want" ]; then echo "stable announces $got"; exit 0; fi
+            sleep 15
+          done
+          echo "::error::stable/manifest.json announces '$got', expected $want"
+          exit 1

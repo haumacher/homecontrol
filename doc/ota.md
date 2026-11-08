@@ -520,8 +520,13 @@ standard ESP-IDF image. The owner's copy stays the backup and signs `scripts/rel
    it, writes `SHA256SUMS` and the site preview.
 3. `publish`: `gh release create --verify-tag` with every asset (a version with a pre-release
    suffix becomes a GitHub pre-release).
-4. `pages`: calls `pages.yml` as a reusable workflow. A release created with `GITHUB_TOKEN` starts
-   no other workflow, so the `release: published` trigger of `pages.yml` would not fire.
+4. `pages`: starts `pages.yml` on `master` (`gh workflow run`, an event `GITHUB_TOKEN` may start;
+   a release created with `GITHUB_TOKEN` starts no other workflow, so the `release: published`
+   trigger of `pages.yml` would not fire), waits for it, and checks that `stable/manifest.json`
+   announces the new version (not for a pre-release). Until 1.1.0 the job called `pages.yml` as a
+   reusable workflow under the tag ref: that deployment was recorded as successful but not served,
+   and the stable channel stayed on the previous version until `pages.yml` ran on master
+   (homecontrol #83).
 
 **Dry run.** Started by hand (`gh workflow run release.yml --ref master`), the workflow builds and
 assembles the current branch, signs with a key generated in the job (the environment refuses a
@@ -539,10 +544,11 @@ alone into `build-release/<version>/site/`. `--dry-run` also prints the tag comm
 workflow, and run when a release is published by hand, when `web/flasher/` or the site script
 change on master, and by hand; the `github-pages` environment admits `master` and tags `v*`). The
 deploying job holds the concurrency group `pages` in every workflow that runs it, so two deployments
-never run at once. GitHub Pages takes only the first deployment of a commit (a later one of the same
-SHA reports success and changes nothing): when the tagged commit itself changed `web/flasher/`, the
-master run has deployed that commit before the release existed, and the release's deployment is
-ignored; then run `gh workflow run pages.yml` after the next commit on master. It downloads
+never run at once. A deployment made under a tag ref reports success but is not served (observed with
+1.1.0, homecontrol #83: the site kept the master deployment of the same commit, a later manual run
+of `pages.yml` on master was served at once); hence the release workflow deploys through a run on
+`master`. If the site ever lags behind the releases, `gh workflow run pages.yml --ref master` rebuilds
+it. It downloads
 the GitHub releases with `gh`: the newest five completely, the older ones only their language
 packs. The releases are the store; nothing is fetched from the live site, so a deployment is
 reproducible from the releases alone (deleting a GitHub release takes it off the site at the next
