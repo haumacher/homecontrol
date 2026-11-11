@@ -281,3 +281,18 @@ outside world (weather, external services).
   development server; an update.url of an older firmware into the release site (or `off`, empty)
   becomes the channel at the next start. "Check" and "Update now" show their outcome on the card
   instead of "the result shows in the log".
+- **2026-11-11 — Image schema 1.6: a function binds what its devices report; `writable` is the
+  user's (haumacher/ehome #134, #136, #138, the author's decisions of the day).** A blind takes the
+  1-bit end positions `atTop` and `atBottom` beside a percentage `position`: with a position the
+  device shows it and uses the end bits only as a cross-check, without one it shows open / closed /
+  in between and never a percentage. A climate takes the actuating value as `heatingLevel` (percent,
+  flames in three steps) and as `heating` (a number heats while above 0). A dimmer's main role is
+  its switching `command`, `levelCommand` and `step` are additional; it needs one of the two.
+  Rules write every value of the application (`virtual`, or no technology member), writable or not;
+  `writable` says only whether the user may change it (spec/rules.md decision 16). Compatibility:
+  the new roles are unknown to a 1.5 firmware and ignored (I5); a dimmer without `levelCommand`, a
+  heating of a number and a rule writing a non-writable application datapoint are refused by it, so
+  E-Home deploys an image with one of those only to a controller reporting 1.6 (I4), and an image
+  without them still loads on 1.5. Alternatives: `position` taking a 1-bit address (0 → 0 %, 1 →
+  100 %) — rejected, a single bit cannot say "in between"; a separate "rule-writable" flag in the
+  image — rejected, the owner's rule is simpler: every application value is the rules'.

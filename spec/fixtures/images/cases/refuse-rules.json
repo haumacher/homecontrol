@@ -1,7 +1,7 @@
-{"comment": "Rules are checked by the rule loader against the image's datapoints and schedules (spec/rules.md 10).",
+{"comment": "Rules are checked by the rule loader against the image's datapoints and schedules (spec/rules.md 10): a KNX datapoint that only reports (not writable) is no rule's to write.",
  "expect": {"valid": false, "kind": "invalid", "refusals": [
    {"path": "rules[0].reactions[0].actions[0].datapoint", "reason": "notWritable"}]},
  "image": {"schemaVersion": "1.0", "projectId": "case", "revision": 1},
- "datapoints": [{"id": "sensor", "type": "boolean"}],
+ "datapoints": [{"id": "sensor", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["1/0/1"]}}],
  "rules": [{"id": "r", "name": "R", "reactions": [{"triggers": [{"kind": "start"}],
    "actions": [{"kind": "write", "datapoint": "sensor", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}]}

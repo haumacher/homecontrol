@@ -234,7 +234,12 @@ struct DatapointFlags {
 	/// sample spacing come with the image's history spec (doc/persistence.md). Numeric and boolean
 	/// datapoints only.
 	static constexpr uint8_t kHistory = 0x20;
-	static constexpr uint8_t kAll = 0x3F;
+	/// A value of the application: the image declares it `virtual` or without a technology member
+	/// (spec/runtime-image.md 3.3, schema 1.6). Rules may command it also without kWritable, which is
+	/// the permission of the user (the UI, the API, MQTT); a rule's write goes through
+	/// DatapointModel::command_by_rule().
+	static constexpr uint8_t kApplication = 0x40;
+	static constexpr uint8_t kAll = 0x7F;
 };
 
 /// One typed value of the house: a KNX group object, a Zigbee attribute, a rule parameter
@@ -256,6 +261,7 @@ public:
 	bool read_on_start() const { return (flags_ & DatapointFlags::kReadOnStart) != 0; }
 	bool persists() const { return (flags_ & DatapointFlags::kPersist) != 0; }
 	bool has_history() const { return (flags_ & DatapointFlags::kHistory) != 0; }
+	bool application() const { return (flags_ & DatapointFlags::kApplication) != 0; }
 
 	/// The current value; of type none while the quality is unknown.
 	const Value& value() const { return value_; }
@@ -307,6 +313,8 @@ struct DatapointRef {
 	ValueType type() const { return type_; }
 	uint8_t flags() const { return flags_; }
 	bool writable() const { return (flags_ & DatapointFlags::kWritable) != 0; }
+	/// Whether a rule may write it: writable, or a value of the application (kApplication, 1.6).
+	bool rule_writable() const { return (flags_ & (DatapointFlags::kWritable | DatapointFlags::kApplication)) != 0; }
 };
 
 /// Looks datapoints up by name and id for the compilers of rules and blocks (homecontrol #70): the
@@ -483,6 +491,11 @@ public:
 	/// refuses); then stored and announced like a report.
 	DatapointStatus command(uint16_t id, const Value& value);
 
+	/// A rule's write (spec/rules.md 7.2): as command(), but a value of the application
+	/// (DatapointFlags::kApplication) that no technology owns takes it also when it is not writable;
+	/// `writable` is the user's permission (spec/runtime-image.md 3.3, 1.6).
+	DatapointStatus command_by_rule(uint16_t id, const Value& value);
+
 	/// The application asks the owning technology to fetch the datapoint's current value
 	/// (Technology::read(); a rule's `read` action). `ok` when the request went out (or was queued);
 	/// the value arrives later as a report. Refused (logged) with `refused` when no technology owns
@@ -500,6 +513,7 @@ public:
 	bool notifying() const { return notifying_; }
 
 private:
+	DatapointStatus take_command(uint16_t id, const Value& value, bool by_rule);
 	Datapoint* lookup(uint16_t id, const char* what);
 	bool refuse_busy(const char* what);
 	void store(Datapoint& datapoint, const Value& value, UpdateOrigin origin);

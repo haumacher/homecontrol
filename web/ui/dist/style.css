@@ -868,6 +868,22 @@ button.tile-icon:hover {
 	height: 24px;
 }
 
+.flames {
+	display: flex;
+	justify-content: center;
+	gap: 4px;
+}
+
+.flames svg {
+	width: 20px;
+	height: 20px;
+	color: var(--line);
+}
+
+.flames svg.lit {
+	color: var(--accent);
+}
+
 .setpoint {
 	min-width: 7em;
 	text-align: center;

@@ -128,6 +128,17 @@ add_test(NAME BuildId.FollowsGitDescribe
 	COMMAND "${CMAKE_COMMAND}" "-DHC_GIT_DIR=${HC_REPO_DIR}" "-DHC_PROGRAM=$<TARGET_FILE:homecontrol>"
 		-P "${HC_REPO_DIR}/platform/posix/test/check_build_id.cmake")
 
+# What a function of the web UI shows (web/ui/dist/function_state.js, spec/runtime-image.md 3.5): the
+# UI's pure derivations, tested with node's test runner where node is installed (web/ui/package.json
+# makes the UI's .js files ES modules for it; the UI itself needs no node).
+find_program(HC_NODE node)
+if(HC_NODE)
+	add_test(NAME WebUi.FunctionState
+		COMMAND "${HC_NODE}" --test "${HC_REPO_DIR}/web/ui/test/function_state.test.mjs")
+else()
+	message(STATUS "node not found: the test WebUi.FunctionState is not registered")
+endif()
+
 # KNXnet/IP tunnelling (issue #7, doc/knx.md): the UDP socket on BSD sockets (the socket calls are
 # shared with the ESP build in platform/common), the diagnostic tool `knxtool` and the KNX tests.
 target_sources(hc_posix PRIVATE src/udp_socket.cpp "${HC_REPO_DIR}/platform/common/src/bsd_udp.cpp")

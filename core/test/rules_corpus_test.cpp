@@ -456,9 +456,11 @@ private:
 			hc::ValueType type = hc::rules::datapoint_type_from_name(dp["type"].text.c_str());
 			REQUIRE_MESSAGE(type != hc::ValueType::none, "datapoint type " << dp["type"].text);
 			bool writable = !dp.has("writable") || dp["writable"].boolean;
+			bool application = dp.has("application") && dp["application"].boolean;
 			types.push_back(type);
 			flags.push_back(static_cast<uint8_t>(hc::DatapointFlags::kReadable |
-				(writable ? hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit : 0)));
+				(writable ? hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit : 0) |
+				(application ? hc::DatapointFlags::kApplication : 0)));
 		}
 		size_t own = names_.size();
 		std::vector<hc::rules::ParameterDatapoint> derived(256);
@@ -491,6 +493,9 @@ private:
 		REQUIRE(model_.load(specs_.data(), specs_.size(), keep_values) == hc::DatapointStatus::ok);
 		for (size_t i = 0; i < own; ++i) {
 			const Json& dp = case_["datapoints"].items[i];
+			if (dp.has("application") && dp["application"].boolean) {
+				continue; // a value of the application: no technology owns it
+			}
 			bool refuse = dp.has("refuseCommands") && dp["refuseCommands"].boolean;
 			bool refuse_reads = dp.has("refuseReads") && dp["refuseReads"].boolean;
 			REQUIRE(model_.bind(static_cast<uint16_t>(i), technologies_[(refuse ? 1 : 0) + (refuse_reads ? 2 : 0)]) ==
@@ -1266,10 +1271,12 @@ HC_RULE_CASE("68", "load-refused-parameter-id-umlaut")
 HC_RULE_CASE("69", "load-refused-parameter-id-length")
 HC_RULE_CASE("70", "load-refused-parameter-id-enabled")
 HC_RULE_CASE("71", "load-refused-parameter-id-keyword")
+HC_RULE_CASE("72", "application-write-not-writable")
+HC_RULE_CASE("73", "load-refused-not-writable-status")
 
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
-	CHECK(files.size() == 71);
+	CHECK(files.size() == 73);
 }
 
 // The block conformance corpus (spec/fixtures/blocks/README.md), run by the same runner.

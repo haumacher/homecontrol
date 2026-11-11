@@ -1,6 +1,6 @@
 {
 	"image": {
-		"schemaVersion": "1.0",
+		"schemaVersion": "1.6",
 		"projectId": "mqtt-kinds",
 		"revision": 1,
 		"name": "Fixture house"
@@ -177,6 +177,48 @@
 			"type": "boolean"
 		},
 		{
+			"id": "climate2.temperature",
+			"type": "real",
+			"unit": "°C"
+		},
+		{
+			"id": "climate2.valve",
+			"type": "real",
+			"unit": "%"
+		},
+		{
+			"id": "climate3.temperature",
+			"type": "real",
+			"unit": "°C"
+		},
+		{
+			"id": "climate3.valve",
+			"type": "unsigned",
+			"unit": "%"
+		},
+		{
+			"id": "dim3.cmd",
+			"type": "boolean",
+			"writable": true
+		},
+		{
+			"id": "dim3.state",
+			"type": "boolean"
+		},
+		{
+			"id": "awning.move",
+			"type": "boolean",
+			"writable": true
+		},
+		{
+			"id": "awning.top",
+			"type": "boolean"
+		},
+		{
+			"id": "awning.bottom",
+			"type": "boolean"
+		},
+		{
 			"id": "scene.number",
 			"type": "unsigned",
 			"writable": true
@@ -236,6 +278,15 @@
 			}
 		},
 		{
+			"id": "dimmer-switch",
+			"label": "Switch-only dimmer",
+			"kind": "dimmer",
+			"datapoints": {
+				"command": "dim3.cmd",
+				"state": "dim3.state"
+			}
+		},
+		{
 			"id": "blind",
 			"label": "Blind",
 			"kind": "blind",
@@ -246,6 +297,16 @@
 				"positionCommand": "blind.position.cmd",
 				"slat": "blind.slat",
 				"slatCommand": "blind.slat.cmd"
+			}
+		},
+		{
+			"id": "awning",
+			"label": "Awning",
+			"kind": "blind",
+			"datapoints": {
+				"move": "awning.move",
+				"atTop": "awning.top",
+				"atBottom": "awning.bottom"
 			}
 		},
 		{
@@ -377,6 +438,25 @@
 				"setpointCommand": "climate.setpoint.cmd",
 				"mode": "climate.mode",
 				"heating": "climate.heating"
+			}
+		},
+		{
+			"id": "climate-valve",
+			"label": "Heating by its valve",
+			"kind": "climate",
+			"datapoints": {
+				"temperature": "climate2.temperature",
+				"heating": "climate2.valve",
+				"heatingLevel": "climate2.valve"
+			}
+		},
+		{
+			"id": "climate-level",
+			"label": "Heating level only",
+			"kind": "climate",
+			"datapoints": {
+				"temperature": "climate3.temperature",
+				"heatingLevel": "climate3.valve"
 			}
 		},
 		{

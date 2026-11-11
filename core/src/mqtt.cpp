@@ -21,7 +21,7 @@ constexpr const char* kTag = "hc.mqtt";
 constexpr const char* kDefaultPrefix = "homeassistant";
 constexpr const char* kNodePrefix = "homecontrol-";
 constexpr uint16_t kNone = 0xFFFF;
-constexpr size_t kMaxRoles = 6;
+constexpr size_t kMaxRoles = 8;
 constexpr size_t kMaxLabel = 63;
 constexpr size_t kMaxUnit = 15;
 constexpr size_t kMaxFunctionId = 32;
@@ -37,10 +37,10 @@ struct KindInfo {
 constexpr KindInfo kKinds[kKindCount] = {
 	{"light", {"command", "state"}},
 	{"dimmer", {"levelCommand", "level", "command", "state"}},
-	{"blind", {"move", "stop", "position", "positionCommand", "slat", "slatCommand"}},
+	{"blind", {"move", "stop", "position", "positionCommand", "slat", "slatCommand", "atTop", "atBottom"}},
 	{"switch", {"command", "state"}},
 	{"sensor", {"value"}},
-	{"climate", {"temperature", "setpoint", "setpointCommand", "mode", "modeCommand", "heating"}},
+	{"climate", {"temperature", "setpoint", "setpointCommand", "mode", "modeCommand", "heating", "heatingLevel"}},
 	{"scene", {"command"}},
 	{"button", {"press", "state"}},
 };
@@ -49,9 +49,10 @@ constexpr KindInfo kKinds[kKindCount] = {
 enum : uint8_t { kLightCommand = 0, kLightState = 1 };
 enum : uint8_t { kDimLevelCommand = 0, kDimLevel = 1, kDimCommand = 2, kDimState = 3 };
 enum : uint8_t { kBlindMove = 0, kBlindStop = 1, kBlindPosition = 2, kBlindPositionCommand = 3, kBlindSlat = 4,
-	kBlindSlatCommand = 5 };
+	kBlindSlatCommand = 5, kBlindAtTop = 6, kBlindAtBottom = 7 };
 enum : uint8_t { kSensorValue = 0 };
-enum : uint8_t { kClimateTemperature = 0, kClimateSetpoint = 1, kClimateSetpointCommand = 2, kClimateHeating = 5 };
+enum : uint8_t { kClimateTemperature = 0, kClimateSetpoint = 1, kClimateSetpointCommand = 2, kClimateHeating = 5,
+	kClimateHeatingLevel = 6 };
 enum : uint8_t { kButtonPress = 0, kButtonState = 1 };
 
 // Home Assistant templates over the state payload {"value": ..., "quality": ..., "time": ...}.
@@ -61,6 +62,10 @@ constexpr const char* kOnOffTemplate = "{{ 'ON' if value_json.value else 'OFF' }
 constexpr const char* kControlledOnOffTemplate = "{{ 'ON' if value_json.value.value else 'OFF' }}";
 constexpr const char* kLevelOnTemplate = "{{ 'true' if value_json.value > 0 else 'false' }}";
 constexpr const char* kHeatingTemplate = "{{ 'heating' if value_json.value else 'idle' }}";
+/// A heating or heating level of a number (a percentage, 1.6): heating while above 0.
+constexpr const char* kHeatingLevelTemplate = "{{ 'heating' if value_json.value > 0 else 'idle' }}";
+/// A blind's end position at the bottom (1.6) as the cover's state, where it reports no position.
+constexpr const char* kAtBottomTemplate = "{{ 'closed' if value_json.value else 'open' }}";
 constexpr const char* kTimeTemplate =
 	"{{ '%02d:%02d:%02d' | format(value_json.value.hour, value_json.value.minute, value_json.value.second) }}";
 constexpr const char* kDateTemplate =
@@ -604,7 +609,12 @@ bool Mqtt::build(Table& table, const MqttImage& image, const char** error) {
 				}
 				function.roles[r] = dp->id();
 			}
-			if (function.roles[0] == kNone) {
+			if (kind == kDimmer && function.roles[kDimLevelCommand] == kNone && function.roles[kDimCommand] == kNone) {
+				// The loader's rule (1.6): a dimmer needs its command or its level command.
+				return refuse(error, "functions[%u].datapoints: a dimmer needs command or levelCommand",
+					static_cast<unsigned>(at));
+			}
+			if (kind != kDimmer && function.roles[0] == kNone) {
 				return refuse(error, "functions[%u].datapoints.%s: a %s needs it", static_cast<unsigned>(at),
 					kKinds[kind].roles[0], kKinds[kind].name);
 			}
@@ -1620,7 +1630,9 @@ bool Mqtt::write_config(const Function& function) {
 			break;
 		case kDimmer: {
 			w.topic("brightness_command_topic", r[kDimLevelCommand], "set");
-			json.member("brightness_scale", uint32_t(100));
+			if (function.has(kDimLevelCommand) || function.has(kDimLevel)) {
+				json.member("brightness_scale", uint32_t(100));
+			}
 			if (function.has(kDimLevel)) {
 				w.topic("brightness_state_topic", r[kDimLevel], "state");
 				json.member("brightness_value_template", kValueTemplate);
@@ -1657,6 +1669,11 @@ bool Mqtt::write_config(const Function& function) {
 				w.topic("position_topic", r[kBlindPosition], "state");
 				json.member("position_template", kValueTemplate);
 				primary = r[kBlindPosition];
+			} else if (function.has(kBlindAtBottom)) {
+				// Only the end positions (1.6): closed at the bottom, else open; no percentage is claimed.
+				w.topic("state_topic", r[kBlindAtBottom], "state");
+				json.member("value_template", kAtBottomTemplate);
+				primary = r[kBlindAtBottom];
 			}
 			if (function.has(kBlindPositionCommand)) {
 				w.topic("set_position_topic", r[kBlindPositionCommand], "set");
@@ -1712,9 +1729,13 @@ bool Mqtt::write_config(const Function& function) {
 			if (function.has(kClimateSetpointCommand)) {
 				w.topic("temperature_command_topic", r[kClimateSetpointCommand], "set");
 			}
-			if (function.has(kClimateHeating)) {
-				w.topic("action_topic", r[kClimateHeating], "state");
-				json.member("action_template", kHeatingTemplate);
+			if (function.has(kClimateHeating) || function.has(kClimateHeatingLevel)) {
+				// heating, else the heating level: a number heats while above 0 (1.6).
+				uint16_t heating = function.has(kClimateHeating) ? r[kClimateHeating] : r[kClimateHeatingLevel];
+				const Datapoint* dp = model_.get(heating);
+				w.topic("action_topic", heating, "state");
+				json.member("action_template",
+					dp != nullptr && dp->type() != ValueType::boolean ? kHeatingLevelTemplate : kHeatingTemplate);
 			}
 			json.key("modes").begin_array().string("heat").end_array();
 			json.member("temperature_unit", "C").member("temp_step", 0.5);

@@ -1,0 +1,20 @@
+{
+	"title": "Load refusal notWritable: a rule writes a datapoint a technology owns that is not writable",
+	"description": "Spec 10.1 (schema 1.6, haumacher/ehome #138): only a value of the application is the rules' to write without `writable`; a status a technology reports (a KNX group address on which no object takes values) is refused at load as before.",
+	"datapoints": [{"name": "heat.level", "type": "real", "writable": false}, {"name": "x.go", "type": "boolean"}],
+	"rules": [
+		{
+			"id": "force",
+			"name": "Force",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "x.go"}],
+					"actions": [{"kind": "write", "datapoint": "heat.level", "value": {"kind": "literal", "type": "real", "value": 50.0}}]
+				}
+			]
+		}
+	],
+	"timeline": [],
+	"end": 0,
+	"expected": {"loadRefused": "notWritable"}
+}

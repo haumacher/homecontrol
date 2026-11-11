@@ -1277,7 +1277,8 @@ bool Builder::action(const JsonValue& json, Action* out) {
 		if (dp == nullptr) {
 			return false;
 		}
-		if (!dp->writable()) {
+		if (!dp->rule_writable()) {
+			// A value of the application is the rules' to write; `writable` is the user's (1.6).
 			PathScope scope(*this, ".datapoint");
 			return fail(LoadError::not_writable, "datapoint '%s' is not writable", name);
 		}

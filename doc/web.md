@@ -332,12 +332,17 @@ the detail sheet, the controls below operate the rest:
 | Kind | Quick action (icon) | Shown | Controls |
 | --- | --- | --- | --- |
 | light, switch | toggles `command` | on/off from `state`, else from `command` | — |
-| dimmer | toggles `command`; without it `levelCommand` 0 / 100 | the level from `level` (else `levelCommand`), "Off" at 0 | a 0..100 slider that sends `levelCommand` on release; with a writable `step`: − / + sending a 25 % relative step (`{"control": brighter, "value": 3}`, DPT 3.007) |
-| blind | — | `position` | up / stop / down (`move` false / `stop` true / `move` true), a slider for `positionCommand` |
+| dimmer | toggles `command`; without it `levelCommand` 0 / 100 | the level from `level` (else `levelCommand`), "Off" at 0; a dimmer with its `command` alone (1.6) on/off from `state`, else `command` | a 0..100 slider that sends `levelCommand` on release; with a writable `step`: − / + sending a 25 % relative step (`{"control": brighter, "value": 3}`, DPT 3.007) |
+| blind | — | `position`; without one the end positions `atTop`/`atBottom` (1.6): open, closed, in between (both false), never a percentage; with both, "end positions disagree" where the ends contradict the position | up / stop / down (`move` false / `stop` true / `move` true), a slider for `positionCommand` |
 | sensor | — | `value` with the function's unit (else the datapoint's) | a 24 h sparkline when the datapoint keeps a history (refreshed every 5 min) |
-| climate | — | `temperature`, "heating" from `heating` | − / setpoint / + in 0.5 steps on `setpointCommand` (from `setpoint`, else the last command) |
+| climate | — | `temperature`; with `heatingLevel` (1.6) "heating 35 %" and three flames lit by its steps; without it "heating" from `heating` (a number: above 0) | − / setpoint / + in 0.5 steps on `setpointCommand` (from `setpoint`, else the last command) |
 | scene | sends the KNX scene code `scene − 1` to `command` (`{"control": false, "value": scene − 1}` for a controlled datapoint; scenes count from 1 in the image, from 0 on the bus) | "Scene n" | — |
 | button | sends true (or `{"control": true, "value": 1}`) to a writable `press` | `state`, else "Pressed 3 min ago" | — |
+
+The derivations of what a tile shows (the blind's end positions, the heating of a number, the flame
+steps, a dimmer's on state) are pure functions in `function_state.js`, tested with node's test runner
+(`web/ui/test/function_state.test.mjs`, ctest `WebUi.FunctionState` where node is installed; the UI
+itself has no node toolchain, `web/ui/package.json` only makes its `.js` files ES modules for the test).
 
 A stale value dims the tile's head and says "last known 3 h ago" (the age from the datapoint's
 `updated_ms` against the feed's `now_ms`); an unknown one shows "—". A command marks the tile

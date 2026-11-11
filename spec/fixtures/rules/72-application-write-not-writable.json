@@ -1,0 +1,35 @@
+{
+	"title": "A rule writes an application datapoint that is not writable; the user's command to it is refused",
+	"description": "Spec 7.2 and 10.1 (schema 1.6, haumacher/ehome #138): `writable` is the user's permission (the UI, the API, MQTT); a value of the application (`application`: true, no technology owns it) is the rules' to write also without it. The rule mirrors the actuating value of the heating into heat.on (heating while above 0 %). The command at 2500 is the user's and refused by the model: the value stays true, nothing in the rule log. The datapoint heat.level, which a technology owns and which is not writable, stays no rule's to write (case 73).",
+	"datapoints": [
+		{"name": "heat.level", "type": "real", "writable": false},
+		{"name": "heat.on", "type": "boolean", "writable": false, "application": true}
+	],
+	"rules": [
+		{
+			"id": "mirror",
+			"name": "Mirror",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "heat.level"}],
+					"actions": [{"kind": "write", "datapoint": "heat.on", "onlyOnChange": true, "value": {"kind": "binary", "op": ">", "left": {"kind": "datapoint", "name": "heat.level"}, "right": {"kind": "literal", "type": "real", "value": 0.0}}}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "heat.level", "value": 35.0}},
+		{"at": 2000, "report": {"datapoint": "heat.level", "value": 12.5}},
+		{"at": 2500, "command": {"datapoint": "heat.on", "value": false, "refused": true}},
+		{"at": 3000, "report": {"datapoint": "heat.level", "value": 0.0}}
+	],
+	"end": 4000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "mirror", "datapoint": "heat.on", "value": true},
+			{"at": 3000, "rule": "mirror", "datapoint": "heat.on", "value": false}
+		],
+		"logs": [],
+		"final": {"datapoints": {"heat.level": 0.0, "heat.on": false}}
+	}
+}

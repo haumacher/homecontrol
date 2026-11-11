@@ -10,6 +10,7 @@ import { formatAgo, formatNumber, formatValue } from "/format.js";
 import { t, has as hasText } from "/i18n.js";
 import { label, dpUnit } from "/model.js";
 import { sparkline } from "/chart.js";
+import { blindState, dimmerOn, flames, heating } from "/function_state.js";
 
 const REPORT_WAIT_MS = 5000;
 
@@ -17,8 +18,8 @@ const REPORT_WAIT_MS = 5000;
 const PRIMARY = {
 	light: ["state", "command"],
 	switch: ["state", "command"],
-	dimmer: ["level", "levelCommand", "state"],
-	blind: ["position", "move"],
+	dimmer: ["level", "levelCommand", "state", "command"],
+	blind: ["position", "atBottom", "atTop", "move"],
 	sensor: ["value"],
 	climate: ["temperature"],
 	scene: ["command"],
@@ -65,6 +66,11 @@ export function functionTile(fn, env) {
 	const bool = (role) => {
 		const d = dp(role);
 		return d && d.quality !== "unknown" ? d.value === true : null;
+	};
+	/// The known value of a role as it is (a boolean or a number), null for none.
+	const known = (role) => {
+		const d = dp(role);
+		return d && d.quality !== "unknown" && (typeof d.value === "boolean" || typeof d.value === "number") ? d.value : null;
 	};
 	// From the model: the tiles are built before the live snapshot may have arrived.
 	const info = (role) => (roles[role] !== undefined ? model.datapoints.get(roles[role]) : undefined);
@@ -152,7 +158,7 @@ export function functionTile(fn, env) {
 			break;
 		case "dimmer":
 			if (writable("command")) {
-				pressedState = () => bool(has("state") ? "state" : "command") ?? ((number("level") ?? number("levelCommand") ?? 0) > 0);
+				pressedState = () => dimmerOn(bool("state"), bool("command"), number(has("level") ? "level" : "levelCommand")) === true;
 				action = () => send("command", !(pressedState() === true), "state");
 				actionLabel = t("tile.toggle", { name });
 			} else if (writable("levelCommand")) {
@@ -240,6 +246,12 @@ export function functionTile(fn, env) {
 			controls.push(rangeControl("positionCommand", "position", "tile.position"));
 		}
 	}
+	let flameRow = null;
+	if (fn.kind === "climate" && has("heatingLevel")) {
+		// The heating level (1.6): three flames, lit by the steps of the actuating value.
+		flameRow = h("div", { class: "flames", role: "img" }, [0, 1, 2].map(() => icon(icons.flame)));
+		controls.push(flameRow);
+	}
 	if (fn.kind === "climate") {
 		const target = has("setpoint") ? "setpoint" : "setpointCommand";
 		setpointText = h("span", { class: "setpoint" });
@@ -290,21 +302,39 @@ export function functionTile(fn, env) {
 				return on === null ? t("value.unknown") : on ? t("value.on") : t("value.off");
 			}
 			case "dimmer": {
+				// A dimmer with its switching command alone (1.6) is on or off by its command.
 				const level = number(has("level") ? "level" : "levelCommand");
-				const on = has("state") ? bool("state") : level === null ? null : level > 0;
+				const on = dimmerOn(bool("state"), bool("command"), level);
 				if (on === null && level === null) {
 					return t("value.unknown");
 				}
 				if (on === false || level === 0) {
 					return t("value.off");
 				}
-				return level !== null ? formatNumber(level, unitOf("levelCommand") || "%", 0) : t("value.on");
+				return level !== null ? formatNumber(level, unitOf("levelCommand") || unitOf("level") || "%", 0) : t("value.on");
 			}
-			case "blind":
-				return has("position") ? show("position") : t("tile.blind");
+			case "blind": {
+				// The position where it is reported, else the end positions (1.6): never a percentage
+				// without a position; the end positions cross-check a position.
+				const state = blindState(number("position"), bool("atTop"), bool("atBottom"));
+				const mismatch = state.conflict ? ` · ${t("tile.blind_mismatch")}` : "";
+				if (state.kind === "position") {
+					return `${show("position")}${mismatch}`;
+				}
+				if (state.kind === "unknown") {
+					return has("atTop") || has("atBottom") || has("position") ? `${t("value.unknown")}${mismatch}` : t("tile.blind");
+				}
+				return t(`tile.blind_${state.kind}`);
+			}
 			case "climate": {
-				const heating = bool("heating") ? ` · ${t("tile.heating")}` : "";
-				return `${show("temperature")}${heating}`;
+				// The heating level in percent where it is bound (1.6), else whether it heats: a heating of a
+				// number heats while above 0.
+				const level = number("heatingLevel");
+				if (level !== null) {
+					return `${show("temperature")} · ${t("tile.heating_level", { level: formatNumber(level, "%", 0) })}`;
+				}
+				const on = heating(known("heating"), null);
+				return `${show("temperature")}${on ? ` · ${t("tile.heating")}` : ""}`;
 			}
 			case "scene":
 				return t("tile.scene", { scene: fn.scene || "" });
@@ -349,6 +379,13 @@ export function functionTile(fn, env) {
 		if (slider && !sliderEditing) {
 			const v = number(sliderRole);
 			slider.value = v === null ? 0 : Math.max(0, Math.min(100, v));
+		}
+		if (flameRow) {
+			const level = number("heatingLevel");
+			const lit = flames(level);
+			Array.from(flameRow.children).forEach((flame, i) => flame.classList.toggle("lit", lit !== null && i < lit));
+			flameRow.setAttribute("aria-label", level === null ? t("tile.heating_level_unknown")
+				: t("tile.heating_level", { level: formatNumber(level, "%", 0) }));
 		}
 		if (setpointText) {
 			const v = number(has("setpoint") ? "setpoint" : "setpointCommand") ?? number("setpointCommand");

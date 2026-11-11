@@ -737,7 +737,12 @@ changed something), not the current value.
 2. Convert to the datapoint's type (3.2). Not exact: log `writeRefused` and skip.
 3. With `onlyOnChange`: if the datapoint's quality is good and its value equals the converted value,
    skip (no log).
-4. `DatapointModel::command()`. A refusal (the technology refused it) logs `writeRefused`. On
+4. `DatapointModel::command_by_rule()`: the model's `command()`, except that a value of the
+   application (a datapoint of the image declared `virtual` or without a technology member,
+   `spec/runtime-image.md` 3.3, schema 1.6) that no technology owns takes the value also when it is
+   not `writable`. `writable` is the user's permission (the UI, the API, MQTT): a rule's own output,
+   which the user must not change, is a value of the application that is not writable
+   (haumacher/ehome #138). A refusal (the technology refused it) logs `writeRefused`. On
    success the model stores the value and tells its listeners; the update is a derived event of
    the cascade, even when the value did not change (`on: update` triggers see it, `on: change`
    triggers do not).
@@ -1085,7 +1090,7 @@ failure refuses the whole image with the rule id, the JSON path and one of these
 | `typeError` | operand or argument types (4.4–4.7), a condition that is not boolean, a write value that does not convert to the datapoint type (3.2), a timer duration that is not a duration |
 | `invalidLiteral` | a literal value out of its range (`25:00`, a color level of 256, a string longer than 28 bytes, an integer beyond 2^53-1, a date or date-time outside the years 1900..2155) |
 | `invalidParameter` | a default that is not valid, `min > max`, `choices` on a type without them |
-| `notWritable` | a `write` to a datapoint without the writable flag (also the datapoint of a parameter that is not adjustable, 8.6); a `write` to the output datapoint of a schedule entry (the scheduler owns it) |
+| `notWritable` | a `write` to a datapoint without the writable flag that is no value of the application (a status a technology reports, a KNX group address on which no object takes values; also the datapoint of a parameter that is not adjustable, 8.6); a `write` to the output datapoint of a schedule entry (the scheduler owns it). A value of the application (`spec/runtime-image.md` 3.3) is the rules' to write also without the writable flag (7.3, schema 1.6) |
 | `notReadable` | a `read` of a datapoint no technology can be asked for: one without a KNX, Zigbee or external-values binding (a virtual datapoint), the output of a schedule entry, a datapoint of the time master, a rule parameter's datapoint (8.6) |
 | `forbidden` | a time, history, timer or state function in a `match` condition; a datapoint, or a time, history, timer or state function, in the `after` of a `silence` trigger; a reference to `enabled`; a reference to the rule's own parameter datapoints (8.6); `from` or `to` in a rule without states; `elseActions` together with `to`; a `timer` node outside `running`/`remaining`; `state()` arguments other than one string literal |
 | `limitExceeded` | a limit of 10.2; two persistence keys of the image (8.4, 8.5) that collide in the device's storage (the device's mapping, `doc/rules.md`; practically never, but checked) |
@@ -1577,3 +1582,11 @@ corpus cases named and both interpreters.
     value equal to the declared default is not stored and removes a stored override, so the
     parameter follows later default changes in E-Home again; a differing value is stored (8.2,
     8.4). Cases 28 and 36.
+16. **Rules write every value of the application; `writable` is the user's.** Decided (2026-11-11,
+    haumacher/ehome #138): a rule may write a datapoint of the image that is a value of the
+    application (`virtual` or without a technology member, `spec/runtime-image.md` 3.3) also when
+    it is not `writable`; `writable` says only whether the user may change it (the UI, the API,
+    MQTT). A rule's own output, which the inhabitant must not change, is such a datapoint. A
+    datapoint a technology owns that is not writable (a KNX status address) stays refused at load
+    (`notWritable`, 10.1): that write is a mistake. Schema 1.6: an older firmware refuses the image
+    (7.3). Cases 72 and 73.

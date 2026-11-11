@@ -1289,6 +1289,13 @@ void parse_datapoint(Ctx& c, const JsonSpan& dp, size_t i, KnxDraft& knx_draft, 
 		Path p(c, ".virtual");
 		c.object(virtual_member, "virtual");
 	}
+	{
+		JsonSpan technology;
+		if (has_virtual || (!c.member(dp, "zigbee", technology) && !c.member(dp, "knx", technology))) {
+			// A value of the application: rules write it also when it is not writable (3.3, 1.6).
+			spec.flags = static_cast<uint8_t>(spec.flags | DatapointFlags::kApplication);
+		}
+	}
 	JsonSpan zigbee_member;
 	if (c.member(dp, "zigbee", zigbee_member)) {
 		Path p(c, ".zigbee");
@@ -1861,17 +1868,23 @@ struct FunctionKind {
 };
 
 constexpr Role kLight[] = {{"command", kRoleBool, true, true}, {"state", kRoleBool, false, false}};
-constexpr Role kDimmer[] = {{"levelCommand", kRoleNumber, true, true}, {"level", kRoleNumber, false, false},
-	{"command", kRoleBool, true, false}, {"state", kRoleBool, false, false},
+// A dimmer's main role is its switching `command`; it needs `command` or `levelCommand`, at least one
+// (1.6, checked after the roles: an image of 1.5 with only `levelCommand` loads as before).
+constexpr Role kDimmer[] = {{"command", kRoleBool, true, false}, {"state", kRoleBool, false, false},
+	{"levelCommand", kRoleNumber, true, false}, {"level", kRoleNumber, false, false},
 	{"step", kRoleControlled, true, false}}; // relative dimming, KNX DPT 3.007 (#30)
+// `atTop` and `atBottom` (1.6): the actuator's 1-bit reports of the end positions.
 constexpr Role kBlind[] = {{"move", kRoleBool, true, true}, {"stop", kRoleBool, true, false},
 	{"position", kRoleNumber, false, false}, {"positionCommand", kRoleNumber, true, false},
-	{"slat", kRoleNumber, false, false}, {"slatCommand", kRoleNumber, true, false}};
+	{"slat", kRoleNumber, false, false}, {"slatCommand", kRoleNumber, true, false},
+	{"atTop", kRoleBool, false, false}, {"atBottom", kRoleBool, false, false}};
 constexpr Role kSwitch[] = {{"command", kRoleBool, true, true}, {"state", kRoleBool, false, false}};
 constexpr Role kSensor[] = {{"value", kRoleAny, false, true}};
 constexpr Role kClimate[] = {{"temperature", kRoleNumber, false, true}, {"setpoint", kRoleNumber, false, false},
 	{"setpointCommand", kRoleNumber, true, false}, {"mode", kRoleEnum | kRoleNumber, false, false},
-	{"modeCommand", kRoleEnum | kRoleNumber, true, false}, {"heating", kRoleBool, false, false}};
+	{"modeCommand", kRoleEnum | kRoleNumber, true, false},
+	// `heating` also a number (1.6, a percentage: heating while above 0), `heatingLevel` the actuating value.
+	{"heating", kRoleBool | kRoleNumber, false, false}, {"heatingLevel", kRoleNumber, false, false}};
 constexpr Role kScene[] = {{"command", kRoleNumber | kRoleEnum | kRoleControlled, true, true}};
 // An enumeration press (1.4, ehome #70): a Zigbee remote's action, with the function's `presses`.
 constexpr Role kButton[] = {{"press", kRoleBool | kRoleControlled | kRoleEnum, false, true},
@@ -1899,6 +1912,7 @@ const char* role_types_text(uint8_t types) {
 		case kRoleBool | kRoleControlled: return "boolean or controlled";
 		case kRoleNumber | kRoleEnum | kRoleControlled: return "a number, enumeration or controlled";
 		case kRoleBool | kRoleControlled | kRoleEnum: return "boolean, controlled or enumeration";
+		case kRoleBool | kRoleNumber: return "boolean or a number (unsigned, signed or real)";
 		default: return "any type";
 	}
 }
@@ -2148,6 +2162,11 @@ void parse_functions(Ctx& c, const JsonSpan& root, const Ids& locations, const I
 							"are known; '%s' is not one", name);
 					}
 				}
+			}
+			JsonSpan ref;
+			if (std::strcmp(kind->name, "dimmer") == 0 && !c.member(roles, "command", ref) &&
+				!c.member(roles, "levelCommand", ref)) {
+				c.refuse("a dimmer needs the role command or levelCommand");
 			}
 		}
 		if (button && press != nullptr) {

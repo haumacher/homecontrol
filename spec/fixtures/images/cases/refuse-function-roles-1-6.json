@@ -1,0 +1,19 @@
+{"comment": "The roles of schema 1.6 refused (haumacher/ehome #134, #136, #138): a dimmer needs its command or its level command, at least one; the end positions of a blind are boolean; a climate's heating is boolean or a number, its heating level a number.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "functions[0].datapoints", "reason": "a dimmer needs the role command or levelCommand"},
+   {"path": "functions[1].datapoints.atTop", "reason": "datapoint 'position' is real, but the role atTop of a blind takes boolean"},
+   {"path": "functions[1].datapoints.atBottom", "reason": "the role atBottom of a blind takes boolean"},
+   {"path": "functions[2].datapoints.heating", "reason": "datapoint 'name' is string, but the role heating of a climate takes boolean or a number"},
+   {"path": "functions[2].datapoints.heatingLevel", "reason": "datapoint 'on' is boolean, but the role heatingLevel of a climate takes a number"}]},
+ "image": {"schemaVersion": "1.6", "projectId": "case", "revision": 1},
+ "datapoints": [
+   {"id": "move", "type": "boolean", "writable": true, "virtual": {}},
+   {"id": "position", "type": "real", "virtual": {}},
+   {"id": "level", "type": "real", "virtual": {}},
+   {"id": "t", "type": "real", "virtual": {}},
+   {"id": "name", "type": "string", "virtual": {}},
+   {"id": "on", "type": "boolean", "virtual": {}}],
+ "functions": [
+   {"id": "dimmer", "label": "Dimmer", "kind": "dimmer", "datapoints": {"level": "level"}},
+   {"id": "blind", "label": "Blind", "kind": "blind", "datapoints": {"move": "move", "atTop": "position", "atBottom": "level"}},
+   {"id": "climate", "label": "Climate", "kind": "climate", "datapoints": {"temperature": "t", "heating": "name", "heatingLevel": "on"}}]}

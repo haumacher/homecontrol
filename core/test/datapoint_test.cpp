@@ -220,7 +220,7 @@ TEST_CASE("DatapointModel load validates every spec before it replaces the model
 	const DatapointSpec null_name[] = {{nullptr, ValueType::boolean, 0}};
 	const DatapointSpec control[] = {{"Tab\there", ValueType::boolean, 0}};
 	const DatapointSpec no_type[] = {{"A", ValueType::none, 0}};
-	const DatapointSpec flags[] = {{"A", ValueType::boolean, 0x40}};
+	const DatapointSpec flags[] = {{"A", ValueType::boolean, 0x80}};
 	CHECK(f.model.load(duplicate, 3) == DatapointStatus::invalid_model);
 	CHECK(f.capture.sink.contains("datapoints 0 and 2 are both named 'A'"));
 	CHECK(f.model.load(too_long, 1) == DatapointStatus::invalid_model);

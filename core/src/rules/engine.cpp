@@ -1863,7 +1863,7 @@ void Engine::action_write(size_t rule, const Action& action) {
 	if ((action.flags & 1) != 0 && dp->quality() == Quality::good && dp->value() == *converted) {
 		return;
 	}
-	DatapointStatus status = model_.command(action.target, *converted);
+	DatapointStatus status = model_.command_by_rule(action.target, *converted);
 	if (status != DatapointStatus::ok) {
 		log_rule(rule, LogCode::write_refused, LogLevel::error, "command refused", "command to '%s' refused: %s", name,
 			datapoint_status_name(status));

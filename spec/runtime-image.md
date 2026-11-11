@@ -28,7 +28,7 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
   more than about 100 KB may find no free heap block of its size; the device then answers 507
   and keeps its image.
 - **I4. Versioned by `image.schemaVersion`, `<major>.<minor>`.** A newer major version is refused
-  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.5)`); a
+  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.6)`); a
   newer minor version of a known major loads, and an older minor version too. Where a newer minor
   meets the strict objects of I5 (a rule, schedule or block member this firmware does not know),
   the refusal adds that the firmware is older than the image, from firmware 1.2 on:
@@ -40,7 +40,10 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
   because an older firmware would ignore the member and run no blocks; and an image with a button
 whose press is an enumeration (3.5) to a controller below 1.4, because an older firmware refuses the
 whole image for it; and an image with a rule parameter whose id is not an identifier
-(`max-helligkeit`, `spec/rules.md` 2.1) to a controller below 1.5, for the same reason. *Alternative:* a feature
+(`max-helligkeit`, `spec/rules.md` 2.1) to a controller below 1.5, for the same reason; and an image
+using what 1.6 brings to a controller below 1.6, for the same reason: a dimmer without `levelCommand`,
+a climate whose `heating` is a number, a rule writing an application datapoint that is not writable
+(3.5, 3.3, section 8). *Alternative:* a feature
   list (more precise, but E-Home would have to know which features a firmware has).
 - **I5. Unknown members are ignored, except in `rules`, `schedules` and `blocks`.** A minor version
   may add members; an older firmware loads the image without them. The rule, schedule and block
@@ -135,14 +138,14 @@ An array of datapoint objects (at most 1024). The array order is the model order
 | `label` | label | no | For the UI. |
 | `unit` | string, 1..15 | no | For the UI (`°C`, `%`, `lx`). |
 | `readable` | boolean | no, false | Others may read it (KNX: the device answers a GroupValue_Read on the sending address). |
-| `writable` | boolean | no, false | Rules, the UI and the API may command it. |
+| `writable` | boolean | no, false | The user may command it (the UI, the API, MQTT), and so may rules. A value of the application (`virtual`, or a datapoint without a technology member) is the rules' to write also when it is not writable (1.6, `spec/rules.md` 7.3): `writable` is the user's permission. |
 | `transmit` | boolean | no, false | A commanded value is sent to the technology. |
 | `readOnStart` | boolean | no, false | The technology reads the value after a start or reconnect. |
 | `persist` | boolean | no, false | The last value is kept across restarts (`doc/persistence.md`). |
 | `history` | `{"retention": s, "spacing": s, "archives": [...]}` | no | A short-term history ring: `spacing` 10..86400 s, `retention` from the spacing up to 31 days, at most 2048 samples; only `boolean`, `unsigned`, `signed`, `real`. `archives` (1.2, optional): the consolidated archives of the datapoint, below. |
 | `knx` | object | no | The KNX binding, below. |
 | `zigbee` | object | no | The Zigbee binding, below. Excludes `knx` and `virtual`. |
-| `virtual` | object (members reserved) | no | A value of the application: no technology; rules and the UI command it. Excludes `knx` and `zigbee`. |
+| `virtual` | object (members reserved) | no | A value of the application: no technology; rules write it, the user commands it where it is `writable`. Excludes `knx` and `zigbee`. |
 
 The archives of a history (issue #56): up to 4 objects `{"resolution": s, "retention": s}`, each a
 store of consolidated slots of `resolution` seconds kept for `retention` seconds, besides the raw
@@ -246,15 +249,38 @@ What the inhabitant operates: a light, a blind, a sensor. A function names the d
 | Kind | Roles (**required**; *command roles need a writable datapoint*) |
 |---|---|
 | `light` | ***command*** (boolean), `state` (boolean) |
-| `dimmer` | ***levelCommand*** (number), `level` (number), *command* (boolean), `state` (boolean), *step* (controlled: relative dimming, KNX DPT 3.007; the control bit is the direction, 1 brighter, the value the step code 1..7, 0 stops) |
-| `blind` | ***move*** (boolean), *stop* (boolean), `position` (number), *positionCommand* (number), `slat` (number), *slatCommand* (number) |
+| `dimmer` | *command* (boolean, the main role), `state` (boolean), *levelCommand* (number), `level` (number), *step* (controlled: relative dimming, KNX DPT 3.007; the control bit is the direction, 1 brighter, the value the step code 1..7, 0 stops); **at least one of command and levelCommand** (1.6) |
+| `blind` | ***move*** (boolean), *stop* (boolean), `position` (number), *positionCommand* (number), `slat` (number), *slatCommand* (number), `atTop` (boolean, 1.6), `atBottom` (boolean, 1.6) |
 | `switch` | ***command*** (boolean), `state` (boolean) |
 | `sensor` | **value** (any type) |
-| `climate` | **temperature** (number), `setpoint` (number), *setpointCommand* (number), `mode` (enumeration or number), *modeCommand* (enumeration or number), `heating` (boolean) |
+| `climate` | **temperature** (number), `setpoint` (number), *setpointCommand* (number), `mode` (enumeration or number), *modeCommand* (enumeration or number), `heating` (boolean or number, 1.6), `heatingLevel` (number, 1.6) |
 | `scene` | ***command*** (number, enumeration or controlled) |
 | `button` | **press** (boolean, controlled, or enumeration: a Zigbee remote's `action`, 1.4), `state` (boolean) |
 
 "number" is `unsigned`, `signed` or `real`. Unknown roles are ignored (I5).
+
+**The roles of 1.6** (haumacher/ehome #134, #136, #138):
+
+- A **dimmer**'s main role is its switching `command` (the function is named after it); `levelCommand`
+  and `step` are additional. A dimmer needs `command` or `levelCommand`, at least one (refused at
+  `functions[i].datapoints`: `a dimmer needs the role command or levelCommand`). An image of 1.5 (a
+  dimmer with `levelCommand`, with or without `command`) loads unchanged.
+- A **blind** binds whatever its actuator reports: a percentage `position` (KNX DPT 5.001), the end
+  positions `atTop` and `atBottom` (1 bit each, true while the hanging is at that end: an actuator's
+  "end position top/bottom" reports, e.g. a shutter or awning without positioning), or both.
+- A **climate**'s `heating` is a boolean or a number: a number is the actuating value in percent
+  (DPT 5.001) and means heating while it is above 0. `heatingLevel` (a number) is the actuating
+  value shown as such. One datapoint may take both roles.
+
+**What the controller shows** (the device UI, `web/ui/dist/function_state.js`; MQTT in
+`spec/mqtt.md` 4):
+
+| Kind | Shown |
+|---|---|
+| `blind` with a known `position` | The position in percent. The end positions only cross-check it: an end reported while the position is more than 5 % away from it (or both ends at once) marks the state as contradictory ("end positions disagree"). |
+| `blind` without a known position | From the end positions: open (`atTop` true), closed (`atBottom` true), in between (both false: stopped on the way); with only one of them bound its false value says "not fully open" or "not fully closed". Never a percentage. Both true: unknown, contradictory. |
+| `climate` | The temperature; with `heatingLevel` its value in percent and as flames in three steps (0 %: none; up to a third: one; up to two thirds: two; above: three); without it "heating" while `heating` is true or above 0. |
+| `dimmer` | On or off by `state`, else by its level above 0, else by the last value of `command`; the level in percent where it has one. The icon switches `command` where it is writable, else `levelCommand` (0 or 100). |
 
 **A Zigbee remote is a button** (1.4, haumacher/ehome #70). A remote reports its presses as the
 enumeration datapoint of its `action` function (a client binding, 3.3 and `spec/zigbee.md`): every
@@ -651,3 +677,21 @@ persisted values and history rings: the device returns to setup.
   that is not an identifier only to a controller that reports 1.5 or newer (I4), as with the
   enumeration press for 1.4; an image whose parameter ids are all identifiers loads on 1.4 as
   before.
+- 1.6 (haumacher/ehome #134, #136, #138): a dimmer's main role is its switching `command`; it needs
+  `command` or `levelCommand`, at least one (before: `levelCommand` required). The blind's roles
+  `atTop` and `atBottom` (1 bit each, the end positions), the climate's `heatingLevel` (a number,
+  the actuating value) and its `heating` of a number (heating while above 0), with what the
+  controller shows of them (3.5). A rule writes a value of the application (`virtual`, or without
+  a technology member) also when it is not `writable`, which is the user's permission (3.3,
+  `spec/rules.md` 7.3 and decision 16); the API's datapoint flags have the bit 0x40 for such a
+  value (`spec/api.md` "Datapoints"). Corpus cases `accept-function-roles-1-6`,
+  `refuse-function-roles-1-6`, `refuse-rules` (now a KNX status datapoint), rule cases 72 and 73.
+  E-Home writes 1.6. An image of 1.0 to 1.5 loads unchanged. A firmware that reads only up to 1.5
+  ignores `atTop`, `atBottom` and `heatingLevel` (unknown roles, I5: the blind shows no end
+  positions, the climate no heating level) and loads the image; it refuses a dimmer without
+  `levelCommand` (`a dimmer needs the role levelCommand`), a `heating` of a number (`... the role
+  heating of a climate takes boolean`) and a rule writing an application datapoint that is not
+  writable (`notWritable`), so the whole image: E-Home deploys an image with one of these three only
+  to a controller that reports 1.6 or newer (I4), as with the parameter ids for 1.5; an image
+  without them (a dimmer with `levelCommand`, a boolean `heating`, rules writing only writable
+  datapoints) loads on 1.5 as before.

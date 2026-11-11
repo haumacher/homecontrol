@@ -241,7 +241,7 @@ TEST_CASE("MqttConnectsWithTheConfigurationAndAnnouncesItself") {
 	CHECK(f.client.subscribed("house/main/fn/+/set"));
 	CHECK(f.client.subscribed("ha/+/homecontrol-a1b2c3/+/config"));
 	CHECK(f.client.subscribed("house/main/dp/+/state"));
-	CHECK(f.client.under("ha/").size() == 24); // one config per function
+	CHECK(f.client.under("ha/").size() == 28); // one config per function
 	CHECK(f.capture.sink.contains("connected to mqtt://broker.example:1883"));
 }
 
@@ -596,7 +596,7 @@ TEST_CASE("MqttDiscoveryOfEveryKind") {
 		CHECK(hc::json_parse(line.data() + space + 1, line.size() - space - 1, span));
 		++count;
 	}
-	CHECK(count == 24);
+	CHECK(count == 28);
 }
 
 TEST_CASE("MqttDiscoveryBurstIsPacedByTheOutbox") {
@@ -707,7 +707,7 @@ TEST_CASE("MqttImageSwapRepublishesAndRemoves") {
 	f.settle();
 	CHECK(f.client.retained.count("ha/light/homecontrol-a1b2c3/dimmer/config") == 0);
 	CHECK(f.client.retained.count("ha/light/homecontrol-a1b2c3/dimmer2/config") == 1);
-	CHECK(f.client.under("ha/").size() == 25); // 24 configs again, one removal
+	CHECK(f.client.under("ha/").size() == 29); // 28 configs again, one removal
 }
 
 TEST_CASE("MqttNewBaseTopicRetiresAndReconnects") {

@@ -14,18 +14,20 @@ namespace image {
 
 /// The runtime image (spec/runtime-image.md): what E-Home deploys, as one JSON document.
 
-/// The schema version this firmware reads, the only place it is set: major 1, minor 5 (1.1 adds the
+/// The schema version this firmware reads, the only place it is set: major 1, minor 6 (1.1 adds the
 /// control pages `ui.pages`, issue #54; 1.2 the adjustable schedule members, issue #58, and the
 /// history archives, issue #56; 1.3 the blocks, issue #60; 1.4 the enumeration press of a button with
 /// its `presses`, the Zigbee remotes, haumacher/ehome #70; 1.5 the parameter ids of the rule-id
-/// characters, `$"max-helligkeit"`, issue #81). An image with a higher major version is refused (named in the
+/// characters, `$"max-helligkeit"`, issue #81; 1.6 the roles atTop, atBottom and heatingLevel, a heating of a
+/// number, a dimmer with its command alone, a rule's write to an application datapoint that is not
+/// writable, haumacher/ehome #134, #136, #138). An image with a higher major version is refused (named in the
 /// report); a higher minor version loads (its additions are ignorable), except where a strict
 /// object (rules, schedules, blocks) meets a member this firmware does not know: that refusal says the
 /// image is newer than the firmware reads (spec/runtime-image.md I4).
 constexpr uint32_t kSchemaMajor = 1;
-constexpr uint32_t kSchemaMinor = 5;
+constexpr uint32_t kSchemaMinor = 6;
 
-/// "1.5": kSchemaMajor.kSchemaMinor as text (the API's `schema`, spec/api.md).
+/// "1.6": kSchemaMajor.kSchemaMinor as text (the API's `schema`, spec/api.md).
 const char* schema_version_text();
 
 /// Largest image in bytes. The device reads the whole text into RAM once at load (the parse works

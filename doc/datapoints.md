@@ -48,8 +48,9 @@ Flags (`DatapointFlags`):
 | `kReadOnStart` | The technology reads the value when it starts (KNX I). |
 | `kPersist` | The last good value and its wall-clock time survive a reboot (`hc::ValueStore`, `doc/persistence.md`). |
 | `kHistory` | A ring of recent samples is kept for the UI's sparklines (`hc::History`); the image's history spec gives retention and spacing. Boolean, unsigned, signed and real datapoints only. |
+| `kApplication` | A value of the application (the image's `virtual`, or no technology member; schema 1.6): a rule's write (`command_by_rule()`) takes it also without `kWritable`, which is the user's permission (the UI, the API, MQTT). |
 
-The model enforces `kWritable` and `kTransmit`; `kReadable` and `kReadOnStart` are instructions to
+The model enforces `kWritable` (for a rule's write together with `kApplication`) and `kTransmit`; `kReadable` and `kReadOnStart` are instructions to
 the adapter; `kPersist` and `kHistory` are instructions to the value store and the history, which
 read them at their own load.
 
@@ -104,6 +105,9 @@ virtual values published to KNX, or the scheduler's outputs mirrored to the bus.
   when it accepted the value for transmission (queued or sent), false to refuse (the command fails
   with `refused`, the value stays). On acceptance, or without a transmitting owner (a rule
   parameter, an internal value), the model stores the value at once.
+- **`command_by_rule(id, value)`** — a rule's `write` (spec/rules.md 7.3): `command()`, except that a
+  datapoint with `kApplication` and no owning technology takes the value also when it is not
+  writable (haumacher/ehome #138: a rule's own output the user must not change).
 
 Both store with quality `good` and the current time. A technology must not call back into the model
 from inside `command()` (refused as `busy`); it reports later through the event loop. A KNX adapter

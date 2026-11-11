@@ -51,11 +51,14 @@ struct Datapoints {
 	std::vector<std::string> names;
 	std::vector<hc::DatapointSpec> specs;
 
-	void add(const std::string& name, hc::ValueType type, bool writable = true) {
+	/// `application`: a value of the application (spec/runtime-image.md 3.3, 1.6), which rules write
+	/// also when it is not writable.
+	void add(const std::string& name, hc::ValueType type, bool writable = true, bool application = false) {
 		names.push_back(name);
 		specs.push_back(hc::DatapointSpec{nullptr, type,
 			static_cast<uint8_t>(hc::DatapointFlags::kReadable |
-				(writable ? hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit : 0))});
+				(writable ? hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit : 0) |
+				(application ? hc::DatapointFlags::kApplication : 0))});
 	}
 
 	void load(hc::DatapointModel& model) {
@@ -564,7 +567,7 @@ TEST_CASE("RulesPrinter round trip of every corpus expression") {
 		Datapoints d;
 		for (const Json& p : json["datapoints"].items) {
 			d.add(p["name"].text, hc::rules::datapoint_type_from_name(p["type"].text.c_str()),
-				!p.has("writable") || p["writable"].boolean);
+				!p.has("writable") || p["writable"].boolean, p.has("application") && p["application"].boolean);
 		}
 		std::vector<const Json*> images{&json["rules"]};
 		for (const Json& step : json["timeline"].items) {

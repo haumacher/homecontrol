@@ -107,7 +107,7 @@ sessions are ended until the restart). The console's `web session clear` does th
 
 ```json
 {"device": {"name": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "...", "ui": "3c0dcd52e390bb91",
-            "schema": "1.5"},
+            "schema": "1.6"},
  "uptime_s": 5321,
  "network": {"state": "up", "ip": "192.0.2.10", "mode": "normal", "pairing": false, "mdns": "homecontrol-a1b2c3.local",
              "mdns_announced": true},
@@ -185,7 +185,10 @@ A datapoint (doc/datapoints.md) in the API:
 
 `type` is the value type's name (`boolean`, `unsigned`, `signed`, `real`, `enumeration`,
 `string`, `raw`, `time of day`, `date`, `date-time`, `controlled`, `color`; doc/datapoints.md);
-`flags` are the datapoint's flag bits; `technology` the name of the technology that owns it
+`flags` are the datapoint's flag bits (1 readable, 2 writable, 4 transmit, 8 read on start, 16
+persist, 32 history, 64 a value of the application that rules write also when it is not writable:
+spec/runtime-image.md 3.3, schema 1.6); `writable` is the user's permission: a command of this API to
+a datapoint without it is refused (409 `dp.not_writable`); `technology` the name of the technology that owns it
 (`knx`, `zigbee`, `external`, `scheduler`, `rules` for a rule parameter's datapoint, ...; `null`
 for an application value); `quality` is `unknown` (no value yet), `good` or `stale`; `pending` is
 true while the owning technology holds a commanded value it has not sent yet because it is not
@@ -1072,7 +1075,7 @@ With `ehome.enabled` true the controller opens the WebSocket of `socket` (TLS) a
 
 ```
 E-Home → {"type": "challenge", "nonce": "<32 to 128 hex digits>"}
-device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "schema": "1.5", "key": "ce7d 4a41 a476 9ee3"}
+device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "schema": "1.6", "key": "ce7d 4a41 a476 9ee3"}
 E-Home → {"type": "ready", "installation": "<name>"}        or {"type": "refused", "code": "...", "error": "..."} and the close
 ```
 

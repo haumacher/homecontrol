@@ -686,6 +686,14 @@ DatapointStatus DatapointModel::restore(uint16_t id, const Value& value) {
 }
 
 DatapointStatus DatapointModel::command(uint16_t id, const Value& value) {
+	return take_command(id, value, false);
+}
+
+DatapointStatus DatapointModel::command_by_rule(uint16_t id, const Value& value) {
+	return take_command(id, value, true);
+}
+
+DatapointStatus DatapointModel::take_command(uint16_t id, const Value& value, bool by_rule) {
 	if (refuse_busy("command")) {
 		return DatapointStatus::busy;
 	}
@@ -693,7 +701,7 @@ DatapointStatus DatapointModel::command(uint16_t id, const Value& value) {
 	if (dp == nullptr) {
 		return DatapointStatus::unknown_id;
 	}
-	if (!dp->writable()) {
+	if (!dp->writable() && !(by_rule && dp->application() && dp->technology_ == nullptr)) {
 		Log::error(kTag, "refusing command to '%s': not writable", dp->name_);
 		return DatapointStatus::not_writable;
 	}

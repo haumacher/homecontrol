@@ -15,7 +15,7 @@ the next free number; a number is never reused.
 | `title` | string | One line: what the case pins. |
 | `description` | string, optional | More explanation for people. |
 | `note` | string, optional | A point for review: a judgment call, an assumption, or the decision of `spec/rules.md` section 12 the case pins. |
-| `datapoints` | array | The datapoints of the image: `{"name", "type"}` with a datapoint value type of `spec/rules.md` 3.1, optional `"writable": false` (default `true`), `"refuseCommands": true` (the owning technology refuses every command), `"readable": false` (no technology can be asked for its value: a `read` of it is refused at load, `notReadable`; default `true`) and `"refuseReads": true` (the owning technology refuses every read, `readRefused`). The parameter datapoints `rule/<ruleId>/<parameterId>` (`spec/rules.md` 8.6) are not listed: the runner derives them from `rules` (and from each `image` step's rules). |
+| `datapoints` | array | The datapoints of the image: `{"name", "type"}` with a datapoint value type of `spec/rules.md` 3.1, optional `"writable": false` (default `true`), `"application": true` (a value of the application, `spec/runtime-image.md` 3.3: no technology owns it, and rules write it also when it is not writable; schema 1.6), `"refuseCommands": true` (the owning technology refuses every command), `"readable": false` (no technology can be asked for its value: a `read` of it is refused at load, `notReadable`; default `true`) and `"refuseReads": true` (the owning technology refuses every read, `readRefused`). The parameter datapoints `rule/<ruleId>/<parameterId>` (`spec/rules.md` 8.6) are not listed: the runner derives them from `rules` (and from each `image` step's rules). |
 | `schedules` | array, optional | Schedule entries that exist in the image (for `schedule` triggers): each an id, or `{"id", "output"}` with the name of the datapoint the entry writes (a rule may not write it, `spec/rules.md` 10.1); or a full entry of the image (`spec/schedules.md` 2, recognized by its `kind`, without `output`), which the device's scheduler runs on the case's clock: it fires by itself, and its adjustable `time` (`spec/schedules.md` 2.2) is the datapoint `schedule/<id>/time`, which the runner derives like the parameter datapoints. A case uses either form, not both. |
 | `clock` | object, optional | `{"start": "YYYY-MM-DDTHH:MM:SS", "synchronized": bool, "zone": "<POSIX TZ>"}`: the local wall time at time 0 (a time that occurs twice is its first occurrence), whether it is synchronized (default `true`) and the time zone as a POSIX TZ string (`"CET-1CEST,M3.5.0,M10.5.0/3"`; absent: UTC). Without `clock` the wall clock is not synchronized. A runner applies the zone through its own evaluation of the string, never the host's time zone. |
 | `ui` | object, optional | `{"lang": "<tag>"}`: the device's UI language (the setting `ui.lang`, default `en`), in which labels are resolved (`spec/rules.md` 2.2). |
@@ -65,7 +65,8 @@ Each step has `at` and exactly one of:
 
 1. Build the datapoint model from `datapoints`. Every datapoint is owned by a test technology that
    accepts every command and every read (and reports neither back) unless `refuseCommands` or
-   `refuseReads` is set; a datapoint is writable and transmitting unless `writable` is `false`.
+   `refuseReads` is set; a datapoint is writable and transmitting unless `writable` is `false`. An
+   `application` datapoint is owned by no technology and has the flag of a value of the application.
    Append the parameter datapoints of `rules` (`spec/rules.md` 8.6), owned by the rule engine.
    Store the `initial` values. Load the `persisted` overrides and states into the parameter store.
    Set the `ui` language. An `image` step loads the model again in the same way for its rules,
@@ -165,6 +166,8 @@ Reals compare with a relative tolerance of 1e-9; everything else compares exactl
 | `69-load-refused-parameter-id-length` | Load refusal `malformed`: a parameter id of 25 characters. |
 | `70-load-refused-parameter-id-enabled` | Load refusal `duplicateId`: a declared parameter `enabled` (reserved for the enable switch). |
 | `71-load-refused-parameter-id-keyword` | Load refusal `malformed`: a parameter id that is a keyword (`not`). |
+| `72-application-write-not-writable` | A rule writes an application datapoint that is not writable (schema 1.6, haumacher/ehome #138); the user's command to it is refused. |
+| `73-load-refused-not-writable-status` | Load refusal `notWritable`: a write to a datapoint a technology owns that is not writable (a status). |
 
 The expected outputs were computed by hand and cross-checked against a throw-away executable model of
 the specification. The sun's positions of cases 59 to 64 come from the throw-away executable model of
