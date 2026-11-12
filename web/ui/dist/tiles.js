@@ -252,7 +252,9 @@ export function functionTile(fn, env) {
 		flameRow = h("div", { class: "flames", role: "img" }, [0, 1, 2].map(() => icon(icons.flame)));
 		controls.push(flameRow);
 	}
-	if (fn.kind === "climate") {
+	if (fn.kind === "climate" && (has("setpoint") || has("setpointCommand"))) {
+		// The setpoint row only where the function has a setpoint: a climate of a temperature and a
+		// heating level (an actuator channel and a room key) has none to show or adjust.
 		const target = has("setpoint") ? "setpoint" : "setpointCommand";
 		setpointText = h("span", { class: "setpoint" });
 		const step = (delta) => {

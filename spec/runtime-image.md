@@ -279,7 +279,7 @@ What the inhabitant operates: a light, a blind, a sensor. A function names the d
 |---|---|
 | `blind` with a known `position` | The position in percent. The end positions only cross-check it: an end reported while the position is more than 5 % away from it (or both ends at once) marks the state as contradictory ("end positions disagree"). |
 | `blind` without a known position | From the end positions: open (`atTop` true), closed (`atBottom` true), in between (both false: stopped on the way); with only one of them bound its false value says "not fully open" or "not fully closed". Never a percentage. Both true: unknown, contradictory. |
-| `climate` | The temperature; with `heatingLevel` its value in percent and as flames in three steps (0 %: none; up to a third: one; up to two thirds: two; above: three); without it "heating" while `heating` is true or above 0. |
+| `climate` | The temperature; with `heatingLevel` its value in percent and as flames in three steps (0 %: none; up to a third: one; up to two thirds: two; above: three); without it "heating" while `heating` is true or above 0. The setpoint ("set to", with colder and warmer where `setpointCommand` is writable) only where the function has `setpoint` or `setpointCommand`. |
 | `dimmer` | On or off by `state`, else by its level above 0, else by the last value of `command`; the level in percent where it has one. The icon switches `command` where it is writable, else `levelCommand` (0 or 100). |
 
 **A Zigbee remote is a button** (1.4, haumacher/ehome #70). A remote reports its presses as the
