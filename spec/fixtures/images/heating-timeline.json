@@ -2,10 +2,11 @@
 	"comment": "Schema 1.7 (issue #84, haumacher/ehome #140): the heating program as one rule with states and a timeline (spec/rules.md 2.8, 11.5), the state datapoint rule/heating/state on a control page (8.8). E-Home's export of this project equals this document as JSON values, apart from this comment and the members generatedAt and generator of image, which E-Home adds. Placeholder addresses 1/x/y.",
 	"image": {"schemaVersion": "1.7", "projectId": "heating-timeline", "revision": 1, "name": "Heating program"},
 	"settings": {"tz": "CET-1CEST,M3.5.0,M10.5.0/3", "location": {"lat": 48.137, "lon": 11.576}},
+	"locations": [],
 	"datapoints": [
 		{
 			"id": "1/4/1",
-			"label": {"en": "Living room HVAC mode", "de": "Wohnzimmer Betriebsart"},
+			"label": "Living room HVAC mode",
 			"type": "enumeration",
 			"writable": true,
 			"transmit": true,
@@ -13,7 +14,7 @@
 		},
 		{
 			"id": "1/4/2",
-			"label": {"en": "Bedroom HVAC mode", "de": "Schlafzimmer Betriebsart"},
+			"label": "Bedroom HVAC mode",
 			"type": "enumeration",
 			"writable": true,
 			"transmit": true,
@@ -35,7 +36,7 @@
 				},
 				{
 					"id": "standby",
-					"label": {"en": "Standby", "de": "Standby"},
+					"label": "Standby",
 					"entry": [
 						{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 2}},
 						{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 2}}

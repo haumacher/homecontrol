@@ -359,7 +359,8 @@ TEST_CASE("Timeline.Image: the heating program of haumacher/ehome #140 through t
 	const Json& rule = r.json["rules"].items[0];
 	CHECK(rule["state"].text == "comfort");
 	REQUIRE(rule["states"].items.size() == 3);
-	CHECK(rule["states"].items[1]["label"]["de"].text == "Standby");
+	CHECK(rule["states"].items[0]["label"]["de"].text == "Komfort");
+	CHECK(rule["states"].items[1]["label"].text == "Standby");
 	CHECK(rule["timeline"]["adjustable"].boolean);
 	CHECK_FALSE(rule["timeline"]["overridden"].boolean);
 	CHECK(rule["timeline"]["plans"].number == 2);
