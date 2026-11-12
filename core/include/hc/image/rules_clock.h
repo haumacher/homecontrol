@@ -23,6 +23,10 @@ public:
 	int64_t local_to_utc(const DateTime& local) const override;
 	bool utc_to_local(int64_t utc_seconds, DateTime& out) const override;
 	bool sun_position(int64_t utc_seconds, SunPosition& out) const override;
+	int64_t civil_to_utc(int32_t year, unsigned month, unsigned day, unsigned hour, unsigned minute,
+		unsigned second) const override;
+	SunLookup sun_event_utc(int32_t year, unsigned month, unsigned day, hc::SunEvent event,
+		int64_t& out) const override;
 
 private:
 	const hc::TimeSource& time_;

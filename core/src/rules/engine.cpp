@@ -22,9 +22,14 @@ namespace {
 constexpr const char* kTag = "hc.rule";
 
 constexpr const char* kLogCodeNames[] = {"log", "conditionNoValue", "valueNoValue", "evalError", "writeRefused",
-	"timerRefused", "parameterRefused", "parameterReset", "stateReset", "loopGuard", "queueOverflow", "readRefused"};
+	"timerRefused", "parameterRefused", "parameterReset", "stateReset", "loopGuard", "queueOverflow", "readRefused",
+	"timelineReset", "sunUnavailable"};
 
-enum EventKind : uint8_t { kDatapoint, kSchedule, kTimer, kStart, kParameter, kStartAll, kSilence, kBlock, kBlockDue };
+enum EventKind : uint8_t {
+	kDatapoint, kSchedule, kTimer, kStart, kParameter, kStartAll, kSilence, kBlock, kBlockDue,
+	kTimeline, ///< A switching point of rule `a` to state `b` (spec 7.13).
+	kEvaluate, ///< An evaluation of rule `a`'s timeline while it runs (spec 7.13).
+};
 
 /// Event flags.
 constexpr uint8_t kChanged = 0x01;   ///< datapoint: value or quality changed.
@@ -37,6 +42,8 @@ constexpr uint8_t kMatchMemory = 0x04;
 constexpr uint8_t kMatched = 0x08;
 
 constexpr uint8_t kNoKind = 0xFF;
+/// The last trigger of a rule was its timeline (a switching point or an evaluation): "timeline <state>".
+constexpr uint8_t kTimelineKind = 0xF0;
 
 /// Per-action flags.
 constexpr uint8_t kReadRefusedLogged = 0x01;
@@ -189,6 +196,17 @@ struct Engine::RuleRuntime {
 	uint8_t state = kNoState;
 	bool has_state = false;
 	bool state_dirty = false; ///< The state changed; its write is delayed (spec 8.5).
+	// The timeline (spec 7.13).
+	int64_t handled = 0;        ///< The latest handled moment `h` (UTC seconds), when handled_valid.
+	int64_t next_moment = 0;    ///< The next point, when next_valid.
+	uint64_t next_deadline = 0; ///< Its monotonic deadline.
+	uint16_t state_datapoint = kNone; ///< The state datapoint bound to the engine (spec 8.8).
+	uint8_t next_state = 0;
+	uint8_t next_plan = 0;
+	bool handled_valid = false;
+	bool next_valid = false;
+	bool timeline_dirty = false; ///< The override changed; its write is delayed (spec 8.7).
+	bool sun_logged = false;     ///< sunUnavailable logged.
 };
 
 struct Engine::ParamRuntime {
@@ -280,6 +298,7 @@ struct Engine::Runtime {
 	uint16_t* matched = nullptr; ///< Match roots that matched the current event.
 	SilenceRuntime* silences = nullptr;
 	uint8_t* action_flags = nullptr;
+	Timeline* overrides = nullptr; ///< The inhabitant's timelines, one per rule (empty: none); spec 8.7.
 	size_t rule_count = 0, param_count = 0, timer_count = 0, silence_count = 0;
 	/// One allocation per table (homecontrol #70: not one block of all, which grew with the rules and
 	/// which a fragmented heap refuses during a swap); the destructor frees them (and destroys the
@@ -299,6 +318,7 @@ struct Engine::Runtime {
 		}
 		rules.release();
 		params.release();
+		delete[] overrides;
 		for (void* part : parts) {
 			::operator delete(part, std::nothrow);
 		}
@@ -438,6 +458,7 @@ private:
 
 bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* previous_ids) {
 	RuleSet next = std::move(next_set);
+	persist_now(); // the delayed writes of the old rules (states, timelines) before anything moves
 	size_t rules = next.rule_count();
 	size_t params = next.parameter_count();
 	size_t timers = next.timer_count();
@@ -479,6 +500,18 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 		rt->action_flags = static_cast<uint8_t*>(table(actions));
 		rt->node_flags = static_cast<uint8_t*>(table(nodes));
 		rt->interest = static_cast<uint8_t*>(table((interest_bits + 7) / 8));
+		bool timelines = false;
+		for (size_t r = 0; r < rules && !timelines; ++r) {
+			timelines = next.timeline(r) != nullptr;
+		}
+		if (refused == 0 && timelines) {
+			rt->overrides = new (std::nothrow) Timeline[rules];
+			if (rt->overrides == nullptr) {
+				refused = rules * sizeof(Timeline);
+			} else {
+				bytes += rules * sizeof(Timeline);
+			}
+		}
 	}
 	if (rt == nullptr || refused > 0) {
 		delete rt; // no objects in its tables yet (the counts are 0): only the memory goes
@@ -513,6 +546,9 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	Runtime* old = runtime_;
 	const RuleSet& old_set = set_;
 	bool boot = !booted_;
+	size_t timeline_points = 0; // the effective timelines so far, in rule order (spec 10.2)
+	size_t timeline_plans = 0;
+	bool timelines_dirty = false;
 
 	// Rules: diagnostics, states, timers, parameters.
 	for (size_t r = 0; r < rules; ++r) {
@@ -530,6 +566,10 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 			nr.state = kNoState;
 			nr.has_state = false;
 			nr.cascade_firings = 0;
+			nr.handled_valid = false; // the start evaluates the timeline again (spec 7.13)
+			nr.next_valid = false;
+			nr.state_datapoint = kNone;
+			nr.timeline_dirty = false;
 			if (previous_ids != nullptr) {
 				// The model was replaced: follow the datapoint of the last trigger and the last write
 				// to its new id; forget it when the datapoint is gone.
@@ -560,7 +600,9 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 			}
 			// Without previous_ids the model stayed: datapoint ids are valid. Other references are by
 			// index of the old set.
-			if (orr.last_trigger_kind != kNoKind && orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::datapoint) &&
+			if (orr.last_trigger_kind == kTimelineKind) {
+				nr.last_trigger_kind = kNoKind; // a state index of the old set
+			} else if (orr.last_trigger_kind != kNoKind && orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::datapoint) &&
 				orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::start) &&
 				orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::match)) {
 				nr.last_trigger_kind = kNoKind; // timer/parameter/schedule indices of the old set
@@ -666,6 +708,34 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 				log_code(rule_id, &nr, LogCode::parameter_reset, LogLevel::warn, "override no longer fits", text);
 			}
 		}
+		// The inhabitant's timeline (spec 8.7): kept while the new rule lets it be.
+		const Timeline* image_timeline = next.timeline(r);
+		char* text = nullptr;
+		size_t length = 0;
+		bool had = false;
+		if (o >= 0 && old->overrides != nullptr && !old->overrides[o].empty()) {
+			RuleSetStates old_states(old_set, static_cast<size_t>(o));
+			text = old->overrides[o].canonical_text(old_states, length);
+			had = true;
+		} else if (o < 0 && boot) {
+			text = read_timeline_blob(rule_id, length);
+			had = text != nullptr;
+		}
+		if (had) {
+			bool dirty = false;
+			keep_timeline_override(r, image_timeline, text, length, dirty, timeline_points, timeline_plans, *rt, next);
+			if (dirty) {
+				nr.timeline_dirty = true;
+				timelines_dirty = true;
+			}
+		}
+		delete[] text;
+		const Timeline* effective =
+			rt->overrides != nullptr && !rt->overrides[r].empty() ? &rt->overrides[r] : image_timeline;
+		if (effective != nullptr) {
+			timeline_points += effective->point_count();
+			timeline_plans += effective->plan_count();
+		}
 	}
 
 	// Change tracking continues for datapoints still tracked; new ones start from the model.
@@ -740,6 +810,10 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	Keeper keeper{*this};
 	KeepOverrides<Keeper> visitor(keeper);
 	store_.prune(visitor);
+	prune_timeline_blobs();
+	if (timelines_dirty) {
+		persist_timeline(SIZE_MAX); // the dropped overrides' blobs go with the next delayed write
+	}
 	bind_parameters();
 	if (observer_) {
 		for (size_t r = 0; r < set_.rule_count(); ++r) {
@@ -898,6 +972,21 @@ void Engine::process_due_timers() {
 			run_cascade(Event{kBlockDue, 0, 0, 0, 0});
 			continue;
 		}
+		// The timelines' switching points: after the timers at an equal deadline, rules in rule order
+		// (spec 7.13).
+		size_t point_rule = SIZE_MAX;
+		uint64_t point_deadline = 0;
+		for (size_t r = 0; r < runtime_->rule_count; ++r) {
+			const RuleRuntime& rr = runtime_->rules[r];
+			if (rr.next_valid && rr.next_deadline <= now && (point_rule == SIZE_MAX || rr.next_deadline < point_deadline)) {
+				point_rule = r;
+				point_deadline = rr.next_deadline;
+			}
+		}
+		if (point_rule != SIZE_MAX && (best == SIZE_MAX || point_deadline < best_deadline)) {
+			apply_points(point_rule);
+			continue;
+		}
 		if (best == SIZE_MAX) {
 			return;
 		}
@@ -934,6 +1023,12 @@ void Engine::reschedule() {
 		if (host_ != nullptr) {
 			uint64_t block_deadline = host_->next_deadline();
 			earliest = block_deadline < earliest ? block_deadline : earliest;
+		}
+		for (size_t i = 0; i < runtime_->rule_count; ++i) {
+			const RuleRuntime& rr = runtime_->rules[i];
+			if (rr.next_valid && rr.next_deadline < earliest) {
+				earliest = rr.next_deadline;
+			}
 		}
 	}
 	if (earliest == EventLoop::kNever) {
@@ -1233,6 +1328,40 @@ void Engine::persist_now() {
 		}
 		store_.write(rule_id, ParameterStore::kStateKey, Val::of_string(state_id, std::strlen(state_id)));
 	}
+	// The inhabitant's timelines (spec 8.7): written or removed.
+	for (size_t r = 0; r < runtime_->rule_count; ++r) {
+		RuleRuntime& rr = runtime_->rules[r];
+		if (!rr.timeline_dirty) {
+			continue;
+		}
+		rr.timeline_dirty = false;
+		if (timeline_store_ == nullptr) {
+			continue;
+		}
+		const char* rule_id = set_.str(set_.rule(r).id);
+		char name[kTimelineBlobName];
+		timeline_blob_name(rule_id, name);
+		if (runtime_->overrides == nullptr || runtime_->overrides[r].empty()) {
+			timeline_store_->remove(name);
+			continue;
+		}
+		RuleSetStates states(set_, r);
+		size_t length = 0;
+		char* text = runtime_->overrides[r].canonical_text(states, length);
+		if (text == nullptr) {
+			Log::error(kTag, "%s: no memory to write the inhabitant's timeline; it is lost at the next restart", rule_id);
+			continue;
+		}
+		char key[48];
+		int key_length = std::snprintf(key, sizeof(key), "%s/%s\n", rule_id, kTimelineKey);
+		BlobChunk chunks[2] = {{key, static_cast<size_t>(key_length)}, {text, length}};
+		BlobStatus status = timeline_store_->write(name, chunks, 2);
+		if (status != BlobStatus::ok) {
+			Log::error(kTag, "%s: the inhabitant's timeline was not written (%s); it is lost at the next restart", rule_id,
+				blob_status_name(status));
+		}
+		delete[] text;
+	}
 }
 
 void Engine::stop_timers(size_t rule) {
@@ -1253,6 +1382,10 @@ void Engine::stop_timers(size_t rule) {
 void Engine::enable_changed(size_t rule, bool enabled) {
 	if (!enabled) {
 		stop_timers(rule);
+		runtime_->rules[rule].next_valid = false; // a disabled rule does not switch (spec 7.13)
+		if (!in_cascade_) {
+			reschedule();
+		}
 		return;
 	}
 	// Enabling arms the silence triggers anew: the period counts from the later of the last update
@@ -1369,6 +1502,35 @@ void Engine::bind_parameters() {
 			publish_parameter(r, p);
 		}
 	}
+	// The state datapoints (spec 8.8).
+	for (size_t r = 0; r < set_.rule_count(); ++r) {
+		const Rule& rule = set_.rule(r);
+		RuleRuntime& rr = runtime_->rules[r];
+		rr.state_datapoint = kNone;
+		if (rule.state_count == 0 || set_.find_parameter(r, "state") >= 0) {
+			continue; // no states, or a parameter `state` of an image before 1.7 has the datapoint
+		}
+		char name[Datapoint::kMaxName + 1];
+		if (!parameter_datapoint_name(set_.str(rule.id), "state", name, sizeof(name))) {
+			continue;
+		}
+		const Datapoint* dp = model_.find(name);
+		if (dp == nullptr) {
+			++missing;
+			continue;
+		}
+		if (dp->type() != ValueType::enumeration) {
+			Log::error(kTag, "datapoint '%s' is %s, the state needs enumeration: not mirrored", name,
+				value_type_name(dp->type()));
+			continue;
+		}
+		if (model_.bind(dp->id(), technology_) != DatapointStatus::ok) {
+			Log::error(kTag, "datapoint '%s' is owned by another technology: the state is not mirrored", name);
+			continue;
+		}
+		rr.state_datapoint = dp->id();
+		publish_state(r);
+	}
 	quiet_ = false;
 	if (missing > 0) {
 		Log::debug(kTag, "%u parameter(s) without a datapoint in the model: not mirrored", static_cast<unsigned>(missing));
@@ -1426,6 +1588,11 @@ void Engine::publish_parameter(size_t rule, size_t index) {
 
 bool Engine::parameter_command(const Datapoint& datapoint, const Value& value) {
 	size_t r = 0, p = 0;
+	if (state_of_datapoint(datapoint.id(), r)) {
+		Log::error(kTag, "command to '%s' refused: the state of a rule changes only by its transitions (spec 8.8)",
+			datapoint.name());
+		return false;
+	}
 	if (!parameter_of(datapoint.id(), r, p)) {
 		Log::error(kTag, "command to '%s' refused: no rule parameter behind it in the loaded rules", datapoint.name());
 		return false;
@@ -1507,6 +1674,14 @@ void Engine::run_cascade(const Event& event) {
 		if (rule < set_.rule_count() && enabled(rule)) {
 			run_start(rule, StartReason::enable);
 		}
+	} else if (event.kind == kTimeline) {
+		size_t rule = event.a;
+		if (rule < set_.rule_count() && enabled(rule)) {
+			record_timeline_firing(rule, static_cast<uint8_t>(event.b));
+			change_state(rule, static_cast<uint8_t>(event.b), true);
+		}
+	} else if (event.kind == kEvaluate) {
+		evaluate_running(event.a);
 	} else {
 		process_event(event, false);
 	}
@@ -1517,14 +1692,25 @@ void Engine::run_cascade(const Event& event) {
 void Engine::run_start(size_t rule, StartReason reason) {
 	const Rule& r = set_.rule(rule);
 	RuleRuntime& rr = runtime_->rules[rule];
-	if (r.state_count > 0 && !rr.has_state) {
+	// Taking the state at a start with the reason boot or image is no event (spec 8.8).
+	bool quiet = reason != StartReason::enable;
+	if (start_timeline(rule, quiet)) {
+		// The state due now, with its entry actions (spec 7.5 step 1).
+	} else if (r.state_count > 0 && !rr.has_state) {
 		rr.state = r.initial_state;
 		rr.has_state = true;
 		state_changed(rule);
+		if (quiet) {
+			quietly([this, rule] { publish_state(rule); });
+		} else {
+			publish_state(rule);
+		}
 		if (enabled(rule)) {
 			current_rule_ = rule;
 			run_actions(rule, set_.state(r.first_state + r.initial_state).entry);
 		}
+	} else if (r.state_count > 0 && quiet) {
+		quietly([this, rule] { publish_state(rule); });
 	}
 	if (enabled(rule)) {
 		process_event(Event{kStart, reason_flag(reason), static_cast<uint16_t>(rule), 0, 0}, false);
@@ -1706,6 +1892,7 @@ void Engine::process_event(const Event& e, bool derived) {
 					rr.state = reaction.to;
 					rr.has_state = true;
 					state_changed(r);
+					publish_state(r);
 					run_actions(r, set_.state(rule.first_state + reaction.to).entry);
 					break;
 				}
@@ -2668,7 +2855,14 @@ bool Engine::diagnostics(size_t rule, RuleDiagnostics& out) const {
 	out.peak_cascade_firings = rr.peak_cascade_firings;
 	out.loop_guards = rr.loop_guards;
 	out.state = current_state(rule);
-	if (rr.last_trigger_kind != kNoKind) {
+	if (rr.last_trigger_kind == kTimelineKind) {
+		out.has_trigger = true;
+		out.last_trigger_ms = rr.last_trigger_ms;
+		out.last_trigger_wall_valid = rr.last_trigger_wall_valid;
+		out.last_trigger_wall = rr.last_trigger_wall;
+		std::snprintf(out.last_trigger, sizeof(out.last_trigger), "timeline %s",
+			rr.last_trigger_ref < r.state_count ? set_.str(set_.state(r.first_state + rr.last_trigger_ref).id) : "?");
+	} else if (rr.last_trigger_kind != kNoKind) {
 		out.has_trigger = true;
 		out.last_trigger_ms = rr.last_trigger_ms;
 		out.last_trigger_wall_valid = rr.last_trigger_wall_valid;
@@ -2759,6 +2953,467 @@ EngineMemory Engine::memory() const {
 	m.per_silence = sizeof(SilenceRuntime);
 	m.per_action = 1;
 	return m;
+}
+
+// ------------------------------------------------------------------------------------------
+// Timelines (spec/rules.md 2.8, 7.13, 8.7, 8.8)
+
+const char* timeline_status_code(TimelineStatus status) {
+	switch (status) {
+		case TimelineStatus::ok: return "ok";
+		case TimelineStatus::unknown_rule: return "unknown";
+		case TimelineStatus::no_timeline: return "no_timeline";
+		case TimelineStatus::not_adjustable: return "not_adjustable";
+		case TimelineStatus::malformed: return "malformed_timeline";
+		case TimelineStatus::unknown_state: return "unknown_state";
+		case TimelineStatus::limit: return "timeline_limit";
+		case TimelineStatus::no_memory: return "no_memory";
+	}
+	return "?";
+}
+
+void Engine::timeline_blob_name(const char* rule, char* out) {
+	uint64_t hash = ParameterStore::hash(rule, kTimelineKey);
+	std::snprintf(out, kTimelineBlobName, "tl.%012llx", static_cast<unsigned long long>(hash & 0xFFFFFFFFFFFFULL));
+}
+
+const Timeline* Engine::timeline(size_t rule) const {
+	if (runtime_ == nullptr || rule >= runtime_->rule_count) {
+		return nullptr;
+	}
+	if (runtime_->overrides != nullptr && !runtime_->overrides[rule].empty()) {
+		return &runtime_->overrides[rule];
+	}
+	return set_.timeline(rule);
+}
+
+bool Engine::timeline_overridden(size_t rule) const {
+	return runtime_ != nullptr && rule < runtime_->rule_count && runtime_->overrides != nullptr &&
+		!runtime_->overrides[rule].empty();
+}
+
+bool Engine::next_point(size_t rule, int64_t& utc, uint8_t& state, uint8_t& plan) const {
+	if (runtime_ == nullptr || rule >= runtime_->rule_count || !runtime_->rules[rule].next_valid) {
+		return false;
+	}
+	const RuleRuntime& rr = runtime_->rules[rule];
+	utc = rr.next_moment;
+	state = rr.next_state;
+	plan = rr.next_plan;
+	return true;
+}
+
+bool Engine::state_of_datapoint(uint16_t datapoint, size_t& rule) const {
+	if (runtime_ == nullptr || datapoint == kNone) {
+		return false;
+	}
+	for (size_t r = 0; r < runtime_->rule_count; ++r) {
+		if (runtime_->rules[r].state_datapoint == datapoint) {
+			rule = r;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool Engine::wall_utc(int64_t& out) const {
+	DateTime now;
+	if (!time_.local_now(now)) {
+		return false;
+	}
+	out = time_.local_to_utc(now);
+	return true;
+}
+
+void Engine::publish_state(size_t rule) {
+	const RuleRuntime& rr = runtime_->rules[rule];
+	const Datapoint* dp = rr.state_datapoint != kNone ? model_.get(rr.state_datapoint) : nullptr;
+	if (dp == nullptr || !rr.has_state) {
+		return;
+	}
+	Value value = Value::of_enum(rr.state);
+	if (quiet_ && dp->quality() == Quality::good && dp->value() == value) {
+		return;
+	}
+	// Every transition updates it, a self-transition without a change (spec 8.8).
+	DatapointStatus status = model_.publish(technology_, rr.state_datapoint, value);
+	if (status != DatapointStatus::ok) {
+		Log::error(kTag, "%s: the state was not published: %s", dp->name(), datapoint_status_name(status));
+	}
+}
+
+void Engine::change_state(size_t rule, uint8_t to, bool exit_actions) {
+	const Rule& r = set_.rule(rule);
+	RuleRuntime& rr = runtime_->rules[rule];
+	current_rule_ = rule;
+	if (exit_actions && rr.has_state) {
+		run_actions(rule, set_.state(r.first_state + rr.state).exit);
+	}
+	rr.state = to;
+	rr.has_state = true;
+	state_changed(rule);
+	publish_state(rule);
+	run_actions(rule, set_.state(r.first_state + to).entry);
+}
+
+void Engine::record_timeline_firing(size_t rule, uint8_t state) {
+	RuleRuntime& rr = runtime_->rules[rule];
+	++rr.firings;
+	rr.last_trigger_ms = cascade_ms_;
+	rr.last_trigger_wall_valid = wall_valid_;
+	rr.last_trigger_wall = wall_;
+	rr.last_trigger_kind = kTimelineKind;
+	rr.last_trigger_ref = state;
+	rr.last_trigger_flags = 0;
+}
+
+void Engine::note_sun(size_t rule, bool no_location) {
+	RuleRuntime& rr = runtime_->rules[rule];
+	if (no_location) {
+		if (!rr.sun_logged) {
+			rr.sun_logged = true;
+			log_rule(rule, LogCode::sun_unavailable, LogLevel::warn, "sun points without a location",
+				"the timeline's sun points have no moment: the device has no location (settings location.lat, location.lon)");
+		}
+		return;
+	}
+	const Timeline* t = timeline(rule);
+	if (t != nullptr && t->has_sun_points()) {
+		rr.sun_logged = false;
+	}
+}
+
+bool Engine::start_timeline(size_t rule, bool quiet) {
+	const Timeline* t = timeline(rule);
+	if (t == nullptr || !enabled(rule) || !wall_valid_) {
+		return false;
+	}
+	RuleRuntime& rr = runtime_->rules[rule];
+	int64_t now = time_.local_to_utc(wall_);
+	rr.handled = now;
+	rr.handled_valid = true;
+	TimelineFound found;
+	bool due = timeline_due(*t, time_, now, found);
+	note_sun(rule, found.no_location);
+	schedule_next(rule);
+	if (!due) {
+		return false;
+	}
+	// The rule takes the due state and runs its entry actions; no exit actions (spec 7.5 step 1).
+	const Rule& r = set_.rule(rule);
+	rr.state = found.state;
+	rr.has_state = true;
+	state_changed(rule);
+	if (quiet) {
+		quietly([this, rule] { publish_state(rule); });
+	} else {
+		publish_state(rule);
+	}
+	current_rule_ = rule;
+	run_actions(rule, set_.state(r.first_state + found.state).entry);
+	return true;
+}
+
+void Engine::evaluate_running(size_t rule) {
+	const Timeline* t = timeline(rule);
+	if (t == nullptr || rule >= set_.rule_count() || !enabled(rule) || !wall_valid_) {
+		return;
+	}
+	RuleRuntime& rr = runtime_->rules[rule];
+	int64_t now = time_.local_to_utc(wall_);
+	rr.handled = now;
+	rr.handled_valid = true;
+	TimelineFound found;
+	bool due = timeline_due(*t, time_, now, found);
+	note_sun(rule, found.no_location);
+	if (due) {
+		record_timeline_firing(rule, found.state);
+		change_state(rule, found.state, true);
+	}
+	schedule_next(rule);
+}
+
+void Engine::schedule_next(size_t rule) {
+	RuleRuntime& rr = runtime_->rules[rule];
+	rr.next_valid = false;
+	const Timeline* t = timeline(rule);
+	int64_t now = 0;
+	if (t == nullptr || !rr.handled_valid || !enabled(rule) || !wall_utc(now)) {
+		return;
+	}
+	TimelineFound found;
+	bool any = timeline_next(*t, time_, rr.handled, found);
+	note_sun(rule, found.no_location);
+	if (!any) {
+		return; // none within eight dates: again at the next change of the date
+	}
+	rr.next_valid = true;
+	rr.next_moment = found.moment;
+	rr.next_state = found.state;
+	rr.next_plan = found.plan;
+	uint64_t mono = clock_.monotonic_ms();
+	rr.next_deadline = found.moment > now ? mono + static_cast<uint64_t>(found.moment - now) * 1000 : mono;
+}
+
+void Engine::apply_points(size_t rule) {
+	RuleRuntime& rr = runtime_->rules[rule];
+	rr.next_valid = false;
+	const Timeline* t = timeline(rule);
+	int64_t now = 0;
+	if (t != nullptr && rr.handled_valid && enabled(rule) && wall_utc(now)) {
+		TimelineFound points[TimelineLimits::kPointsPerPlan];
+		for (int guard = 0; guard < 64; ++guard) {
+			bool no_location = false;
+			size_t n = timeline_between(*t, time_, rr.handled, now, points, TimelineLimits::kPointsPerPlan, no_location);
+			if (n == 0) {
+				break;
+			}
+			for (size_t i = 0; i < n; ++i) {
+				// Each point is an external event of its own (spec 7.13 point 2).
+				run_cascade(Event{kTimeline, 0, static_cast<uint16_t>(rule), points[i].state, 0});
+				rr.handled = points[i].moment;
+			}
+			t = timeline(rule);
+			if (t == nullptr) {
+				break;
+			}
+		}
+	}
+	schedule_next(rule);
+}
+
+void Engine::time_changed(uint8_t events) {
+	if (runtime_ == nullptr) {
+		return;
+	}
+	if ((events & (TimeEvents::kSynchronized | TimeEvents::kClockJumped)) != 0) {
+		// An evaluation of every enabled rule with a timeline, one cascade each in rule order.
+		bool queued = false;
+		for (size_t r = 0; r < set_.rule_count(); ++r) {
+			if (timeline(r) != nullptr && enabled(r)) {
+				queued = push_inbound(Event{kEvaluate, 0, static_cast<uint16_t>(r), 0, 0}) || queued;
+			}
+		}
+		if (queued) {
+			post_drain();
+		}
+		return;
+	}
+	if ((events & TimeEvents::kSynchronizationLost) != 0) {
+		for (size_t r = 0; r < runtime_->rule_count; ++r) {
+			runtime_->rules[r].next_valid = false;
+		}
+	} else if ((events & (TimeEvents::kDayChanged | TimeEvents::kOffsetChanged | TimeEvents::kLocationChanged)) != 0) {
+		for (size_t r = 0; r < runtime_->rule_count; ++r) {
+			if (timeline(r) != nullptr) {
+				schedule_next(r);
+			}
+		}
+	}
+	if (!in_cascade_) {
+		reschedule();
+	}
+}
+
+TimelineStatus Engine::set_timeline(const char* rule_id, const JsonValue* json, TimelineRefusal& refusal) {
+	refusal = TimelineRefusal();
+	int r = runtime_ != nullptr ? set_.find_rule(rule_id) : -1;
+	if (r < 0) {
+		std::snprintf(refusal.text, sizeof(refusal.text), "no rule '%s'", rule_id);
+		return TimelineStatus::unknown_rule;
+	}
+	size_t rule = static_cast<size_t>(r);
+	const Timeline* image = set_.timeline(rule);
+	if (image == nullptr) {
+		std::snprintf(refusal.text, sizeof(refusal.text), "rule '%s' has no timeline", rule_id);
+		return TimelineStatus::no_timeline;
+	}
+	if (!image->adjustable()) {
+		std::snprintf(refusal.text, sizeof(refusal.text), "the timeline of rule '%s' is not adjustable", rule_id);
+		return TimelineStatus::not_adjustable;
+	}
+	Timeline next;
+	if (json != nullptr) {
+		RuleSetStates states(set_, rule);
+		if (!Timeline::parse(*json, states, false, &next, refusal)) {
+			switch (refusal.error) {
+				case LoadError::out_of_memory: return TimelineStatus::no_memory;
+				case LoadError::limit_exceeded: return TimelineStatus::limit;
+				case LoadError::unknown_reference: {
+					size_t n = std::strlen(refusal.path);
+					return n >= 5 && std::strcmp(refusal.path + n - 5, "state") == 0 ? TimelineStatus::unknown_state
+																					   : TimelineStatus::malformed;
+				}
+				default: return TimelineStatus::malformed;
+			}
+		}
+		// The budget of the effective timelines (spec 10.2).
+		size_t points = next.point_count();
+		size_t plans = next.plan_count();
+		for (size_t i = 0; i < set_.rule_count(); ++i) {
+			const Timeline* t = i == rule ? nullptr : timeline(i);
+			if (t != nullptr) {
+				points += t->point_count();
+				plans += t->plan_count();
+			}
+		}
+		if (points > TimelineLimits::kImagePoints || plans > TimelineLimits::kImagePlans) {
+			refusal.error = LoadError::limit_exceeded;
+			std::snprintf(refusal.text, sizeof(refusal.text), "the timelines of all rules would have more than %u %s",
+				static_cast<unsigned>(points > TimelineLimits::kImagePoints ? TimelineLimits::kImagePoints
+																			  : TimelineLimits::kImagePlans),
+				points > TimelineLimits::kImagePoints ? "points" : "plans");
+			return TimelineStatus::limit;
+		}
+		if (next.equals(*image)) {
+			next = Timeline(); // equal to the image's: no override (spec 8.7)
+		}
+	}
+	if (runtime_->overrides == nullptr) {
+		return TimelineStatus::no_memory; // allocated with any timeline of the image: never
+	}
+	runtime_->overrides[rule] = std::move(next);
+	persist_timeline(rule);
+	// It takes effect at once: an evaluation (spec 7.13), processed before the answer.
+	if (enabled(rule) && push_inbound(Event{kEvaluate, 0, static_cast<uint16_t>(rule), 0, 0})) {
+		if (in_cascade_) {
+			post_drain();
+		} else {
+			drain();
+		}
+	} else {
+		schedule_next(rule);
+		if (!in_cascade_) {
+			reschedule();
+		}
+	}
+	return TimelineStatus::ok;
+}
+
+void Engine::persist_timeline(size_t rule) {
+	if (rule != SIZE_MAX) {
+		runtime_->rules[rule].timeline_dirty = true;
+	}
+	if (persist_pending_) {
+		return;
+	}
+	persist_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kStatePersistDelayMs,
+		Callback::member<Engine, &Engine::on_persist>(this));
+	persist_pending_ = persist_timer_.valid();
+	if (!persist_pending_) {
+		persist_now();
+	}
+}
+
+void Engine::keep_timeline_override(size_t rule, const Timeline* image, const char* text, size_t length, bool& dirty,
+	size_t& points, size_t& plans, Runtime& rt, const RuleSet& next) {
+	const char* rule_id = next.str(next.rule(rule).id);
+	RuleRuntime& nr = rt.rules[rule];
+	auto reset = [&](const char* why) {
+		char message[176];
+		std::snprintf(message, sizeof(message), "the inhabitant's timeline is dropped: %s; the image's applies", why);
+		log_code(rule_id, &nr, LogCode::timeline_reset, LogLevel::warn, "inhabitant's timeline dropped", message);
+		dirty = true;
+	};
+	if (text == nullptr || image == nullptr) {
+		dirty = true; // no memory, or the rule has no timeline any more: deleted silently
+		return;
+	}
+	if (!image->adjustable()) {
+		reset("the timeline is no longer adjustable");
+		return;
+	}
+	RuleSetStates states(next, rule);
+	TimelineRefusal refusal;
+	Timeline candidate;
+	if (!Timeline::parse_text(text, length, states, false, &candidate, refusal)) {
+		char why[128];
+		if (refusal.error == LoadError::unknown_reference) {
+			std::snprintf(why, sizeof(why), "%s", refusal.text);
+		} else {
+			std::snprintf(why, sizeof(why), "it no longer fits (%s: %s)", load_error_name(refusal.error), refusal.text);
+		}
+		reset(why);
+		return;
+	}
+	if (points + candidate.point_count() > TimelineLimits::kImagePoints ||
+		plans + candidate.plan_count() > TimelineLimits::kImagePlans) {
+		reset("the timelines of all rules would exceed 256 points or 64 plans");
+		return;
+	}
+	if (candidate.equals(*image)) {
+		dirty = true; // equal to the new image's: no override any more
+		return;
+	}
+	rt.overrides[rule] = std::move(candidate);
+}
+
+char* Engine::read_timeline_blob(const char* rule, size_t& length) const {
+	if (timeline_store_ == nullptr) {
+		return nullptr;
+	}
+	char name[kTimelineBlobName];
+	timeline_blob_name(rule, name);
+	size_t size = 0;
+	if (timeline_store_->size(name, size) != BlobStatus::ok || size == 0 || size > BlobStore::kMaxBlobSize) {
+		return nullptr;
+	}
+	char* buffer = new (std::nothrow) char[size + 1];
+	if (buffer == nullptr) {
+		Log::error(kTag, "%s: no memory to read the inhabitant's timeline", rule);
+		return nullptr;
+	}
+	size_t got = 0;
+	if (timeline_store_->read(name, 0, buffer, size, got) != BlobStatus::ok || got != size) {
+		delete[] buffer;
+		return nullptr;
+	}
+	buffer[size] = '\0';
+	// The first line is the logical key: a blob of another rule (a hash collision) is no override.
+	char key[48];
+	std::snprintf(key, sizeof(key), "%s/%s\n", rule, kTimelineKey);
+	size_t key_length = std::strlen(key);
+	if (size < key_length || std::memcmp(buffer, key, key_length) != 0) {
+		delete[] buffer;
+		return nullptr;
+	}
+	std::memmove(buffer, buffer + key_length, size - key_length + 1);
+	length = size - key_length;
+	return buffer;
+}
+
+void Engine::prune_timeline_blobs() {
+	if (timeline_store_ == nullptr) {
+		return;
+	}
+	// The blobs `tl.*` of no override (removed rules, dropped overrides, foreign ones). Collected first:
+	// the visitor must not modify the store. Load time only.
+	struct Collect final : BlobVisitor {
+		char names[32][BlobStore::kMaxNameLength + 1] = {};
+		size_t count = 0;
+		void blob(const char* name, size_t) override {
+			if (std::strncmp(name, "tl.", 3) == 0 && count < 32) {
+				std::snprintf(names[count++], sizeof(names[0]), "%s", name);
+			}
+		}
+	};
+	Collect* found = new (std::nothrow) Collect();
+	if (found == nullptr) {
+		return;
+	}
+	timeline_store_->visit(*found);
+	for (size_t i = 0; i < found->count; ++i) {
+		bool keep = false;
+		for (size_t r = 0; r < set_.rule_count() && !keep; ++r) {
+			char name[kTimelineBlobName];
+			timeline_blob_name(set_.str(set_.rule(r).id), name);
+			keep = std::strcmp(name, found->names[i]) == 0 && timeline_overridden(r);
+		}
+		if (!keep) {
+			timeline_store_->remove(found->names[i]);
+		}
+	}
+	delete found;
 }
 
 } // namespace hc::rules

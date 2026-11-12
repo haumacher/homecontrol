@@ -13,6 +13,8 @@
 
 namespace hc::rules {
 
+class Timeline;
+
 /// The limits of spec/rules.md 10.2.
 struct Limits {
 	static constexpr size_t kRules = 128;
@@ -182,6 +184,8 @@ struct Timer {
 
 struct State {
 	uint32_t id;
+	uint32_t label;      ///< String offset of the resolved label; 0 (the empty string) without one.
+	uint32_t label_json; ///< See Choice: 0 for a plain string or no label.
 	ActionList entry;
 	ActionList exit;
 };
@@ -313,11 +317,14 @@ public:
 	/// are normalized (spec 4.8); labels are resolved in `language` (a language tag, the device's
 	/// `ui.lang`; spec 2.2). Two parameters (or rule states, spec 8.5) whose storage keys
 	/// (ParameterStore) collide refuse the set (limitExceeded).
+	/// `reserve_state_parameter`: a parameter `state` of a rule with states is refused (an image of
+	/// schema 1.7 or newer, spec 8.8); an older image may declare one, which then has no state
+	/// datapoint.
 	LoadResult load(const JsonValue& rules, const DatapointModel& model, const ScheduleDirectory* schedules,
-		const char* language = "en");
+		const char* language = "en", bool reserve_state_parameter = true);
 	/// The same against a directory of the datapoints (the image loader's tables: no scratch model).
 	LoadResult load(const JsonValue& rules, const DatapointDirectory& datapoints, const ScheduleDirectory* schedules,
-		const char* language = "en");
+		const char* language = "en", bool reserve_state_parameter = true);
 
 	void clear();
 	bool empty() const { return rule_count_ == 0; }
@@ -332,6 +339,8 @@ public:
 	const Choice& choice(size_t i) const { return choices_[i]; }
 	const Timer& timer(size_t i) const { return timers_[i]; }
 	const State& state(size_t i) const { return states_[i]; }
+	/// The image's timeline of `rule` (spec 2.8); nullptr without one.
+	const Timeline* timeline(size_t rule) const;
 	const Node& node(size_t i) const { return nodes_[i]; }
 	const Val& constant(size_t i) const { return constants_[i]; }
 	const char* str(uint32_t offset) const { return strings_ + offset; }
@@ -397,6 +406,7 @@ private:
 	MatchRef* matches_ = nullptr;
 	SilenceRef* silences_ = nullptr;
 	char* strings_ = nullptr;
+	Timeline* timelines_ = nullptr; ///< One per rule (empty without a timeline), or none at all.
 	size_t rule_count_ = 0, reaction_count_ = 0, trigger_count_ = 0, action_count_ = 0, log_part_count_ = 0,
 		   parameter_count_ = 0, choice_count_ = 0, timer_count_ = 0, state_count_ = 0, node_count_ = 0,
 		   constant_count_ = 0, schedule_count_ = 0, tracked_count_ = 0, match_count_ = 0, silence_count_ = 0,

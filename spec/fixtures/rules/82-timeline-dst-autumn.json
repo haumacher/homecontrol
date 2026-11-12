@@ -1,0 +1,58 @@
+{
+	"title": "Timeline: a point in the repeated hour of the fall-back day applies once, at its first occurrence",
+	"description": "Europe/Berlin, 2027-10-31: the clock goes from 03:00 back to 02:00. The plan: 02:30 a, 03:00 b, 12:00 c. 02:30 applies at its first occurrence (summer time, 00:30 UTC), not again in the repeated hour (01:30 UTC, when the rule is still in a); 03:00 CET is 02:00 UTC, an hour and a half after a; 12:00 c.",
+	"note": "Decided 17 with the DST rules S1 of spec/schedules.md (spec/rules.md 7.13).",
+	"datapoints": [{"name": "out", "type": "real"}],
+	"clock": {"start": "2027-10-30T12:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "dst",
+			"name": "DST",
+			"states": [
+				{
+					"id": "a",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+				},
+				{
+					"id": "b",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+				},
+				{
+					"id": "c",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "real", "value": 3.0}}]
+				}
+			],
+			"initialState": "c",
+			"timeline": {
+				"plans": [
+					{
+						"id": "p",
+						"label": "P",
+						"points": [
+							{"time": {"hour": 2, "minute": 30, "second": 0}, "state": "a"},
+							{"time": {"hour": 3, "minute": 0, "second": 0}, "state": "b"},
+							{"time": {"hour": 12, "minute": 0, "second": 0}, "state": "c"}
+						]
+					}
+				],
+				"assignments": [{"plan": "p"}]
+			}
+		}
+	],
+	"timeline": [{"at": 55800000, "check": {"states": {"dst": "a"}, "firings": {"dst": 1}}}],
+	"end": 93600000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "dst", "datapoint": "out", "value": 3.0},
+			{"at": 52200000, "rule": "dst", "datapoint": "out", "value": 1.0},
+			{"at": 57600000, "rule": "dst", "datapoint": "out", "value": 2.0},
+			{"at": 90000000, "rule": "dst", "datapoint": "out", "value": 3.0}
+		],
+		"logs": [],
+		"final": {
+			"states": {"dst": "c"},
+			"firings": {"dst": 3},
+			"timelines": {"dst": {"next": {"at": "2027-11-01T02:30:00", "state": "a"}}}
+		}
+	}
+}

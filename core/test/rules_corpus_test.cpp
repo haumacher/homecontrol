@@ -108,6 +108,24 @@ public:
 	int64_t local_to_utc(const hc::DateTime& local) const override { return rules_clock.local_to_utc(local); }
 	bool utc_to_local(int64_t utc, hc::DateTime& out) const override { return rules_clock.utc_to_local(utc, out); }
 	bool sun_position(int64_t utc, hc::SunPosition& out) const override { return rules_clock.sun_position(utc, out); }
+	int64_t civil_to_utc(int32_t year, unsigned month, unsigned day, unsigned hour, unsigned minute,
+		unsigned second) const override {
+		return rules_clock.civil_to_utc(year, month, day, hour, minute, second);
+	}
+	/// The timelines' sun points (README "location"): the device's astronomy at the case's location,
+	/// elevation 0.
+	SunLookup sun_event_utc(int32_t year, unsigned month, unsigned day, hc::SunEvent event,
+		int64_t& out) const override {
+		if (!wall.has_location) {
+			return SunLookup::no_location;
+		}
+		hc::SunTimes times = hc::sun_times(year, month, day, wall.where);
+		if (!times.occurs(event)) {
+			return SunLookup::absent;
+		}
+		out = times.at(event);
+		return SunLookup::ok;
+	}
 
 	bool sun_time(hc::rules::SunEvent event, hc::TimeOfDay& out) const override {
 		const Val& v = sun[static_cast<size_t>(event)];
@@ -340,6 +358,17 @@ public:
 			size_t slash = entry.first.find('/');
 			REQUIRE(slash != std::string::npos);
 			Val v;
+			if (entry.second["type"].text == "timeline") {
+				// The inhabitant's timeline (spec 8.7): the engine's blob, its key line and the JSON.
+				REQUIRE(entry.first.substr(slash + 1) == Engine::kTimelineKey);
+				std::string rule = entry.first.substr(0, slash);
+				std::string content = rule + "/" + Engine::kTimelineKey + "\n" + json_text(entry.second["value"]);
+				char name[Engine::kTimelineBlobName];
+				Engine::timeline_blob_name(rule.c_str(), name);
+				hc::BlobChunk chunk{content.data(), content.size()};
+				REQUIRE(blobs_.write(name, &chunk, 1) == hc::BlobStatus::ok);
+				continue;
+			}
 			if (entry.second["type"].text == "state") {
 				// A persisted rule state (spec 8.5): `<ruleId>/.state` with the state id.
 				REQUIRE(entry.first.substr(slash + 1) == hc::rules::ParameterStore::kStateKey);
@@ -359,10 +388,17 @@ public:
 		image_ = &rules_of(case_);
 		engine_ = std::make_unique<Engine>(loop_, model_, clock_, settings_, time_);
 		engine_->set_observer(&recorder_);
+		engine_->set_timeline_store(&blobs_);
 		LoadResult result = engine_->load(tree_.value(*image_), &schedules_);
 		if (case_["expected"].has("loadRefused") && (!result.ok() || !case_.has("blocks"))) {
 			CHECK_MESSAGE(!result.ok(), "the load must be refused");
 			CHECK(std::string(hc::rules::load_error_name(result.error)) == case_["expected"]["loadRefused"].text);
+			if (case_["expected"].has("path")) {
+				CHECK(std::string(result.path) == case_["expected"]["path"].text);
+			}
+			if (case_["expected"].has("text")) {
+				CHECK(std::string(result.text) == case_["expected"]["text"].text);
+			}
 			MESSAGE("refusal: " << std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
 			return;
 		}
@@ -588,10 +624,24 @@ private:
 			engine_->set_parameter(p["rule"].text.c_str(), p["parameter"].text.c_str(), tree_.value(p["value"]));
 		} else if (step.has("clockSync")) {
 			time_.wall.synchronized = step["clockSync"].boolean;
+			uint8_t event = time_.wall.synchronized ? hc::TimeEvents::kSynchronized : hc::TimeEvents::kSynchronizationLost;
 			if (scheduler_ != nullptr) {
-				scheduler_->time_changed(time_.wall.synchronized ? hc::TimeEvents::kSynchronized
-					: hc::TimeEvents::kSynchronizationLost);
+				scheduler_->time_changed(event);
 			}
+			engine_->time_changed(event);
+		} else if (step.has("clockStep")) {
+			// README "clockStep": the wall clock steps; beyond 60 s it is a jump of the time service.
+			int64_t step_ms = static_cast<int64_t>(step["clockStep"].number);
+			REQUIRE(step_ms % 1000 == 0);
+			time_.wall.start_utc += step_ms / 1000;
+			if (step_ms > 60000 || step_ms < -60000) {
+				if (scheduler_ != nullptr) {
+					scheduler_->time_changed(hc::TimeEvents::kClockJumped);
+				}
+				engine_->time_changed(hc::TimeEvents::kClockJumped);
+			}
+		} else if (step.has("setTimeline")) {
+			set_timeline(step["setTimeline"], at);
 		} else if (step.has("setSchedule")) {
 			set_schedule(step["setSchedule"], at);
 		} else if (step.has("image")) {
@@ -644,6 +694,7 @@ private:
 			load_model(*image_, blocks_span_);
 			engine_ = std::make_unique<Engine>(loop_, model_, clock_, settings_, time_);
 			engine_->set_observer(&recorder_);
+			engine_->set_timeline_store(&blobs_);
 			LoadResult result = engine_->load(tree_.value(*image_), &schedules_);
 			REQUIRE(result.ok());
 			hc::blocks::BlockSet set;
@@ -1042,14 +1093,167 @@ private:
 		if (expected.has("records")) {
 			compare_records(expected["records"], where);
 		}
+		if (expected.has("timelines")) {
+			compare_timelines(expected["timelines"], where);
+		}
 		if (expected.has("persisted")) {
 			engine_->persist_now(); // the delayed state writes (README: the store as an orderly shutdown leaves it)
 			compare_persisted(expected["persisted"], where);
 		}
 	}
 
+	/// README "setTimeline": the change of PUT or DELETE /api/rules/<ruleId>/timeline.
+	void set_timeline(const Json& change, uint64_t at) {
+		hc::rules::TimelineRefusal refusal;
+		hc::rules::TimelineStatus status;
+		if (change.has("reset")) {
+			status = engine_->set_timeline(change["rule"].text.c_str(), nullptr, refusal);
+		} else {
+			hc::JsonValue value = tree_.value(change["timeline"]);
+			status = engine_->set_timeline(change["rule"].text.c_str(), &value, refusal);
+		}
+		std::string got = status == hc::rules::TimelineStatus::ok ? "ok" : hc::rules::timeline_status_code(status);
+		std::string want = change.has("refused") ? change["refused"].text : "ok";
+		CHECK_MESSAGE(got == want, "setTimeline at " << at << ": " << got << " (" << refusal.path << ": "
+			<< refusal.text << "), expected " << want);
+		if (change.has("path")) {
+			CHECK_MESSAGE(std::string(refusal.path) == change["path"].text, "setTimeline at " << at << ": path "
+				<< refusal.path << ", expected " << change["path"].text);
+		}
+	}
+
+	/// A JSON text of a case's value (for the persisted timelines).
+	static std::string json_text(const Json& json) {
+		switch (json.kind) {
+			case Json::Kind::null: return "null";
+			case Json::Kind::boolean: return json.boolean ? "true" : "false";
+			case Json::Kind::number: return json.text;
+			case Json::Kind::string: {
+				std::string out = "\"";
+				for (char c : json.text) {
+					if (c == '"' || c == '\\') {
+						out += '\\';
+					}
+					out += c;
+				}
+				return out + "\"";
+			}
+			case Json::Kind::array: {
+				std::string out = "[";
+				for (size_t i = 0; i < json.items.size(); ++i) {
+					out += (i > 0 ? "," : "") + json_text(json.items[i]);
+				}
+				return out + "]";
+			}
+			case Json::Kind::object: {
+				std::string out = "{";
+				bool first = true;
+				for (const auto& m : json.members) {
+					out += (first ? "\"" : ",\"") + m.first + "\":" + json_text(m.second);
+					first = false;
+				}
+				return out + "}";
+			}
+		}
+		return "null";
+	}
+
+	/// Structural equality of two case values (members by name, numbers by value).
+	static bool same_json(const Json& a, const Json& b) {
+		if (a.kind != b.kind) {
+			return false;
+		}
+		switch (a.kind) {
+			case Json::Kind::null: return true;
+			case Json::Kind::boolean: return a.boolean == b.boolean;
+			case Json::Kind::number: return a.number == b.number;
+			case Json::Kind::string: return a.text == b.text;
+			case Json::Kind::array:
+				if (a.items.size() != b.items.size()) {
+					return false;
+				}
+				for (size_t i = 0; i < a.items.size(); ++i) {
+					if (!same_json(a.items[i], b.items[i])) {
+						return false;
+					}
+				}
+				return true;
+			case Json::Kind::object:
+				if (a.members.size() != b.members.size()) {
+					return false;
+				}
+				for (const auto& m : a.members) {
+					if (!b.has(m.first) || !same_json(m.second, b[m.first])) {
+						return false;
+					}
+				}
+				return true;
+		}
+		return false;
+	}
+
+	/// README "timelines".
+	void compare_timelines(const Json& expected, const std::string& where) {
+		for (const auto& entry : expected.members) {
+			size_t r = static_cast<size_t>(rule_index(entry.first));
+			if (entry.second.has("overridden")) {
+				CHECK_MESSAGE(engine_->timeline_overridden(r) == entry.second["overridden"].boolean,
+					where << ": timeline of " << entry.first << " overridden " << engine_->timeline_overridden(r));
+			}
+			if (entry.second.has("next")) {
+				int64_t utc = 0;
+				uint8_t state = 0, plan = 0;
+				std::string have = "null";
+				if (engine_->next_point(r, utc, state, plan)) {
+					hc::DateTime local;
+					REQUIRE(time_.utc_to_local(utc, local));
+					char text[32];
+					std::snprintf(text, sizeof(text), "%04u-%02u-%02uT%02u:%02u:%02u", local.year, local.month, local.day,
+						local.hour, local.minute, local.second);
+					const hc::rules::RuleSet& set = engine_->rules();
+					have = std::string(text) + " " + set.str(set.state(set.rule(r).first_state + state).id);
+				}
+				const Json& want_json = entry.second["next"];
+				std::string want = want_json.kind == Json::Kind::null ? "null"
+					: want_json["at"].text + " " + want_json["state"].text;
+				CHECK_MESSAGE(have == want, where << ": next point of " << entry.first << " is " << have << ", expected "
+					<< want);
+			}
+		}
+	}
+
 	void compare_persisted(const Json& expected, const std::string& where) {
 		std::map<std::string, Val> stored;
+		// The inhabitant's timelines (spec 8.7): one blob each.
+		std::map<std::string, Json> timelines;
+		struct Names : hc::BlobVisitor {
+			std::vector<std::string> names;
+			void blob(const char* name, size_t) override { names.push_back(name); }
+		} names;
+		blobs_.visit(names);
+		for (const std::string& name : names.names) {
+			if (name.compare(0, 3, "tl.") != 0) {
+				continue;
+			}
+			size_t size = 0;
+			REQUIRE(blobs_.size(name.c_str(), size) == hc::BlobStatus::ok);
+			std::string content(size, '\0');
+			size_t got = 0;
+			REQUIRE(blobs_.read(name.c_str(), 0, &content[0], size, got) == hc::BlobStatus::ok);
+			size_t newline = content.find('\n');
+			REQUIRE(newline != std::string::npos);
+			Json json;
+			std::string error;
+			REQUIRE_MESSAGE(hc_test::parse_json(content.substr(newline + 1), json, error), error);
+			timelines[content.substr(0, newline)] = json;
+		}
+		for (const auto& entry : timelines) {
+			CHECK_MESSAGE(expected.has(entry.first), where << ": unexpected stored timeline " << entry.first);
+			if (expected.has(entry.first)) {
+				CHECK_MESSAGE(same_json(entry.second, expected[entry.first]), where << ": stored timeline " << entry.first
+					<< " differs: " << json_text(entry.second));
+			}
+		}
 		for (const auto& entry : settings_.entries) {
 			if (entry.first.compare(0, 3, "rp.") != 0) {
 				continue;
@@ -1066,6 +1270,9 @@ private:
 			stored[name] = v;
 		}
 		for (const auto& entry : expected.members) {
+			if (timelines.count(entry.first) > 0) {
+				continue;
+			}
 			auto it = stored.find(entry.first);
 			if (it == stored.end()) {
 				CHECK_MESSAGE(false, where << ": override " << entry.first << " not stored");
@@ -1273,10 +1480,38 @@ HC_RULE_CASE("70", "load-refused-parameter-id-enabled")
 HC_RULE_CASE("71", "load-refused-parameter-id-keyword")
 HC_RULE_CASE("72", "application-write-not-writable")
 HC_RULE_CASE("73", "load-refused-not-writable-status")
+HC_RULE_CASE("74", "timeline-heating-week")
+HC_RULE_CASE("75", "timeline-start-reasons")
+HC_RULE_CASE("76", "timeline-clock-sync-step")
+HC_RULE_CASE("77", "timeline-midnight-empty-day")
+HC_RULE_CASE("78", "timeline-manual-override")
+HC_RULE_CASE("79", "timeline-sun-summer-winter")
+HC_RULE_CASE("80", "timeline-sun-no-location")
+HC_RULE_CASE("81", "timeline-dst-spring")
+HC_RULE_CASE("82", "timeline-dst-autumn")
+HC_RULE_CASE("83", "timeline-state-datapoint")
+HC_RULE_CASE("84", "timeline-change-api")
+HC_RULE_CASE("85", "timeline-image-swap-override")
+HC_RULE_CASE("86", "load-refused-timeline-without-states")
+HC_RULE_CASE("87", "load-refused-timeline-unknown-state")
+HC_RULE_CASE("88", "load-refused-timeline-time-and-sun")
+HC_RULE_CASE("89", "load-refused-timeline-offset-clock-point")
+HC_RULE_CASE("90", "load-refused-timeline-clamps")
+HC_RULE_CASE("91", "load-refused-timeline-unknown-plan")
+HC_RULE_CASE("92", "load-refused-timeline-no-default")
+HC_RULE_CASE("93", "load-refused-timeline-two-defaults")
+HC_RULE_CASE("94", "load-refused-timeline-duplicate-plan")
+HC_RULE_CASE("95", "load-refused-timeline-weekday-range")
+HC_RULE_CASE("96", "load-refused-timeline-weekday-twice")
+HC_RULE_CASE("97", "load-refused-timeline-points-limit")
+HC_RULE_CASE("98", "load-refused-state-parameter")
+HC_RULE_CASE("99", "load-refused-write-state-datapoint")
+HC_RULE_CASE("100", "load-refused-own-state-datapoint")
+HC_RULE_CASE("101", "timeline-enable-override-watch")
 
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
-	CHECK(files.size() == 73);
+	CHECK(files.size() == 101);
 }
 
 // The block conformance corpus (spec/fixtures/blocks/README.md), run by the same runner.

@@ -292,6 +292,36 @@ undeclared parameters, overrides that no longer fit, unreadable `rp.` entries.
 - Parameter writes stay immediate (people change parameters rarely); state writes are delayed
   because transitions can be frequent.
 
+## Timelines (issue #84)
+
+`hc::rules::Timeline` (`core/include/hc/rules/timeline.h`) is one compiled timeline in one heap
+block: points of 16 bytes (state index, clock or sun event, clamp flags, the time or offset and the
+two clamps in seconds), plans of 12 bytes (offsets of the id and the label's compact JSON in the
+block's text, first point, count), assignments of 2 bytes (plan, weekday bits). The parser checks
+spec/rules.md 10.1 in the table's order, two passes over the JSON like the rule loader (check and
+count, then fill). The rule set holds the image's timelines (`RuleSet::timeline()`), the engine's
+runtime the inhabitant's (`Engine::timeline()` is the effective one). The heating program takes
+about 220 bytes per copy.
+
+The engine follows the time service (`Engine` is a `TimeListener`, `kTimeEvents`): the
+synchronization and a jump evaluate (one `kEvaluate` cascade per rule), a change of the date, the
+offset or the location recomputes the next point. Each rule keeps its handled moment `h` and its next
+point with a monotonic deadline that joins the timers' (`process_due_timers()`, after the timers at
+an equal deadline); a deadline reached early (the wall clock slewed) just re-arms. Moments go through
+`TimeSource::civil_to_utc()` (S1) and `TimeSource::sun_event_utc()` (`image::RulesClock`: the time
+service's cached `sun_times()`).
+
+**Persistence (frozen format).** The inhabitant's timeline of a rule is the blob `tl.` + 12 lower-case
+hex digits of `ParameterStore::hash(<ruleId>, ".timeline")` in the blob store of the image service
+(LittleFS `/storage/state` on the ESP): the logical key `<ruleId>/.timeline`, a newline, the
+canonical JSON (spec/rules.md 8.7). A blob whose key line names another rule is ignored (a hash
+collision). Writes are delayed with the state writes (10 s) and done at an orderly shutdown; at each
+load the blobs `tl.*` of rules without an override are removed.
+
+The state datapoint `rule/<ruleId>/state` is derived with the parameters' (`parameter_datapoints()`)
+and bound to the engine's technology `rules`; every transition publishes it (a self-transition too),
+the start with the reason boot or image quietly.
+
 ## Labels
 
 A rule's name, a parameter's label and a choice's label may be a language map (spec 2.2). The

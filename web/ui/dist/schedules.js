@@ -3,13 +3,15 @@
 // inhabitant switch them), the next firing and the last one, and the members the image declares
 // adjustable (spec/schedules.md 2.1, issue #58): a time picker on the member's step, day toggles,
 // offsets and intervals in minutes, each within its bounds; a changed value is marked and the entry
-// can return to the project's values. Polled every 30 s.
+// can return to the project's values. Below them the time programs: the rules with a timeline
+// (timelines.js, issue #84). Polled every 30 s.
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
 import { formatRelative, formatWhen } from "/format.js";
 import { t, has } from "/i18n.js";
 import { pages } from "/model.js";
+import { timelinesSection } from "/timelines.js";
 
 const POLL_MS = 30000;
 
@@ -155,6 +157,7 @@ function entryRow(entry, now, synchronized, onChange) {
 export function renderSchedules(content) {
 	const list = h("ul", { class: "card schedule-list" }, h("li", { class: "muted" }, t("app.loading")));
 	const message = h("p", { class: "message error", role: "alert", hidden: true });
+	const programs = timelinesSection();
 	let timer = null;
 	let stopped = false;
 
@@ -185,6 +188,7 @@ export function renderSchedules(content) {
 				const again2 = focused && list.querySelector(`[id="${focused}"]`);
 				again2 && again2.focus();
 			}
+			await programs.load();
 		} catch (error) {
 			message.textContent = error && error.code === "image.unavailable" ? t("rules.no_image_service") : errorText(error);
 			message.hidden = false;
@@ -195,7 +199,7 @@ export function renderSchedules(content) {
 		}
 	}
 
-	content.append(h("p", { class: "muted intro" }, t("schedules.intro")), message, list);
+	content.append(h("p", { class: "muted intro" }, t("schedules.intro")), message, list, programs.element);
 	load();
 	return () => {
 		stopped = true;

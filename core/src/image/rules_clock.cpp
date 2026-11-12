@@ -103,6 +103,32 @@ bool RulesClock::sun_time(rules::SunEvent event, TimeOfDay& out) const {
 	return true;
 }
 
+int64_t RulesClock::civil_to_utc(int32_t year, unsigned month, unsigned day, unsigned hour, unsigned minute,
+	unsigned second) const {
+	Date date;
+	date.year = static_cast<uint16_t>(year);
+	date.month = static_cast<uint8_t>(month);
+	date.day = static_cast<uint8_t>(day);
+	return time_.local_to_utc(date, hour, minute, second); // S1: the end of a gap, the first occurrence
+}
+
+rules::TimeSource::SunLookup RulesClock::sun_event_utc(int32_t year, unsigned month, unsigned day, hc::SunEvent event,
+	int64_t& out) const {
+	Date date;
+	date.year = static_cast<uint16_t>(year);
+	date.month = static_cast<uint8_t>(month);
+	date.day = static_cast<uint8_t>(day);
+	SunTimes times;
+	if (!time_.sun_times(date, times)) {
+		return SunLookup::no_location;
+	}
+	if (!times.occurs(event)) {
+		return SunLookup::absent;
+	}
+	out = times.at(event);
+	return SunLookup::ok;
+}
+
 bool RulesClock::sun_position(int64_t utc_seconds, SunPosition& out) const {
 	GeoLocation where;
 	if (!time_.location(where)) {

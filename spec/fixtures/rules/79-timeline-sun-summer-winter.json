@@ -1,0 +1,74 @@
+{
+	"title": "Timeline: sun points before a clock point in winter and after it in summer, a clamp, and a stepped clock",
+	"description": "Munich (48.137 N, 11.576 E), Europe/Berlin. The plan: sunset on, 21:00 off, dusk + 10 min night but not after 22:00. On 2027-01-13 the device computes sunset 2027-01-13T16:44:18 and dusk 2027-01-13T17:19:43 (hc::sun_times, elevation 0): the points apply in the order of their moments, on, night (dusk + 10 min), off at 21:00, and the evening ends off. Booted at 12:00 the rule finds no point of today up to now and takes yesterday's last, 21:00 off. At 22:00 the wall clock steps to 2027-07-14 12:00 CEST (a jump): the due state is that of 2027-07-13's last point, night (dusk + 10 min clamped to 22:00), entered by a transition. On 2027-07-14 sunset is 2027-07-14T21:10:38 and dusk 2027-07-14T21:50:10: off at 21:00 comes first, then on at sunset, then night at 22:00 (dusk + 10 min would be 2027-07-14T22:00:10, the clamp moves it to 22:00); the summer evening ends in night.",
+	"note": "Decided 17: the points of a day apply in the order of their actual moments; a sun point is the event of its date plus the offset, clamped (spec/rules.md 7.13). The sun times come from the device's astronomy (spec/fixtures/rules/README.md \"location\"); the one nearest to a rounding boundary (2027-01-14's sunset, in the check) lies 0.026 s from it, far beyond what the two implementations' libraries may differ (about 1e-9 s).",
+	"datapoints": [{"name": "garden.light", "type": "real"}],
+	"clock": {"start": "2027-01-13T12:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"location": {"lat": 48.137, "lon": 11.576},
+	"rules": [
+		{
+			"id": "garden",
+			"name": "Garden light",
+			"states": [
+				{
+					"id": "off",
+					"entry": [{"kind": "write", "datapoint": "garden.light", "value": {"kind": "literal", "type": "real", "value": 0.0}}]
+				},
+				{
+					"id": "on",
+					"entry": [{"kind": "write", "datapoint": "garden.light", "value": {"kind": "literal", "type": "real", "value": 100.0}}]
+				},
+				{
+					"id": "night",
+					"entry": [{"kind": "write", "datapoint": "garden.light", "value": {"kind": "literal", "type": "real", "value": 30.0}}]
+				}
+			],
+			"initialState": "off",
+			"timeline": {
+				"plans": [
+					{
+						"id": "evening",
+						"label": "Evening",
+						"points": [
+							{"sun": "sunset", "state": "on"},
+							{"time": {"hour": 21, "minute": 0, "second": 0}, "state": "off"},
+							{
+								"sun": "dusk",
+								"offset": 600000,
+								"notAfter": {"hour": 22, "minute": 0, "second": 0},
+								"state": "night"
+							}
+						]
+					}
+				],
+				"assignments": [{"plan": "evening"}]
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 35999999,
+			"check": {"states": {"garden": "off"}, "timelines": {"garden": {"next": {"at": "2027-01-14T16:45:39", "state": "on"}}}}
+		},
+		{"at": 36000000, "clockStep": 15685200000}
+	],
+	"end": 75600000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "garden", "datapoint": "garden.light", "value": 0.0},
+			{"at": 17058000, "rule": "garden", "datapoint": "garden.light", "value": 100.0},
+			{"at": 19783000, "rule": "garden", "datapoint": "garden.light", "value": 30.0},
+			{"at": 32400000, "rule": "garden", "datapoint": "garden.light", "value": 0.0},
+			{"at": 36000000, "rule": "garden", "datapoint": "garden.light", "value": 30.0},
+			{"at": 68400000, "rule": "garden", "datapoint": "garden.light", "value": 0.0},
+			{"at": 69038000, "rule": "garden", "datapoint": "garden.light", "value": 100.0},
+			{"at": 72000000, "rule": "garden", "datapoint": "garden.light", "value": 30.0}
+		],
+		"logs": [],
+		"final": {
+			"states": {"garden": "night"},
+			"datapoints": {"garden.light": 30.0, "rule/garden/state": 2},
+			"timelines": {"garden": {"next": {"at": "2027-07-15T21:00:00", "state": "off"}}}
+		}
+	}
+}

@@ -246,16 +246,18 @@ TEST_CASE("TimeService.SynchronizationLost") {
 TEST_CASE("TimeService.ListenerRegistrationRules") {
 	ScopedCapture capture;
 	Rig rig;
-	Recorder a, b, c, d, e;
+	Recorder a, b, c, d, e, f, g;
 	CHECK(rig.time.add_listener(a));
 	CHECK_FALSE(rig.time.add_listener(a));
 	CHECK(capture.sink.contains("E hc.time: refusing to add a time listener twice"));
 	CHECK(rig.time.add_listener(b));
 	CHECK(rig.time.add_listener(c));
 	CHECK(rig.time.add_listener(d));
-	CHECK_FALSE(rig.time.add_listener(e));
-	CHECK(capture.sink.contains("E hc.time: refusing time listener: capacity of 4 exhausted"));
-	CHECK_FALSE(rig.time.remove_listener(e));
+	CHECK(rig.time.add_listener(e));
+	CHECK(rig.time.add_listener(f));
+	CHECK_FALSE(rig.time.add_listener(g));
+	CHECK(capture.sink.contains("E hc.time: refusing time listener: capacity of 6 exhausted"));
+	CHECK_FALSE(rig.time.remove_listener(g));
 
 	// From within a notification: refused.
 	struct Meddler : hc::TimeListener {

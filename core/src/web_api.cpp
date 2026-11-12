@@ -578,9 +578,22 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 	char first[48];
 	char second[48];
 	if (rules_path) {
-		// /api/rules/<id>/parameters/<parameter>
+		// /api/rules/<id>/parameters/<parameter>, /api/rules/<id>/timeline
 		const char* rest = path + 11;
 		const char* slash = std::strchr(rest, '/');
+		if (slash != nullptr && std::strcmp(slash, "/timeline") == 0) {
+			if (!url_decode(rest, static_cast<size_t>(slash - rest), first, sizeof(first))) {
+				refuse(response, 404, "api.not_found", "no such API endpoint (/api/rules/<rule>/timeline)");
+				return;
+			}
+			if (request.method != HttpMethod::get && request.method != HttpMethod::put &&
+				request.method != HttpMethod::del) {
+				refuse(response, 405, "api.method_not_allowed", "use GET, PUT or DELETE");
+				return;
+			}
+			rule_timeline(first, request, response);
+			return;
+		}
 		const char* tail = slash != nullptr ? slash : rest + std::strlen(rest);
 		bool shaped = slash != nullptr && starts_with(slash, "/parameters/") && slash[12] != '\0' &&
 			std::strchr(slash + 12, '/') == nullptr;
@@ -1431,6 +1444,12 @@ size_t WebApi::body_limit(HttpMethod method, const char* path) const {
 	if (method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
 		return image_ != nullptr ? image_->receivable() : image::kMaxImageBytes;
 	}
+	if (method == HttpMethod::put && path != nullptr && starts_with(path, "/api/rules/")) {
+		size_t n = std::strlen(path);
+		if (n > 9 && std::strcmp(path + n - 9, "/timeline") == 0) {
+			return kMaxTimelineBody; // the inhabitant's timeline (spec/api.md)
+		}
+	}
 	return kMaxBody;
 }
 
@@ -1809,8 +1828,13 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		size_t param_rule = 0, param_index = 0;
 		bool parameter = dp != nullptr && engine.parameter_of(dp->id(), param_rule, param_index);
 		const rules::RuleSet& set = engine.rules();
+		size_t state_rule = 0;
+		bool state = dp != nullptr && !parameter && engine.state_of_datapoint(dp->id(), state_rule);
 		if (d.label != nullptr) {
 			json.key("label").raw(d.label, std::strlen(d.label));
+		} else if (state) {
+			const rules::Rule& rule = set.rule(state_rule);
+			write_label(json, set, "label", rule.name, rule.name_json);
 		} else if (parameter) {
 			const rules::Rule& rule = set.rule(param_rule);
 			const rules::Parameter& decl = set.parameter(rule.first_parameter + param_index);
@@ -1839,7 +1863,23 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		if (d.binding != nullptr) {
 			json.key("binding").raw(d.binding, std::strlen(d.binding));
 		}
-		if (parameter) {
+		if (state) {
+			// A rule's state datapoint (spec/rules.md 8.8): the states as its choices, by position.
+			const rules::Rule& rule = set.rule(state_rule);
+			json.key("state").begin_object().member("rule", set.str(rule.id)).end_object();
+			json.key("choices").begin_array();
+			for (size_t s = 0; s < rule.state_count; ++s) {
+				const rules::State& st = set.state(rule.first_state + s);
+				json.begin_object().member("value", static_cast<uint32_t>(s));
+				if (st.label != 0) {
+					write_label(json, set, "label", st.label, st.label_json);
+				} else {
+					json.member("label", set.str(st.id));
+				}
+				json.end_object();
+			}
+			json.end_array();
+		} else if (parameter) {
 			const rules::Rule& rule = set.rule(param_rule);
 			const rules::Parameter& decl = set.parameter(rule.first_parameter + param_index);
 			json.key("parameter")
@@ -2203,6 +2243,40 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 	} else {
 		json.null();
 	}
+	if (rule.state_count > 0) {
+		// The states in their order, the position the state datapoint's value (spec/rules.md 8.8).
+		json.key("states").begin_array();
+		for (size_t s = 0; s < rule.state_count; ++s) {
+			const rules::State& state = set.state(rule.first_state + s);
+			json.begin_object().member("id", set.str(state.id));
+			if (state.label != 0) {
+				write_label(json, set, "label", state.label, state.label_json);
+			}
+			json.end_object();
+		}
+		json.end_array();
+	}
+	if (const rules::Timeline* timeline = engine.timeline(index)) {
+		// A summary; the timelines themselves at GET /api/rules/<rule>/timeline (spec/api.md).
+		json.key("timeline")
+			.begin_object()
+			.member("adjustable", set.timeline(index)->adjustable())
+			.member("overridden", engine.timeline_overridden(index))
+			.member("plans", static_cast<uint32_t>(timeline->plan_count()));
+		int64_t at = 0;
+		uint8_t state = 0, plan = 0;
+		json.key("next");
+		if (engine.next_point(index, at, state, plan)) {
+			json.begin_object()
+				.member("at", at)
+				.member("state", set.str(set.state(rule.first_state + state).id))
+				.member("plan", timeline->text(timeline->plan(plan).id))
+				.end_object();
+		} else {
+			json.null();
+		}
+		json.end_object();
+	}
 	write_event(json, "lastTrigger", d.has_trigger, d.last_trigger, d.last_trigger_ms);
 	write_event(json, "lastAction", d.has_action, d.last_action, d.last_action_ms);
 	json.member("errors", d.errors);
@@ -2306,6 +2380,162 @@ void WebApi::rules(const WebRequest& request, WebResponse& response) {
 	} else {
 		json.null();
 	}
+	json.end_object();
+	finish(response, json);
+}
+
+namespace {
+
+/// A timeline refusal: the reason with its code, the API's code and the path (spec/api.md).
+void refuse_timeline(WebResponse& response, int status, const char* code, const rules::TimelineRefusal& refusal) {
+	char text[128];
+	if (refusal.error != rules::LoadError::ok) {
+		std::snprintf(text, sizeof(text), "%s: %s", rules::load_error_name(refusal.error), refusal.text);
+	} else {
+		std::snprintf(text, sizeof(text), "%s", refusal.text);
+	}
+	response.status = status;
+	response.content_type = "application/json";
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object().member("error", text).member("code", code);
+	if (refusal.error != rules::LoadError::ok) {
+		json.member("path", refusal.path);
+	}
+	json.end_object();
+	response.length = json.overflowed() ? 0 : json.length();
+}
+
+} // namespace
+
+void WebApi::rule_timeline(const char* rule, const WebRequest& request, WebResponse& response) {
+	rules::Engine& engine = image_->engine();
+	int index = engine.loaded() ? engine.rules().find_rule(rule) : -1;
+	if (index < 0) {
+		refuse(response, 404, "rule.unknown", "no rule with this id");
+		return;
+	}
+	size_t r = static_cast<size_t>(index);
+	const rules::RuleSet& set = engine.rules();
+	const rules::Timeline* image = set.timeline(r);
+	if (image == nullptr) {
+		refuse(response, 404, "rule.no_timeline", "the rule has no timeline");
+		return;
+	}
+	rules::RuleSetStates states(set, r);
+	if (request.method == HttpMethod::get) {
+		bool from_image = false;
+		const char* source = request.query != nullptr ? std::strstr(request.query, "source=") : nullptr;
+		if (source != nullptr && (source == request.query || source[-1] == '&')) {
+			const char* value = source + 7;
+			size_t length = std::strcspn(value, "&");
+			if (length == 5 && std::strncmp(value, "image", 5) == 0) {
+				from_image = true;
+			} else if (!(length == 9 && std::strncmp(value, "effective", 9) == 0)) {
+				refuse(response, 400, "api.bad_query", "source must be image or effective");
+				return;
+			}
+		}
+		const rules::Timeline& timeline = from_image ? *image : *engine.timeline(r);
+		uint32_t from = 0;
+		query_uint(request.query, "from", from);
+		size_t count = timeline.plan_count();
+		JsonWriter json(response.body, response.capacity);
+		json.reserve(kClosingReserve);
+		json.begin_object()
+			.member("rule", set.str(set.rule(r).id))
+			.member("source", from_image ? "image" : "effective")
+			.member("adjustable", image->adjustable())
+			.member("overridden", engine.timeline_overridden(r))
+			.member("count", static_cast<uint32_t>(count))
+			.member("from", from);
+		json.key("assignments");
+		timeline.write_assignments(json);
+		json.key("plans").begin_array();
+		size_t i = from;
+		size_t written = 0;
+		for (; i < count; ++i) {
+			JsonWriter::Mark mark = json.mark();
+			timeline.write_plan(json, states, i);
+			if (json.overflowed()) {
+				json.reset(mark);
+				break;
+			}
+			++written;
+		}
+		if (written == 0 && i < count) {
+			refuse(response, 500, "api.response_too_large", "a plan does not fit the server's buffer");
+			return;
+		}
+		json.release();
+		json.end_array();
+		json.key("next");
+		if (i < count) {
+			json.number(static_cast<uint32_t>(i));
+		} else {
+			json.null();
+		}
+		json.end_object();
+		finish(response, json);
+		return;
+	}
+	if (!image->adjustable()) {
+		refuse(response, 403, "rule.not_adjustable", "the image fixes this rule's timeline");
+		return;
+	}
+	rules::TimelineRefusal refusal;
+	rules::TimelineStatus status = rules::TimelineStatus::ok;
+	if (request.method == HttpMethod::del) {
+		status = engine.set_timeline(rule, nullptr, refusal);
+	} else {
+		JsonSpan body;
+		const char* error = nullptr;
+		if (!json_parse(request.body, request.body_length, body, &error, 16) || body.kind != JsonSpan::Kind::object) {
+			refuse(response, 400, "api.bad_json", error != nullptr ? error : "the body must be a JSON object");
+			return;
+		}
+		JsonSpan member;
+		if (!json_member(body, "timeline", member)) {
+			refuse(response, 400, "rule.value_missing", "the body needs {\"timeline\": {\"plans\": [...], \"assignments\": [...]}}");
+			return;
+		}
+		// Nothing else in the body.
+		size_t position = 0;
+		JsonSpan name, value;
+		while (json_next_member(body, position, name, value)) {
+			char text[24];
+			if (!json_string(name, text, sizeof(text)) || std::strcmp(text, "timeline") != 0) {
+				rules::TimelineRefusal other;
+				other.error = rules::LoadError::malformed;
+				std::snprintf(other.text, sizeof(other.text), "unknown member '%s' (the body has only 'timeline')",
+					json_string(name, text, sizeof(text)) ? text : "?");
+				refuse_timeline(response, 400, "rule.malformed_timeline", other);
+				return;
+			}
+		}
+		JsonSpanDocument document;
+		hc::JsonValue timeline = document.value(member);
+		status = engine.set_timeline(rule, &timeline, refusal);
+	}
+	if (status != rules::TimelineStatus::ok) {
+		int http = 400;
+		const char* code = "rule.malformed_timeline";
+		switch (status) {
+			case rules::TimelineStatus::unknown_rule: http = 404; code = "rule.unknown"; break;
+			case rules::TimelineStatus::no_timeline: http = 404; code = "rule.no_timeline"; break;
+			case rules::TimelineStatus::not_adjustable: http = 403; code = "rule.not_adjustable"; break;
+			case rules::TimelineStatus::unknown_state: http = 422; code = "rule.unknown_state"; break;
+			case rules::TimelineStatus::limit: http = 422; code = "rule.timeline_limit"; break;
+			case rules::TimelineStatus::no_memory: http = 507; code = "rule.no_memory"; break;
+			default: break;
+		}
+		Log::warn(kTag, "timeline of %s refused: %s: %s", rule, refusal.path, refusal.text);
+		refuse_timeline(response, http, code, refusal);
+		return;
+	}
+	Log::info(kTag, "timeline of %s %s from the API", rule, request.method == HttpMethod::del ? "reset" : "replaced");
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object().member("ok", true).member("now_ms", controller_.clock().monotonic_ms()).key("rule");
+	write_rule(json, r);
 	json.end_object();
 	finish(response, json);
 }

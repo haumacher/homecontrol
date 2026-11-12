@@ -94,6 +94,7 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/rules/parameter_store.cpp"
 	"${HC_CORE_DIR}/src/rules/printer.cpp"
 	"${HC_CORE_DIR}/src/rules/engine.cpp"
+	"${HC_CORE_DIR}/src/rules/timeline.cpp"
 )
 # Blocks: the block types, the loader of the image's `blocks` and the runtime (issue #60,
 # spec/blocks.md, doc/blocks.md). The blocks' arithmetic must give the same bits as E-Home's Java

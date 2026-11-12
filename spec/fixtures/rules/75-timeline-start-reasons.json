@@ -1,0 +1,130 @@
+{
+	"title": "Timeline: every start enters the state due now with its entry actions (boot, image, enable)",
+	"description": "A circulation pump on 06:00-08:00 and 18:00-22:00. Booted at 07:00 the rule enters on (due since 06:00) with its entry action, before its start trigger runs (which logs state()). An image swap with the same rule enters on again and sends again. Disabled at 07:20, the point 08:00 does not switch it (the state stays on); enabled at 08:20 the rule starts with the reason enable and enters the state due now, off, with its entry action. At 18:00 the point switches it on.",
+	"note": "Decided 17: one rule for every evaluation, no memory of the last point; a disabled rule does not switch (spec/rules.md 7.5, 7.9, 7.13).",
+	"datapoints": [{"name": "pump", "type": "boolean"}],
+	"clock": {"start": "2026-11-18T07:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "pump",
+			"name": "Circulation pump",
+			"states": [
+				{
+					"id": "off",
+					"entry": [{"kind": "write", "datapoint": "pump", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				},
+				{
+					"id": "on",
+					"entry": [{"kind": "write", "datapoint": "pump", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			],
+			"initialState": "off",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+							{"time": {"hour": 8, "minute": 0, "second": 0}, "state": "off"},
+							{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "on"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "off"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			},
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["start ", {"kind": "call", "function": "state", "args": []}]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{
+			"at": 600000,
+			"image": {
+				"rules": [
+					{
+						"id": "pump",
+						"name": "Circulation pump",
+						"states": [
+							{
+								"id": "off",
+								"entry": [
+									{
+										"kind": "write",
+										"datapoint": "pump",
+										"value": {"kind": "literal", "type": "boolean", "value": false}
+									}
+								]
+							},
+							{
+								"id": "on",
+								"entry": [
+									{
+										"kind": "write",
+										"datapoint": "pump",
+										"value": {"kind": "literal", "type": "boolean", "value": true}
+									}
+								]
+							}
+						],
+						"initialState": "off",
+						"timeline": {
+							"plans": [
+								{
+									"id": "day",
+									"label": "Day",
+									"points": [
+										{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+										{"time": {"hour": 8, "minute": 0, "second": 0}, "state": "off"},
+										{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "on"},
+										{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "off"}
+									]
+								}
+							],
+							"assignments": [{"plan": "day"}]
+						},
+						"reactions": [
+							{
+								"triggers": [{"kind": "start"}],
+								"actions": [
+									{
+										"kind": "log",
+										"level": "info",
+										"message": ["start ", {"kind": "call", "function": "state", "args": []}]
+									}
+								]
+							}
+						]
+					}
+				]
+			}
+		},
+		{"at": 1200000, "setParameter": {"rule": "pump", "parameter": "enabled", "value": false}},
+		{"at": 4200000, "check": {"states": {"pump": "on"}, "datapoints": {"pump": true}, "timelines": {"pump": {"next": null}}}},
+		{"at": 4800000, "setParameter": {"rule": "pump", "parameter": "enabled", "value": true}}
+	],
+	"end": 39900000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "pump", "datapoint": "pump", "value": true},
+			{"at": 600000, "rule": "pump", "datapoint": "pump", "value": true},
+			{"at": 4800000, "rule": "pump", "datapoint": "pump", "value": false},
+			{"at": 39600000, "rule": "pump", "datapoint": "pump", "value": true}
+		],
+		"logs": [
+			{"at": 0, "rule": "pump", "code": "log", "level": "info", "message": "start on"},
+			{"at": 600000, "rule": "pump", "code": "log", "level": "info", "message": "start on"},
+			{"at": 4800000, "rule": "pump", "code": "log", "level": "info", "message": "start off"}
+		],
+		"final": {
+			"states": {"pump": "on"},
+			"datapoints": {"pump": true, "rule/pump/state": 1},
+			"timelines": {"pump": {"overridden": false, "next": {"at": "2026-11-18T22:00:00", "state": "off"}}}
+		}
+	}
+}

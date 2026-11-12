@@ -1,0 +1,53 @@
+{
+	"title": "Load refusal limitExceeded: 17 points in a plan",
+	"description": "spec/rules.md 10.1 (schema 1.7, issue #84): the refusal limitExceeded at rules[0].timeline.plans[0].points with its text; E-Home's validation refuses the same with the same text.",
+	"datapoints": [{"name": "out", "type": "boolean"}],
+	"clock": {"start": "2026-11-18T12:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "r",
+			"name": "R",
+			"states": [
+				{
+					"id": "off",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				},
+				{
+					"id": "on",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			],
+			"initialState": "off",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+							{"time": {"hour": 6, "minute": 1, "second": 0}, "state": "off"},
+							{"time": {"hour": 6, "minute": 2, "second": 0}, "state": "on"},
+							{"time": {"hour": 6, "minute": 3, "second": 0}, "state": "off"},
+							{"time": {"hour": 6, "minute": 4, "second": 0}, "state": "on"},
+							{"time": {"hour": 6, "minute": 5, "second": 0}, "state": "off"},
+							{"time": {"hour": 6, "minute": 6, "second": 0}, "state": "on"},
+							{"time": {"hour": 6, "minute": 7, "second": 0}, "state": "off"},
+							{"time": {"hour": 6, "minute": 8, "second": 0}, "state": "on"},
+							{"time": {"hour": 6, "minute": 9, "second": 0}, "state": "off"},
+							{"time": {"hour": 6, "minute": 10, "second": 0}, "state": "on"},
+							{"time": {"hour": 6, "minute": 11, "second": 0}, "state": "off"},
+							{"time": {"hour": 6, "minute": 12, "second": 0}, "state": "on"},
+							{"time": {"hour": 6, "minute": 13, "second": 0}, "state": "off"},
+							{"time": {"hour": 6, "minute": 14, "second": 0}, "state": "on"},
+							{"time": {"hour": 6, "minute": 15, "second": 0}, "state": "off"},
+							{"time": {"hour": 6, "minute": 16, "second": 0}, "state": "on"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "limitExceeded", "path": "rules[0].timeline.plans[0].points", "text": "more than 16 points in a plan"}
+}

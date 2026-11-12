@@ -161,7 +161,7 @@ public:
 	static constexpr int64_t kJumpThresholdS = 60;
 
 	/// Listeners registered at the same time.
-	static constexpr size_t kListenerCapacity = 4;
+	static constexpr size_t kListenerCapacity = 6;
 
 	TimeService(EventLoop& loop, const Clock& clock, const TimeZone& zone, Settings& settings);
 	~TimeService();

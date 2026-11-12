@@ -1,0 +1,98 @@
+{
+	"comment": "Schema 1.7 (issue #84, haumacher/ehome #140): the heating program as one rule with states and a timeline (spec/rules.md 2.8, 11.5), the state datapoint rule/heating/state on a control page (8.8). E-Home's export of this project equals this document as JSON values, apart from this comment and the members generatedAt and generator of image, which E-Home adds. Placeholder addresses 1/x/y.",
+	"image": {"schemaVersion": "1.7", "projectId": "heating-timeline", "revision": 1, "name": "Heating program"},
+	"settings": {"tz": "CET-1CEST,M3.5.0,M10.5.0/3", "location": {"lat": 48.137, "lon": 11.576}},
+	"datapoints": [
+		{
+			"id": "1/4/1",
+			"label": {"en": "Living room HVAC mode", "de": "Wohnzimmer Betriebsart"},
+			"type": "enumeration",
+			"writable": true,
+			"transmit": true,
+			"knx": {"dpt": "20.102", "send": "1/4/1"}
+		},
+		{
+			"id": "1/4/2",
+			"label": {"en": "Bedroom HVAC mode", "de": "Schlafzimmer Betriebsart"},
+			"type": "enumeration",
+			"writable": true,
+			"transmit": true,
+			"knx": {"dpt": "20.102", "send": "1/4/2"}
+		}
+	],
+	"rules": [
+		{
+			"id": "heating",
+			"name": {"en": "Heating program", "de": "Heizprogramm"},
+			"states": [
+				{
+					"id": "comfort",
+					"label": {"en": "Comfort", "de": "Komfort"},
+					"entry": [
+						{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 1}},
+						{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 1}}
+					]
+				},
+				{
+					"id": "standby",
+					"label": {"en": "Standby", "de": "Standby"},
+					"entry": [
+						{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 2}},
+						{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 2}}
+					]
+				},
+				{
+					"id": "night",
+					"label": {"en": "Night", "de": "Nacht"},
+					"entry": [
+						{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 3}},
+						{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 3}}
+					]
+				}
+			],
+			"initialState": "comfort",
+			"timeline": {
+				"adjustable": true,
+				"plans": [
+					{
+						"id": "workday",
+						"label": {"en": "Workday", "de": "Werktag"},
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "comfort"},
+							{"time": {"hour": 8, "minute": 0, "second": 0}, "state": "standby"},
+							{"time": {"hour": 16, "minute": 0, "second": 0}, "state": "comfort"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "night"}
+						]
+					},
+					{
+						"id": "weekend",
+						"label": {"en": "Weekend", "de": "Wochenende"},
+						"points": [
+							{"time": {"hour": 7, "minute": 30, "second": 0}, "state": "comfort"},
+							{"time": {"hour": 23, "minute": 0, "second": 0}, "state": "night"}
+						]
+					}
+				],
+				"assignments": [{"plan": "workday"}, {"days": [6, 7], "plan": "weekend"}]
+			},
+			"reactions": []
+		}
+	],
+	"ui": {
+		"pages": [
+			{
+				"id": "heating",
+				"label": {"en": "Heating", "de": "Heizung"},
+				"sections": [
+					{
+						"elements": [
+							{"datapoint": "rule/heating/state"},
+							{"datapoint": "1/4/1", "readOnly": true},
+							{"datapoint": "1/4/2", "readOnly": true}
+						]
+					}
+				]
+			}
+		]
+	}
+}

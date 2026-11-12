@@ -137,6 +137,9 @@ public:
 	static constexpr size_t kMaxHistoryPoints = 160;
 	/// Largest request body accepted (the platforms refuse longer ones with 413).
 	static constexpr size_t kMaxBody = 1024;
+	/// The body of PUT /api/rules/<rule>/timeline: every timeline the limits admit fits in its compact
+	/// form (12.7 KB at most, spec/rules.md 10.2).
+	static constexpr size_t kMaxTimelineBody = 16384;
 	static constexpr const char* kCsrfHeaderValue = "HomeControl";
 	/// How long a restart, a factory reset or new WiFi credentials wait after the answer, so that it
 	/// reaches the client before the connection goes.
@@ -277,6 +280,8 @@ private:
 	void history(const WebRequest& request, WebResponse& response);
 	void rules(const WebRequest& request, WebResponse& response);
 	void rule_parameter(const char* rule, const char* parameter, const WebRequest& request, WebResponse& response);
+	/// GET, PUT and DELETE /api/rules/<rule>/timeline (spec/api.md, spec/rules.md 8.7).
+	void rule_timeline(const char* rule, const WebRequest& request, WebResponse& response);
 	void schedules(const WebRequest& request, WebResponse& response);
 	void put_schedule(const char* id, const WebRequest& request, WebResponse& response);
 	void reset_schedule(const char* id, WebResponse& response);

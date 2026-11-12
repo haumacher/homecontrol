@@ -85,6 +85,7 @@ ImageService::ImageService(Controller& controller, DatapointModel& model, BlobSt
 	  time_master_(controller.loop(), controller.time(), model, adapter),
 	  store_(blobs) {
 	scheduler_.defer_time_reports(true); // published quietly after each load (bind_technologies)
+	engine_.set_timeline_store(&blobs);   // the inhabitant's timelines (spec/rules.md 8.7)
 	scheduler_.set_quiet_reports(this); // the outputs' first values after a load (issue #67)
 }
 
@@ -105,6 +106,7 @@ ImageService::~ImageService() {
 		controller_.set_led_input(nullptr);
 		controller_.time().remove_listener(scheduler_);
 		controller_.time().remove_listener(time_master_);
+		controller_.time().remove_listener(engine_);
 		scheduler_.remove_listener(*this);
 	}
 }
@@ -117,6 +119,9 @@ void ImageService::start() {
 	started_ = true;
 	if (!controller_.time().add_listener(scheduler_)) {
 		Log::error(kTag, "schedules will not fire: no time listener slot for the scheduler");
+	}
+	if (!controller_.time().add_listener(engine_, rules::Engine::kTimeEvents)) {
+		Log::error(kTag, "the rules' timelines will not follow the clock: no time listener slot");
 	}
 	if (!controller_.time().add_listener(time_master_, knx::TimeMaster::kTimeEvents)) {
 		Log::error(kTag, "the KNX time master will not broadcast: no time listener slot");

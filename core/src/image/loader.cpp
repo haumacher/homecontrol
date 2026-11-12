@@ -3400,7 +3400,11 @@ void parse_rules(Ctx& c, const JsonSpan& root, const char* language, const Index
 	PlanSchedules schedules(plan);
 	PlanDirectory datapoints(index);
 	// Compiled once: the set goes to the engine at the swap (Plan::rule_set).
-	rules::LoadResult result = plan.rule_set.load(document.value(rules_member), datapoints, &schedules, language);
+	// A parameter `state` of a rule with states is refused from schema 1.7 on (spec/rules.md 8.8).
+	uint32_t major = 0, minor = 0;
+	bool reserve_state = !parse_version(plan.info.schema_version, major, minor) || major > 1 || minor >= 7;
+	rules::LoadResult result =
+		plan.rule_set.load(document.value(rules_member), datapoints, &schedules, language, reserve_state);
 	if (!result.ok()) {
 		Report::Kind kind =
 			result.error == rules::LoadError::out_of_memory ? Report::Kind::no_memory : Report::Kind::invalid;

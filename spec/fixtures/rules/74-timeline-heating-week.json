@@ -1,0 +1,138 @@
+{
+	"title": "Timeline: the heating program of haumacher/ehome #140 over a week",
+	"description": "A rule with the states comfort, standby and night, whose entry actions write the KNX HVAC mode (1, 2, 3) of two rooms, and a timeline: the plan workday (06:00 comfort, 08:00 standby, 16:00 comfort, 22:00 night) by default, the plan weekend (07:30 comfort, 23:00 night) on Saturday and Sunday (spec/rules.md 2.8, 7.13, worked example 11.5). Booted on Monday 2026-11-16 at 05:00, the rule finds no point of Monday up to now and takes Sunday's last point, 23:00 night: it starts in night and writes the mode at once, with no reaction. Then every point is a transition with the entry actions, through Friday and the weekend, until Monday 05:00. The state datapoint rule/heating/state is the position of the state (comfort 0, standby 1, night 2). The rule has no reactions.",
+	"note": "Decided 17 (2026-11-12, issue #84): a time program is a rule with states plus a timeline; a start enters the state due now with its entry actions.",
+	"datapoints": [{"name": "1/4/1", "type": "enumeration"}, {"name": "1/4/2", "type": "enumeration"}],
+	"clock": {"start": "2026-11-16T05:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "heating",
+			"name": {"en": "Heating program", "de": "Heizprogramm"},
+			"states": [
+				{
+					"id": "comfort",
+					"label": {"en": "Comfort", "de": "Komfort"},
+					"entry": [
+						{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 1}},
+						{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 1}}
+					]
+				},
+				{
+					"id": "standby",
+					"label": {"en": "Standby", "de": "Standby"},
+					"entry": [
+						{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 2}},
+						{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 2}}
+					]
+				},
+				{
+					"id": "night",
+					"label": {"en": "Night", "de": "Nacht"},
+					"entry": [
+						{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 3}},
+						{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 3}}
+					]
+				}
+			],
+			"initialState": "comfort",
+			"timeline": {
+				"adjustable": true,
+				"plans": [
+					{
+						"id": "workday",
+						"label": {"en": "Workday", "de": "Werktag"},
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "comfort"},
+							{"time": {"hour": 8, "minute": 0, "second": 0}, "state": "standby"},
+							{"time": {"hour": 16, "minute": 0, "second": 0}, "state": "comfort"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "night"}
+						]
+					},
+					{
+						"id": "weekend",
+						"label": {"en": "Weekend", "de": "Wochenende"},
+						"points": [
+							{"time": {"hour": 7, "minute": 30, "second": 0}, "state": "comfort"},
+							{"time": {"hour": 23, "minute": 0, "second": 0}, "state": "night"}
+						]
+					}
+				],
+				"assignments": [{"plan": "workday"}, {"days": [6, 7], "plan": "weekend"}]
+			},
+			"reactions": []
+		}
+	],
+	"timeline": [
+		{"at": 0, "check": {"states": {"heating": "night"}, "datapoints": {"rule/heating/state": 2, "1/4/1": 3}}},
+		{
+			"at": 198000000,
+			"check": {
+				"states": {"heating": "standby"},
+				"datapoints": {"rule/heating/state": 1, "1/4/1": 2, "1/4/2": 2},
+				"timelines": {"heating": {"overridden": false, "next": {"at": "2026-11-18T16:00:00", "state": "comfort"}}}
+			}
+		}
+	],
+	"end": 604800000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "heating", "datapoint": "1/4/1", "value": 3},
+			{"at": 0, "rule": "heating", "datapoint": "1/4/2", "value": 3},
+			{"at": 3600000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 3600000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 10800000, "rule": "heating", "datapoint": "1/4/1", "value": 2},
+			{"at": 10800000, "rule": "heating", "datapoint": "1/4/2", "value": 2},
+			{"at": 39600000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 39600000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 61200000, "rule": "heating", "datapoint": "1/4/1", "value": 3},
+			{"at": 61200000, "rule": "heating", "datapoint": "1/4/2", "value": 3},
+			{"at": 90000000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 90000000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 97200000, "rule": "heating", "datapoint": "1/4/1", "value": 2},
+			{"at": 97200000, "rule": "heating", "datapoint": "1/4/2", "value": 2},
+			{"at": 126000000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 126000000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 147600000, "rule": "heating", "datapoint": "1/4/1", "value": 3},
+			{"at": 147600000, "rule": "heating", "datapoint": "1/4/2", "value": 3},
+			{"at": 176400000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 176400000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 183600000, "rule": "heating", "datapoint": "1/4/1", "value": 2},
+			{"at": 183600000, "rule": "heating", "datapoint": "1/4/2", "value": 2},
+			{"at": 212400000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 212400000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 234000000, "rule": "heating", "datapoint": "1/4/1", "value": 3},
+			{"at": 234000000, "rule": "heating", "datapoint": "1/4/2", "value": 3},
+			{"at": 262800000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 262800000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 270000000, "rule": "heating", "datapoint": "1/4/1", "value": 2},
+			{"at": 270000000, "rule": "heating", "datapoint": "1/4/2", "value": 2},
+			{"at": 298800000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 298800000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 320400000, "rule": "heating", "datapoint": "1/4/1", "value": 3},
+			{"at": 320400000, "rule": "heating", "datapoint": "1/4/2", "value": 3},
+			{"at": 349200000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 349200000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 356400000, "rule": "heating", "datapoint": "1/4/1", "value": 2},
+			{"at": 356400000, "rule": "heating", "datapoint": "1/4/2", "value": 2},
+			{"at": 385200000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 385200000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 406800000, "rule": "heating", "datapoint": "1/4/1", "value": 3},
+			{"at": 406800000, "rule": "heating", "datapoint": "1/4/2", "value": 3},
+			{"at": 441000000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 441000000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 496800000, "rule": "heating", "datapoint": "1/4/1", "value": 3},
+			{"at": 496800000, "rule": "heating", "datapoint": "1/4/2", "value": 3},
+			{"at": 527400000, "rule": "heating", "datapoint": "1/4/1", "value": 1},
+			{"at": 527400000, "rule": "heating", "datapoint": "1/4/2", "value": 1},
+			{"at": 583200000, "rule": "heating", "datapoint": "1/4/1", "value": 3},
+			{"at": 583200000, "rule": "heating", "datapoint": "1/4/2", "value": 3}
+		],
+		"logs": [],
+		"final": {
+			"states": {"heating": "night"},
+			"datapoints": {"rule/heating/state": 2, "1/4/1": 3, "1/4/2": 3},
+			"firings": {"heating": 24},
+			"timelines": {"heating": {"overridden": false, "next": {"at": "2026-11-23T06:00:00", "state": "comfort"}}}
+		}
+	}
+}

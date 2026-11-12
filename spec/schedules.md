@@ -43,6 +43,19 @@ Decisions:
   S1, no missed firings of S2, the moment invisible in the schedule view); every member adjustable
   (E-Home could not keep an installation's timing, and the UI could not know what makes sense).
 
+**Moments here, states in a rule's timeline** (issue #84, schema 1.7). A schedule entry is a moment
+that fires; its `output` is a boolean, true from a firing until local midnight (section 5). A *state
+that holds* by time of day (a heating program with comfort, standby and night, a circulation pump,
+garden lighting) is a rule with states and a `timeline` (`spec/rules.md` 2.8, 7.13): day plans of
+switching points, each a clock time or a sun event with the value forms and rules of the kind
+`astro` here (`sun`, `offset`, `notBefore`, `notAfter`, section 3) and the DST rules S1, and the
+assignment of plans to days. Unlike an entry, the timeline knows the state due at any moment, so
+after a start or a new image the rule is right at once; and the inhabitant replaces it as a whole
+(`spec/rules.md` 8.7) instead of adjusting members within bounds (S4). The schedules stay as they
+are: entries remain moments and `output` is untouched. A timeline's points do not fire
+`schedule` triggers and have no missed firings (S2): every start, synchronization or step of the
+clock enters the state due now instead.
+
 ## 2. The entry
 
 The image carries `"schedules": [ ... ]`; the order is the *image order* (entries due at the same

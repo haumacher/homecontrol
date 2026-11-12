@@ -20,12 +20,12 @@ namespace image {
 /// its `presses`, the Zigbee remotes, haumacher/ehome #70; 1.5 the parameter ids of the rule-id
 /// characters, `$"max-helligkeit"`, issue #81; 1.6 the roles atTop, atBottom and heatingLevel, a heating of a
 /// number, a dimmer with its command alone, a rule's write to an application datapoint that is not
-/// writable, haumacher/ehome #134, #136, #138). An image with a higher major version is refused (named in the
+/// writable, haumacher/ehome #134, #136, #138; 1.7 a rule's timeline and a state's label, issue #84). An image with a higher major version is refused (named in the
 /// report); a higher minor version loads (its additions are ignorable), except where a strict
 /// object (rules, schedules, blocks) meets a member this firmware does not know: that refusal says the
 /// image is newer than the firmware reads (spec/runtime-image.md I4).
 constexpr uint32_t kSchemaMajor = 1;
-constexpr uint32_t kSchemaMinor = 6;
+constexpr uint32_t kSchemaMinor = 7;
 
 /// "1.6": kSchemaMajor.kSchemaMinor as text (the API's `schema`, spec/api.md).
 const char* schema_version_text();

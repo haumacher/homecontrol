@@ -10,7 +10,8 @@ that breaks a client needs a new path or field, not a changed meaning.
 
 - Bodies are UTF-8 JSON objects (`Content-Type: application/json`), at most 1024 bytes in a
   request (413 `api.body_too_large` otherwise), except `PUT /api/image` (256 KB; on a device with a
-  staging area its capacity less one byte, below). Responses carry `Cache-Control: no-store`.
+  staging area its capacity less one byte, below) and `PUT /api/rules/<rule>/timeline` (16 KB,
+  which every timeline the limits admit fits in its compact form: spec/rules.md 10.2). Responses carry `Cache-Control: no-store`.
 - Every refusal is a 4xx/5xx status with the body `{"error": "<English reason>", "code": "<key>"}`.
   The `code` is stable and is the key a UI translates (doc/web.md, "Texts"); the `error` text is
   for logs and humans and may change. Some refusals add fields (listed below).
@@ -189,7 +190,7 @@ A datapoint (doc/datapoints.md) in the API:
 persist, 32 history, 64 a value of the application that rules write also when it is not writable:
 spec/runtime-image.md 3.3, schema 1.6); `writable` is the user's permission: a command of this API to
 a datapoint without it is refused (409 `dp.not_writable`); `technology` the name of the technology that owns it
-(`knx`, `zigbee`, `external`, `scheduler`, `rules` for a rule parameter's datapoint, ...; `null`
+(`knx`, `zigbee`, `external`, `scheduler`, `rules` for a rule parameter's datapoint and a rule's state datapoint, ...; `null`
 for an application value); `quality` is `unknown` (no value yet), `good` or `stale`; `pending` is
 true while the owning technology holds a commanded value it has not sent yet because it is not
 connected (the KNX tunnel is down, the Zigbee network is not up; spec/rules.md 7.3): `value` is
@@ -228,7 +229,9 @@ refused; the log says why), 503 `dp.busy`. A command to a rule parameter's datap
 (`rule/<ruleId>/<parameterId>`, spec/rules.md 8.6) sets the parameter as
 `PUT /api/rules/<rule>/parameters/<parameter>` does; a value the parameter refuses (range, choices)
 is 409 `dp.refused`, a parameter that is not adjustable 409 `dp.not_writable`. A duration
-parameter's datapoint takes milliseconds.
+parameter's datapoint takes milliseconds. A command to a rule's state datapoint
+(`rule/<ruleId>/state`, spec/rules.md 8.8) is refused with 409 `dp.not_writable` ("the state of a
+rule changes only by its transitions"): it is not writable.
 
 ## Log
 
@@ -717,7 +720,7 @@ All three: 404 `image.unavailable` in a build without the image service (POSIX `
 
 What the device UI reads of the runtime image to build its pages: the model of rooms and functions,
 the control pages, the history, the rules and the schedules. Authenticated like every endpoint; the
-two `PUT`s with the CSRF header when the cookie is used. All six: 404 `image.unavailable` in a build without the
+`PUT`s and `DELETE`s with the CSRF header when the cookie is used. All of them: 404 `image.unavailable` in a build without the
 image service (POSIX `--demo`), 405 `api.method_not_allowed` for other methods.
 
 ### `GET /api/model[?from=<n>]`
@@ -756,6 +759,12 @@ a client builds the dashboard without the image. Without an image: 200 `{"loaded
   `unit` the parameter's unit, `ms` for a duration, and `min`, `max`, `step` and `choices`
   (`[{"value", "label"}]`) as the parameter declares them (as in `/api/rules`). A client may show
   them with the rule's controls of `/api/rules` instead of as separate datapoints.
+- A rule's state datapoint (`rule/<ruleId>/state`, spec/rules.md 8.8, behind the rule's parameter
+  datapoints) has the technology `rules`, `writable` false, a member `"state": {"rule": "<ruleId>"}`,
+  the rule's `name` as its `label` and `choices` `[{"value": 0, "label": ...}, ...]`: one per state
+  in the order of `states`, `value` its position, `label` the state's label as the image gives it,
+  or the state's id where it has none (at most 16, the limit of a parameter's choices). A client
+  shows the element's label for the value, as for an enumeration parameter.
 - `min` and `max` also come with a KNX datapoint of a scaled type with a fixed range (DPT 5.001:
   0..100, 5.003: 0..360). A control page offers a slider where a datapoint has both.
 - `loaded_ms` is when the image was applied (with `source`: deployed when and how).
@@ -854,7 +863,16 @@ datapoints (`count`, `from`, `next`):
 
 ```json
 {"now_ms": 90211, "count": 2, "from": 0, "next": null,
- "rules": [{"id": "hall-presence-light", "name": "Hall light by presence",
+ "rules": [{"id": "heating", "name": {"en": "Heating program", "de": "Heizprogramm"},
+            "enabled": true, "enabledAdjustable": true, "enabledOverridden": false, "firings": 24, "state": "night",
+            "states": [{"id": "comfort", "label": {"en": "Comfort", "de": "Komfort"}},
+                       {"id": "standby", "label": {"en": "Standby", "de": "Standby"}},
+                       {"id": "night", "label": {"en": "Night", "de": "Nacht"}}],
+            "timeline": {"adjustable": true, "overridden": false, "plans": 2,
+                         "next": {"at": 1795410000, "state": "comfort", "plan": "workday"}},
+            "lastTrigger": {"text": "timeline night", "ms": 88000}, "lastAction": {"text": "write 1/4/2 = 3", "ms": 88000},
+            "errors": 0, "lastError": null, "timers": [], "parameters": []},
+           {"id": "hall-presence-light", "name": "Hall light by presence",
             "enabled": true, "enabledAdjustable": true, "enabledOverridden": false, "firings": 12, "state": null,
             "lastTrigger": {"text": "datapoint hall.presence", "ms": 88000},
             "lastAction": {"text": "write hall.light = true", "ms": 88000},
@@ -876,6 +894,72 @@ a parameter's `label` and a choice's `label` are labels (spec/rules.md 2.2) pass
 image gives them: a string, or an object from language tags to strings
 (`{"en": "Staircase", "de": "Treppenhaus"}`) that the UI resolves in the viewer's language. The
 device's log and the diagnostics' texts use the label resolved in the setting `ui.lang`.
+
+A rule with states (schema 1.7, spec/rules.md 2.6) has `states`, its states in their order with the
+`label` where the image gives one (the position in this list is the value of the state datapoint,
+8.8), and `state`, the current one's id; a rule without states has `state` `null` and no `states`.
+A rule with a timeline (spec/rules.md 2.8) has `timeline`, a summary: `adjustable` (the image's),
+`overridden` (the inhabitant's timeline applies, 8.7), `plans` (the number of plans of the
+effective timeline) and `next`, the next switching point (`at` in UTC seconds, its `state` and
+`plan`), `null` while the clock is not synchronized, the rule is disabled or no point lies in the
+next eight days. The timelines themselves are `GET /api/rules/<rule>/timeline`: a rule's two
+timelines (the image's and the inhabitant's) may take 25 KB, more than any answer of this API holds
+(spec/rules.md 10.2).
+
+### `GET /api/rules/<rule>/timeline[?from=<n>][&source=image]`
+
+The effective timeline of a rule (the inhabitant's where overridden, else the image's), or with
+`source=image` the image's, in the form of the image (spec/rules.md 2.8), paged by plan like the
+other lists (`count` plans, `from`, `next`; a page holds as many whole plans as fit the response
+buffer, every plan fits one page of the 4 KB answers of the E-Home connection, spec/rules.md 10.2);
+`assignments` come with every page:
+
+```json
+{"rule": "heating", "source": "effective", "adjustable": true, "overridden": true,
+ "count": 2, "from": 0, "next": null,
+ "assignments": [{"plan": "workday"}, {"days": [6, 7], "plan": "weekend"}],
+ "plans": [{"id": "workday", "label": {"en": "Workday", "de": "Werktag"}, "points": [
+             {"time": {"hour": 6, "minute": 30, "second": 0}, "state": "comfort"},
+             {"time": {"hour": 8, "minute": 0, "second": 0}, "state": "standby"},
+             {"sun": "sunset", "offset": 3600000, "notAfter": {"hour": 22, "minute": 0, "second": 0}, "state": "night"}]},
+           {"id": "weekend", "label": {"en": "Weekend", "de": "Wochenende"}, "points": [
+             {"time": {"hour": 7, "minute": 30, "second": 0}, "state": "comfort"},
+             {"time": {"hour": 23, "minute": 0, "second": 0}, "state": "night"}]}]}
+```
+
+Plans, points and assignments are in the timeline's canonical form (spec/rules.md 8.7: members in
+the order of 2.8, an `offset` of 0 left out). Refusals: 404
+`rule.unknown`, 404 `rule.no_timeline` (the rule has no timeline), 400 `api.bad_query` (`source`
+other than `image` or `effective`), 500 `api.response_too_large`.
+
+### `PUT /api/rules/<rule>/timeline` and `DELETE /api/rules/<rule>/timeline`
+
+`PUT` with the body `{"timeline": {"plans": [...], "assignments": [...]}}` replaces the rule's
+timeline as a whole by the inhabitant's (spec/rules.md 8.7): checked as the loader checks the
+image's (spec/rules.md 10.1, the same texts), against the limits and the budget of the effective
+timelines (10.2), applied whole or refused whole; a timeline equal to the image's removes the
+override. `DELETE` resets to the image's timeline. Both take effect at once: the rule goes to the
+state due under the new timeline with its entry actions (an evaluation, spec/rules.md 7.13), before
+the answer, and the override is persisted. 200 `{"ok": true, "now_ms", "rule": {...}}` with the rule
+as in the list. Refusals, checked in this order, those about the body with the `path` of the
+offending value relative to the timeline (`{"error": "unknownReference: no state 'warm' in the
+rule", "code": "rule.unknown_state", "path": "plans[0].points[1].state"}`, the `error` the loader's
+text with its reason code):
+
+| Status | Code | When |
+|---|---|---|
+| 404 | `rule.unknown` | no rule with this id |
+| 404 | `rule.no_timeline` | the rule has no timeline in the image (the inhabitant replaces a timeline, he does not add one) |
+| 403 | `rule.not_adjustable` | the image's timeline says `adjustable: false` |
+| 400 | `api.bad_json` | the body is no JSON (413 `api.body_too_large` above 16 KB) |
+| 400 | `rule.value_missing` | `PUT` without `timeline` |
+| 400 | `rule.malformed_timeline` | anything malformed: an unknown member (also `adjustable`, which is the image's, and members of the body other than `timeline`), a moment (neither or both of `time` and `sun`, an offset or clamp on a clock point, values out of range, `notBefore` after `notAfter`), a plan id, a duplicate plan id, an assignment naming no plan, no or two defaults, weekdays outside 1..7 or assigned twice (the loader's `malformed`, `duplicateId` and the `unknownReference` of a plan) |
+| 422 | `rule.unknown_state` | a point names a state the rule does not have (the loader's `unknownReference` of a state) |
+| 422 | `rule.timeline_limit` | a limit of spec/rules.md 10.2 (plans, points per plan and per timeline, languages of a plan's label), or the effective timelines of all rules would exceed 256 points or 64 plans (`limitExceeded: the timelines of all rules would have more than 256 points`) |
+
+Path segments may be percent-encoded. The device's schedules page lists the rules with a timeline
+beside the schedule entries, with the current state, the next point and the editor of the plans and
+the assignments, read-only when the timeline is not adjustable; it uses these endpoints.
 
 ### `PUT /api/rules/<rule>/parameters/<parameter>`
 

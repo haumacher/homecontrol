@@ -1,0 +1,44 @@
+{
+	"title": "Timeline: without a location sun points have no moment, logged once; the clock points still apply",
+	"description": "The plan: sunset on, 23:00 off; the case has no location. Booted at 12:00 the rule finds yesterday's 23:00 off (sunset has no moment) and logs sunUnavailable once. At 23:00 off again (a self-transition, the lamp written again); the sunset of the second day passes without anything.",
+	"note": "Decided 17 (spec/rules.md 7.13, 9.2 sunUnavailable).",
+	"datapoints": [{"name": "lamp", "type": "boolean"}],
+	"clock": {"start": "2026-11-18T12:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "lamp",
+			"name": "Lamp",
+			"states": [
+				{
+					"id": "off",
+					"entry": [{"kind": "write", "datapoint": "lamp", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				},
+				{
+					"id": "on",
+					"entry": [{"kind": "write", "datapoint": "lamp", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			],
+			"initialState": "on",
+			"timeline": {
+				"plans": [
+					{
+						"id": "p",
+						"label": "P",
+						"points": [{"sun": "sunset", "state": "on"}, {"time": {"hour": 23, "minute": 0, "second": 0}, "state": "off"}]
+					}
+				],
+				"assignments": [{"plan": "p"}]
+			}
+		}
+	],
+	"timeline": [],
+	"end": 115200000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "lamp", "datapoint": "lamp", "value": false},
+			{"at": 39600000, "rule": "lamp", "datapoint": "lamp", "value": false}
+		],
+		"logs": [{"at": 0, "rule": "lamp", "code": "sunUnavailable"}],
+		"final": {"states": {"lamp": "off"}, "timelines": {"lamp": {"next": {"at": "2026-11-19T23:00:00", "state": "off"}}}}
+	}
+}

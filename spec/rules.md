@@ -26,7 +26,8 @@ These are the author's decisions; this specification implements them.
    conformance corpus keeps both identical: a semantic change lands with new corpus cases.
 3. **Engineering happens in E-Home; the device executes.** The device never edits a rule. Its UI
    and API change only the *adjustable parameters* a rule declares (times, setpoints, the enable
-   switch); everything else is refused with a reason.
+   switch) and, since issue #84, a rule's *timeline* where the rule declares it adjustable (2.8,
+   8.7): which state holds when; everything else is refused with a reason.
 
 ### 1.2 Decisions taken in this specification
 
@@ -113,6 +114,28 @@ the local wall time of the time service (issue #9) and have no value while the w
 synchronized. Within one cascade every expression sees the same time. Date-time arithmetic and
 comparisons work on the instant, so they are correct across a change of summer time (4.5, 4.6).
 
+**D10. A time program is a rule with states plus a timeline; the state is a datapoint.** (Issue
+#84, haumacher/ehome #140; decisions 17 to 19 of section 12.) A heating program (comfort, standby,
+night), a circulation pump or garden lighting by time of day needs a *state* that holds, not moments
+that fire. The rule is the fixed half, the installer's: its states, their entry and exit actions
+(the messages and the datapoints they go to) and its reactions. Its optional `timeline` is the free
+half, the inhabitant's: day plans of switching points (a clock time or a sun event, and a state)
+and the assignment of plans to days (2.8). A switching point is an ordinary transition; whenever the
+timeline is evaluated anew (a start, the clock becoming synchronized or stepping, a change of the
+timeline) the rule goes to the state due now, with its entry actions, and nothing remembers which
+point was applied last (7.13). A reaction with `to` overrides the timeline until its next point.
+The inhabitant replaces the timeline as a whole on the device; a new image keeps that while every
+state it names still exists (8.7). The current state of every rule with states is the read-only
+datapoint `rule/<ruleId>/state` (8.8). *Alternatives:* a schedule kind `profile` with one output
+datapoint and values per point, or a separate object with its own states and messages (a second
+kind of state machine with the same parts as a rule with states, whose messages would need a second
+action language or a rule behind it); remembering the last applied point, so a restart does not
+send again and an override survives it, or treating a point into the current state as a no-op
+(complexity nobody may need: "when the thing is restarted it is OK if things get re-sent", the
+author); per-member bounds for the inhabitant as for schedule entries (what is fixed is the machine,
+not the times); a `schedule` trigger firing at each point (rules trigger on the state datapoint,
+which also covers the start).
+
 ### 1.3 Terms
 
 | Term | Definition |
@@ -131,6 +154,11 @@ comparisons work on the instant, so they are correct across a change of summer t
 | timer | A named one-shot countdown of a rule on the monotonic clock (section 2.5). |
 | state | A named state of a rule with states; the rule is in exactly one of its states (section 2.6). |
 | image swap | Replacing the loaded runtime image by a new one without a reboot (section 7.6). |
+| timeline | The optional member of a rule with states that says which state holds when: day plans and their assignment to days (section 2.8). |
+| day plan | A list of switching points describing one day; the assignments say on which dates it applies (2.8). |
+| switching point | A moment of a day plan (a clock time or a sun event) and a state; when the clock reaches it the rule takes a transition to that state (7.13). |
+| state due now | The state of the latest switching point passed, searched back over today and the seven days before (7.13). |
+| evaluation | The rule goes to the state due now, with its entry actions: at a start, when the clock becomes synchronized or steps, when the timeline changes (7.13). |
 
 ## 2. The data model
 
@@ -150,6 +178,7 @@ kind `datapoint` and an expression node of kind `datapoint` are different things
 | parameter id | 1..24 characters of `A-Z a-z 0-9 _ -` (those of a rule id), not a keyword (schema 1.5, issue #81) | the rule |
 | timer and state id | an *identifier*: 1..24 characters, `[A-Za-z_][A-Za-z0-9_]*`, not a keyword | the rule (each kind separately) |
 | schedule id | the id of a schedule entry of the image (issue #10), same form as a rule id | the image |
+| plan id | 1..24 characters of `A-Z a-z 0-9 _ -` (those of a parameter id; schema 1.7, issue #84) | the timeline |
 | datapoint name | as in the datapoint model: 1..63 printable bytes | the image |
 
 The keywords are `and`, `or`, `not`, `true` and `false`. A parameter id that is not an identifier
@@ -160,8 +189,10 @@ the parameter's datapoint name `rule/<ruleId>/<parameterId>` within 63 bytes (5 
 identifier needs a firmware that reads schema 1.5 (`spec/runtime-image.md` section 8): an older one
 refuses it.
 
-The parameter id `enabled` is reserved for the enable switch (section 8.3). Datapoint names that
-start with `rule/` are reserved for the datapoints of the rule parameters (section 8.6), those that
+The parameter id `enabled` is reserved for the enable switch (section 8.3); in a rule with states
+the parameter id `state` is reserved too, because `rule/<ruleId>/state` is the datapoint of the
+rule's state (section 8.8; refused `duplicateId`, 10.1). Datapoint names that
+start with `rule/` are reserved for the datapoints of the rule parameters and states (sections 8.6, 8.8), those that
 start with `schedule/` for the adjustable schedule times (`spec/schedules.md` 2.2), those that start
 with `block/` for the datapoints of the blocks (`spec/blocks.md` 6); the image declares none.
 
@@ -177,8 +208,9 @@ with `block/` for the datapoints of the blocks (`spec/blocks.md` 6); the image d
 | `parameters` | array of parameter | no | Section 8. |
 | `timers` | array of timer | no | Section 2.5. |
 | `states` | array of state | no | Section 2.6; present and non-empty makes this a *rule with states*. |
-| `initialState` | state id | with `states` | The state the rule enters when it starts without a preserved state. |
-| `reactions` | array of reaction | yes, 1 or more | Section 2.4. |
+| `initialState` | state id | with `states` | The state the rule enters when it starts without a preserved state (and, with a timeline, without a state due now, 7.13). |
+| `timeline` | timeline | no; only with `states` | Which state holds when (section 2.8, schema 1.7). |
+| `reactions` | array of reaction | yes, 1 or more; in a rule with a timeline 0 or more (empty or absent) | Section 2.4. A time program whose states only send their messages needs no reaction. |
 
 A *label* (the rule's `name`, a parameter's `label`, a choice's `label`) is a string of 1..63 bytes
 or an object from language tags to such strings, as in the runtime image
@@ -239,6 +271,7 @@ refuses the starting action (`timerRefused`).
 | Member | Type | Required | Meaning |
 |---|---|---|---|
 | `id` | identifier | yes | |
+| `label` | label (2.2) | no (the id) | Shown for the state in the device's timeline editor, its pages and the choices of the state datapoint (8.8). Schema 1.7. |
 | `entry` | array of action | no | Run when the rule enters the state. |
 | `exit` | array of action | no | Run when the rule leaves the state. |
 
@@ -251,8 +284,10 @@ its actions and the state does not change.
 When a rule with states starts without a preserved state (a boot without a persisted state, a new
 rule, a state not preserved by an image swap), its current state becomes `initialState` and that
 state's entry actions run (section 7.5). A preserved state is one kept by an image swap (7.6) or
-restored at boot from the persisted state (8.5); the rule takes it without running entry actions. There are no other ways to change the state: there is no "set state" action, because a state
-change must come from a guarded transition with defined exit and entry actions.
+restored at boot from the persisted state (8.5); the rule takes it without running entry actions. There are no other ways to change the state than these and a timeline (2.8), whose switching points and
+evaluations are transitions too (7.13): there is no "set state" action, and the state datapoint
+`rule/<ruleId>/state` takes no commands (8.8), because a state change must come from a transition
+with defined exit and entry actions.
 
 ### 2.7 Actions
 
@@ -271,6 +306,82 @@ An action is an object with a `kind`:
 Actions of one list run in order; each sees the effects of the previous ones (a written value, a
 started timer). A failing action (no value, refusal) is logged and skipped; the following actions
 still run.
+
+### 2.8 Timeline
+
+*Schema 1.7, issue #84 (haumacher/ehome #140), decision 17.* A rule with states may carry a
+`timeline`: which of its states holds when. It has two layers: *day plans*, each a sequence of
+switching points (a moment and a state) describing one day, and *assignments*, which say on which
+dates a plan applies. A state holds from its point until the next point, across midnight and
+across days. The rule stays what it is: its states with their entry and exit actions are the
+messages the timeline sends, its reactions still run (a reaction with `to` is a manual override,
+7.13). A timeline on a rule without states is refused (`forbidden`, 10.1).
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `adjustable` | boolean | no, `true` | Whether the inhabitant may replace the timeline on the device (8.7). `false` fixes it to the image's. |
+| `plans` | array of plan, 1..8 | yes | The day plans, in an order the editor shows. |
+| `assignments` | array of assignment, 1..8 | yes | Which plan applies on which date; exactly one default. |
+
+A **plan**:
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | plan id (2.1) | yes | Unique in the timeline; the assignments name it. |
+| `label` | label (2.2), at most 4 languages | yes | Shown in the editor ("Workday", `{"en": "Workday", "de": "Werktag"}`). |
+| `points` | array of point, 0..16 | yes | The switching points of the day, in any order; their *plan order* decides only between points at the same moment (7.13). An empty plan is a day without switching: the state of the day before holds through it. |
+
+A **point** has exactly one of `time` and `sun`:
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `time` | time `{"hour": 0..23, "minute": 0..59, "second": 0..59}` (all three, no `dayOfWeek`) | one of `time`, `sun` | A *clock point*: that local time. |
+| `sun` | `dawn`, `sunrise`, `sunset` or `dusk` | one of `time`, `sun` | A *sun point*: the sun event of the day, as for the schedule kind `astro` (`spec/schedules.md` 3). |
+| `offset` | duration: integer milliseconds, a whole number of seconds, -12 h..12 h | no, 0; only with `sun` | Added to the sun event. |
+| `notBefore`, `notAfter` | time | no; only with `sun`; `notBefore` not after `notAfter` | The moment is moved up to `notBefore` if earlier and down to `notAfter` if later. |
+| `state` | state id of the rule | yes | The state the rule goes to at this point. |
+
+An **assignment**:
+
+| Member | Type | Required | Meaning |
+|---|---|---|---|
+| `days` | array of weekdays 1 (Monday) .. 7 (Sunday), 1..7 elements, no duplicates (the numbering of `weekday()`) | no | Selects the dates of these weekdays. Without `days` the assignment is the *default*: every date. |
+| `plan` | plan id of the timeline | yes | The plan of the dates the assignment selects. |
+
+**The assignment model.** Each assignment has a *selector* of a *kind* with a *rank*: the default
+(no selector) rank 0, `days` rank 1. The plan of a date is that of the matching assignment of the
+highest rank. Assignments of one rank may not overlap (a weekday in two `days` assignments is
+refused), and exactly one default is required, so every date has exactly one plan. A plan no
+assignment names is allowed: it is kept, for the inhabitant to assign later. Later kinds of
+selector (out of scope of issue #84: a day of the month, a range of the year, single dates,
+calendars of holidays and vacations, a plan chosen by a condition datapoint) only add members and
+ranks above `days`, the more specific the higher, and keep "highest rank wins, no overlap within a
+rank"; an older firmware refuses them as unknown members (I5 of `spec/runtime-image.md`).
+
+The heating program of haumacher/ehome #140 (section 11.5):
+
+```json
+"timeline": {
+  "plans": [
+    {"id": "workday", "label": {"en": "Workday", "de": "Werktag"}, "points": [
+      {"time": {"hour": 6, "minute": 0, "second": 0}, "state": "comfort"},
+      {"time": {"hour": 8, "minute": 0, "second": 0}, "state": "standby"},
+      {"time": {"hour": 16, "minute": 0, "second": 0}, "state": "comfort"},
+      {"time": {"hour": 22, "minute": 0, "second": 0}, "state": "night"}]},
+    {"id": "weekend", "label": {"en": "Weekend", "de": "Wochenende"}, "points": [
+      {"time": {"hour": 7, "minute": 30, "second": 0}, "state": "comfort"},
+      {"time": {"hour": 23, "minute": 0, "second": 0}, "state": "night"}]}],
+  "assignments": [
+    {"plan": "workday"},
+    {"days": [6, 7], "plan": "weekend"}]
+}
+```
+
+A sun point: `{"sun": "sunset", "offset": 7200000, "notAfter": {"hour": 22, "minute": 0, "second":
+0}, "state": "night"}` (two hours after sunset, but not after 22:00).
+
+The timeline is strict like the rest of a rule (section 2: unknown members refused, `description`
+and `comment` allowed). Its checks and their refusal texts are in 10.1, its limits in 10.2.
 
 ## 3. Types and values
 
@@ -403,7 +514,7 @@ always puts spaces around binary operators), `30min` is a duration, `30 min` an 
 | `@living.light`, `@"Living room light 1"` | The current value of the datapoint (no value unless the quality is good). A name that is not an identifier with dot-separated parts is written as a string. | from the datapoint type (section 3.1) |
 | `$timeout`, `$"max-helligkeit"` | The current value of the rule's parameter. An id that is not an identifier (2.1) is written as a string, with the escapes of a string literal (4.2), like a datapoint name. | the parameter's type |
 | `running(off)`, `remaining(off)` | Whether the rule's timer runs; the time until it expires (no value when stopped). | boolean; duration |
-| `state()`, `state("stairs")` | The current state id of this rule, or of the rule with the given id (a literal; that rule must have states). | string |
+| `state()`, `state("stairs")` | The current state id of this rule, or of the rule with the given id (a literal; that rule must have states). Another rule's state is also the datapoint `@"rule/stairs/state"`, its position in `states` (8.8). | string |
 
 Parameters, timers and states are always those of the rule the expression belongs to; another
 rule's state is readable by its id, and another rule's parameters through their datapoints
@@ -687,7 +798,7 @@ The rule engine runs on the event loop's thread and processes one *cascade* at a
 1. An external event arrives: the datapoint model reports an update not caused by a rule action (a
    telegram, a device report, a stale report, a command from the UI or API), the scheduler fires an
    entry, a timer of a rule expires, the period of a `silence` trigger ends (7.11), a rule starts
-   (7.5), or a parameter is changed from the UI or API.
+   (7.5), a parameter is changed from the UI or API, or a timeline switches or is evaluated (7.13).
 2. The engine puts it into an empty FIFO *event queue* and fixes the *cascade time*: the monotonic
    time and the wall time at which the cascade starts. Every expression in the cascade sees this
    time (`now()`, `sinceChange`, timer deadlines).
@@ -776,14 +887,21 @@ A rule *starts* at boot, at every image swap (every rule of the new image) and w
 For each starting rule, in rule order, one cascade with an external *start event* for this rule
 alone:
 
-1. A rule with states and no preserved state (2.6) takes `initialState`; if the rule is enabled,
+1. A rule with a timeline that is enabled, while the wall clock is synchronized and the timeline
+   has a state due now (7.13), takes that state and runs its entry actions, whatever its preserved
+   state (an evaluation; no exit actions run, the rule is starting, not leaving a state). Otherwise:
+   a rule with states and no preserved state (2.6) takes `initialState`; if the rule is enabled,
    the entry actions of that state run. A rule with a preserved state stays in it; no entry
    actions run.
 2. If the rule is enabled, the start event is processed like any event (7.2): it matches the
    rule's `start` triggers whose `reasons` contain the start reason (`boot`, `image` or `enable`).
 
-A disabled rule with states takes its initial state without running entry actions. Enabling a rule
-does not re-run the entry actions of its current state.
+A disabled rule with states takes its initial state (or keeps its preserved one) without running
+entry actions, also with a timeline. Enabling a rule without a timeline does not re-run the entry
+actions of its current state; enabling a rule with a timeline enters the state due now with its
+entry actions, by step 1 (also when it is the current state). Taking the state at a start with the
+reason `boot` or `image` sets the state datapoint quietly (8.8); at the reason `enable` a changed
+state is an event.
 
 ### 7.6 Image swap
 
@@ -797,8 +915,13 @@ When a new image is loaded without a reboot:
    - running timers whose id is still declared, with their deadlines; other timers are cancelled;
    - the current state when the new rule has a state with that id; otherwise the state is lost,
      `stateReset` is logged and the rule enters its initial state when it starts; the persisted
-     state follows (8.5);
+     state follows (8.5); a rule with a timeline then enters the state due now at its start
+     instead (7.5 step 1);
+   - the inhabitant's timeline per section 8.7 (otherwise `timelineReset`);
    - the diagnostics.
+
+   The entries a swap logs come in rule order, within a rule `stateReset`, then `parameterReset`,
+   then `timelineReset`.
 4. Rules with a new id start fresh.
 5. The memories of all `match` triggers are re-baselined (7.4); change tracking (7.7) continues
    for datapoints that still exist.
@@ -812,7 +935,8 @@ spread out as at boot), so new inputs get a value without waiting for the next r
 
 Values the image itself sets (issue #67): the datapoints whose values follow from the image and the
 device's own persisted state, not from a technology's report, take their values at a load (a swap
-or the boot) as no event for the rules: the rule parameters' datapoints (8.6), the schedules' time
+or the boot) as no event for the rules: the rule parameters' datapoints (8.6), the rules' state
+datapoints (8.8, the state each rule takes at its start, also the state due now), the schedules' time
 datapoints and the schedules' output datapoints, whose value then says whether the entry fired
 today (`spec/schedules.md` 2.2, 5). No trigger matches on them, and rules see the values when they
 start with the reason `image` or `boot` (7.5). An output's value is taken at the first evaluation
@@ -847,8 +971,9 @@ the engine keeps its own deadline list.
 
 The enable switch is the parameter `enabled` (8.3). When it changes to `false`, the rule's running
 timers are cancelled, its silence triggers disarmed, and it stops firing; its state and parameters
-stay. When it changes to `true`, the rule's silence triggers are armed anew (7.11) and the rule
-starts with the reason `enable` (7.5), in the cascade of the parameter change.
+stay, and its timeline switches no more (7.13). When it changes to `true`, the rule's silence
+triggers are armed anew (7.11) and the rule starts with the reason `enable` (7.5), in the cascade
+of the parameter change; a rule with a timeline enters the state due now there (7.5 step 1).
 
 ### 7.10 Reboot
 
@@ -860,7 +985,11 @@ overrides and rule states (8.5) survive (decision 3). After the image is loaded 
 2. A persisted state that the image does not declare, or a persisted state of a rule that now has
    no states, logs `stateReset`; a rule with states then takes `initialState` with its entry
    actions (7.5).
-3. Every rule starts with the reason `boot` (7.5); `start` triggers fire as usual.
+3. Every rule starts with the reason `boot` (7.5); `start` triggers fire as usual. A rule with a
+   timeline enters the state due now with its entry actions instead of steps 1 and 2 when the
+   wall clock is synchronized at its start and the timeline has a due state (7.5 step 1); else
+   when the clock becomes synchronized (7.13). The persisted inhabitant's timeline (8.7) is the
+   rule's timeline from the start.
 
 Timers do not resume. A rule that needs its timer after a reboot restarts it from a reaction to
 the `start` trigger with the reason `boot` and `from` the state (corpus case 37).
@@ -910,6 +1039,103 @@ an external source that cannot be fetched (no network, no synchronized clock, no
 refused read logs `readRefused` (once per action, until a read of that action is accepted) and the
 following actions still run. A read of a datapoint no technology can read at all is refused at load
 (`notReadable`, 10.1).
+
+### 7.13 Timelines
+
+The semantics of the `timeline` of 2.8 (issue #84, decision 17). All dates are local dates and all
+moments UTC instants in whole seconds, through the device's time zone (the image's `settings.tz`,
+`spec/runtime-image.md` 3.2); E-Home's simulation computes them the same way.
+
+**1. The moment of a point on a date D.**
+
+- A clock point: its `time` on D, by the DST rules S1 of `spec/schedules.md`: a time in the gap at
+  the start of summer time is the end of the gap (02:30 on the last Sunday of March in the EU is
+  03:00), a time that occurs twice is its first occurrence (02:30 on the last Sunday of October is
+  the one in summer time).
+- A sun point: the sun event of D as for the schedule kind `astro` (`spec/schedules.md` 3: the
+  events of D are those around its solar noon, at the device's location, `doc/time.md`), plus
+  `offset` added to the instant, then moved up to `notBefore` and down to `notAfter`, both local
+  times on D by S1. A point whose event does not occur on D (polar day or night, a summer night too
+  bright for civil dusk) has no moment on D, whatever its clamps say; the other points of D still
+  apply. Without a location no sun point has a moment: the rule logs `sunUnavailable` once (9.2),
+  its clock points still apply, and its sun points apply again once a location is set.
+- Then the moment is kept within D: a moment before D's first instant (00:00:00 on D by S1) is that
+  instant, one after D's last second (the first instant of the next date less one second) is that
+  second. A day plan describes its own day: an offset or a clamp never moves a point into a
+  neighbouring date, where it would act under another date's plan.
+
+The points of D are the points of D's plan (2.8: the matching assignment of the highest rank),
+ordered by their moments on D and, at equal moments, in plan order. The dates' ranges of moments
+are disjoint and ordered like the dates.
+
+**2. Switching.** While the rule is enabled and the wall clock synchronized, when the clock reaches
+the moment of a point, the rule takes a transition to the point's state: the exit actions of the
+current state, the change of state, the entry actions of the point's state, in this order (2.6;
+there are no reaction actions). It does so whatever the current state, also when the rule is
+already in the point's state: a self-transition, which runs exit and entry actions again and so
+sends the messages again (a switching point into the current state is no no-op, decision 17). Each
+point is an external event of its own (7.1), one cascade per point; points at the same moment are
+applied one after the other in plan order, so the last one's state holds; points of several rules
+at the same moment in rule order; a timer expiring at the same moment before them (7.1). The device applies a
+point within about a second of its moment (like a schedule entry, `spec/schedules.md` 4.1); a
+corpus runner applies it at its moment exactly. A switching point is a firing of the rule (9.1:
+`firings` counts it, `lastTrigger` is `timeline <stateId>`); no trigger matches it (a reaction does
+not see the point, a rule that follows the state triggers on the state datapoint, 8.8), and `from`
+does not restrict it.
+
+The timeline keeps the latest *handled* moment `h`: a point applied sets `h` to its moment, an
+evaluation (below) to its instant. The next point is the first point whose moment lies after `h`,
+searched over the dates from the local date of `h` on (eight dates; with none, again at the next
+change of the local date). When the loop takes it up late (a busy loop, seconds), every point with
+a moment after `h` and not after now is applied in order. A clock that steps back by at most 60 s
+repeats nothing.
+
+**3. The state due now** at the instant `t` (the cascade's wall time): for the dates D = L, L-1,
+..., L-7, where L is the local date of `t`, in this order, the points of D whose moment on D is not
+after `t`; the first of these dates that has one gives the *due point*, the one with the latest
+moment, at equal moments the last in plan order. The *state due now* is the due point's state. When
+none of the eight dates has such a point (every plan empty, only sun points without a location or
+an event), the timeline has no due state. Today and the seven dates before suffice: assignments go
+by weekday, so the seven whole dates before today hold every weekday's plan once, and an older
+point can never be the latest; a later kind of assignment (2.8) that needs a longer window says so.
+A point exactly at `t` has passed.
+
+**4. Evaluation.** Whenever the timeline is evaluated anew, the rule goes to the state due now, with
+its entry actions (decision 17: one rule for every evaluation; nothing remembers which point was
+applied last):
+
+| When | What happens |
+|---|---|
+| The rule starts: boot, image swap (every rule of the new image, also an unchanged one), enabling (7.5, 7.6, 7.9, 7.10) | Step 1 of 7.5: the rule takes the due state and runs its entry actions; no exit actions (the rule is starting). |
+| The wall clock becomes synchronized (the time service's first fix, or again after it was lost) | For each enabled rule with a timeline, in rule order, one cascade: a transition to the due state (exit actions of the current state, the change, entry actions; a self-transition when it is the current state). |
+| The synchronized wall clock steps by more than 60 s against the monotonic clock, forward or back (the time service's jump, `doc/time.md`; its threshold `kJumpThresholdS`) | As at the synchronization. Points stepped over are not applied one by one; after a step back the points between the new and the old time apply again as the clock reaches them. |
+| The inhabitant changes or resets the timeline (8.7) | For this rule, if enabled, one cascade: a transition to the due state, as at the synchronization. |
+
+An evaluation needs an enabled rule, a synchronized wall clock and a due state. Without a due state
+or a synchronized clock a start goes as without a timeline (7.5: the preserved state without entry
+actions, else `initialState` with its entry actions), and the other evaluations change nothing.
+Every evaluation of the table sets `h` to its instant (with a synchronized clock), also when it
+enters nothing, so no point before it is applied afterwards. An evaluation at a start is part of the start event (no firing
+of its own); one while the rule runs is a firing like a switching point (`lastTrigger`
+`timeline <stateId>`).
+
+Not an evaluation: the change of the local date, a change of the UTC offset (summer time, a new
+`tz`), a change of the location. They only move the next point (a new location gives the sun points
+their moments from then on). While the clock is not synchronized and while the rule is disabled no
+point applies, and none is missed: the synchronization or the enabling evaluates.
+
+**5. Manual override.** A reaction with `to` (a push button, a window contact) changes the state as
+always (2.6); the timeline does not undo it. The next switching point sets the state again, and so
+does every evaluation (a restart, the clock stepping, a change of the timeline): an override lasts
+until the next point (decision 17; remembering it across a restart was rejected).
+
+**6. Example.** The heating program of 2.8 (11.5), Europe/Berlin. Booted on Monday at 05:00, the
+rule finds no point of Monday's plan (workday) up to 05:00 and Sunday's (weekend) last point 23:00
+`night`: it starts in `night` and writes the mode of the rooms (the entry actions). At 06:00
+`comfort`, 08:00 `standby`, 16:00 `comfort`, 22:00 `night`; on Saturday 07:30 `comfort`, 23:00
+`night`. Had the rule a reaction to a comfort button with `to: comfort`, a press at 23:30 on
+Saturday would hold until Sunday 07:30, when the point re-enters `comfort` (a self-transition)
+and sends the mode again. Corpus cases 74 to 85.
 
 ## 8. Adjustable parameters
 
@@ -1034,6 +1260,87 @@ The adjustable time of a schedule entry is a datapoint of the same kind, `schedu
 (`@"schedule/workdayMorning/time"`); its value at the load is no event, a command to it is a change
 of the entry within its bounds.
 
+### 8.7 The inhabitant's timeline
+
+*Issue #84, decision 17.* The timeline is the inhabitant's half of a time program: where the image
+declares it `adjustable` (the default), the inhabitant replaces it on the device, through the API
+(`PUT /api/rules/<ruleId>/timeline`, `spec/api.md`) or the device's editor on the schedules page,
+which uses that API. What the inhabitant cannot change is the machine: the states, their actions
+and the reactions; and the timeline's own `adjustable`.
+
+1. **A change replaces the timeline as a whole**: its plans with their points and its assignments.
+   It is checked exactly as the loader checks the image's timeline (10.1, the same reasons and
+   texts, the paths relative to the timeline) and against the limits of 10.2, the budget of the
+   effective timelines included, and applied whole or refused whole with the reason: the timeline
+   is not adjustable, a point names a state the rule does not have, a moment or a member is
+   malformed (clamps contradicting each other among them), a limit is exceeded (the API's codes in
+   `spec/api.md`).
+2. **Equal is no override.** A timeline equal to the image's removes the override; any other
+   becomes the rule's *timeline override* and is the rule's timeline from then on. Equal means
+   member by member in order (plans, their points, the assignments), with an absent `offset` equal
+   to 0 and `days` compared as sets; labels as the image gives them. A reset
+   (`DELETE /api/rules/<ruleId>/timeline`) removes the override.
+3. **It takes effect at once**: a change and a reset evaluate the timeline (7.13), so the rule goes
+   to the state due under the new timeline with its entry actions. A refused change changes nothing.
+4. **Persistence.** The override is persisted under the logical key `<ruleId>/.timeline` (no
+   parameter id can be `.timeline`, as `.state`, 8.5) in the device's store, with delayed,
+   coalesced writes like the overrides of 8.4 (a power loss within 10 s loses the latest change).
+   Its text exceeds what a setting holds, so the platform keeps it in its blob store (the mapping
+   of the key is the device's, `doc/rules.md`, like 8.4): the timeline's *canonical form*, the JSON
+   of `plans` and `assignments` without whitespace, members in the order of the tables of 2.8, an
+   `offset` of 0 left out (also the form `GET /api/rules/<ruleId>/timeline` answers with): at most
+   12.7 KB (10.2), within the store's blobs of 20 KB. At boot the persisted override is the rule's timeline
+   when the image still lets it be (below).
+5. **A new image** (swap or boot) checks the override against the new rule:
+
+| New image | Override |
+|---|---|
+| The rule has a timeline that is adjustable, and the rule has every state the override names | kept, and checked as a change (1: the new rule's states; the budget of 10.2 over the rules in rule order); if it now equals the new image's timeline, it is removed (no override) |
+| A state the override names is gone, or the timeline is no longer adjustable, or the override no longer fits (a limit or the budget) | deleted, `timelineReset` logged (9.2) naming the reason; the image's timeline applies |
+| The rule has no timeline any more, no states, or is gone | deleted silently (E-Home removed it) |
+
+   Kept or not, the rule then starts with the reason `image` or `boot` and enters the state due
+   under its timeline (7.5). E-Home cannot know the inhabitant's timeline; it warns when a change of
+   the rule removes a state its last deployed timeline names (haumacher/ehome #140).
+
+### 8.8 The state as a datapoint
+
+*Issue #84, decision 18.* Every rule with states, with or without a timeline, has the datapoint
+`rule/<ruleId>/state` (`rule/heating/state`): pages show it, rules and blocks read it and trigger on
+it. The device derives it when it loads the image, behind the rule's parameter datapoints (8.6: per
+rule `enabled`, the parameters, then `state`); the image declares none (the prefix `rule/` is
+reserved, 2.1), and a parameter `state` of a rule with states is refused (`duplicateId`, 10.1) in an
+image of schema 1.7 or newer; in an older image, which may declare one, that parameter keeps its
+datapoint and the rule has no state datapoint (logged at load), so a stored image still loads after
+the firmware update (`spec/runtime-image.md` section 8). It is owned by the rule engine (technology
+`rules`):
+
+1. **Type and value.** The type is `enumeration`; the value is the 0-based position of the current
+   state in the rule's `states` (in the heating program `comfort` 0, `standby` 1, `night` 2),
+   quality good from the rule's start. The API names the elements by the states' labels (the
+   `choices` `[{"value", "label"}]` of a parameter, from each state's `label`, its id where it has
+   none; `spec/api.md`); a rule has at most 16 states (10.2), as many as a parameter has choices.
+   A rule compares the number (`@"rule/heating/state" == 2`; enumerations compare with integers,
+   4.5); E-Home names the state in its texts.
+2. **Load quiet, changes events.** The value the rule takes at its start with the reason `boot` or
+   `image` (the preserved state, `initialState`, or the state due now) is no event (7.6, "values
+   the image itself sets"). Every later transition updates the datapoint (origin `publish`) as an
+   event of the cascade at the change of state (7.2: after the events derived from the exit
+   actions and the reaction's actions, before those of the entry actions): a reaction with `to`, a
+   switching point, an evaluation while the rule runs, the start at enabling. A self-transition
+   updates it without changing it (`on: update` triggers see it, `on: change` triggers do not).
+3. **Read-only.** It is not writable: a command (the UI, the API, MQTT) is refused with the reason
+   (`spec/api.md`: 409 `dp.not_writable`), and a rule's `write` to it is refused at load
+   (`notWritable`). Commanding the state from outside is not decided (issue #84). A `read` of it is
+   refused at load (`notReadable`): there is nothing to fetch.
+4. **Its own rule** cannot reference it (refused at load, `forbidden`): it has `state()` and its
+   entry actions.
+5. **Persistence.** The state is persisted as 8.5 says; the datapoint is not persisted by the
+   datapoint model and has no history.
+
+The numbering follows the order of `states`: an image that reorders the states changes the number
+of a kept state, quietly at the load. E-Home's simulation shows the same datapoint.
+
 ## 9. Diagnostics
 
 ### 9.1 Per-rule state
@@ -1049,6 +1356,7 @@ and #14; E-Home: the simulation view):
 | `lastActionAt`, `lastAction` | The last action that took effect: `write hall.light = true`, `restartTimer off 3min`, `setParameter comfort = 21.5`, `read hall.temp`, `log`. |
 | `errors`, `lastErrorAt`, `lastError` | Number of logged errors and warnings of the rule, the last one's time, code (9.2) and text. |
 | `state` | The current state id (rules with states). |
+| `timeline` | Rules with a timeline: whether the inhabitant's timeline applies (`overridden`, 8.7) and the next switching point (its moment and state, none while the clock is not synchronized or the rule disabled). |
 | `timers` | For each timer: `id`, `running`, `remaining`. |
 | `parameters` | For each parameter: `id`, value, whether it has an override. |
 
@@ -1069,6 +1377,8 @@ contract (the corpus compares them); the text after the code is free.
 | `parameterRefused` | warning | a parameter value was refused (UI, API or action) | every time |
 | `parameterReset` | warning | an override was deleted by a new image because it no longer fits (8.4) | every time |
 | `stateReset` | warning | a new image does not have the rule's current state (7.6); at boot, the persisted state is not declared or the rule has no states (7.10) | every time |
+| `timelineReset` | warning | a new image drops the inhabitant's timeline because a state it names is gone, the timeline is no longer adjustable, or it no longer fits a limit (8.7); the text names the reason | every time |
+| `sunUnavailable` | warning | a timeline has sun points but the device has no location: they have no moment (7.13) | once per rule, again only after its sun points had moments |
 | `loopGuard` | error | a cascade exceeded 32 derived firings (7.2); the entry names the culprit: the rule with the most derived firings in the cascade (the first in rule order on a tie) and their number; with blocks (`spec/blocks.md` 5.1) their calls for derived events count too, and a block that called more than every rule is the culprit | once per cascade |
 | `queueOverflow` | error | the event queue was full; the event was dropped | once per cascade |
 
@@ -1085,18 +1395,72 @@ failure refuses the whole image with the rule id, the JSON path and one of these
 | Reason | Examples |
 |---|---|
 | `malformed` | wrong JSON type, missing or unknown member, unknown `kind`, `function` or `op`; an id outside its form (2.1): `parameter id 'max/helligkeit' is not 1..24 characters of A-Z a-z 0-9 _ -`, `parameter id 'not' is a keyword`, `timer id 'x-y' is not an identifier` |
-| `duplicateId` | two rules, or two parameters/timers/states of one rule, with the same id |
+| `duplicateId` | two rules, or two parameters/timers/states of one rule, with the same id; a parameter `enabled`; a parameter `state` in a rule with states (8.8); two plans of a timeline with the same id |
 | `unknownReference` | a datapoint, schedule, parameter, timer, state or rule (in `state("id")`) that does not exist; a `state("id")` literal whose value is not a JSON string or is longer than 32 bytes (it names no rule) |
 | `typeError` | operand or argument types (4.4–4.7), a condition that is not boolean, a write value that does not convert to the datapoint type (3.2), a timer duration that is not a duration |
 | `invalidLiteral` | a literal value out of its range (`25:00`, a color level of 256, a string longer than 28 bytes, an integer beyond 2^53-1, a date or date-time outside the years 1900..2155) |
 | `invalidParameter` | a default that is not valid, `min > max`, `choices` on a type without them |
-| `notWritable` | a `write` to a datapoint without the writable flag that is no value of the application (a status a technology reports, a KNX group address on which no object takes values; also the datapoint of a parameter that is not adjustable, 8.6); a `write` to the output datapoint of a schedule entry (the scheduler owns it). A value of the application (`spec/runtime-image.md` 3.3) is the rules' to write also without the writable flag (7.3, schema 1.6) |
-| `notReadable` | a `read` of a datapoint no technology can be asked for: one without a KNX, Zigbee or external-values binding (a virtual datapoint), the output of a schedule entry, a datapoint of the time master, a rule parameter's datapoint (8.6) |
-| `forbidden` | a time, history, timer or state function in a `match` condition; a datapoint, or a time, history, timer or state function, in the `after` of a `silence` trigger; a reference to `enabled`; a reference to the rule's own parameter datapoints (8.6); `from` or `to` in a rule without states; `elseActions` together with `to`; a `timer` node outside `running`/`remaining`; `state()` arguments other than one string literal |
+| `notWritable` | a `write` to a datapoint without the writable flag that is no value of the application (a status a technology reports, a KNX group address on which no object takes values; also the datapoint of a parameter that is not adjustable, 8.6); a `write` to the output datapoint of a schedule entry (the scheduler owns it); a `write` to a rule's state datapoint (8.8). A value of the application (`spec/runtime-image.md` 3.3) is the rules' to write also without the writable flag (7.3, schema 1.6) |
+| `notReadable` | a `read` of a datapoint no technology can be asked for: one without a KNX, Zigbee or external-values binding (a virtual datapoint), the output of a schedule entry, a datapoint of the time master, a rule parameter's datapoint (8.6), a rule's state datapoint (8.8) |
+| `forbidden` | a time, history, timer or state function in a `match` condition; a datapoint, or a time, history, timer or state function, in the `after` of a `silence` trigger; a reference to `enabled`; a reference to the rule's own parameter datapoints (8.6) or its own state datapoint (8.8); `from` or `to` in a rule without states; `elseActions` together with `to`; a `timer` node outside `running`/`remaining`; `state()` arguments other than one string literal; a `timeline` in a rule without states |
 | `limitExceeded` | a limit of 10.2; two persistence keys of the image (8.4, 8.5) that collide in the device's storage (the device's mapping, `doc/rules.md`; practically never, but checked) |
 
 Every check belongs to loading the rule set itself, so every loader (the image service, a checker
 in E-Home, a test) refuses the same images.
+
+**The checks of a timeline and the state datapoint** (schema 1.7, issue #84). E-Home's validation
+refuses the same with the same texts at the field; the device's API refuses an inhabitant's
+timeline with them (8.7; there the path is relative to the timeline, `plans[0].points[2].state`).
+The loader checks a timeline after the rule's states, in the order of this table, and within it
+plans, points and assignments in their array order, so the first failure is the same on both sides.
+The path is relative to the rule (`rules[i]`); `<x>` stands for the offending value, a time is
+written `HH:MM:SS`. An unknown member anywhere in the timeline is refused like elsewhere in a rule
+(`malformed: unknown member 'x'`, with the hint of `spec/runtime-image.md` I4 when the image's minor
+version is newer), as is a member of the wrong JSON type (`malformed: '<member>' must be ...`).
+
+| Check | Path | Reason and text |
+|---|---|---|
+| a timeline in a rule without states | `.timeline` | `forbidden: 'timeline' in a rule without states` |
+| not an object | `.timeline` | `malformed: an object expected` |
+| `plans` absent | `.timeline` | `malformed: member 'plans' missing` |
+| no plan | `.timeline.plans` | `malformed: a timeline needs at least one plan` |
+| more than 8 plans | `.timeline.plans` | `limitExceeded: more than 8 plans` |
+| a plan id outside its form (2.1) | `.timeline.plans[p].id` | `malformed: plan id '<x>' is not 1..24 characters of A-Z a-z 0-9 _ -` |
+| a plan id used twice | `.timeline.plans[p].id` | `duplicateId: plan id '<x>' is used twice` |
+| a plan without a label | `.timeline.plans[p]` | `malformed: member 'label' missing` (a malformed label: the texts of 2.2 at `.label`) |
+| a plan's label of more than 4 languages | `.timeline.plans[p].label` | `limitExceeded: more than 4 languages in a plan's label` |
+| a plan without `points` | `.timeline.plans[p]` | `malformed: member 'points' missing` (an empty array is allowed) |
+| more than 16 points in a plan | `.timeline.plans[p].points` | `limitExceeded: more than 16 points in a plan` |
+| a point with neither `time` nor `sun` | `.timeline.plans[p].points[k]` | `malformed: a point needs 'time' or 'sun'` |
+| a point with both | `.timeline.plans[p].points[k]` | `malformed: a point has 'time' or 'sun', not both` |
+| a malformed time | `...points[k].time` | `malformed: 'time' must be a time {hour 0..23, minute 0..59, second 0..59}` |
+| an unknown sun event | `...points[k].sun` | `malformed: unknown sun event '<x>' (dawn, sunrise, sunset, dusk)` |
+| `offset`, `notBefore` or `notAfter` on a clock point | `...points[k].offset` (the member) | `malformed: 'offset' is only for a sun point` (`'notBefore'`, `'notAfter'` likewise) |
+| an offset not whole seconds or beyond 12 h | `...points[k].offset` | `malformed: an offset must be whole seconds within -12 h..12 h` |
+| a malformed clamp | `...points[k].notBefore` | `malformed: 'notBefore' must be a time {hour 0..23, minute 0..59, second 0..59}` (`notAfter` likewise) |
+| `notBefore` after `notAfter` | `...points[k]` | `malformed: notBefore <HH:MM:SS> is after notAfter <HH:MM:SS>` |
+| a point without a state | `...points[k]` | `malformed: member 'state' missing` |
+| a state the rule does not have | `...points[k].state` | `unknownReference: no state '<x>' in the rule` |
+| more than 64 points in the timeline | `.timeline` | `limitExceeded: more than 64 points in a timeline` |
+| `assignments` absent | `.timeline` | `malformed: member 'assignments' missing` |
+| more than 8 assignments | `.timeline.assignments` | `limitExceeded: more than 8 assignments` |
+| an assignment without `plan` | `.timeline.assignments[a]` | `malformed: member 'plan' missing` |
+| an assignment naming no plan | `.timeline.assignments[a].plan` | `unknownReference: no plan '<x>' in the timeline` |
+| `days` not a non-empty array | `.timeline.assignments[a].days` | `malformed: 'days' must be a non-empty array of weekdays 1..7` |
+| a weekday outside 1..7 | `.timeline.assignments[a].days[d]` | `malformed: weekday <x> is not 1..7` |
+| a weekday twice in one assignment | `.timeline.assignments[a].days[d]` | `malformed: weekday <x> is listed twice` |
+| a weekday in two assignments | `.timeline.assignments[a].days[d]` | `malformed: weekday <x> is assigned by assignments[<b>] already` |
+| a second default | `.timeline.assignments[a]` | `malformed: a second default assignment (the first is assignments[<b>])` |
+| no default | `.timeline.assignments` | `malformed: no default assignment (one without 'days')` |
+| the image's timelines beyond 256 points or 64 plans (checked in rule order, at the timeline that crosses it) | `.timeline` | `limitExceeded: more than 256 points in the timelines of the image` (`more than 64 plans ...` likewise) |
+| a parameter `state` in a rule with states (an image of schema 1.7 or newer, 8.8) | `.parameters[k].id` | `duplicateId: the parameter id 'state' is reserved for the state datapoint of a rule with states` |
+| a `write` to a state datapoint | `.reactions[r].actions[a].datapoint` (or an `entry`/`exit` action) | `notWritable: datapoint '<x>' is a rule's state: no rule writes it` |
+| a `read` of a state datapoint | the action's `.datapoint` | `notReadable: datapoint '<x>' mirrors a rule's state: no technology reads it` |
+| a rule's own state datapoint in a trigger, an expression or an action | the reference | `forbidden: '<x>' is the state of this rule: use state()` |
+| a rule without reactions and without a timeline | `.reactions` | `malformed: a rule needs at least one reaction` (as before; with a timeline none is needed) |
+
+A plan that no assignment names, a plan without points and two points at the same moment are
+allowed (2.8, 7.13). The state's `label` is checked like every label (2.2).
 
 ### 10.2 Limits
 
@@ -1125,12 +1489,45 @@ interpreters refuse beyond them (load refusal `limitExceeded`, or the run-time l
 | Timer duration, period of a `silence` trigger | 100 ms .. 30 d (`timerRefused`) |
 | String value | 28 bytes |
 | Formatted log message | 200 bytes (cut, 4.9) |
+| Plans per timeline (2.8) | 8 |
+| Points per plan | 16 |
+| Points per timeline | 64 |
+| Languages of a plan's label | 4 |
+| Assignments per timeline | 8 (a default and seven weekdays) |
+| Points / plans in all timelines of an image | 256 / 64 |
+| Points / plans in all effective timelines (the inhabitant's where overridden, else the image's) | 256 / 64 (8.7: a change beyond is refused, a kept override beyond is dropped) |
 
 Budget: a compact node takes 16 bytes on the ESP32 (kind, operator or function, a type, two child
 indices or a 64-bit literal; longer literals in a side table), so 4096 nodes take 64 KB at most;
 a typical 50-rule image uses under 1500 nodes (about 24 KB) plus about 100 bytes per rule, 24 per
 timer and 48 per parameter. The event queue holds 128 entries of 8 bytes. Evaluation uses a stack
 of at most 12 frames of values (12 × 32 bytes).
+
+Timelines (issue #84; the limits of the specification round, 8 plans and 16 points per plan, checked here):
+
+- *RAM.* A compiled point takes 16 bytes (the state's index, the kind and sun event, flags, the
+  time or the offset as 32-bit seconds, the two clamps as 32-bit seconds), a plan 8 bytes plus its
+  id and label, which the rule set keeps like its other labels, an assignment 2 bytes (the plan's
+  index, the weekday bits), a timeline 24 bytes (counts, first indices, the handled moment `h` and
+  the next point, 7.13). The device keeps the image's timelines (for the API, the comparison of 8.7
+  and the reset) and the effective ones: at most 2 × (256 × 16 + 64 × 8) = 9 KB beside the 64 KB of
+  nodes, without the labels. The heating program of 11.5 (6 points, 2 plans, 2 assignments) takes
+  140 bytes per copy; ten rooms' programs of 6 to 10 points each under 2 KB.
+- *Text.* In its canonical JSON (compact, UTF-8, members in the order of 2.8) the largest point is a
+  sun point with the offset -43200000, both clamps 23:59:59 and a state id of 24 characters: 166
+  bytes (a clock point 79). The largest timeline the limits admit, 64 such points in 8 plans with
+  ids of 24 characters and labels of 4 languages of 63 bytes each, all escaped (126 bytes written),
+  and 8 assignments, is 12,653 bytes with the frame `{"timeline": ...}` of the API. So the API's
+  body of `PUT /api/rules/<ruleId>/timeline` (16 KB), the persisted override (one blob of the store,
+  at most 20 KB, 8.7) and a page of `GET /api/rules/<ruleId>/timeline` with one plan (16 such points
+  and such a label: 2,866 bytes, the page below 3.5 KB, within the 4 KB answers of the E-Home
+  connection) hold every timeline. Without the limit of 64 points per timeline (8 × 16 sun points,
+  21 KB) or with 16 languages in a plan's label (a plan alone 5 KB) they would not.
+- *Flash.* The overrides together have at most 256 points, so at most about 51 KB of text in the
+  worst case; the heating program's override is about 600 bytes, one 4 KB block of the LittleFS
+  store.
+- *States.* A rule has at most 16 states, as many as a parameter has choices: the choices of the
+  state datapoint (8.8) never exceed what the API and the pages handle for a parameter.
 
 ## 11. Worked examples
 
@@ -1519,6 +1916,99 @@ rule stairs "Staircase light"
 }
 ```
 
+### 11.5 Heating program (a timeline)
+
+The time program of haumacher/ehome #140: three states whose entry actions write the KNX HVAC mode
+(DPT 20.102: 1 comfort, 2 standby, 3 night) of the rooms, and a timeline with a plan for workdays
+and one for the weekend (2.8, 7.13). The rule needs no reaction: the timeline drives it, and after
+a boot, a new image or a change of the timeline the rooms get the mode due now at once. The
+inhabitant changes the plans on the device (8.7); a control page shows the state datapoint
+`rule/heating/state` (8.8). The outline writes a state's label after its id and the timeline's
+plans with their points as `HH:MM state` (a sun point as `sunset+2h state`, a clamp as
+`sunset+2h<=22:00`). Corpus: `spec/fixtures/rules/74-timeline-heating-week.json`; the whole image:
+`spec/fixtures/images/heating-timeline.json`, which E-Home's export of this rule equals.
+
+```
+rule heating "Heating program"
+  state comfort "Comfort"
+    entry: write @"1/4/1" := 1; write @"1/4/2" := 1
+  state standby "Standby"
+    entry: write @"1/4/1" := 2; write @"1/4/2" := 2
+  state night "Night"
+    entry: write @"1/4/1" := 3; write @"1/4/2" := 3
+  initial comfort
+  timeline
+    plan workday "Workday": 06:00 comfort, 08:00 standby, 16:00 comfort, 22:00 night
+    plan weekend "Weekend": 07:30 comfort, 23:00 night
+    assign workday; sat sun weekend
+```
+
+```json
+{
+	"id": "heating",
+	"name": {"en": "Heating program", "de": "Heizprogramm"},
+	"states": [
+		{
+			"id": "comfort",
+			"label": {"en": "Comfort", "de": "Komfort"},
+			"entry": [
+				{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 1}},
+				{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 1}}
+			]
+		},
+		{
+			"id": "standby",
+			"label": {"en": "Standby", "de": "Standby"},
+			"entry": [
+				{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 2}},
+				{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 2}}
+			]
+		},
+		{
+			"id": "night",
+			"label": {"en": "Night", "de": "Nacht"},
+			"entry": [
+				{"kind": "write", "datapoint": "1/4/1", "value": {"kind": "literal", "type": "integer", "value": 3}},
+				{"kind": "write", "datapoint": "1/4/2", "value": {"kind": "literal", "type": "integer", "value": 3}}
+			]
+		}
+	],
+	"initialState": "comfort",
+	"timeline": {
+		"adjustable": true,
+		"plans": [
+			{
+				"id": "workday",
+				"label": {"en": "Workday", "de": "Werktag"},
+				"points": [
+					{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "comfort"},
+					{"time": {"hour": 8, "minute": 0, "second": 0}, "state": "standby"},
+					{"time": {"hour": 16, "minute": 0, "second": 0}, "state": "comfort"},
+					{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "night"}
+				]
+			},
+			{
+				"id": "weekend",
+				"label": {"en": "Weekend", "de": "Wochenende"},
+				"points": [
+					{"time": {"hour": 7, "minute": 30, "second": 0}, "state": "comfort"},
+					{"time": {"hour": 23, "minute": 0, "second": 0}, "state": "night"}
+				]
+			}
+		],
+		"assignments": [
+			{"plan": "workday"},
+			{"days": [6, 7], "plan": "weekend"}
+		]
+	},
+	"reactions": []
+}
+```
+
+The write values are integer literals: an integer converts exactly to the enumeration datapoint
+(3.2), and the normalized tree has no enumeration literal in a write (4.8). The state datapoint
+`rule/heating/state` is 0 in `comfort`, 1 in `standby`, 2 in `night`.
+
 ## 12. Decisions
 
 The points the first draft left open, decided by the author on 2026-10-18. Each keeps its number;
@@ -1590,3 +2080,35 @@ corpus cases named and both interpreters.
     datapoint a technology owns that is not writable (a KNX status address) stays refused at load
     (`notWritable`, 10.1): that write is a mistake. Schema 1.6: an older firmware refuses the image
     (7.3). Cases 72 and 73.
+17. **Time programs: a rule with states plus a timeline.** Adopted (2026-11-12, issue #84,
+    haumacher/ehome #140, specification round with the author; D10): a rule with states may carry a
+    `timeline` of day plans (switching points: a clock time or a sun event with offset and clamps,
+    and a state) and assignments of plans to days (the default and weekdays; later kinds only add
+    ranks); a switching point is an ordinary transition, also into the current state; every
+    evaluation (a start, the clock becoming synchronized or stepping by more than 60 s, a change of
+    the timeline) goes to the state due now with its entry actions, searched back over today and
+    the seven days before, and nothing remembers the last point applied; a reaction with `to` is a
+    manual override until the next point or evaluation; the inhabitant replaces the timeline as a
+    whole where it is `adjustable`, a timeline equal to the image's is no override, and a new image
+    keeps the inhabitant's while every state it names still exists (2.8, 7.13, 8.7). Settled by the
+    orchestrator of the round: schema 1.7; 8 plans per timeline, 16 points per plan; and in this
+    specification: 64 points per timeline, 4 languages per plan label, 256 points and 64 plans over
+    the image's and over the effective timelines (10.2, from the arithmetic of the API's buffers and
+    the store); a sun point's moment kept within its date; an empty plan allowed; a start takes the
+    due state without exit actions, an evaluation while the rule runs is a transition. *Rejected:*
+    a schedule kind `profile`, a separate state object, remembering the last point, a point into the
+    current state as a no-op, per-member bounds for the inhabitant, a `schedule` trigger per point
+    (D10). Cases 74 to 82, 84 to 97.
+18. **The state of a rule is a read-only datapoint.** Adopted (2026-11-12, issue #84): every rule
+    with states has `rule/<ruleId>/state`, an enumeration of the 0-based position of the state in
+    `states`, named in the API by the states' labels as a parameter's choices; quiet at a load, an
+    event at every later transition; commands refused, a rule's `write` and `read` refused at load,
+    the rule's own reference refused; a parameter `state` of a rule with states refused (2.1, 8.8,
+    10.1). States get an optional `label` (2.6). Commanding the state from outside is not decided.
+    Cases 83, 98 to 100.
+19. **The inhabitant's timeline through the API.** Settled by the orchestrator (2026-11-12, issue
+    #84): `PUT /api/rules/<ruleId>/timeline` replaces it whole, `DELETE` resets it, persisted under
+    `<ruleId>/.timeline` like a parameter override; in this specification the full timelines are
+    served by `GET /api/rules/<ruleId>/timeline`, paged by plan, and `GET /api/rules` carries the
+    rule's states and a summary of its timeline, because one rule's two timelines do not fit the
+    API's answers (8.7, 10.2, `spec/api.md`). Cases 84, 85.

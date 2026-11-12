@@ -963,7 +963,7 @@ std::string with_block(const std::string& block) {
 
 TEST_CASE("Image.Blocks: schema 1.3; mirrors behind the image's datapoints; refusals with their paths") {
 	DashboardFixture f;
-	CHECK(std::string(hc::image::schema_version_text()) == "1.6");
+	CHECK(std::string(hc::image::schema_version_text()) == "1.7");
 	f.load(kBlocksImage);
 	f.controller.run_once();
 	f.controller.run_once();
@@ -1057,7 +1057,7 @@ TEST_CASE("WebApi.Blocks: list, types, changes applied whole or refused whole, r
 	f.controller.run_once();
 	auto status = f.get("/api/status", f.cookie);
 	REQUIRE(status.status == 200);
-	CHECK(status.json["device"]["schema"].text == "1.6");
+	CHECK(status.json["device"]["schema"].text == "1.7");
 	CHECK(status.json["image"]["blocks"].number == 1);
 	auto r = f.get("/api/blocks", f.cookie);
 	REQUIRE(r.status == 200);

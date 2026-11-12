@@ -1333,6 +1333,62 @@ input.number {
 	margin-top: 8px;
 }
 
+/* Time programs: the rules with a timeline and their editor (timelines.js, issue #84). */
+.timelines-section {
+	margin-top: 24px;
+}
+
+.timeline-body:empty {
+	display: none;
+}
+
+.timeline-editor {
+	margin-top: 8px;
+	padding-left: 12px;
+	border-left: 2px solid var(--line);
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.timeline-plan,
+.timeline-assign {
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	padding: 8px 12px;
+	margin: 0;
+}
+
+.timeline-points {
+	list-style: none;
+	margin: 8px 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.timeline-point,
+.timeline-actions,
+.timeline-days {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
+.timeline-editor label.inline {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 13px;
+	color: var(--text-2);
+}
+
+.timeline-editor input.number {
+	width: 5em;
+}
+
 .day-toggles button {
 	min-width: 40px;
 	padding: 4px 6px;

@@ -1,0 +1,385 @@
+{
+	"title": "An image swap keeps the inhabitant's timeline while every state it names exists, and drops it otherwise",
+	"description": "Five rules with the timeline 06:00 s1, 18:00 s2 and an inhabitant's timeline persisted before the boot, which they follow from the boot on (s2 due at 14:00). The new image at 14:10: a is unchanged, its override is kept; b's image timeline now equals the override, which is no override any more; c's timeline is no longer adjustable, d has no timeline any more, e renamed s2 to s3. c and e drop the override with timelineReset (e also loses its state, stateReset, first); d drops it silently and, without a timeline, keeps its state without entry actions. Every rule with a timeline enters the state due under its timeline with its entry actions.",
+	"note": "Decided 17 (spec/rules.md 7.6, 8.7).",
+	"datapoints": [
+		{"name": "a", "type": "real"},
+		{"name": "b", "type": "real"},
+		{"name": "c", "type": "real"},
+		{"name": "d", "type": "real"},
+		{"name": "e", "type": "real"}
+	],
+	"clock": {"start": "2026-11-18T14:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"persisted": {
+		"a/.timeline": {
+			"type": "timeline",
+			"value": {
+				"plans": [{"id": "day", "label": "Day", "points": [{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s2"}]}],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		"b/.timeline": {
+			"type": "timeline",
+			"value": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+							{"time": {"hour": 12, "minute": 0, "second": 0}, "state": "s2"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		"c/.timeline": {
+			"type": "timeline",
+			"value": {
+				"plans": [{"id": "day", "label": "Day", "points": [{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s2"}]}],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		"d/.timeline": {
+			"type": "timeline",
+			"value": {
+				"plans": [{"id": "day", "label": "Day", "points": [{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s2"}]}],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		"e/.timeline": {
+			"type": "timeline",
+			"value": {
+				"plans": [{"id": "day", "label": "Day", "points": [{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s2"}]}],
+				"assignments": [{"plan": "day"}]
+			}
+		}
+	},
+	"rules": [
+		{
+			"id": "a",
+			"name": "a",
+			"states": [
+				{
+					"id": "s1",
+					"entry": [{"kind": "write", "datapoint": "a", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+				},
+				{
+					"id": "s2",
+					"entry": [{"kind": "write", "datapoint": "a", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+				}
+			],
+			"initialState": "s1",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+							{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "s2"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		{
+			"id": "b",
+			"name": "b",
+			"states": [
+				{
+					"id": "s1",
+					"entry": [{"kind": "write", "datapoint": "b", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+				},
+				{
+					"id": "s2",
+					"entry": [{"kind": "write", "datapoint": "b", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+				}
+			],
+			"initialState": "s1",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+							{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "s2"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		{
+			"id": "c",
+			"name": "c",
+			"states": [
+				{
+					"id": "s1",
+					"entry": [{"kind": "write", "datapoint": "c", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+				},
+				{
+					"id": "s2",
+					"entry": [{"kind": "write", "datapoint": "c", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+				}
+			],
+			"initialState": "s1",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+							{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "s2"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		{
+			"id": "d",
+			"name": "d",
+			"states": [
+				{
+					"id": "s1",
+					"entry": [{"kind": "write", "datapoint": "d", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+				},
+				{
+					"id": "s2",
+					"entry": [{"kind": "write", "datapoint": "d", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+				}
+			],
+			"initialState": "s1",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+							{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "s2"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		{
+			"id": "e",
+			"name": "e",
+			"states": [
+				{
+					"id": "s1",
+					"entry": [{"kind": "write", "datapoint": "e", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+				},
+				{
+					"id": "s2",
+					"entry": [{"kind": "write", "datapoint": "e", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+				}
+			],
+			"initialState": "s1",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+							{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "s2"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 0,
+			"check": {
+				"timelines": {
+					"a": {"overridden": true},
+					"b": {"overridden": true},
+					"c": {"overridden": true},
+					"d": {"overridden": true},
+					"e": {"overridden": true}
+				}
+			}
+		},
+		{
+			"at": 600000,
+			"image": {
+				"rules": [
+					{
+						"id": "a",
+						"name": "a",
+						"states": [
+							{
+								"id": "s1",
+								"entry": [{"kind": "write", "datapoint": "a", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+							},
+							{
+								"id": "s2",
+								"entry": [{"kind": "write", "datapoint": "a", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+							}
+						],
+						"initialState": "s1",
+						"timeline": {
+							"plans": [
+								{
+									"id": "day",
+									"label": "Day",
+									"points": [
+										{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+										{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "s2"}
+									]
+								}
+							],
+							"assignments": [{"plan": "day"}]
+						}
+					},
+					{
+						"id": "b",
+						"name": "b",
+						"states": [
+							{
+								"id": "s1",
+								"entry": [{"kind": "write", "datapoint": "b", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+							},
+							{
+								"id": "s2",
+								"entry": [{"kind": "write", "datapoint": "b", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+							}
+						],
+						"initialState": "s1",
+						"timeline": {
+							"plans": [
+								{
+									"id": "day",
+									"label": "Day",
+									"points": [
+										{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+										{"time": {"hour": 12, "minute": 0, "second": 0}, "state": "s2"}
+									]
+								}
+							],
+							"assignments": [{"plan": "day"}]
+						}
+					},
+					{
+						"id": "c",
+						"name": "c",
+						"states": [
+							{
+								"id": "s1",
+								"entry": [{"kind": "write", "datapoint": "c", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+							},
+							{
+								"id": "s2",
+								"entry": [{"kind": "write", "datapoint": "c", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+							}
+						],
+						"initialState": "s1",
+						"timeline": {
+							"adjustable": false,
+							"plans": [
+								{
+									"id": "day",
+									"label": "Day",
+									"points": [
+										{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+										{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "s2"}
+									]
+								}
+							],
+							"assignments": [{"plan": "day"}]
+						}
+					},
+					{
+						"id": "d",
+						"name": "d",
+						"states": [
+							{
+								"id": "s1",
+								"entry": [{"kind": "write", "datapoint": "d", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+							},
+							{
+								"id": "s2",
+								"entry": [{"kind": "write", "datapoint": "d", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+							}
+						],
+						"initialState": "s1",
+						"reactions": [{"triggers": [{"kind": "start"}], "actions": []}]
+					},
+					{
+						"id": "e",
+						"name": "e",
+						"states": [
+							{
+								"id": "s1",
+								"entry": [{"kind": "write", "datapoint": "e", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+							},
+							{
+								"id": "s3",
+								"entry": [{"kind": "write", "datapoint": "e", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+							}
+						],
+						"initialState": "s1",
+						"timeline": {
+							"plans": [
+								{
+									"id": "day",
+									"label": "Day",
+									"points": [
+										{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s1"},
+										{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "s3"}
+									]
+								}
+							],
+							"assignments": [{"plan": "day"}]
+						}
+					}
+				]
+			}
+		}
+	],
+	"end": 1200000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "a", "datapoint": "a", "value": 2.0},
+			{"at": 0, "rule": "b", "datapoint": "b", "value": 2.0},
+			{"at": 0, "rule": "c", "datapoint": "c", "value": 2.0},
+			{"at": 0, "rule": "d", "datapoint": "d", "value": 2.0},
+			{"at": 0, "rule": "e", "datapoint": "e", "value": 2.0},
+			{"at": 600000, "rule": "a", "datapoint": "a", "value": 2.0},
+			{"at": 600000, "rule": "b", "datapoint": "b", "value": 2.0},
+			{"at": 600000, "rule": "c", "datapoint": "c", "value": 1.0},
+			{"at": 600000, "rule": "e", "datapoint": "e", "value": 1.0}
+		],
+		"logs": [
+			{"at": 600000, "rule": "c", "code": "timelineReset"},
+			{"at": 600000, "rule": "e", "code": "stateReset"},
+			{"at": 600000, "rule": "e", "code": "timelineReset"}
+		],
+		"final": {
+			"states": {"a": "s2", "b": "s2", "c": "s1", "d": "s2", "e": "s1"},
+			"timelines": {"a": {"overridden": true}, "b": {"overridden": false}, "c": {"overridden": false}, "e": {"overridden": false}},
+			"persisted": {
+				"a/.timeline": {
+					"plans": [{"id": "day", "label": "Day", "points": [{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "s2"}]}],
+					"assignments": [{"plan": "day"}]
+				},
+				"a/.state": "s2",
+				"b/.state": "s2",
+				"c/.state": "s1",
+				"d/.state": "s2",
+				"e/.state": "s1"
+			}
+		}
+	}
+}

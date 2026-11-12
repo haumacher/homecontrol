@@ -1,0 +1,108 @@
+{
+	"title": "Timeline: a state holds across midnight and a day without points; the window of seven days; no due state",
+	"description": "night: the plan normal (07:00 day, 23:30 night) by default, the empty plan quiet on Wednesday. weekly: an empty plan by default and one point, Sunday 10:00 b. empty: one empty plan. Booted on Sunday 2026-11-22 at 09:00: night is due day (07:00 today); weekly finds nothing from Saturday back to Monday and takes Sunday 2026-11-15 10:00, the seventh date back, the edge of the window; empty has no due state and starts as without a timeline (initialState x with its entry action). Sunday 10:00 re-enters b (a self-transition sends again). night goes to night at 23:30 and holds it across midnight; Wednesday has no points, and a reboot on Wednesday at 12:00 finds Tuesday 23:30 behind the empty day: night again, with its entry action; weekly again b (Sunday 10:00, three days back); empty keeps its persisted state x without entry actions. Thursday 07:00 day.",
+	"note": "Decided 17: an empty plan is allowed (a day without switching); the search goes back over today and the seven dates before (spec/rules.md 2.8, 7.13).",
+	"datapoints": [{"name": "r1", "type": "boolean"}, {"name": "r2", "type": "real"}, {"name": "r3", "type": "boolean"}],
+	"clock": {"start": "2026-11-22T09:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "night",
+			"name": "Night setback",
+			"states": [
+				{
+					"id": "day",
+					"entry": [{"kind": "write", "datapoint": "r1", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				},
+				{
+					"id": "night",
+					"entry": [{"kind": "write", "datapoint": "r1", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				}
+			],
+			"initialState": "day",
+			"timeline": {
+				"plans": [
+					{
+						"id": "normal",
+						"label": "Normal",
+						"points": [
+							{"time": {"hour": 7, "minute": 0, "second": 0}, "state": "day"},
+							{"time": {"hour": 23, "minute": 30, "second": 0}, "state": "night"}
+						]
+					},
+					{"id": "quiet", "label": "Quiet", "points": []}
+				],
+				"assignments": [{"plan": "normal"}, {"days": [3], "plan": "quiet"}]
+			}
+		},
+		{
+			"id": "weekly",
+			"name": "Sunday only",
+			"states": [
+				{
+					"id": "a",
+					"entry": [{"kind": "write", "datapoint": "r2", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+				},
+				{
+					"id": "b",
+					"entry": [{"kind": "write", "datapoint": "r2", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+				}
+			],
+			"initialState": "a",
+			"timeline": {
+				"plans": [
+					{"id": "none", "label": "None", "points": []},
+					{
+						"id": "sunday",
+						"label": "Sunday",
+						"points": [{"time": {"hour": 10, "minute": 0, "second": 0}, "state": "b"}]
+					}
+				],
+				"assignments": [{"plan": "none"}, {"days": [7], "plan": "sunday"}]
+			}
+		},
+		{
+			"id": "empty",
+			"name": "No points",
+			"states": [
+				{
+					"id": "x",
+					"entry": [{"kind": "write", "datapoint": "r3", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				},
+				{
+					"id": "y",
+					"entry": [{"kind": "write", "datapoint": "r3", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				}
+			],
+			"initialState": "x",
+			"timeline": {"plans": [{"id": "p", "label": "P", "points": []}], "assignments": [{"plan": "p"}]}
+		}
+	],
+	"timeline": [{"at": 270000000, "reboot": true}],
+	"end": 342000000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "night", "datapoint": "r1", "value": true},
+			{"at": 0, "rule": "weekly", "datapoint": "r2", "value": 2.0},
+			{"at": 0, "rule": "empty", "datapoint": "r3", "value": true},
+			{"at": 3600000, "rule": "weekly", "datapoint": "r2", "value": 2.0},
+			{"at": 52200000, "rule": "night", "datapoint": "r1", "value": false},
+			{"at": 79200000, "rule": "night", "datapoint": "r1", "value": true},
+			{"at": 138600000, "rule": "night", "datapoint": "r1", "value": false},
+			{"at": 165600000, "rule": "night", "datapoint": "r1", "value": true},
+			{"at": 225000000, "rule": "night", "datapoint": "r1", "value": false},
+			{"at": 270000000, "rule": "night", "datapoint": "r1", "value": false},
+			{"at": 270000000, "rule": "weekly", "datapoint": "r2", "value": 2.0},
+			{"at": 338400000, "rule": "night", "datapoint": "r1", "value": true}
+		],
+		"logs": [],
+		"final": {
+			"states": {"night": "day", "weekly": "b", "empty": "x"},
+			"datapoints": {"rule/night/state": 0, "rule/weekly/state": 1, "rule/empty/state": 0},
+			"timelines": {
+				"night": {"next": {"at": "2026-11-26T23:30:00", "state": "night"}},
+				"weekly": {"next": {"at": "2026-11-29T10:00:00", "state": "b"}},
+				"empty": {"next": null}
+			}
+		}
+	}
+}

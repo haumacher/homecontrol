@@ -1,0 +1,67 @@
+{
+	"title": "Timeline: a reaction with to overrides the state until the next point or a restart",
+	"description": "A heating with a comfort button (a reaction with to: comfort) and the points 06:00 comfort, 22:00 night. Booted at 21:00 it enters comfort; 22:00 night (the exit action of comfort logs). The button at 22:30 brings comfort back: the manual override. A reboot at 23:00 evaluates the timeline: night again, the override is gone. The button at 23:10 overrides again; the point 06:00 re-enters comfort although the rule is in it: a self-transition with the exit and entry actions, the mode sent again.",
+	"note": "Decided 17: a switching point is an ordinary transition, also into the current state; an override lasts until the next point or evaluation (spec/rules.md 7.13).",
+	"datapoints": [{"name": "button", "type": "boolean"}, {"name": "mode", "type": "enumeration"}],
+	"clock": {"start": "2026-11-18T21:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "heat",
+			"name": "Heating",
+			"states": [
+				{
+					"id": "comfort",
+					"entry": [{"kind": "write", "datapoint": "mode", "value": {"kind": "literal", "type": "integer", "value": 1}}],
+					"exit": [{"kind": "log", "level": "info", "message": ["leave comfort"]}]
+				},
+				{
+					"id": "night",
+					"entry": [{"kind": "write", "datapoint": "mode", "value": {"kind": "literal", "type": "integer", "value": 3}}]
+				}
+			],
+			"initialState": "comfort",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "comfort"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "night"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			},
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "button", "on": "update"}],
+					"condition": {"kind": "datapoint", "name": "button"},
+					"actions": [],
+					"to": "comfort"
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 5400000, "report": {"datapoint": "button", "value": true}},
+		{"at": 7200000, "reboot": true},
+		{"at": 7800000, "report": {"datapoint": "button", "value": true}}
+	],
+	"end": 34200000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "heat", "datapoint": "mode", "value": 1},
+			{"at": 3600000, "rule": "heat", "datapoint": "mode", "value": 3},
+			{"at": 5400000, "rule": "heat", "datapoint": "mode", "value": 1},
+			{"at": 7200000, "rule": "heat", "datapoint": "mode", "value": 3},
+			{"at": 7800000, "rule": "heat", "datapoint": "mode", "value": 1},
+			{"at": 32400000, "rule": "heat", "datapoint": "mode", "value": 1}
+		],
+		"logs": [
+			{"at": 3600000, "rule": "heat", "code": "log", "level": "info", "message": "leave comfort"},
+			{"at": 32400000, "rule": "heat", "code": "log", "level": "info", "message": "leave comfort"}
+		],
+		"final": {"states": {"heat": "comfort"}, "datapoints": {"rule/heat/state": 0, "mode": 1}, "firings": {"heat": 2}}
+	}
+}

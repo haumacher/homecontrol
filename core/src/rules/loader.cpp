@@ -14,6 +14,7 @@
 #include "hc/log.h"
 #include "hc/rules/parameter_store.h"
 #include "hc/rules/rule_set.h"
+#include "hc/rules/timeline.h"
 
 namespace hc::rules {
 
@@ -265,8 +266,12 @@ const char* load_error_name(LoadError error) {
 /// counting pass. Both passes allocate in the same order.
 class Builder {
 public:
-	Builder(const DatapointDirectory& model, const ScheduleDirectory* schedules, const char* language)
-		: model_(model), schedules_(schedules), language_(language != nullptr && language[0] ? language : "en") {}
+	Builder(const DatapointDirectory& model, const ScheduleDirectory* schedules, const char* language,
+		bool reserve_state_parameter)
+		: model_(model),
+		  schedules_(schedules),
+		  language_(language != nullptr && language[0] ? language : "en"),
+		  reserve_state_parameter_(reserve_state_parameter) {}
 
 	/// Runs one pass. `set` nullptr: the counting pass.
 	bool run(const JsonValue& rules, RuleSet* set);
@@ -276,6 +281,8 @@ public:
 	size_t n_rules = 0, n_reactions = 0, n_triggers = 0, n_actions = 0, n_parts = 0, n_parameters = 0,
 		   n_choices = 0, n_timers = 0, n_states = 0, n_nodes = 0, n_constants = 0, n_schedules = 0, n_tracked = 0,
 		   n_matches = 0, n_silences = 0, n_strings = 0;
+	/// Over all timelines of the image (spec 10.2).
+	size_t n_timeline_points = 0, n_timeline_plans = 0;
 
 private:
 	struct PathScope {
@@ -347,6 +354,10 @@ private:
 		return root_of(json, match ? RootKind::match : RootKind::normal, index, type, out);
 	}
 	bool root_of(const JsonValue& json, RootKind kind, uint16_t& index, Type& type, Node* out = nullptr);
+	/// Whether `name` is the state datapoint `rule/<ruleId>/state` of a rule with states (spec 8.8);
+	/// `own` whether of the rule being compiled.
+	bool state_datapoint(const char* name, bool& own) const;
+	bool timeline(const JsonValue& json, Rule& rule);
 	/// Whether `name` is a parameter datapoint of the rule being compiled (`rule/<its id>/...`):
 	/// the rule names its own parameters with `$id` (spec 8.6).
 	bool own_parameter_datapoint(const char* name) const;
@@ -371,6 +382,8 @@ private:
 	const DatapointDirectory& model_;
 	const ScheduleDirectory* schedules_;
 	const char* language_;
+	bool reserve_state_parameter_;
+	bool rule_has_timeline_ = false;
 	RuleSet* set_ = nullptr;
 	RuleScope rs_;
 	char path_[sizeof(LoadResult::path)] = {};
@@ -379,6 +392,7 @@ private:
 	struct RuleId {
 		char id[33];
 		bool has_states;
+		bool state_parameter; ///< Declares a parameter `state` (an image before 1.7, spec 8.8).
 	};
 	size_t rule_ids_count_ = 0;
 	RuleId* rule_ids_ = nullptr;
@@ -737,6 +751,19 @@ bool Builder::prescan(const JsonValue& rules) {
 		std::memcpy(rule_ids_[i].id, id, sizeof(id));
 		JsonValue states;
 		rule_ids_[i].has_states = item.member("states", states) && states.is(JsonKind::array) && states.size() > 0;
+		rule_ids_[i].state_parameter = false;
+		JsonValue parameters;
+		if (item.member("parameters", parameters) && parameters.is(JsonKind::array)) {
+			size_t p_position = 0;
+			JsonValue parameter;
+			JsonValue member;
+			char pid[8];
+			while (parameters.next_item(p_position, parameter)) {
+				if (parameter.member("id", member) && member.get_string(pid, sizeof(pid)) && std::strcmp(pid, "state") == 0) {
+					rule_ids_[i].state_parameter = true;
+				}
+			}
+		}
 		++i;
 	}
 	rule_ids_count_ = i;
@@ -747,6 +774,7 @@ bool Builder::run(const JsonValue& rules, RuleSet* set) {
 	set_ = set;
 	n_rules = n_reactions = n_triggers = n_actions = n_parts = n_parameters = n_choices = n_timers = n_states = 0;
 	n_nodes = n_constants = n_schedules = n_tracked = n_matches = n_silences = n_strings = 0;
+	n_timeline_points = n_timeline_plans = 0;
 	path_[0] = '\0';
 	rs_ = RuleScope{};
 	rs_.index = Limits::kRules; // no rule yet
@@ -773,7 +801,7 @@ bool Builder::run(const JsonValue& rules, RuleSet* set) {
 
 bool Builder::rule(const JsonValue& json) {
 	static const char* const kMembers[] = {"id", "name", "enabled", "enabledAdjustable", "parameters", "timers",
-		"states", "initialState", "reactions", nullptr};
+		"states", "initialState", "timeline", "reactions", nullptr};
 	if (!only(json, kMembers)) {
 		return false;
 	}
@@ -888,7 +916,7 @@ bool Builder::rule(const JsonValue& json) {
 		size_t i = 0;
 		while (states.next_item(position, item)) {
 			PathScope item_scope(*this, "[%u]", static_cast<unsigned>(i++));
-			static const char* const kStateMembers[] = {"id", "entry", "exit", nullptr};
+			static const char* const kStateMembers[] = {"id", "label", "entry", "exit", nullptr};
 			if (!only(item, kStateMembers)) {
 				return false;
 			}
@@ -976,6 +1004,10 @@ bool Builder::rule(const JsonValue& json) {
 			PathScope item_scope(*this, "[%u]", static_cast<unsigned>(i));
 			State s{};
 			s.id = add_string(rs_.states[i]);
+			JsonValue label_value;
+			if (item.member("label", label_value) && !label_member(item, "label", s.label, s.label_json)) {
+				return false;
+			}
 			JsonValue list;
 			bool has_list = false;
 			if (!array_member(item, "entry", false, list, has_list)) {
@@ -1003,15 +1035,21 @@ bool Builder::rule(const JsonValue& json) {
 		}
 	}
 
-	// Reactions.
+	// The timeline (spec 2.8), after the states.
+	if (!timeline(json, rule)) {
+		return false;
+	}
+	bool has_timeline = rule_has_timeline_;
+
+	// Reactions: a rule with a timeline needs none (spec 2.2).
 	JsonValue reactions;
-	if (!array_member(json, "reactions", true, reactions, present)) {
+	if (!array_member(json, "reactions", !has_timeline, reactions, present)) {
 		return false;
 	}
 	{
 		PathScope scope(*this, ".reactions");
-		size_t count = reactions.size();
-		if (count < 1) {
+		size_t count = present ? reactions.size() : 0;
+		if (count < 1 && !has_timeline) {
 			return fail(LoadError::malformed, "a rule needs at least one reaction");
 		}
 		if (count > Limits::kReactions) {
@@ -1078,6 +1116,12 @@ bool Builder::parameter(const JsonValue& json, RuleScope& rs, Parameter* out) {
 	if (std::strcmp(id, "enabled") == 0) {
 		PathScope scope(*this, ".id");
 		return fail(LoadError::duplicate_id, "the parameter id 'enabled' is reserved for the enable switch");
+	}
+	if (std::strcmp(id, "state") == 0 && reserve_state_parameter_ && rs.index < rule_ids_count_ &&
+		rule_ids_[rs.index].has_states) {
+		PathScope scope(*this, ".id");
+		return fail(LoadError::duplicate_id,
+			"the parameter id 'state' is reserved for the state datapoint of a rule with states");
 	}
 	if (find_parameter(id) >= 0) {
 		PathScope scope(*this, ".id");
@@ -1277,6 +1321,11 @@ bool Builder::action(const JsonValue& json, Action* out) {
 		if (dp == nullptr) {
 			return false;
 		}
+		bool own_state = false;
+		if (state_datapoint(name, own_state)) {
+			PathScope scope(*this, ".datapoint");
+			return fail(LoadError::not_writable, "datapoint '%s' is a rule's state: no rule writes it", name);
+		}
 		if (!dp->rule_writable()) {
 			// A value of the application is the rules' to write; `writable` is the user's (1.6).
 			PathScope scope(*this, ".datapoint");
@@ -1317,6 +1366,11 @@ bool Builder::action(const JsonValue& json, Action* out) {
 		const DatapointRef* dp = datapoint_member(json, name, sizeof(name), found);
 		if (dp == nullptr) {
 			return false;
+		}
+		bool own_state = false;
+		if (state_datapoint(name, own_state)) {
+			PathScope scope(*this, ".datapoint");
+			return fail(LoadError::not_readable, "datapoint '%s' mirrors a rule's state: no technology reads it", name);
 		}
 		if (std::strncmp(name, kParameterDatapointPrefix, std::strlen(kParameterDatapointPrefix)) == 0) {
 			PathScope scope(*this, ".datapoint");
@@ -1784,6 +1838,84 @@ bool Builder::reaction(const JsonValue& json, Reaction* out) {
 	return true;
 }
 
+namespace {
+
+/// The state ids of the rule being compiled (RuleScope), for the timeline's parser.
+class ScopeStates : public TimelineStates {
+public:
+	ScopeStates(const char (*ids)[25], size_t count) : ids_(ids), count_(count) {}
+	size_t count() const override { return count_; }
+	const char* id(size_t index) const override { return ids_[index]; }
+
+private:
+	const char (*ids_)[25];
+	size_t count_;
+};
+
+} // namespace
+
+bool Builder::timeline(const JsonValue& json, Rule& rule) {
+	(void)rule;
+	rule_has_timeline_ = false;
+	JsonValue member;
+	if (!json.member("timeline", member)) {
+		return true;
+	}
+	PathScope scope(*this, ".timeline");
+	if (rs_.state_count == 0) {
+		return fail(LoadError::forbidden, "'timeline' in a rule without states");
+	}
+	ScopeStates states(rs_.states, rs_.state_count);
+	TimelineRefusal refusal;
+	Timeline compiled;
+	if (!Timeline::parse(member, states, true, &compiled, refusal)) {
+		if (refusal.path[0] != '\0') {
+			PathScope inner(*this, ".%s", refusal.path);
+			return fail(refusal.error, "%s", refusal.text);
+		}
+		return fail(refusal.error, "%s", refusal.text);
+	}
+	n_timeline_points += compiled.point_count();
+	n_timeline_plans += compiled.plan_count();
+	if (n_timeline_points > TimelineLimits::kImagePoints) {
+		return fail(LoadError::limit_exceeded, "more than %u points in the timelines of the image",
+			static_cast<unsigned>(TimelineLimits::kImagePoints));
+	}
+	if (n_timeline_plans > TimelineLimits::kImagePlans) {
+		return fail(LoadError::limit_exceeded, "more than %u plans in the timelines of the image",
+			static_cast<unsigned>(TimelineLimits::kImagePlans));
+	}
+	rule_has_timeline_ = true;
+	if (set_ != nullptr && set_->timelines_ != nullptr) {
+		set_->timelines_[rs_.index] = std::move(compiled);
+	}
+	return true;
+}
+
+bool Builder::state_datapoint(const char* name, bool& own) const {
+	own = false;
+	size_t prefix = std::strlen(kParameterDatapointPrefix);
+	if (std::strncmp(name, kParameterDatapointPrefix, prefix) != 0) {
+		return false;
+	}
+	const char* rest = name + prefix;
+	const char* slash = std::strchr(rest, '/');
+	if (slash == nullptr || std::strcmp(slash + 1, "state") != 0) {
+		return false;
+	}
+	size_t n = static_cast<size_t>(slash - rest);
+	for (size_t i = 0; i < rule_ids_count_; ++i) {
+		if (std::strlen(rule_ids_[i].id) == n && std::strncmp(rule_ids_[i].id, rest, n) == 0) {
+			if (!rule_ids_[i].has_states || rule_ids_[i].state_parameter) {
+				return false; // no state datapoint: a parameter `state` (before 1.7) or no states
+			}
+			own = i == rs_.index;
+			return true;
+		}
+	}
+	return false;
+}
+
 bool Builder::own_parameter_datapoint(const char* name) const {
 	size_t prefix = std::strlen(kParameterDatapointPrefix);
 	if (rs_.index >= rule_ids_count_ || std::strncmp(name, kParameterDatapointPrefix, prefix) != 0) {
@@ -1802,6 +1934,11 @@ const DatapointRef* Builder::datapoint_member(const JsonValue& json, char* name,
 	PathScope scope(*this, ".datapoint");
 	if (!model_.lookup(name, out)) {
 		fail(LoadError::unknown_reference, "no datapoint '%s'", name);
+		return nullptr;
+	}
+	bool own_state = false;
+	if (state_datapoint(name, own_state) && own_state) {
+		fail(LoadError::forbidden, "'%s' is the state of this rule: use state()", name);
 		return nullptr;
 	}
 	if (own_parameter_datapoint(name)) {
@@ -1990,6 +2127,11 @@ bool Builder::expr(const JsonValue& json, ExprScope& scope, size_t depth, uint16
 		if (dp == nullptr) {
 			PathScope p(*this, ".name");
 			return fail(LoadError::unknown_reference, "no datapoint '%s'", name);
+		}
+		bool own_state = false;
+		if (state_datapoint(name, own_state) && own_state) {
+			PathScope p(*this, ".name");
+			return fail(LoadError::forbidden, "'%s' is the state of this rule: use state()", name);
 		}
 		if (own_parameter_datapoint(name)) {
 			PathScope p(*this, ".name");
@@ -2626,6 +2768,7 @@ void RuleSet::clear() {
 	for (size_t i = 0; i < constant_count_; ++i) {
 		constants_[i].~Val();
 	}
+	delete[] timelines_;
 	for (void* part : parts_) {
 		::operator delete(part, std::nothrow);
 	}
@@ -2633,14 +2776,14 @@ void RuleSet::clear() {
 }
 
 LoadResult RuleSet::load(const JsonValue& rules, const DatapointModel& model, const ScheduleDirectory* schedules,
-	const char* language) {
+	const char* language, bool reserve_state_parameter) {
 	ModelDirectory directory(model);
-	return load(rules, directory, schedules, language);
+	return load(rules, directory, schedules, language, reserve_state_parameter);
 }
 
 LoadResult RuleSet::load(const JsonValue& rules, const DatapointDirectory& model, const ScheduleDirectory* schedules,
-	const char* language) {
-	Builder* builder = new (std::nothrow) Builder(model, schedules, language);
+	const char* language, bool reserve_state_parameter) {
+	Builder* builder = new (std::nothrow) Builder(model, schedules, language, reserve_state_parameter);
 	LoadResult result;
 	if (builder == nullptr) {
 		result.error = LoadError::out_of_memory;
@@ -2702,6 +2845,16 @@ LoadResult RuleSet::load(const JsonValue& rules, const DatapointDirectory& model
 		Log::error(kTag, "rules refused: %s", result.text);
 		return result; // `next` frees the tables it got
 	}
+	if (builder->n_timeline_plans > 0) {
+		next.timelines_ = new (std::nothrow) Timeline[builder->n_rules];
+		if (next.timelines_ == nullptr) {
+			delete builder;
+			result.error = LoadError::out_of_memory;
+			std::snprintf(result.text, sizeof(result.text), "no memory for the timelines");
+			Log::error(kTag, "rules refused: %s", result.text);
+			return result;
+		}
+	}
 	next.block_size_ = total;
 	for (size_t i = 0; i < builder->n_constants; ++i) {
 		new (&next.constants_[i]) Val();
@@ -2757,6 +2910,10 @@ uint16_t RuleSet::find_tracked(uint16_t datapoint) const {
 		}
 	}
 	return kNone;
+}
+
+const Timeline* RuleSet::timeline(size_t rule) const {
+	return timelines_ != nullptr && rule < rule_count_ && !timelines_[rule].empty() ? &timelines_[rule] : nullptr;
 }
 
 int RuleSet::find_rule(const char* id) const {
@@ -2865,14 +3022,13 @@ size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, siz
 		}
 		add(id, "enabled", ValueType::boolean, adjustable);
 		JsonValue parameters;
-		if (!item.member("parameters", parameters) || !parameters.is(JsonKind::array)) {
-			continue;
-		}
+		bool has_parameters = item.member("parameters", parameters) && parameters.is(JsonKind::array);
 		char seen[Limits::kParameters][25];
 		size_t parameter_count = 0;
 		size_t p_position = 0;
 		JsonValue p;
-		while (parameters.next_item(p_position, p) && parameter_count + 1 < Limits::kParameters) {
+		bool state_parameter = false;
+		while (has_parameters && parameters.next_item(p_position, p) && parameter_count + 1 < Limits::kParameters) {
 			char pid[25];
 			char type_text[24];
 			if (!p.is(JsonKind::object) || !p.member("id", member) || !member.get_string(pid, sizeof(pid)) ||
@@ -2894,7 +3050,14 @@ size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, siz
 			if (p.member("adjustable", member) && !member.get_bool(p_adjustable)) {
 				p_adjustable = true;
 			}
+			state_parameter = state_parameter || std::strcmp(pid, "state") == 0;
 			add(id, pid, value_type, p_adjustable);
+		}
+		// The state datapoint of a rule with states (spec 8.8), behind the parameters: an enumeration,
+		// not writable. An image before 1.7 with a parameter `state` keeps that parameter's.
+		JsonValue states;
+		if (item.member("states", states) && states.is(JsonKind::array) && states.size() > 0 && !state_parameter) {
+			add(id, "state", ValueType::enumeration, false);
 		}
 	}
 	return count;

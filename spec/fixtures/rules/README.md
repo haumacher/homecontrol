@@ -7,7 +7,7 @@ lands with new or changed cases; a case added on one side fails the other until 
 
 ## Files
 
-One case per file, `NN-<name>.json`, UTF-8, numbered in the order of the list below. New cases take
+One case per file, `NN-<name>.json` (three digits from 100 on), UTF-8, numbered in the order of the list below. New cases take
 the next free number; a number is never reused.
 
 | Member | Type | Meaning |
@@ -15,18 +15,18 @@ the next free number; a number is never reused.
 | `title` | string | One line: what the case pins. |
 | `description` | string, optional | More explanation for people. |
 | `note` | string, optional | A point for review: a judgment call, an assumption, or the decision of `spec/rules.md` section 12 the case pins. |
-| `datapoints` | array | The datapoints of the image: `{"name", "type"}` with a datapoint value type of `spec/rules.md` 3.1, optional `"writable": false` (default `true`), `"application": true` (a value of the application, `spec/runtime-image.md` 3.3: no technology owns it, and rules write it also when it is not writable; schema 1.6), `"refuseCommands": true` (the owning technology refuses every command), `"readable": false` (no technology can be asked for its value: a `read` of it is refused at load, `notReadable`; default `true`) and `"refuseReads": true` (the owning technology refuses every read, `readRefused`). The parameter datapoints `rule/<ruleId>/<parameterId>` (`spec/rules.md` 8.6) are not listed: the runner derives them from `rules` (and from each `image` step's rules). |
+| `datapoints` | array | The datapoints of the image: `{"name", "type"}` with a datapoint value type of `spec/rules.md` 3.1, optional `"writable": false` (default `true`), `"application": true` (a value of the application, `spec/runtime-image.md` 3.3: no technology owns it, and rules write it also when it is not writable; schema 1.6), `"refuseCommands": true` (the owning technology refuses every command), `"readable": false` (no technology can be asked for its value: a `read` of it is refused at load, `notReadable`; default `true`) and `"refuseReads": true` (the owning technology refuses every read, `readRefused`). The parameter datapoints `rule/<ruleId>/<parameterId>` (`spec/rules.md` 8.6) and the state datapoints `rule/<ruleId>/state` of the rules with states (8.8) are not listed: the runner derives them from `rules` (and from each `image` step's rules). |
 | `schedules` | array, optional | Schedule entries that exist in the image (for `schedule` triggers): each an id, or `{"id", "output"}` with the name of the datapoint the entry writes (a rule may not write it, `spec/rules.md` 10.1); or a full entry of the image (`spec/schedules.md` 2, recognized by its `kind`, without `output`), which the device's scheduler runs on the case's clock: it fires by itself, and its adjustable `time` (`spec/schedules.md` 2.2) is the datapoint `schedule/<id>/time`, which the runner derives like the parameter datapoints. A case uses either form, not both. |
 | `clock` | object, optional | `{"start": "YYYY-MM-DDTHH:MM:SS", "synchronized": bool, "zone": "<POSIX TZ>"}`: the local wall time at time 0 (a time that occurs twice is its first occurrence), whether it is synchronized (default `true`) and the time zone as a POSIX TZ string (`"CET-1CEST,M3.5.0,M10.5.0/3"`; absent: UTC). Without `clock` the wall clock is not synchronized. A runner applies the zone through its own evaluation of the string, never the host's time zone. |
 | `ui` | object, optional | `{"lang": "<tag>"}`: the device's UI language (the setting `ui.lang`, default `en`), in which labels are resolved (`spec/rules.md` 2.2). |
-| `location` | object, optional | `{"lat", "lon"}`: the controller's location in degrees (north and east positive). With it and a synchronized `clock`, `sunAzimuth()` and `sunElevation()` (`spec/rules.md` 4.7) give the sun's position by `spec/blocks.md` 13.2 at the wall second; without it they have no value. It does not change `astro`. |
+| `location` | object, optional | `{"lat", "lon"}`: the controller's location in degrees (north and east positive). With it and a synchronized `clock`, `sunAzimuth()` and `sunElevation()` (`spec/rules.md` 4.7) give the sun's position by `spec/blocks.md` 13.2 at the wall second, and the sun points of timelines (`spec/rules.md` 7.13) take the sun events of their dates from the device's astronomy at this location with the elevation 0 (`hc::sun_times`, E-Home's `Astro.sunTime`: UTC instants in whole seconds); without it they have no value, and sun points have no moment (`sunUnavailable`). It does not change `astro` (the rules' `sunrise()` and the like), and full `astro` entries of `schedules` still have no sun times in the corpus. |
 | `astro` | object, optional | The sun times of the time service: `sunrise`, `sunset`, `dawn`, `dusk` as time-of-day values; an absent one has no value. |
-| `persisted` | object, optional | Parameter overrides and rule states stored before the boot: `"<ruleId>/<parameterId>": {"type": <parameter type>, "value": <JSON value>}`, and `"<ruleId>/.state": {"type": "state", "value": "<state id>"}` (`spec/rules.md` 8.5). |
+| `persisted` | object, optional | Parameter overrides and rule states stored before the boot: `"<ruleId>/<parameterId>": {"type": <parameter type>, "value": <JSON value>}`, `"<ruleId>/.state": {"type": "state", "value": "<state id>"}` (`spec/rules.md` 8.5), and the inhabitant's timelines `"<ruleId>/.timeline": {"type": "timeline", "value": {"plans": [...], "assignments": [...]}}` (8.7; the timeline's members without `adjustable`, which is the image's). |
 | `initial` | object, optional | Datapoint values present before the rules start: `"<name>": <JSON value>`, quality good, updated at time 0. Datapoints not listed are unknown. |
-| `rules` | array | The `rules` member of the image (`spec/rules.md` section 2), expressions as JSON AST. |
+| `rules` | array | The `rules` member of the image (`spec/rules.md` section 2), expressions as JSON AST, of the newest schema (`spec/runtime-image.md` section 8; 1.7: a parameter `state` of a rule with states is refused, case 98). |
 | `timeline` | array | The inputs, in order (below). |
 | `end` | integer | The time at which the run ends. |
-| `expected` | object | The outputs (below), or `{"loadRefused": "<reason>"}`. |
+| `expected` | object | The outputs (below), or `{"loadRefused": "<reason>"}`, optionally with `"path"` (the refusal's path, `rules[0].timeline.plans[1].id`) and `"text"` (the text after the reason code, compared exactly, `spec/rules.md` 10.1). |
 
 Times (`at`, `end`, the `at` of expected entries) are milliseconds since the boot on the monotonic
 clock; the runner may map time 0 to any monotonic base. The wall clock advances with the monotonic
@@ -56,7 +56,9 @@ Each step has `at` and exactly one of:
 | `schedule` | schedule id: the scheduler fires the entry. |
 | `setParameter` | `{"rule", "parameter", "value"}`: the UI or API sets a parameter (`spec/rules.md` 8.2). |
 | `setSchedule` | `{"id", <member>: <value>, ..., "enabled"?}` or `{"id", "reset": true}`: the change of `PUT /api/schedules/<id>` (`spec/api.md`) to a full entry, the members in their image form; with `"refused": "<code>"` (`not_adjustable`, `out_of_bounds`, `malformed`) the change must be refused with it. |
-| `clockSync` | boolean: the wall clock becomes synchronized or not. |
+| `clockSync` | boolean: the wall clock becomes synchronized or not (the time service's synchronization or its loss; at `true` the timelines are evaluated, `spec/rules.md` 7.13). |
+| `clockStep` | integer milliseconds, a whole number of seconds, positive or negative: the synchronized wall clock steps by this against the monotonic clock (from then on the wall time is the start, plus the monotonic time, plus every step so far). A step of more than 60 s either way is a jump of the time service, which evaluates the timelines (7.13); a smaller one is not. |
+| `setTimeline` | `{"rule", "timeline": {"plans", "assignments"}}` or `{"rule", "reset": true}`: the change of `PUT` or `DELETE /api/rules/<ruleId>/timeline` (`spec/rules.md` 8.7, `spec/api.md`); with `"refused": "<code>"` (the API's code without `rule.`: `unknown`, `no_timeline`, `not_adjustable`, `unknown_state`, `malformed_timeline`, `timeline_limit`) the change must be refused with it, and with `"path"` at that path (relative to the timeline, `plans[0].points[1].state`). A refused change changes nothing. |
 | `image` | `{"rules": [...], "schedules"?: [...]}`: an image swap with these rules; the datapoints stay, with their values (`spec/rules.md` 7.6); the schedules stay too unless `schedules` gives the new image's full entries (`spec/schedules.md` 4.4: overrides kept or dropped). |
 | `reboot` | `true`: an orderly reboot (delayed writes of the store complete first). Datapoint values become unknown; timers, change tracking and diagnostics are lost; persisted overrides and rule states stay; the current image is loaded again, rules with states restore their persisted states (`spec/rules.md` 7.10) and every rule starts with the reason `boot`. |
 | `check` | an object like `expected.final`, compared at this time. |
@@ -76,9 +78,13 @@ Each step has `at` and exactly one of:
    `boot` (`spec/rules.md` 7.5).
 3. For each timeline step in order: first process the expiries of all rule timers and silence
    periods with a deadline up to the step's `at`, each as a cascade at its own deadline, in the
-   order of `spec/rules.md` 7.8; then apply the step at its `at`. Steps with the same `at` are
+   order of `spec/rules.md` 7.8, and the switching points of the timelines (`spec/rules.md` 7.13)
+   whose moments lie up to the step's wall time, each at its moment exactly (at the same instant
+   the timer expiries first, then the points in rule order and, within a rule, plan order); then
+   apply the step at its `at`. Steps with the same `at` are
    applied in the listed order, each its own cascade.
-4. After the last step, process the expiries up to `end`, then compare `expected.final`.
+4. After the last step, process the expiries and switching points up to `end`, then compare
+   `expected.final`.
 
 ## Expected outputs
 
@@ -86,8 +92,8 @@ Each step has `at` and exactly one of:
 |---|---|
 | `commands` | Every successful `DatapointModel::command()` call made by the rule engine, in order: `at`, `rule`, `datapoint`, `value`. A command refused by the technology is not a command; it appears as a `writeRefused` log entry. |
 | `reads` | Optional (absent: none). Every `read` action the technology accepted (`spec/rules.md` 7.12), in order: `at`, `rule`, `datapoint`. A refused read is not listed; it appears as a `readRefused` log entry. |
-| `logs` | Every log entry of the rule engine with a code of `spec/rules.md` 9.2, in order: `at`, `rule`, `code`; for the code `log` also `level` and `message` (exact); for `loopGuard` optionally `culprit` (rule id) and `firings` (its derived firings in the cascade). Other members and the free text after the code are not compared. |
-| `final` | Optional; each section compares only the keys it lists: `datapoints` (current value, `null` for unknown), `states` (rule id → state id), `parameters` (`"<ruleId>/<parameterId>"` → current value), `timers` (`"<ruleId>/<timerId>"` → remaining ms, `null` when stopped), `firings` (rule id → the diagnostics counter), `names` (rule id → the resolved name), `labels` (`"<ruleId>/<parameterId>"` → the resolved label), `schedules` (schedule id → `{"values": {<member>: <value>}, "overridden": [<member>...], "enabled": bool}`, each part optional, `values` in the image form of the members; `overridden` the complete set), `persisted` (the complete set of stored overrides and states, as the store holds them after its delayed writes: `"<ruleId>/<parameterId>"` → value, `"<ruleId>/.state"` → state id). |
+| `logs` | Every log entry of the rule engine with a code of `spec/rules.md` 9.2 (also `timelineReset` and `sunUnavailable`), in order: `at`, `rule`, `code`; for the code `log` also `level` and `message` (exact); for `loopGuard` optionally `culprit` (rule id) and `firings` (its derived firings in the cascade). Other members and the free text after the code are not compared. |
+| `final` | Optional; each section compares only the keys it lists: `datapoints` (current value, `null` for unknown), `states` (rule id → state id), `parameters` (`"<ruleId>/<parameterId>"` → current value), `timers` (`"<ruleId>/<timerId>"` → remaining ms, `null` when stopped), `firings` (rule id → the diagnostics counter), `names` (rule id → the resolved name), `labels` (`"<ruleId>/<parameterId>"` → the resolved label), `schedules` (schedule id → `{"values": {<member>: <value>}, "overridden": [<member>...], "enabled": bool}`, each part optional, `values` in the image form of the members; `overridden` the complete set), `timelines` (rule id → `{"overridden": bool, "next": {"at": "YYYY-MM-DDTHH:MM:SS", "state": "<state id>"}}`, each part optional: whether the inhabitant's timeline applies and the next switching point, its local wall time (a time that occurs twice: the one meant is the next) and state; `"next": null` when there is none, `spec/rules.md` 7.13, 9.1), `persisted` (the complete set of stored overrides and states, as the store holds them after its delayed writes: `"<ruleId>/<parameterId>"` → value, `"<ruleId>/.state"` → state id, `"<ruleId>/.timeline"` → the timeline as in `persisted`'s `value`). |
 
 Reals compare with a relative tolerance of 1e-9; everything else compares exactly.
 
@@ -168,6 +174,34 @@ Reals compare with a relative tolerance of 1e-9; everything else compares exactl
 | `71-load-refused-parameter-id-keyword` | Load refusal `malformed`: a parameter id that is a keyword (`not`). |
 | `72-application-write-not-writable` | A rule writes an application datapoint that is not writable (schema 1.6, haumacher/ehome #138); the user's command to it is refused. |
 | `73-load-refused-not-writable-status` | Load refusal `notWritable`: a write to a datapoint a technology owns that is not writable (a status). |
+| `74-timeline-heating-week` | The heating program of haumacher/ehome #140 (`spec/rules.md` 11.5) over a week: two plans by weekday, the state due at the boot entered with its entry actions, every point a transition; the state datapoint (decision 17). |
+| `75-timeline-start-reasons` | Boot, image swap and enabling each enter the state due now with its entry actions, before the `start` triggers; a disabled rule does not switch. |
+| `76-timeline-clock-sync-step` | An unsynchronized boot goes as without a timeline; the synchronization and a step of more than 60 s are evaluations (transitions with exit and entry actions); a small step is none; points stepped over are not applied. |
+| `77-timeline-midnight-empty-day` | A state holds across midnight and a day whose plan is empty; the search window of today and seven dates back; a timeline without points has no due state. |
+| `78-timeline-manual-override` | A reaction with `to` overrides until the next point or a restart; a point into the current state is a self-transition that sends again. |
+| `79-timeline-sun-summer-winter` | Sun points before a clock point in winter and after it in summer (Munich), a `notAfter` clamp, a stepped clock across half a year. |
+| `80-timeline-sun-no-location` | Without a location sun points have no moment, `sunUnavailable` once; clock points still apply. |
+| `81-timeline-dst-spring` | A point in the gap of the spring-forward day is the end of the gap; two points at one moment apply in plan order. |
+| `82-timeline-dst-autumn` | A point in the repeated hour applies once, at its first occurrence. |
+| `83-timeline-state-datapoint` | `rule/<ruleId>/state`: its position value, quiet at the load, an event at a transition (before the entry actions' events), read by another rule, a command refused; a rule with states without a timeline has it too (decision 18). |
+| `84-timeline-change-api` | `setTimeline`: a change evaluates at once; refusals `unknown_state`, `malformed_timeline`, `timeline_limit`, `not_adjustable`, `no_timeline` with their paths; the override persisted across a reboot; equal to the image's is no override; the reset (decision 19). |
+| `85-timeline-image-swap-override` | A new image keeps the inhabitant's timeline, makes an equal one no override, drops it with `timelineReset` (not adjustable, a state gone) or silently (no timeline). |
+| `86-load-refused-timeline-without-states` | Load refusal `forbidden`: a timeline on a rule without states (with path and text, `spec/rules.md` 10.1). |
+| `87-load-refused-timeline-unknown-state` | Load refusal `unknownReference`: a point naming no state of the rule. |
+| `88-load-refused-timeline-time-and-sun` | Load refusal `malformed`: a point with both `time` and `sun`. |
+| `89-load-refused-timeline-offset-clock-point` | Load refusal `malformed`: an `offset` on a clock point. |
+| `90-load-refused-timeline-clamps` | Load refusal `malformed`: `notBefore` after `notAfter`. |
+| `91-load-refused-timeline-unknown-plan` | Load refusal `unknownReference`: an assignment naming no plan. |
+| `92-load-refused-timeline-no-default` | Load refusal `malformed`: no default assignment. |
+| `93-load-refused-timeline-two-defaults` | Load refusal `malformed`: a second default assignment. |
+| `94-load-refused-timeline-duplicate-plan` | Load refusal `duplicateId`: two plans with one id. |
+| `95-load-refused-timeline-weekday-range` | Load refusal `malformed`: a weekday outside 1..7. |
+| `96-load-refused-timeline-weekday-twice` | Load refusal `malformed`: a weekday in two assignments. |
+| `97-load-refused-timeline-points-limit` | Load refusal `limitExceeded`: 17 points in a plan. |
+| `98-load-refused-state-parameter` | Load refusal `duplicateId`: a parameter `state` in a rule with states. |
+| `99-load-refused-write-state-datapoint` | Load refusal `notWritable`: a write to another rule's state datapoint. |
+| `100-load-refused-own-state-datapoint` | Load refusal `forbidden`: a rule's trigger on its own state datapoint. |
+| `101-timeline-enable-override-watch` | A timeline composed with the enable switch (an enable takes the due state), a reaction's manual override and a rule watching the state datapoint (a self-transition updates it without a change). |
 
 The expected outputs were computed by hand and cross-checked against a throw-away executable model of
 the specification. The sun's positions of cases 59 to 64 come from the throw-away executable model of
@@ -176,6 +210,9 @@ literally in binary64; every position was cross-checked against the same formula
 `sin`, `cos`, `asin` and `atan2` (within 1e-9°) and the Astronomical Almanac's low-precision formula
 (a different algorithm, within 0.02°), case 60 also against the NREL example's published topocentric
 azimuth 194.34024° and elevation without refraction 39.872046° (within 0.0025° after the parallax);
-no decision of case 64 lies within 0.02° of its threshold. A `note` starting with "Review:" contains
+no decision of case 64 lies within 0.02° of its threshold. The moments of cases 74 to 85 come from a throw-away
+model of `spec/rules.md` 7.13 over Python's `zoneinfo` (Europe/Berlin, with the gap and fold rules
+S1 written out), the sun times of case 79 from the core's `hc::sun_times` itself (the raw seconds
+before rounding are at least 0.026 s from a rounding boundary). A `note` starting with "Review:" contains
 a judgment call the author should confirm, one starting with "Decided" names the decision of
 `spec/rules.md` section 12 it pins.

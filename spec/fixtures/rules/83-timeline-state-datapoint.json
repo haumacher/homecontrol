@@ -1,0 +1,90 @@
+{
+	"title": "The state of a rule is the datapoint rule/<ruleId>/state: quiet at the load, an event at every later transition, read-only",
+	"description": "heat has a timeline (06:00 on, 22:00 off), follow reads and triggers on rule/heat/state, stairs has states without a timeline. Booted at 21:00, heat enters on (due since 06:00): the state datapoint takes 1 (the position of on in states) quietly, so follow's datapoint trigger does not fire, and its start trigger reads 1. A command to the state datapoint is refused. At 22:00 heat goes to off: the datapoint changes to 0 as an event of the cascade, after the change of state and before the events of the entry actions; follow writes the lamp. stairs' state datapoint follows its reaction with to.",
+	"note": "Decided 18 (2026-11-12, issue #84): spec/rules.md 8.8.",
+	"datapoints": [{"name": "h", "type": "boolean"}, {"name": "lamp", "type": "boolean"}, {"name": "button", "type": "boolean"}],
+	"clock": {"start": "2026-11-18T21:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "heat",
+			"name": "Heating",
+			"states": [
+				{
+					"id": "off",
+					"label": "Off",
+					"entry": [{"kind": "write", "datapoint": "h", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				},
+				{
+					"id": "on",
+					"label": {"en": "On", "de": "An"},
+					"entry": [{"kind": "write", "datapoint": "h", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			],
+			"initialState": "off",
+			"timeline": {
+				"plans": [
+					{
+						"id": "p",
+						"label": "P",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "off"}
+						]
+					}
+				],
+				"assignments": [{"plan": "p"}]
+			}
+		},
+		{
+			"id": "follow",
+			"name": "Follow",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["heat is ", {"kind": "datapoint", "name": "rule/heat/state"}]}]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "rule/heat/state"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "lamp",
+							"value": {
+								"kind": "binary",
+								"op": "==",
+								"left": {"kind": "datapoint", "name": "rule/heat/state"},
+								"right": {"kind": "literal", "type": "integer", "value": 1}
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "stairs",
+			"name": "Stairs",
+			"states": [{"id": "idle"}, {"id": "busy"}],
+			"initialState": "idle",
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "button", "on": "update"}], "actions": [], "to": "busy"}]
+		}
+	],
+	"timeline": [
+		{"at": 0, "check": {"datapoints": {"rule/heat/state": 1, "rule/stairs/state": 0, "lamp": null}}},
+		{"at": 600000, "command": {"datapoint": "rule/heat/state", "value": 0, "refused": true}},
+		{"at": 4200000, "report": {"datapoint": "button", "value": true}}
+	],
+	"end": 4800000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "heat", "datapoint": "h", "value": true},
+			{"at": 3600000, "rule": "heat", "datapoint": "h", "value": false},
+			{"at": 3600000, "rule": "follow", "datapoint": "lamp", "value": false}
+		],
+		"logs": [{"at": 0, "rule": "follow", "code": "log", "level": "info", "message": "heat is 1"}],
+		"final": {
+			"states": {"heat": "off", "stairs": "busy"},
+			"datapoints": {"rule/heat/state": 0, "rule/stairs/state": 1, "lamp": false, "h": false},
+			"firings": {"heat": 1, "follow": 2, "stairs": 1}
+		}
+	}
+}

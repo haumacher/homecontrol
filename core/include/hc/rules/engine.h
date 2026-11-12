@@ -12,12 +12,15 @@
 #include "hc/event_loop.h"
 #include "hc/json_value.h"
 #include "hc/log.h"
+#include "hc/platform/blob_store.h"
 #include "hc/platform/clock.h"
 #include "hc/platform/settings.h"
 #include "hc/rules/parameter_store.h"
 #include "hc/rules/rule_set.h"
+#include "hc/rules/timeline.h"
 #include "hc/rules/value.h"
 #include "hc/technology.h"
+#include "hc/time_service.h"
 
 namespace hc::rules {
 
@@ -82,6 +85,25 @@ public:
 		return true;
 	}
 
+	/// The instant of the local civil time `year-month-day hour:minute:second` by the DST rules S1
+	/// of spec/schedules.md (a timeline's moments, spec/rules.md 7.13): a time in a spring-forward
+	/// gap is the end of the gap, a time that occurs twice its first occurrence. The default is UTC.
+	virtual int64_t civil_to_utc(int32_t year, unsigned month, unsigned day, unsigned hour, unsigned minute,
+		unsigned second) const {
+		return days_of(year, month, day) * 86400 + static_cast<int64_t>(hour) * 3600 + minute * 60 + second;
+	}
+
+	/// Whether a sun event of a date is known (a timeline's sun points, spec/rules.md 7.13).
+	enum class SunLookup : uint8_t { ok, absent, no_location };
+	/// The UTC instant of `event` of the local date `year-month-day` at the device's location (the
+	/// events around the date's solar noon, as for the schedule kind `astro`): ok; absent when the
+	/// event does not occur that day; no_location without a location. The default has none.
+	virtual SunLookup sun_event_utc(int32_t year, unsigned month, unsigned day, hc::SunEvent event,
+		int64_t& out) const {
+		(void)year, (void)month, (void)day, (void)event, (void)out;
+		return SunLookup::no_location;
+	}
+
 protected:
 	~TimeSource() = default;
 };
@@ -100,6 +122,8 @@ enum class LogCode : uint8_t {
 	loop_guard,
 	queue_overflow,
 	read_refused,
+	timeline_reset,  ///< A new image dropped the inhabitant's timeline (spec 8.7).
+	sun_unavailable, ///< A timeline's sun points have no moment: no location (spec 7.13).
 };
 
 /// The spec's name of a code ("conditionNoValue", ...).
@@ -171,6 +195,21 @@ struct RuleDiagnostics {
 	uint32_t loop_guards = 0;            ///< Cascades refused while this rule fired.
 };
 
+/// Outcome of a change of a rule's timeline by the inhabitant (spec 8.7, spec/api.md).
+enum class TimelineStatus : uint8_t {
+	ok,
+	unknown_rule,
+	no_timeline,
+	not_adjustable,
+	malformed,     ///< The refusal's reason and path say what (malformed, duplicateId, a plan unknown).
+	unknown_state, ///< A point names a state the rule does not have.
+	limit,         ///< A limit of spec 10.2, or the budget of the effective timelines.
+	no_memory,
+};
+
+/// The API's code of a status without the prefix ("not_adjustable", "malformed_timeline", ...).
+const char* timeline_status_code(TimelineStatus status);
+
 /// What the engine costs (besides the RuleSet).
 struct EngineMemory {
 	size_t object;    ///< sizeof(Engine): queues and bookkeeping.
@@ -232,8 +271,12 @@ protected:
 /// parameterRefused otherwise). Silence triggers (spec 7.11) are slots allocated at load.
 ///
 /// Threading: every method on the event loop's thread.
-class Engine : public DatapointListener {
+class Engine : public DatapointListener, public hc::TimeListener {
 public:
+	/// The time events a timeline follows (spec 7.13): the evaluations at the synchronization and a
+	/// jump, the next point after a change of the date, the offset or the location.
+	static constexpr uint8_t kTimeEvents = TimeEvents::kSynchronized | TimeEvents::kSynchronizationLost |
+		TimeEvents::kClockJumped | TimeEvents::kDayChanged | TimeEvents::kOffsetChanged | TimeEvents::kLocationChanged;
 	/// External events waiting for their cascade.
 	static constexpr size_t kInboundCapacity = 64;
 
@@ -349,6 +392,33 @@ public:
 
 	void set_observer(EngineObserver* observer) { observer_ = observer; }
 
+	// --- Timelines (spec/rules.md 2.8, 7.13, 8.7, 8.8; issue #84) ---
+
+	/// The store of the inhabitant's timelines (one blob per rule, doc/rules.md); without one they
+	/// live until the next restart.
+	void set_timeline_store(BlobStore* store) { timeline_store_ = store; }
+	/// The blob of `rule`'s timeline override: "tl." and 12 hex digits of the hash of
+	/// `<ruleId>/.timeline` (`out` at least kTimelineBlobName bytes).
+	static constexpr size_t kTimelineBlobName = 16;
+	static void timeline_blob_name(const char* rule, char* out);
+	/// The logical key of an override (spec 8.7).
+	static constexpr const char* kTimelineKey = ".timeline";
+
+	/// A time event of the time service (TimeListener).
+	void time_changed(uint8_t events) override;
+
+	/// Replaces the timeline of `rule` by the inhabitant's (`timeline`), or resets it to the image's
+	/// (`timeline` nullptr); evaluates it at once (spec 8.7). On refusal `refusal` says why.
+	TimelineStatus set_timeline(const char* rule, const JsonValue* timeline, TimelineRefusal& refusal);
+	/// The effective timeline of `rule` (the inhabitant's where overridden); nullptr without one.
+	const Timeline* timeline(size_t rule) const;
+	bool timeline_overridden(size_t rule) const;
+	/// The next switching point of `rule` (UTC seconds, the state index, the plan index); false when
+	/// none is armed (no timeline, disabled, clock not synchronized, none within eight days).
+	bool next_point(size_t rule, int64_t& utc, uint8_t& state, uint8_t& plan) const;
+	/// The rule behind a state datapoint `rule/<ruleId>/state`; false for another datapoint.
+	bool state_of_datapoint(uint16_t datapoint, size_t& rule) const;
+
 	const RuleSet& rules() const { return set_; }
 	bool loaded() const { return runtime_ != nullptr; }
 
@@ -459,6 +529,22 @@ private:
 	// Swap.
 	bool install(RuleSet&& next, LoadResult& result, const uint16_t* previous_ids);
 
+	// Timelines (spec 7.13).
+	void change_state(size_t rule, uint8_t to, bool exit_actions);
+	void publish_state(size_t rule);
+	void record_timeline_firing(size_t rule, uint8_t state);
+	bool wall_utc(int64_t& out) const;
+	bool start_timeline(size_t rule, bool quiet);
+	void evaluate_running(size_t rule);
+	void apply_points(size_t rule);
+	void schedule_next(size_t rule);
+	void note_sun(size_t rule, bool no_location);
+	void keep_timeline_override(size_t rule, const Timeline* image, const char* text, size_t length, bool& dirty,
+		size_t& points, size_t& plans, Runtime& rt, const RuleSet& next);
+	char* read_timeline_blob(const char* rule, size_t& length) const;
+	void prune_timeline_blobs();
+	void persist_timeline(size_t rule);
+
 	// State persistence (spec 8.5).
 	void state_changed(size_t rule);
 	void on_persist();
@@ -471,6 +557,7 @@ private:
 	const TimeSource& time_;
 	EngineObserver* observer_ = nullptr;
 	BlockHost* host_ = nullptr;
+	BlobStore* timeline_store_ = nullptr;
 	bool listening_ = false;
 	ParameterTechnology technology_{*this};
 	bool quiet_ = false;          ///< Publishing at load: no events.

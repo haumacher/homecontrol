@@ -1,0 +1,326 @@
+{
+	"title": "The inhabitant's timeline: replaced whole and evaluated at once, refused whole with the reason, persisted, equal to the image's is no override, reset",
+	"description": "heat (06:00 on, 22:00 off) is adjustable, fixed is not, plain has no timeline. Booted on Wednesday at 12:00. At 12:10 the inhabitant replaces heat's timeline (06:00 on, 12:05 off): it takes effect at once, the due state off is entered by a transition. Refused, each whole and changing nothing: a point naming a state the rule does not have, a point with time and sun, 17 points in a plan, notBefore after notAfter, fixed's timeline (not adjustable), plain's (no timeline). A reboot keeps the persisted override (off is due). A timeline equal to the image's removes the override (on is due again); another override (13:15 off) and the reset back to the image's each evaluate.",
+	"note": "Decided 17 and 19 (spec/rules.md 8.7, spec/api.md PUT and DELETE /api/rules/<ruleId>/timeline).",
+	"datapoints": [
+		{"name": "h", "type": "boolean"},
+		{"name": "f", "type": "boolean"},
+		{"name": "p", "type": "boolean"},
+		{"name": "button", "type": "boolean"}
+	],
+	"clock": {"start": "2026-11-18T12:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "heat",
+			"name": "heat",
+			"states": [
+				{
+					"id": "off",
+					"entry": [{"kind": "write", "datapoint": "h", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				},
+				{
+					"id": "on",
+					"entry": [{"kind": "write", "datapoint": "h", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			],
+			"initialState": "off",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "off"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		{
+			"id": "fixed",
+			"name": "fixed",
+			"states": [
+				{
+					"id": "x",
+					"entry": [{"kind": "write", "datapoint": "f", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				},
+				{
+					"id": "y",
+					"entry": [{"kind": "write", "datapoint": "f", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			],
+			"initialState": "x",
+			"timeline": {
+				"adjustable": false,
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "y"},
+							{"time": {"hour": 20, "minute": 0, "second": 0}, "state": "x"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		},
+		{
+			"id": "plain",
+			"name": "plain",
+			"states": [
+				{
+					"id": "p1",
+					"entry": [{"kind": "write", "datapoint": "p", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				},
+				{
+					"id": "p2",
+					"entry": [{"kind": "write", "datapoint": "p", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			],
+			"initialState": "p1",
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "button", "on": "update"}], "actions": [], "to": "p2"}]
+		}
+	],
+	"timeline": [
+		{
+			"at": 600000,
+			"setTimeline": {
+				"rule": "heat",
+				"timeline": {
+					"plans": [
+						{
+							"id": "day",
+							"label": "Day",
+							"points": [
+								{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+								{"time": {"hour": 12, "minute": 5, "second": 0}, "state": "off"}
+							]
+						}
+					],
+					"assignments": [{"plan": "day"}]
+				}
+			}
+		},
+		{
+			"at": 600000,
+			"check": {"timelines": {"heat": {"overridden": true, "next": {"at": "2026-11-19T06:00:00", "state": "on"}}}}
+		},
+		{
+			"at": 660000,
+			"setTimeline": {
+				"rule": "heat",
+				"timeline": {
+					"plans": [
+						{
+							"id": "day",
+							"label": "Day",
+							"points": [
+								{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+								{"time": {"hour": 12, "minute": 5, "second": 0}, "state": "warm"}
+							]
+						}
+					],
+					"assignments": [{"plan": "day"}]
+				},
+				"refused": "unknown_state",
+				"path": "plans[0].points[1].state"
+			}
+		},
+		{
+			"at": 720000,
+			"setTimeline": {
+				"rule": "heat",
+				"timeline": {
+					"plans": [
+						{
+							"id": "day",
+							"label": "Day",
+							"points": [{"time": {"hour": 6, "minute": 0, "second": 0}, "sun": "sunset", "state": "on"}]
+						}
+					],
+					"assignments": [{"plan": "day"}]
+				},
+				"refused": "malformed_timeline",
+				"path": "plans[0].points[0]"
+			}
+		},
+		{
+			"at": 780000,
+			"setTimeline": {
+				"rule": "heat",
+				"timeline": {
+					"plans": [
+						{
+							"id": "day",
+							"label": "Day",
+							"points": [
+								{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+								{"time": {"hour": 6, "minute": 1, "second": 0}, "state": "off"},
+								{"time": {"hour": 6, "minute": 2, "second": 0}, "state": "on"},
+								{"time": {"hour": 6, "minute": 3, "second": 0}, "state": "off"},
+								{"time": {"hour": 6, "minute": 4, "second": 0}, "state": "on"},
+								{"time": {"hour": 6, "minute": 5, "second": 0}, "state": "off"},
+								{"time": {"hour": 6, "minute": 6, "second": 0}, "state": "on"},
+								{"time": {"hour": 6, "minute": 7, "second": 0}, "state": "off"},
+								{"time": {"hour": 6, "minute": 8, "second": 0}, "state": "on"},
+								{"time": {"hour": 6, "minute": 9, "second": 0}, "state": "off"},
+								{"time": {"hour": 6, "minute": 10, "second": 0}, "state": "on"},
+								{"time": {"hour": 6, "minute": 11, "second": 0}, "state": "off"},
+								{"time": {"hour": 6, "minute": 12, "second": 0}, "state": "on"},
+								{"time": {"hour": 6, "minute": 13, "second": 0}, "state": "off"},
+								{"time": {"hour": 6, "minute": 14, "second": 0}, "state": "on"},
+								{"time": {"hour": 6, "minute": 15, "second": 0}, "state": "off"},
+								{"time": {"hour": 6, "minute": 16, "second": 0}, "state": "on"}
+							]
+						}
+					],
+					"assignments": [{"plan": "day"}]
+				},
+				"refused": "timeline_limit",
+				"path": "plans[0].points"
+			}
+		},
+		{
+			"at": 840000,
+			"setTimeline": {
+				"rule": "heat",
+				"timeline": {
+					"plans": [
+						{
+							"id": "day",
+							"label": "Day",
+							"points": [
+								{
+									"sun": "sunset",
+									"notBefore": {"hour": 22, "minute": 0, "second": 0},
+									"notAfter": {"hour": 21, "minute": 0, "second": 0},
+									"state": "on"
+								}
+							]
+						}
+					],
+					"assignments": [{"plan": "day"}]
+				},
+				"refused": "malformed_timeline",
+				"path": "plans[0].points[0]"
+			}
+		},
+		{
+			"at": 900000,
+			"setTimeline": {
+				"rule": "fixed",
+				"timeline": {
+					"plans": [{"id": "day", "label": "Day", "points": [{"time": {"hour": 7, "minute": 0, "second": 0}, "state": "y"}]}],
+					"assignments": [{"plan": "day"}]
+				},
+				"refused": "not_adjustable"
+			}
+		},
+		{
+			"at": 960000,
+			"setTimeline": {
+				"rule": "plain",
+				"timeline": {
+					"plans": [{"id": "day", "label": "Day", "points": [{"time": {"hour": 7, "minute": 0, "second": 0}, "state": "p2"}]}],
+					"assignments": [{"plan": "day"}]
+				},
+				"refused": "no_timeline"
+			}
+		},
+		{
+			"at": 1020000,
+			"check": {
+				"states": {"heat": "off", "fixed": "y", "plain": "p1"},
+				"timelines": {"heat": {"overridden": true}, "fixed": {"overridden": false}}
+			}
+		},
+		{"at": 3600000, "reboot": true},
+		{
+			"at": 3600000,
+			"check": {
+				"timelines": {"heat": {"overridden": true}},
+				"persisted": {
+					"heat/.timeline": {
+						"plans": [
+							{
+								"id": "day",
+								"label": "Day",
+								"points": [
+									{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+									{"time": {"hour": 12, "minute": 5, "second": 0}, "state": "off"}
+								]
+							}
+						],
+						"assignments": [{"plan": "day"}]
+					},
+					"heat/.state": "off",
+					"fixed/.state": "y",
+					"plain/.state": "p1"
+				}
+			}
+		},
+		{
+			"at": 4200000,
+			"setTimeline": {
+				"rule": "heat",
+				"timeline": {
+					"plans": [
+						{
+							"id": "day",
+							"label": "Day",
+							"points": [
+								{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+								{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "off"}
+							]
+						}
+					],
+					"assignments": [{"plan": "day"}]
+				}
+			}
+		},
+		{"at": 4200000, "check": {"timelines": {"heat": {"overridden": false}}}},
+		{
+			"at": 4800000,
+			"setTimeline": {
+				"rule": "heat",
+				"timeline": {
+					"plans": [
+						{
+							"id": "day",
+							"label": "Day",
+							"points": [
+								{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+								{"time": {"hour": 13, "minute": 15, "second": 0}, "state": "off"}
+							]
+						}
+					],
+					"assignments": [{"plan": "day"}]
+				}
+			}
+		},
+		{"at": 5400000, "setTimeline": {"rule": "heat", "reset": true}}
+	],
+	"end": 6000000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "heat", "datapoint": "h", "value": true},
+			{"at": 0, "rule": "fixed", "datapoint": "f", "value": true},
+			{"at": 0, "rule": "plain", "datapoint": "p", "value": false},
+			{"at": 600000, "rule": "heat", "datapoint": "h", "value": false},
+			{"at": 3600000, "rule": "heat", "datapoint": "h", "value": false},
+			{"at": 3600000, "rule": "fixed", "datapoint": "f", "value": true},
+			{"at": 4200000, "rule": "heat", "datapoint": "h", "value": true},
+			{"at": 4800000, "rule": "heat", "datapoint": "h", "value": false},
+			{"at": 5400000, "rule": "heat", "datapoint": "h", "value": true}
+		],
+		"logs": [],
+		"final": {
+			"states": {"heat": "on", "fixed": "y", "plain": "p1"},
+			"timelines": {"heat": {"overridden": false, "next": {"at": "2026-11-18T22:00:00", "state": "off"}}},
+			"persisted": {"heat/.state": "on", "fixed/.state": "y", "plain/.state": "p1"}
+		}
+	}
+}

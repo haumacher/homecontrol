@@ -1,0 +1,57 @@
+{
+	"title": "Timeline composed with the enable switch, a manual override by a reaction and a rule watching the state datapoint",
+	"description": "hall: on at 08:00, off at 18:00 every day; a report of btn goes to on. watch writes mirror on every change of rule/hall/state. Boot on Monday 2026-11-16 at 07:00: off is due (Sunday 18:00), entered with its entry action; the state datapoint's load value is no event. 08:00 on (watch follows). 09:00 hall is disabled: 18:00 does not switch. 19:00 enabled again: a start with the reason enable takes the due state off with its entry action (watch follows). 20:00 btn: on by the reaction, the manual override (watch follows). Tuesday 08:00 switches to on although hall is in on: a self-transition sends again, the state datapoint is updated without a change and watch does not fire. Tuesday 18:00 off.",
+	"note": "Orchestrator's probe of haumacher/homecontrol#84 (spec/rules.md 7.13, 8.8, 7.9 enable).",
+	"datapoints": [{"name": "light", "type": "boolean"}, {"name": "mirror", "type": "unsigned"}, {"name": "btn", "type": "boolean"}],
+	"clock": {"start": "2026-11-16T07:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "hall",
+			"name": "Hall",
+			"states": [
+				{"id": "off", "label": "Off", "entry": [{"kind": "write", "datapoint": "light", "value": {"kind": "literal", "type": "boolean", "value": false}}]},
+				{"id": "on", "label": "On", "entry": [{"kind": "write", "datapoint": "light", "value": {"kind": "literal", "type": "boolean", "value": true}}]}
+			],
+			"initialState": "on",
+			"timeline": {
+				"plans": [{"id": "p", "label": "Every day", "points": [
+					{"time": {"hour": 8, "minute": 0, "second": 0}, "state": "on"},
+					{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "off"}]}],
+				"assignments": [{"plan": "p"}]
+			},
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "btn", "on": "update"}], "actions": [], "to": "on"}]
+		},
+		{
+			"id": "watch",
+			"name": "Watch",
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "rule/hall/state"}], "actions": [
+				{"kind": "write", "datapoint": "mirror", "value": {"kind": "datapoint", "name": "rule/hall/state"}}]}]
+		}
+	],
+	"timeline": [
+		{"at": 7200000, "setParameter": {"rule": "hall", "parameter": "enabled", "value": false}},
+		{"at": 43200000, "setParameter": {"rule": "hall", "parameter": "enabled", "value": true}},
+		{"at": 46800000, "report": {"datapoint": "btn", "value": true}}
+	],
+	"end": 129600000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "hall", "datapoint": "light", "value": false},
+			{"at": 3600000, "rule": "hall", "datapoint": "light", "value": true},
+			{"at": 3600000, "rule": "watch", "datapoint": "mirror", "value": 1},
+			{"at": 43200000, "rule": "hall", "datapoint": "light", "value": false},
+			{"at": 43200000, "rule": "watch", "datapoint": "mirror", "value": 0},
+			{"at": 46800000, "rule": "hall", "datapoint": "light", "value": true},
+			{"at": 46800000, "rule": "watch", "datapoint": "mirror", "value": 1},
+			{"at": 90000000, "rule": "hall", "datapoint": "light", "value": true},
+			{"at": 126000000, "rule": "hall", "datapoint": "light", "value": false},
+			{"at": 126000000, "rule": "watch", "datapoint": "mirror", "value": 0}
+		],
+		"logs": [],
+		"final": {
+			"states": {"hall": "off"},
+			"datapoints": {"rule/hall/state": 0, "mirror": 0, "light": false},
+			"timelines": {"hall": {"next": {"at": "2026-11-18T08:00:00", "state": "on"}}}
+		}
+	}
+}

@@ -1,0 +1,72 @@
+{
+	"title": "Timeline: the clock becoming synchronized and stepping evaluates; an unsynchronized start goes as without a timeline",
+	"description": "The pump of case 75 (06:00 on, 08:00 off, ...), off with an exit action that logs. Booted at 07:00 without a synchronized clock, the rule takes initialState off with its entry action. The synchronization at 07:01 is an evaluation while the rule runs: a transition to on (exit actions of off, entry actions of on). The clock loses its synchronization, and a reboot then restores the persisted state on without entry actions; the synchronization at 07:04 evaluates again: a self-transition into on, which sends again. A step of the wall clock back by 30 s is no jump and changes nothing; a step forward by an hour (to 08:05:30) is one: the due state is off, entered by a transition, and the point 08:00 stepped over is not applied on its own; the step back by an hour evaluates again (on). The point 08:00 then applies when the clock reaches it (the wall clock is 30 s behind the start plus the monotonic time).",
+	"note": "Decided 17: an evaluation while the rule runs is a transition (exit and entry actions); a jump is a step of more than 60 s (spec/rules.md 7.13).",
+	"datapoints": [{"name": "pump", "type": "boolean"}],
+	"clock": {"start": "2026-11-18T07:00:00", "synchronized": false, "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "pump",
+			"name": "Circulation pump",
+			"states": [
+				{
+					"id": "off",
+					"entry": [{"kind": "write", "datapoint": "pump", "value": {"kind": "literal", "type": "boolean", "value": false}}],
+					"exit": [{"kind": "log", "level": "info", "message": ["leave off"]}]
+				},
+				{
+					"id": "on",
+					"entry": [{"kind": "write", "datapoint": "pump", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			],
+			"initialState": "off",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+							{"time": {"hour": 8, "minute": 0, "second": 0}, "state": "off"},
+							{"time": {"hour": 18, "minute": 0, "second": 0}, "state": "on"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "off"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			},
+			"reactions": []
+		}
+	],
+	"timeline": [
+		{"at": 60000, "clockSync": true},
+		{"at": 120000, "clockSync": false},
+		{"at": 180000, "reboot": true},
+		{"at": 180000, "check": {"states": {"pump": "on"}, "datapoints": {"pump": null, "rule/pump/state": 1}}},
+		{"at": 240000, "clockSync": true},
+		{"at": 300000, "clockStep": -30000},
+		{"at": 360000, "clockStep": 3600000},
+		{"at": 420000, "clockStep": -3600000}
+	],
+	"end": 3690000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "pump", "datapoint": "pump", "value": false},
+			{"at": 60000, "rule": "pump", "datapoint": "pump", "value": true},
+			{"at": 240000, "rule": "pump", "datapoint": "pump", "value": true},
+			{"at": 360000, "rule": "pump", "datapoint": "pump", "value": false},
+			{"at": 420000, "rule": "pump", "datapoint": "pump", "value": true},
+			{"at": 3630000, "rule": "pump", "datapoint": "pump", "value": false}
+		],
+		"logs": [
+			{"at": 60000, "rule": "pump", "code": "log", "level": "info", "message": "leave off"},
+			{"at": 420000, "rule": "pump", "code": "log", "level": "info", "message": "leave off"}
+		],
+		"final": {
+			"states": {"pump": "off"},
+			"datapoints": {"pump": false, "rule/pump/state": 0},
+			"firings": {"pump": 4},
+			"persisted": {"pump/.state": "off"}
+		}
+	}
+}

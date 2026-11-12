@@ -28,7 +28,7 @@ names, the JSON value forms of its section 3.1). Fixtures: `spec/fixtures/images
   more than about 100 KB may find no free heap block of its size; the device then answers 507
   and keeps its image.
 - **I4. Versioned by `image.schemaVersion`, `<major>.<minor>`.** A newer major version is refused
-  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.6)`); a
+  naming the version (`schemaVersion 2.0 is newer than this firmware reads (1.x, up to 1.7)`); a
   newer minor version of a known major loads, and an older minor version too. Where a newer minor
   meets the strict objects of I5 (a rule, schedule or block member this firmware does not know),
   the refusal adds that the firmware is older than the image, from firmware 1.2 on:
@@ -43,7 +43,9 @@ whole image for it; and an image with a rule parameter whose id is not an identi
 (`max-helligkeit`, `spec/rules.md` 2.1) to a controller below 1.5, for the same reason; and an image
 using what 1.6 brings to a controller below 1.6, for the same reason: a dimmer without `levelCommand`,
 a climate whose `heating` is a number, a rule writing an application datapoint that is not writable
-(3.5, 3.3, section 8). *Alternative:* a feature
+(3.5, 3.3, section 8); and an image with a rule `timeline` or a state `label` (1.7, `spec/rules.md`
+2.6, 2.8) to a controller below 1.7, because an older firmware refuses that rule by the strict
+`rules` (I5) with the update hint. *Alternative:* a feature
   list (more precise, but E-Home would have to know which features a firmware has).
 - **I5. Unknown members are ignored, except in `rules`, `schedules` and `blocks`.** A minor version
   may add members; an older firmware loads the image without them. The rule, schedule and block
@@ -108,7 +110,7 @@ Strings are 1..N bytes of valid UTF-8 without control characters; N is given per
 
 | Member | Type | Required | Meaning |
 |---|---|---|---|
-| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.5` (section 8). |
+| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.7` (section 8). |
 | `projectId` | string, 1..63 | yes | E-Home's project. Shown in the status. |
 | `revision` | integer 0..4294967295 | yes | E-Home's deployment counter, shown in the status and returned by PUT. The device does not refuse an older revision: rolling back is a deployment like any other. |
 | `generatedAt` | string, 1..31 | no | ISO 8601 time of the export. |
@@ -179,7 +181,11 @@ parameter, the enable switch included, named `rule/<ruleId>/<parameterId>`, behi
 datapoints and the time master's, in rule order (per rule `enabled` first, then the parameters in
 their order). Its type follows the parameter's (`duration` as `unsigned` milliseconds); it is
 writable exactly when the parameter is adjustable, not persisted by the datapoint model (the rule
-engine's parameter store keeps the overrides) and without history; the rule engine owns it. Ids
+engine's parameter store keeps the overrides) and without history; the rule engine owns it. Behind
+a rule's parameter datapoints, a rule with states adds `rule/<ruleId>/state` (1.7, `spec/rules.md`
+8.8): type `enumeration`, the 0-based position of the current state in the rule's `states`, not
+writable (a command is refused), not readable, not persisted by the datapoint model, without
+history; the rule engine owns it. So the order is per rule `enabled`, the parameters, `state`. Ids
 starting with `rule/` are reserved: a declared one refuses the image. Functions, schedules and
 the UI may name these datapoints like any other.
 
@@ -436,7 +442,7 @@ optional). An **element** has exactly one of `function`, `datapoint` or `chart`,
 | Element | Members | Meaning |
 |---|---|---|
 | function | `function`: a function id (3.5) | The function's tile by its kind, with its detail sheet. |
-| datapoint | `datapoint`: a datapoint id (3.3, including the implied `rule/<ruleId>/<parameterId>` and `rule/<ruleId>/enabled`); `readOnly`: boolean, default false | A value tile; the control is chosen by the value type (doc/web.md "Control pages"), and shown only when the datapoint is writable and `readOnly` is not true. `readOnly: false` cannot make a datapoint writable: it stays read-only. `readOnly` on another element is refused. |
+| datapoint | `datapoint`: a datapoint id (3.3, including the implied `rule/<ruleId>/<parameterId>`, `rule/<ruleId>/enabled` and `rule/<ruleId>/state`); `readOnly`: boolean, default false | A value tile; the control is chosen by the value type (doc/web.md "Control pages"), and shown only when the datapoint is writable and `readOnly` is not true. `readOnly: false` cannot make a datapoint writable: it stays read-only. `readOnly` on another element is refused. |
 | chart | `chart`: object, below | A history chart over the tiles' grid. |
 
 The 1.0 draft's `chart: true` flag of a datapoint element was replaced by the chart element: an
@@ -695,3 +701,28 @@ persisted values and history rings: the device returns to setup.
   to a controller that reports 1.6 or newer (I4), as with the parameter ids for 1.5; an image
   without them (a dimmer with `levelCommand`, a boolean `heating`, rules writing only writable
   datapoints) loads on 1.5 as before.
+- 1.7 (issue #84, haumacher/ehome #140): time programs. A rule with states may carry a `timeline`
+  (`spec/rules.md` 2.8: day plans of switching points, a clock time or a sun event with `offset`,
+  `notBefore`, `notAfter`, and a state; assignments of plans to days, the default and `days`;
+  `adjustable`), and a state may carry a `label`; a rule with a timeline needs no reaction. The
+  semantics (`spec/rules.md` 7.13): a switching point is a transition, every start, synchronization
+  or step of the clock and change of the timeline enters the state due now with its entry actions,
+  a reaction with `to` overrides until the next point. The inhabitant replaces an adjustable
+  timeline on the device (`spec/rules.md` 8.7; `PUT`/`DELETE /api/rules/<ruleId>/timeline`,
+  `spec/api.md`), kept by a new image while every state it names exists. Every rule with states
+  has the implied datapoint `rule/<ruleId>/state` (3.3, `spec/rules.md` 8.8), an enumeration of the
+  state's position, read-only, with the states' labels as its choices in the API; a parameter
+  `state` of a rule with states is refused. The limits of `spec/rules.md` 10.2 (8 plans, 16 points
+  per plan, 64 per timeline, 256 points and 64 plans per image). Corpus cases
+  `spec/fixtures/rules/` 74 to 100, the image `heating-timeline.json` (E-Home's export of the
+  heating program equals it) and the image case `refuse-rule-timeline`. E-Home writes 1.7. An image
+  of 1.0 to 1.6 loads unchanged; its rules with states get the state datapoint, which no image
+  could declare (the prefix `rule/` is reserved), so nothing it says changes meaning. A parameter
+  `state` of a rule with states is refused in an image of 1.7 or newer; in an older one, which may
+  declare it, that parameter keeps its datapoint and the rule gets no state datapoint (logged at
+  load), so a stored image keeps loading after the firmware update. A firmware that reads only up to 1.6 refuses a rule with `timeline` or a
+  state with `label` (`rule 'heating': malformed: unknown member 'timeline' (the image's schema 1.7
+  is newer than this firmware reads, up to 1.6: update the firmware)`), so the whole image: E-Home
+  deploys an image with either only to a controller that reports 1.7 or newer (I4), as for 1.6; an
+  image without them loads on 1.6 as before (without the state datapoints, which E-Home's pages
+  and rules may then not name).

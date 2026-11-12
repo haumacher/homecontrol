@@ -1,0 +1,47 @@
+{
+	"comment": "A timeline point naming no state of the rule (spec/rules.md 2.8, 10.1; schema 1.7): the rule loader refuses the image with the path and the reason; E-Home validates the same.",
+	"expect": {
+		"valid": false,
+		"kind": "invalid",
+		"refusals": [
+			{
+				"path": "rules[0].timeline.plans[0].points[1].state",
+				"reason": "rule 'heating': unknownReference: no state 'warm' in the rule"
+			}
+		]
+	},
+	"image": {"schemaVersion": "1.7", "projectId": "case", "revision": 1},
+	"datapoints": [{"id": "mode", "type": "enumeration", "writable": true, "virtual": {}}],
+	"rules": [
+		{
+			"id": "heating",
+			"name": "Heating",
+			"states": [
+				{
+					"id": "comfort",
+					"label": "Comfort",
+					"entry": [{"kind": "write", "datapoint": "mode", "value": {"kind": "literal", "type": "integer", "value": 1}}]
+				},
+				{
+					"id": "night",
+					"label": "Night",
+					"entry": [{"kind": "write", "datapoint": "mode", "value": {"kind": "literal", "type": "integer", "value": 3}}]
+				}
+			],
+			"initialState": "comfort",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "comfort"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "warm"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		}
+	]
+}

@@ -1,0 +1,28 @@
+{
+	"title": "Load refusal forbidden: a timeline on a rule without states",
+	"description": "spec/rules.md 10.1 (schema 1.7, issue #84): the refusal forbidden at rules[0].timeline with its text; E-Home's validation refuses the same with the same text.",
+	"datapoints": [{"name": "out", "type": "boolean"}],
+	"clock": {"start": "2026-11-18T12:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "r",
+			"name": "R",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "off"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			},
+			"reactions": [{"triggers": [{"kind": "start"}], "actions": []}]
+		}
+	],
+	"end": 0,
+	"expected": {"loadRefused": "forbidden", "path": "rules[0].timeline", "text": "'timeline' in a rule without states"}
+}

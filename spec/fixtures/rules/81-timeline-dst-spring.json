@@ -1,0 +1,58 @@
+{
+	"title": "Timeline: a point in the gap of the spring-forward day is the end of the gap; points at one moment apply in plan order",
+	"description": "Europe/Berlin, 2027-03-28: the clock goes from 02:00 to 03:00. The plan: 02:30 a, 03:00 b, 12:00 c. Booted on Saturday at 12:00 the rule is due c (12:00, a point exactly now has passed). On Sunday 02:30 does not exist and is 03:00 (S1), the moment of the point b too: both apply at 03:00 CEST in plan order, a then b, each a transition with its entry action, and b holds. 12:00 c.",
+	"note": "Decided 17 with the DST rules S1 of spec/schedules.md (spec/rules.md 7.13).",
+	"datapoints": [{"name": "out", "type": "real"}],
+	"clock": {"start": "2027-03-27T12:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "dst",
+			"name": "DST",
+			"states": [
+				{
+					"id": "a",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "real", "value": 1.0}}]
+				},
+				{
+					"id": "b",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "real", "value": 2.0}}]
+				},
+				{
+					"id": "c",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "real", "value": 3.0}}]
+				}
+			],
+			"initialState": "c",
+			"timeline": {
+				"plans": [
+					{
+						"id": "p",
+						"label": "P",
+						"points": [
+							{"time": {"hour": 2, "minute": 30, "second": 0}, "state": "a"},
+							{"time": {"hour": 3, "minute": 0, "second": 0}, "state": "b"},
+							{"time": {"hour": 12, "minute": 0, "second": 0}, "state": "c"}
+						]
+					}
+				],
+				"assignments": [{"plan": "p"}]
+			}
+		}
+	],
+	"timeline": [],
+	"end": 86400000,
+	"expected": {
+		"commands": [
+			{"at": 0, "rule": "dst", "datapoint": "out", "value": 3.0},
+			{"at": 50400000, "rule": "dst", "datapoint": "out", "value": 1.0},
+			{"at": 50400000, "rule": "dst", "datapoint": "out", "value": 2.0},
+			{"at": 82800000, "rule": "dst", "datapoint": "out", "value": 3.0}
+		],
+		"logs": [],
+		"final": {
+			"states": {"dst": "c"},
+			"firings": {"dst": 3},
+			"timelines": {"dst": {"next": {"at": "2027-03-29T02:30:00", "state": "a"}}}
+		}
+	}
+}

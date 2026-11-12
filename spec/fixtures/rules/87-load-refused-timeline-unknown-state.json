@@ -1,0 +1,42 @@
+{
+	"title": "Load refusal unknownReference: a point naming no state of the rule",
+	"description": "spec/rules.md 10.1 (schema 1.7, issue #84): the refusal unknownReference at rules[0].timeline.plans[0].points[1].state with its text; E-Home's validation refuses the same with the same text.",
+	"datapoints": [{"name": "out", "type": "boolean"}],
+	"clock": {"start": "2026-11-18T12:00:00", "zone": "CET-1CEST,M3.5.0,M10.5.0/3"},
+	"rules": [
+		{
+			"id": "r",
+			"name": "R",
+			"states": [
+				{
+					"id": "off",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "boolean", "value": false}}]
+				},
+				{
+					"id": "on",
+					"entry": [{"kind": "write", "datapoint": "out", "value": {"kind": "literal", "type": "boolean", "value": true}}]
+				}
+			],
+			"initialState": "off",
+			"timeline": {
+				"plans": [
+					{
+						"id": "day",
+						"label": "Day",
+						"points": [
+							{"time": {"hour": 6, "minute": 0, "second": 0}, "state": "on"},
+							{"time": {"hour": 22, "minute": 0, "second": 0}, "state": "night"}
+						]
+					}
+				],
+				"assignments": [{"plan": "day"}]
+			}
+		}
+	],
+	"end": 0,
+	"expected": {
+		"loadRefused": "unknownReference",
+		"path": "rules[0].timeline.plans[0].points[1].state",
+		"text": "no state 'night' in the rule"
+	}
+}
