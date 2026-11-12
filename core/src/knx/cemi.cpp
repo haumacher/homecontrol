@@ -249,5 +249,39 @@ bool confirms(const LData& confirmation, const LData& request) {
 		std::memcmp(confirmation.tpdu, request.tpdu, request.tpdu_length) == 0;
 }
 
+CemiResult view(const uint8_t* data, size_t length, RawView& out) {
+	out = RawView{};
+	if (length < 2) {
+		return fail(CemiStatus::wrong_length, "cEMI frame shorter than 2 octets");
+	}
+	if (!known_code(data[0])) {
+		return fail(CemiStatus::unsupported, "cEMI message code is not L_Data.req/con/ind");
+	}
+	size_t base = 2u + data[1];
+	if (length < base + 7) {
+		return fail(CemiStatus::wrong_length, "cEMI L_Data frame shorter than its fields");
+	}
+	size_t tpdu_length = static_cast<size_t>(data[base + 6]) + 1;
+	if (length != base + 7 + tpdu_length) {
+		return fail(CemiStatus::wrong_length, "cEMI length field disagrees with the frame length");
+	}
+	out.code = static_cast<MessageCode>(data[0]);
+	out.confirm_error = (data[base] & 0x01) != 0;
+	out.group = (data[base + 1] & 0x80) != 0;
+	out.destination = static_cast<uint16_t>((data[base + 4] << 8) | data[base + 5]);
+	out.tpdu_offset = base + 7;
+	out.tpdu_length = tpdu_length;
+	return CemiResult{};
+}
+
+bool confirms(const uint8_t* confirmation, const RawView& confirmation_view, const uint8_t* request,
+	const RawView& request_view) {
+	return confirmation_view.code == MessageCode::ldata_con && confirmation_view.group == request_view.group &&
+		confirmation_view.destination == request_view.destination &&
+		confirmation_view.tpdu_length == request_view.tpdu_length &&
+		std::memcmp(confirmation + confirmation_view.tpdu_offset, request + request_view.tpdu_offset,
+			request_view.tpdu_length) == 0;
+}
+
 } // namespace knx
 } // namespace hc

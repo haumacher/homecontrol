@@ -171,6 +171,8 @@ public:
 		knx_ = tunnel;
 		telegrams_ = telegrams;
 	}
+	/// The KNX tunnel set_knx() gave (nullptr: none): the E-Home connection's bus session uses it.
+	knx::KnxTunnel* knx_tunnel() const { return knx_; }
 	/// The KNX gateway search behind /api/knx/search (spec/api.md "KNX gateway search"); without one
 	/// the route answers 501.
 	void set_knx_search(knx::GatewaySearch* search) { knx_search_ = search; }

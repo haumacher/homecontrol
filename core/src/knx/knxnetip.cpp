@@ -225,6 +225,17 @@ bool build_tunneling_request(FrameBuffer& out, uint8_t channel, uint8_t sequence
 	return true;
 }
 
+void write_tunneling_header(uint8_t* out, uint8_t channel, uint8_t sequence, size_t cemi_length) {
+	out[0] = kHeaderLength;
+	out[1] = kVersion;
+	put16(out + 2, static_cast<uint16_t>(Service::tunneling_request));
+	put16(out + 4, static_cast<uint16_t>(kTunnelingHeader + cemi_length));
+	out[6] = 4;
+	out[7] = channel;
+	out[8] = sequence;
+	out[9] = 0;
+}
+
 void build_tunneling_ack(FrameBuffer& out, uint8_t channel, uint8_t sequence, uint8_t status) {
 	header(out, Service::tunneling_ack, 10);
 	out.data[6] = 4;

@@ -428,8 +428,29 @@ void KnxTunnel::handle_tunneling_request(const uint8_t* data, size_t length) {
 	}
 	transmit(data_, ack, "TUNNELING_ACK");
 	++receive_sequence_;
+	// The frame as it is, before the TPDU limit of LData: the bus session forwards indications of any
+	// length, and its own frames are confirmed by L_Data.con frames as long as they are.
+	const uint8_t* cemi = data + ip::kTunnelingHeader;
+	size_t cemi_length = length - ip::kTunnelingHeader;
+	RawView raw;
+	bool viewed = static_cast<bool>(view(cemi, cemi_length, raw));
+	if (viewed && raw.code == MessageCode::ldata_ind) {
+		for (size_t i = 0; i < listener_count_; ++i) {
+			listeners_[i]->tunnel_raw_frame(*this, cemi, cemi_length);
+		}
+	} else if (viewed && raw.code == MessageCode::ldata_con && queue_count_ > 0 && queue_[queue_head_].raw != nullptr) {
+		handle_raw_confirmation(cemi, raw);
+		return;
+	}
 	if (!result) {
-		Log::warn(kTag, "dropping a tunnelled frame: %s", request.cemi.reason);
+		if (viewed && !(raw.group && !raw.broadcast())) {
+			// Not a group telegram: management frames longer than LData keeps, for the bus session only.
+			Log::debug(kTag, "a tunnelled %s to %s %u not decoded: %s", message_code_name(raw.code),
+				raw.group ? "broadcast" : "individual address", static_cast<unsigned>(raw.destination),
+				request.cemi.reason);
+		} else {
+			Log::warn(kTag, "dropping a tunnelled frame: %s", request.cemi.reason);
+		}
 		return;
 	}
 	switch (request.frame.code) {
@@ -447,8 +468,25 @@ void KnxTunnel::handle_tunneling_request(const uint8_t* data, size_t length) {
 	}
 }
 
+void KnxTunnel::handle_raw_confirmation(const uint8_t* cemi, const RawView& view_) {
+	const RawFrame& head = *queue_[queue_head_].raw;
+	RawView request;
+	if ((!awaiting_ack_ && !awaiting_confirm_) || !view(head.cemi(), head.length, request) ||
+		!confirms(cemi, view_, head.cemi(), request)) {
+		Log::debug(kTag, "L_Data.con for no frame in flight ignored");
+		return;
+	}
+	if (awaiting_ack_) {
+		early_confirm_ = true;
+		early_negative_ = view_.confirm_error;
+		return;
+	}
+	complete(view_.confirm_error ? SendOutcome::negative : SendOutcome::confirmed, nullptr);
+}
+
 void KnxTunnel::handle_confirmation(const LData& frame) {
-	if (queue_count_ == 0 || (!awaiting_ack_ && !awaiting_confirm_) || !confirms(frame, queue_[queue_head_].frame)) {
+	if (queue_count_ == 0 || (!awaiting_ack_ && !awaiting_confirm_) || queue_[queue_head_].raw != nullptr ||
+		!confirms(frame, queue_[queue_head_].frame)) {
 		Log::debug(kTag, "L_Data.con for no frame in flight ignored");
 		return;
 	}
@@ -481,6 +519,11 @@ void KnxTunnel::handle_tunneling_ack(const uint8_t* data, size_t length) {
 	ack_timer_ = TimerHandle();
 	awaiting_ack_ = false;
 	++send_sequence_;
+	if (early_confirm_ && queue_[queue_head_].raw != nullptr) {
+		early_confirm_ = false;
+		complete(early_negative_ ? SendOutcome::negative : SendOutcome::confirmed, nullptr);
+		return;
+	}
 	if (early_confirm_) {
 		early_confirm_ = false;
 		LData confirmation = early_frame_;
@@ -529,30 +572,58 @@ void KnxTunnel::heartbeat_timeout() {
 // ---- Sending -------------------------------------------------------------------------------
 
 uint32_t KnxTunnel::send(const LData& frame) {
+	if (phase_ == Phase::up && queue_count_ < kQueueCapacity) {
+		ip::FrameBuffer probe;
+		CemiResult encoded;
+		if (!ip::build_tunneling_request(probe, channel_, 0, frame, &encoded)) {
+			Log::warn(kTag, "refusing to send a frame that does not encode: %s", encoded.reason);
+			return 0;
+		}
+	}
+	uint32_t token = 0;
+	enqueue(&frame, nullptr, token);
+	return token;
+}
+
+uint32_t KnxTunnel::send_raw(RawFrame& frame) {
+	if (phase_ == Phase::up && queue_count_ < kQueueCapacity) {
+		RawView raw;
+		CemiResult viewed = frame.length <= RawFrame::kMaxCemi ? view(frame.cemi(), frame.length, raw)
+			: CemiResult{CemiStatus::too_long, "cEMI frame longer than 264 octets"};
+		if (viewed && raw.code != MessageCode::ldata_req) {
+			viewed = CemiResult{CemiStatus::unsupported, "not an L_Data.req"};
+		}
+		if (!viewed) {
+			Log::warn(kTag, "refusing to send a frame as it is: %s", viewed.reason);
+			return 0;
+		}
+	}
+	uint32_t token = 0;
+	enqueue(nullptr, &frame, token);
+	return token;
+}
+
+bool KnxTunnel::enqueue(const LData* frame, RawFrame* raw, uint32_t& token) {
+	token = 0;
 	if (phase_ != Phase::up) {
 		Log::warn(kTag, "refusing to send: the tunnel is %s (%s)", tunnel_state_name(state_), reason_);
-		return 0;
+		return false;
 	}
 	if (queue_count_ == kQueueCapacity) {
 		Log::warn(kTag, "refusing to send: the queue of %u frames is full", static_cast<unsigned>(kQueueCapacity));
-		return 0;
+		return false;
 	}
-	ip::FrameBuffer probe;
-	CemiResult encoded;
-	if (!ip::build_tunneling_request(probe, channel_, 0, frame, &encoded)) {
-		Log::warn(kTag, "refusing to send a frame that does not encode: %s", encoded.reason);
-		return 0;
-	}
-	uint32_t token = next_token_++;
+	token = next_token_++;
 	if (next_token_ == 0) {
 		next_token_ = 1;
 	}
 	Pending& entry = queue_[(queue_head_ + queue_count_) % kQueueCapacity];
-	entry.frame = frame;
+	entry.frame = frame != nullptr ? *frame : LData();
 	entry.token = token;
+	entry.raw = raw;
 	++queue_count_;
 	pump();
-	return token;
+	return true;
 }
 
 void KnxTunnel::pump() {
@@ -566,10 +637,20 @@ void KnxTunnel::pump() {
 }
 
 void KnxTunnel::send_head() {
-	ip::FrameBuffer frame;
-	ip::build_tunneling_request(frame, channel_, send_sequence_, queue_[queue_head_].frame);
 	// A failed send is not fatal here: the missing ACK repeats it and then ends the connection.
-	transmit(data_, frame, "TUNNELING_REQUEST");
+	RawFrame* raw = queue_[queue_head_].raw;
+	if (raw != nullptr) {
+		ip::write_tunneling_header(raw->octets, channel_, send_sequence_, raw->length);
+		const char* error = nullptr;
+		if (!socket_.send_to(data_, raw->octets, RawFrame::kHeadroom + raw->length, &error)) {
+			char text[ip::Endpoint::kMaxText];
+			Log::warn(kTag, "knx TUNNELING_REQUEST to %s not sent: %s", data_.format(text, sizeof(text)), error);
+		}
+	} else {
+		ip::FrameBuffer frame;
+		ip::build_tunneling_request(frame, channel_, send_sequence_, queue_[queue_head_].frame);
+		transmit(data_, frame, "TUNNELING_REQUEST");
+	}
 	ack_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kAckTimeoutMs,
 		Callback::member<KnxTunnel, &KnxTunnel::ack_timeout>(this));
 }
@@ -609,9 +690,15 @@ void KnxTunnel::complete(SendOutcome outcome, const LData* confirmation) {
 	Pending done = queue_[queue_head_];
 	queue_head_ = (queue_head_ + 1) % kQueueCapacity;
 	--queue_count_;
-	const LData& reported = confirmation != nullptr ? *confirmation : done.frame;
-	for (size_t i = 0; i < listener_count_; ++i) {
-		listeners_[i]->tunnel_sent(*this, done.token, reported, outcome);
+	if (done.raw != nullptr) {
+		for (size_t i = 0; i < listener_count_; ++i) {
+			listeners_[i]->tunnel_raw_sent(*this, done.token, outcome);
+		}
+	} else {
+		const LData& reported = confirmation != nullptr ? *confirmation : done.frame;
+		for (size_t i = 0; i < listener_count_; ++i) {
+			listeners_[i]->tunnel_sent(*this, done.token, reported, outcome);
+		}
 	}
 	pump();
 }
@@ -630,7 +717,11 @@ void KnxTunnel::flush_queue() {
 		queue_head_ = (queue_head_ + 1) % kQueueCapacity;
 		--queue_count_;
 		for (size_t i = 0; i < listener_count_; ++i) {
-			listeners_[i]->tunnel_sent(*this, done.token, done.frame, SendOutcome::lost);
+			if (done.raw != nullptr) {
+				listeners_[i]->tunnel_raw_sent(*this, done.token, SendOutcome::lost);
+			} else {
+				listeners_[i]->tunnel_sent(*this, done.token, done.frame, SendOutcome::lost);
+			}
 		}
 	}
 	queue_head_ = 0;

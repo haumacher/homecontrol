@@ -296,3 +296,13 @@ outside world (weather, external services).
   without them still loads on 1.5. Alternatives: `position` taking a 1-bit address (0 → 0 %, 1 →
   100 %) — rejected, a single bit cannot say "in between"; a separate "rule-writable" flag in the
   image — rejected, the owner's rule is simpler: every application value is the rules'.
+- **2026-11-12 — E-Home programs through the controller's tunnel: a bus session forwards frames
+  (homecontrol #85, haumacher/ehome#148, the specification round of the day).** The controller
+  forwards cEMI frames between E-Home and its KNX tunnel (`{"type": "bus"}` messages on the E-Home
+  connection, spec/api.md "Bus session"); transport connections and load procedures stay in E-Home.
+  One session at a time, ended by E-Home, the connection, the tunnel going down or 60 s idle; the
+  session's frames share the tunnel's queue with the controller's own telegrams; frames are forwarded
+  as they are up to an APDU of 254 octets (the UDP datagram limit grew to 320 octets for it); the
+  session's 3.4 KB are heap while it runs. The capability is the presence of `ehome.bus` in the
+  status. Not on the local `/ws`. Rejected: the controller executing E-Home's download plan; a device
+  setting allowing it; the monitor's `send` to individual addresses.

@@ -8,6 +8,7 @@
 #include <cstdint>
 
 #include "hc/backoff.h"
+#include "hc/bus_session.h"
 #include "hc/event_loop.h"
 #include "hc/fetch_body.h"
 #include "hc/image/image_body.h"
@@ -83,7 +84,9 @@ const char* ehome_state_name(EhomeState state);
 /// `command`, `monitor` work as for a browser) and dispatches `request` envelopes into WebApi with
 /// WebRequest::ehome set (a token's rights, nothing more), one at a time; a body announced with
 /// `length` arrives in binary frames into a heap buffer of that size (freed after the request), a
-/// streamed answer (GET /api/image) goes back in binary frames, a piece per loop turn. It pings
+/// streamed answer (GET /api/image) goes back in binary frames, a piece per loop turn. `bus` messages
+/// go to the BusSession, which forwards KNX frames through the controller's tunnel (homecontrol #85,
+/// spec/api.md "Bus session"); the session ends with the connection. It pings
 /// every kPingMs and closes when the pong does not come within kPongTimeoutMs.
 ///
 /// The installation key (issue #35, doc/ehome.md "Installation key"): the enrollment answer's
@@ -156,6 +159,9 @@ public:
 	/// A deferred answer of the API may be ready (WebApi calls it when a deployed image's store ended,
 	/// homecontrol #68): the answer of the request waiting for it goes out now.
 	void deferred_ready();
+
+	/// The bus session (spec/api.md "Bus session"): E-Home's `bus` messages.
+	const BusSession& bus() const { return bus_; }
 
 	/// The `ehome` member of the status (its value: an object).
 	void write_status(JsonWriter& json) const;
@@ -315,6 +321,9 @@ private:
 	/// nothing.
 	char* out_ = nullptr;
 	void free_out();
+
+	/// The bus session over this connection (homecontrol #85): ends with the connection.
+	BusSession bus_;
 };
 
 } // namespace hc

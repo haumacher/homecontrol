@@ -1179,7 +1179,8 @@ Text messages are at most 4096 bytes in both directions; the controller closes t
 longer one. After `ready` the socket is the live feed of this document's WebSocket section: E-Home sends
 `{"type": "subscribe"}` and receives `status`, `datapoints`, `zigbee` and `monitor` messages exactly
 as a browser does, and sends `command`, `read` and the monitor's `send`/`read` as a browser does
-(the monitor shows them with `"via": "ehome"`). In addition E-Home makes requests:
+(the monitor shows them with `"via": "ehome"`), and drives a bus session with `bus` messages (section
+"Bus session" below). In addition E-Home makes requests:
 
 ```
 E-Home → {"type": "request", "id": 7, "method": "GET", "path": "/api/zigbee/export?from=0"}
@@ -1329,14 +1330,155 @@ path and host as the reverse proxy presents it (`X-Forwarded-Proto`, `X-Forwarde
 - Keepalive: the device sends WebSocket ping frames; E-Home answers with pong frames and also
   accepts a JSON `{"type": "ping"}` with a JSON `pong`, as the browser protocol does.
 
+### Bus session (homecontrol #85, E-Home's side haumacher/ehome#148; firmware from 2026-11)
+
+E-Home programs KNX devices through the controller: an E-Home that is not in the installation's
+network (the hosted one) cannot reach a KNXnet/IP gateway there, but the controller holds a tunnel to
+one and is connected to E-Home already. A **bus session** on the E-Home connection passes cEMI
+frames in both directions, like a remote tunnel. The controller only forwards: transport
+connections, sequence numbers, acknowledgements, timeouts and the load procedures run in E-Home,
+exactly as over a tunnel of E-Home's own.
+
+**Capability.** A controller that has bus sessions reports `ehome.bus` in its status (section
+"Status" below); E-Home offers programming through a controller only when the member is present and
+refuses it otherwise with the reason "the controller's firmware has no bus session (update it)".
+
+**Messages.** All are text messages of the E-Home connection with `"type": "bus"`. E-Home's carry
+`op`, the controller's `event`. `ref` is a number or a string (its JSON text below 40 bytes), echoed
+as given; it is optional for `open` and `close` and required for `send`. Frames are cEMI L_Data
+frames (KNX 03.06.03: message code, additional information length and information, control fields
+1 and 2, source, destination, length, TPDU) written as hex digits without separators; the controller
+writes upper case and reads either.
+
+```
+E-Home → {"type": "bus", "op": "open", "ref": 1}
+device → {"type": "bus", "event": "opened", "ref": 1, "address": "1.1.250", "max_frame": 264, "max_apdu": 254, "idle_s": 60}
+
+E-Home → {"type": "bus", "op": "send", "ref": 7, "frame": "1100B060000011050080"}
+device → {"type": "bus", "event": "sent", "ref": 7, "outcome": "confirmed"}
+
+device → {"type": "bus", "event": "frames", "frames": ["2900B060110511FA00C2", "2900B0E011050000010140"]}
+device → {"type": "bus", "event": "frames", "frames": ["2900B060110511FA00C6"], "dropped": 2}
+
+E-Home → {"type": "bus", "op": "close", "ref": 2}
+device → {"type": "bus", "event": "closed", "ref": 2, "code": "bus.closed", "reason": "closed by E-Home", "sent": 40, "received": 38, "dropped": 0}
+
+device → {"type": "bus", "event": "refused", "op": "send", "ref": 8, "code": "bus.queue_full", "error": "4 frames of the session wait for their outcome: wait for one"}
+```
+
+- **`open`** starts the session. `opened` answers with `address`, the individual address the
+  gateway assigned to the controller's tunnel (the source of every frame the session sends: E-Home
+  takes it as its own address for the session), `max_frame`, the longest cEMI frame `send` takes in
+  octets (264), `max_apdu`, the longest APDU in a frame without additional information (254, the
+  value of the length field: E-Home uses the smaller of it and the device's maximum APDU length,
+  PID 56), and `idle_s`, after which a session without frames ends. One session at a time: an `open`
+  while one is open is refused `bus.busy` and the open one goes on.
+- **`send`** takes `frame`, an L_Data.req (message code `11`) to an individual address (control
+  field 2 bit 7 clear) or a broadcast (the bit set and destination 0, a system or domain broadcast),
+  at most `max_frame` octets, additional information included. Standard and extended frames pass
+  alike; the controller does not look into the TPDU and forwards the octets unchanged. It is queued
+  on the controller's tunnel like the controller's own telegrams (one frame on the wire at a time),
+  and answered exactly once: `refused` at once, or `sent` with the `outcome` the tunnel reports:
+  `confirmed` (the gateway's L_Data.con, positive), `negative` (the L_Data.con says the frame was not
+  sent on the bus), `no_confirmation` (acknowledged by the gateway, no L_Data.con within 3 s) or
+  `lost` (the tunnel went down before the frame was sent; the `closed` with `bus.tunnel_down`
+  follows). A device's acknowledgement on the bus is not part of the outcome; E-Home's transport
+  layer sees it as an indication. At most 4 frames of the session wait for their outcome at a time;
+  E-Home waits for an outcome before it sends a fifth.
+- **`frames`**: while a session is open, every L_Data.ind the tunnel receives that is addressed to
+  the tunnel's individual address, or is a broadcast, goes to E-Home, as the gateway sent it
+  (additional information included; extended frames too, up to the 320-octet datagram the controller
+  receives), in the order received. The indications of one loop turn of the controller go in one
+  message (more follow in further messages, none longer than 4096 bytes). Group telegrams (control
+  field 2 bit 7 set, destination other than 0) are not forwarded: they keep going to the datapoints,
+  the rules and the monitor. Indications to other individual addresses are not forwarded. `dropped`
+  (only when not 0) counts the indications lost before this message because the connection did not
+  take the messages fast enough (below); E-Home's transport layer repeats what it misses.
+- **`close`** ends the session: `closed` with `code` `bus.closed`. `closed` (also without E-Home
+  asking, then without `ref`) carries the `code` and `reason` of the end and the session's counts:
+  `sent` (frames the tunnel took), `received` (indications forwarded), `dropped`.
+
+**The end.** A session ends
+
+| `code` of `closed` | `reason` (the text may change) | when |
+|---|---|---|
+| `bus.closed` | `closed by E-Home` | E-Home sent `close`. |
+| `bus.idle` | `no frame for 60 s` | 60 s without a frame in either direction (a `send` the tunnel took, an indication forwarded). |
+| `bus.tunnel_down` | `the KNX tunnel went down: <the tunnel's reason>` | The tunnel to the gateway went down (a reconnect may get another individual address, so the session does not survive it). The frames still queued are reported `lost` first. |
+| `bus.overflow` | `the messages to E-Home outran the connection` | The controller's messages to E-Home (answers, outcomes) waiting for room in the connection's send queue filled the session's outbox (2048 bytes, of which indications take at most 1536); the waiting messages are dropped. |
+| — | — | The connection to E-Home ends (no message: there is no connection to carry it). |
+
+Frames E-Home sent before the end that are still on the tunnel are sent; their outcome is not
+reported, and until it comes (at most about 5 s each) they count against the 4 frames of the next
+session. A new `open` may follow at once.
+
+**Refusals** (`{"type": "bus", "event": "refused", "op", "ref", "code", "error"}`; `op` is `"?"` for
+a message without a usable `op`; the `error` texts are examples and may change):
+
+| `code` | `op` | when |
+|---|---|---|
+| `bus.knx_unavailable` | `open` | `this controller has no KNX tunnel` (a build without KNX). |
+| `bus.tunnel_down` | `open`, `send` | `the KNX tunnel is not up (<the tunnel's reason>)`, e.g. no gateway set, connecting. |
+| `bus.busy` | `open` | `a bus session is open already: one at a time`. |
+| `bus.no_memory` | `open` | `no memory for the bus session (<n> bytes)`: the session's buffers (about 3.4 KB) are taken from the heap at `open`. |
+| `bus.no_session` | `send`, `close` | `no bus session is open` (also after an end E-Home has not seen yet). |
+| `bus.bad_frame` | `send` | `frame` missing or not a string of an even number of hex digits; longer than `max_frame` (`the frame has 265 octets, more than the 264 forwarded`); not a cEMI L_Data frame whose length field agrees with its length; no L_Data.req (`the frame is no L_Data.req (message code 11)`); a group telegram (`the frame is a group telegram: ... (group telegrams: the monitor's send)`). |
+| `bus.queue_full` | `send` | `4 frames of the session wait for their outcome: wait for one`, or `the KNX tunnel's queue is full: try again` (32 frames of the controller and the session). |
+| `bus.bad_request` | any | No `op`, an unknown `op` (`"op" is open, send or close`), a `ref` that is no number or string or too long, a `send` without `ref`. |
+
+**Authentication and log.** The session needs nothing beyond the authenticated E-Home connection:
+an enrolled controller takes E-Home's requests and signed images already, and there is no switch on
+the device. The controller logs (tag `hc.ehome`) every session's begin with the tunnel's address
+(`bus session opened by E-Home: tunnel address 1.1.250`), its end with the reason and the counts
+(`bus session ended (closed by E-Home): 40 frames sent, 38 received, 0 dropped, after 95 s`), a frame
+whose outcome is not `confirmed`, and every refusal with its reason and code. The monitor shows
+neither the session's frames nor the forwarded indications (it shows group telegrams).
+
+**Only over the E-Home connection.** The controller's own WebSocket `/ws` (the local path with a
+session or token) does not offer the session; a `bus` message there is answered `ws.unknown_type`.
+
+**Decided in this round** (the specification round of 2026-11-12, haumacher/homecontrol#85, settled
+the design; the following details were left open there and are decided here):
+
+- The messages as `{"type": "bus", ...}` with `op` from E-Home and `event` from the controller, the
+  frames as hex digits without separators, one answer per `send` (`sent` or `refused`); the codes
+  above; an idle time of 60 s.
+- The longest frame forwarded is the KNX maximum (an APDU of 254 octets), not a smaller limit of the
+  test system's devices: the session must not be what limits a device's maximum APDU length. For it
+  the controller's UDP receive buffer grew from 256 to 320 octets per datagram.
+- The session's frames and its outbox take heap memory only while a session runs (or its last frames
+  are on the tunnel), as the connection's response buffer does: a controller that is never
+  programmed through pays nothing.
+- A session ends when the tunnel goes down rather than surviving a reconnect: the reconnect may
+  assign another individual address, and E-Home's transport connections cannot survive it anyway.
+- Indications are forwarded only when addressed to the tunnel's individual address or a broadcast
+  (the issue's wording); a gateway that passes on frames between other devices does not flood the
+  connection with them.
+- The capability is the presence of `ehome.bus` in the status, not a firmware version E-Home would
+  have to compare.
+- The local `/ws` does not offer the session (left open by the round): programming from the local
+  network goes to a gateway directly, and the local path would need its own decision on rights.
+
+Rejected (from the round): the controller executing a download plan E-Home sends (every load
+procedure, mask and recovery a second time in the firmware); a setting "allow programming through
+this controller" (the enrollment grants it, the log shows it); the monitor's `send` extended by
+individual addresses (the monitor is an event stream with a ring and gaps; a transport connection
+needs every frame in order). Rejected here: frames as space-separated hex like the monitor's `data`
+(a third more bytes per frame for nothing a machine needs); an acknowledgement of `send` when the
+tunnel takes the frame followed by the outcome (two answers per frame where E-Home needs one); a
+fixed RAM reserve for the session (about 3.4 KB on every controller); forwarding every non-group
+indication.
+
 ### Status
 
 `GET /api/status` gains `"ehome": {"enabled": true, "enrolled": true, "state": "connected" |
 "connecting" | "off" | "failed", "since_s": 812, "installation": "<name>", "key": "ce7d 4a41 a476 9ee3",
-"pending_key": "90ae 3702 f3a9 63ab", "error": "..."}` (`installation` when enrolled, `key` the
+"pending_key": "90ae 3702 f3a9 63ab", "error": "...", "bus": {"open": false}}` (`installation` when enrolled, `key` the
 installation key's fingerprint while one is stored (`"damaged"` for an unreadable one),
 `pending_key` while a rotation awaits the owner, `error` while failed; the address is the
-`ehome.url` setting); the
+`ehome.url` setting). `bus` (firmware from 2026-11) is the bus session: its presence says the firmware has
+it; while a session is open `{"open": true, "since_s": 95, "address": "1.1.250", "sent": 40,
+"received": 38, "dropped": 0}`. The
 WebSocket `status` message carries the same member; the Settings page shows it beside the switch.
 E-Home shows each controller of a project as online or offline with the last contact.
 

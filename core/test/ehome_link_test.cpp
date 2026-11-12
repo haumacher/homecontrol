@@ -1537,3 +1537,602 @@ TEST_CASE("E-Home image store: the session ends while the image is stored; the s
 	CHECK(f.response(5)["status"].number == 200);
 	CHECK(f.response(5)["body"]["stored"].boolean);
 }
+
+// ---- The bus session (homecontrol #85, spec/api.md "Bus session") ------------------------------
+
+namespace {
+
+using hc_test::Bytes;
+using hc_test::bytes;
+using hc_test::hex;
+
+/// The tunnel's address (1.1.250, from connect_response()) and a device's (1.1.5).
+/// E-Home's T_Connect to 1.1.5, as Calimero builds it (system priority, hop count 6, source 0.0.0).
+constexpr const char* kConnect = "11 00 B0 60 00 00 11 05 00 80";
+/// The gateway's L_Data.con of it (the source filled in), and the negative one.
+constexpr const char* kConnectCon = "2E 00 B0 60 11 FA 11 05 00 80";
+constexpr const char* kConnectNegative = "2E 00 B1 60 11 FA 11 05 00 80";
+/// The device's T_ACK to the tunnel's address.
+constexpr const char* kAckFromDevice = "29 00 B0 60 11 05 11 FA 00 C2";
+/// A_IndividualAddress_Response of 1.1.5, a broadcast.
+constexpr const char* kAddressResponse = "29 00 B0 E0 11 05 00 00 01 01 40";
+/// A group write to 1/0/1 (on).
+constexpr const char* kGroupWrite = "29 00 BC E0 11 05 08 01 01 00 81";
+/// A T_Connect between two other devices.
+constexpr const char* kOtherConnect = "29 00 B0 60 11 05 11 06 00 80";
+
+std::string compact(const char* spaced) {
+	std::string out;
+	for (const char* p = spaced; *p != '\0'; ++p) {
+		if (*p != ' ') {
+			out += *p;
+		}
+	}
+	return out;
+}
+
+std::string upper_hex(const Bytes& octets) {
+	return compact(hex(octets).c_str());
+}
+
+/// A TUNNELING_REQUEST of the gateway with any cEMI length (the support's helper takes one octet).
+Bytes gateway_request(uint8_t sequence, const Bytes& cemi) {
+	size_t total = 10 + cemi.size();
+	Bytes result{0x06, 0x10, 0x04, 0x20, static_cast<uint8_t>(total >> 8), static_cast<uint8_t>(total), 0x04, 7, sequence, 0};
+	result.insert(result.end(), cemi.begin(), cemi.end());
+	return result;
+}
+
+/// An L_Data frame (`code` 11 req, 29 ind, 2E con) of an extended frame with an APDU of `apdu`
+/// octets (an A_Memory_Write in a connection), from `source` to `destination` (individual).
+Bytes extended(uint8_t code, size_t apdu, uint16_t source, uint16_t destination) {
+	Bytes frame{code, 0x00, 0x30, 0x60, static_cast<uint8_t>(source >> 8), static_cast<uint8_t>(source),
+		static_cast<uint8_t>(destination >> 8), static_cast<uint8_t>(destination), static_cast<uint8_t>(apdu), 0x42};
+	for (size_t i = 0; i < apdu; ++i) {
+		frame.push_back(static_cast<uint8_t>(i == 0 ? 0x80 | (apdu - 3) : i));
+	}
+	return frame;
+}
+
+struct BusFixture : EhomeFixture {
+	hc_test::TunnelRecorder recorder;
+	uint8_t gateway_sequence = 0; ///< The gateway's next TUNNELING_REQUEST.
+	size_t heartbeats_answered = 0;
+
+	explicit BusFixture(bool with_tunnel = true) {
+		if (with_tunnel) {
+			api.set_knx(&tunnel, nullptr);
+			tunnel.add_listener(&recorder);
+			std::optional<hc::knx::GatewayAddress> gateway = hc::knx::GatewayAddress::parse("192.0.2.1");
+			REQUIRE(gateway);
+			tunnel.set_gateway(&*gateway, false);
+			tunnel.start();
+			run();
+			socket.inject(hc_test::connect_response(7));
+			REQUIRE(tunnel.is_up());
+		}
+		handshake();
+	}
+
+	void bus(const std::string& members) {
+		client.deliver("{\"type\":\"bus\"," + members + "}");
+		run();
+	}
+
+	/// The bus messages of `event` sent so far.
+	std::vector<Json> events(const std::string& event) const {
+		std::vector<Json> out;
+		for (const Json& m : client.sent("bus")) {
+			if (m["event"].text == event) {
+				out.push_back(m);
+			}
+		}
+		return out;
+	}
+
+	/// The bus messages' events in order.
+	std::vector<std::string> order() const {
+		std::vector<std::string> out;
+		for (const Json& m : client.sent("bus")) {
+			out.push_back(m["event"].text);
+		}
+		return out;
+	}
+
+	Json last(const std::string& event) const {
+		std::vector<Json> all = events(event);
+		return all.empty() ? Json() : all.back();
+	}
+
+	void open() {
+		bus("\"op\":\"open\",\"ref\":1");
+		REQUIRE(link.bus().is_open());
+	}
+
+	void send(int ref, const std::string& frame) { bus("\"op\":\"send\",\"ref\":" + std::to_string(ref) + ",\"frame\":\"" + frame + "\""); }
+
+	/// The TUNNELING_REQUESTs the tunnel sent, as their cEMI octets.
+	std::vector<Bytes> requests() const {
+		std::vector<Bytes> out;
+		for (const auto& d : socket.sent) {
+			if (d.data.size() > 10 && d.data[2] == 0x04 && d.data[3] == 0x20) {
+				out.push_back(Bytes(d.data.begin() + 10, d.data.end()));
+			}
+		}
+		return out;
+	}
+
+	/// The gateway acknowledges the tunnel's request with `sequence`.
+	void ack(uint8_t sequence) {
+		socket.inject(hc_test::tunneling_ack(7, sequence));
+		run();
+	}
+
+	/// The gateway sends a cEMI frame (an indication or a confirmation).
+	void gateway(const Bytes& cemi) {
+		socket.inject(gateway_request(gateway_sequence++, cemi));
+		run();
+	}
+
+	/// Waits `ms` in steps of 1 s, playing E-Home's pongs and the gateway's heartbeat answers.
+	void wait(uint64_t ms) {
+		for (uint64_t waited = 0; waited < ms; waited += 1000) {
+			advance(1000);
+			client.pong();
+			size_t heartbeats = socket.count(hc::knx::ip::Service::connectionstate_request);
+			if (heartbeats > heartbeats_answered) {
+				heartbeats_answered = heartbeats;
+				socket.inject(hc_test::connectionstate_response(7));
+			}
+		}
+	}
+};
+
+} // namespace
+
+TEST_CASE("Bus session: the status says the firmware has it; open answers the tunnel's address and the longest frame") {
+	BusFixture f;
+	Json status = f.status();
+	REQUIRE(status.has("bus"));
+	CHECK_FALSE(status["bus"]["open"].boolean);
+	CHECK_FALSE(f.link.bus().holds_memory()); // nothing taken before a session
+
+	f.open();
+	Json opened = f.last("opened");
+	CHECK(opened["ref"].number == 1);
+	CHECK(opened["address"].text == "1.1.250");
+	CHECK(opened["max_frame"].number == 264);
+	CHECK(opened["max_apdu"].number == 254);
+	CHECK(opened["idle_s"].number == 60);
+	CHECK(f.capture.sink.contains("I hc.ehome: bus session opened by E-Home: tunnel address 1.1.250"));
+	status = f.status();
+	CHECK(status["bus"]["open"].boolean);
+	CHECK(status["bus"]["address"].text == "1.1.250");
+	CHECK(status["bus"]["sent"].number == 0);
+	CHECK(f.link.bus().holds_memory());
+	// Not for the live feed: no ws.unknown_type.
+	CHECK(f.client.sent("error").empty());
+}
+
+TEST_CASE("Bus session: a send is forwarded as it is and answered with each outcome of the tunnel") {
+	BusFixture f;
+	f.open();
+
+	// Confirmed: the TUNNELING_REQUEST carries E-Home's octets unchanged.
+	f.send(10, compact(kConnect));
+	REQUIRE(f.requests().size() == 1);
+	CHECK(hex(f.requests()[0]) == kConnect);
+	CHECK(hex(f.socket.last().data) == std::string("06 10 04 20 00 14 04 07 00 00 ") + kConnect);
+	CHECK(f.events("sent").empty()); // the outcome comes with the confirmation
+	f.ack(0);
+	f.gateway(bytes(kConnectCon));
+	Json sent = f.last("sent");
+	CHECK(sent["ref"].number == 10);
+	CHECK(sent["outcome"].text == "confirmed");
+
+	// Negative.
+	f.send(11, compact(kConnect));
+	f.ack(1);
+	f.gateway(bytes(kConnectNegative));
+	CHECK(f.last("sent")["ref"].number == 11);
+	CHECK(f.last("sent")["outcome"].text == "negative");
+
+	// No confirmation within 3 s.
+	f.send(12, compact(kConnect));
+	f.ack(2);
+	f.wait(3000);
+	CHECK(f.last("sent")["ref"].number == 12);
+	CHECK(f.last("sent")["outcome"].text == "no_confirmation");
+
+	// The confirmation that arrives before the gateway's ACK counts as well.
+	f.send(13, compact(kConnect));
+	f.gateway(bytes(kConnectCon));
+	CHECK(f.last("sent")["ref"].number == 12);
+	f.ack(3);
+	CHECK(f.last("sent")["ref"].number == 13);
+	CHECK(f.last("sent")["outcome"].text == "confirmed");
+	CHECK(f.status()["bus"]["sent"].number == 4);
+	CHECK(f.capture.sink.contains("I hc.ehome: bus session: frame 11 negative confirmation"));
+}
+
+TEST_CASE("Bus session: indications to the tunnel's address and broadcasts go to E-Home in order; group telegrams do not") {
+	BusFixture f;
+	f.open();
+	// Three in one loop turn: one message, in the order received.
+	f.socket.inject(gateway_request(f.gateway_sequence++, bytes(kAckFromDevice)));
+	f.socket.inject(gateway_request(f.gateway_sequence++, bytes(kGroupWrite)));
+	f.socket.inject(gateway_request(f.gateway_sequence++, bytes(kAddressResponse)));
+	f.socket.inject(gateway_request(f.gateway_sequence++, bytes(kOtherConnect)));
+	f.run();
+	std::vector<Json> frames = f.events("frames");
+	REQUIRE(frames.size() == 1);
+	REQUIRE(frames[0]["frames"].items.size() == 2);
+	CHECK(frames[0]["frames"].items[0].text == compact(kAckFromDevice));
+	CHECK(frames[0]["frames"].items[1].text == compact(kAddressResponse));
+	CHECK_FALSE(frames[0].has("dropped"));
+	// The group telegram took its usual way (the tunnel's listeners: the adapter, the monitor's log).
+	bool group_seen = false;
+	for (const auto& frame : f.recorder.frames) {
+		group_seen = group_seen || (frame.group && frame.destination == 0x0801);
+	}
+	CHECK(group_seen);
+	// Later ones follow in later messages, in order.
+	f.gateway(bytes(kAckFromDevice));
+	f.gateway(bytes(kAddressResponse));
+	frames = f.events("frames");
+	REQUIRE(frames.size() == 3);
+	CHECK(frames[1]["frames"].items[0].text == compact(kAckFromDevice));
+	CHECK(frames[2]["frames"].items[0].text == compact(kAddressResponse));
+	CHECK(f.status()["bus"]["received"].number == 4);
+
+	// Without a session nothing is forwarded.
+	f.bus("\"op\":\"close\"");
+	f.gateway(bytes(kAckFromDevice));
+	CHECK(f.events("frames").size() == 3);
+}
+
+TEST_CASE("Bus session: one at a time; it ends by close, by the end of the connection and by idling") {
+	BusFixture f;
+	f.open();
+	f.bus("\"op\":\"open\",\"ref\":\"again\"");
+	Json refused = f.last("refused");
+	CHECK(refused["ref"].text == "again");
+	CHECK(refused["op"].text == "open");
+	CHECK(refused["code"].text == "bus.busy");
+	CHECK(f.link.bus().is_open()); // the first one goes on
+
+	// Close: answered with the counts; the memory is given back.
+	f.send(5, compact(kConnect));
+	f.ack(0);
+	f.gateway(bytes(kConnectCon));
+	f.gateway(bytes(kAckFromDevice));
+	f.bus("\"op\":\"close\",\"ref\":2");
+	Json closed = f.last("closed");
+	CHECK(closed["ref"].number == 2);
+	CHECK(closed["code"].text == "bus.closed");
+	CHECK(closed["sent"].number == 1);
+	CHECK(closed["received"].number == 1);
+	CHECK(closed["dropped"].number == 0);
+	CHECK_FALSE(f.link.bus().is_open());
+	CHECK_FALSE(f.link.bus().holds_memory());
+	CHECK(f.capture.sink.contains("I hc.ehome: bus session ended (closed by E-Home): 1 frames sent, 1 received, 0 dropped"));
+
+	// The end of the connection ends it without a message.
+	f.open();
+	size_t messages = f.client.sent("bus").size();
+	f.client.drop("connection reset");
+	CHECK_FALSE(f.link.bus().is_open());
+	CHECK(f.client.sent("bus").size() == messages);
+	CHECK(f.capture.sink.contains("I hc.ehome: bus session ended (the connection to E-Home ended)"));
+	f.advance(1100);
+	f.handshake();
+	CHECK_FALSE(f.status()["bus"]["open"].boolean);
+
+	// Idling: frames keep it open, 60 s without one end it.
+	f.open();
+	f.wait(50000);
+	f.gateway(bytes(kAckFromDevice)); // an indication counts
+	f.wait(50000);
+	CHECK(f.link.bus().is_open());
+	f.send(6, compact(kConnect)); // and so does a send
+	f.ack(1);
+	f.gateway(bytes(kConnectCon));
+	f.wait(50000);
+	CHECK(f.link.bus().is_open());
+	f.wait(11000);
+	CHECK_FALSE(f.link.bus().is_open());
+	closed = f.last("closed");
+	CHECK(closed["code"].text == "bus.idle");
+	CHECK(closed["reason"].text == "no frame for 60 s");
+	CHECK_FALSE(closed.has("ref"));
+	CHECK(f.tunnel.is_up());
+}
+
+TEST_CASE("Bus session: the controller's own telegrams share the tunnel's queue with the session's frames") {
+	BusFixture f;
+	f.open();
+	// A telegram of the controller's (a rule, a schedule) is on the wire first ...
+	hc::knx::LData own;
+	uint8_t on = 1;
+	REQUIRE(hc::knx::make_group_request(own, hc::knx::GroupAddress::of(1, 0, 1), hc::knx::GroupService::write, &on, 1, true));
+	uint32_t token = f.tunnel.send(own);
+	REQUIRE(token != 0);
+	// ... E-Home's frame waits behind it, then goes, and the controller's next one behind that.
+	f.send(20, compact(kConnect));
+	uint32_t token2 = f.tunnel.send(own);
+	REQUIRE(token2 != 0);
+	CHECK(f.requests().size() == 1);
+	CHECK(f.tunnel.queued() == 3);
+	f.ack(0);
+	f.gateway(bytes("2E 00 BC E0 11 FA 08 01 01 00 81"));
+	REQUIRE(f.recorder.sent.size() == 1);
+	CHECK(f.recorder.sent[0].token == token);
+	CHECK(f.recorder.sent[0].outcome == hc::knx::SendOutcome::confirmed);
+	REQUIRE(f.requests().size() == 2);
+	CHECK(hex(f.requests()[1]) == kConnect);
+	f.ack(1);
+	f.gateway(bytes(kConnectCon));
+	CHECK(f.last("sent")["outcome"].text == "confirmed");
+	CHECK(f.recorder.sent.size() == 1); // the session's outcome is not the controller's
+	REQUIRE(f.requests().size() == 3);
+	f.ack(2);
+	f.gateway(bytes("2E 00 BC E0 11 FA 08 01 01 00 81"));
+	REQUIRE(f.recorder.sent.size() == 2);
+	CHECK(f.recorder.sent[1].token == token2);
+}
+
+TEST_CASE("Bus session: extended frames longer than a decoded group telegram pass both ways") {
+	BusFixture f;
+	f.open();
+	// A memory write with 60 octets of APDU: 70 octets of cEMI, beyond LData's 41.
+	Bytes write = extended(0x11, 60, 0x0000, 0x1105);
+	REQUIRE(write.size() == 70);
+	f.send(30, upper_hex(write));
+	REQUIRE(f.requests().size() == 1);
+	CHECK(f.requests()[0] == write);
+	CHECK(f.socket.last().data.size() == 80);
+	f.ack(0);
+	f.gateway(extended(0x2E, 60, 0x11FA, 0x1105)); // its confirmation is as long
+	CHECK(f.last("sent")["outcome"].text == "confirmed");
+
+	// The longest: an APDU of 254 octets, 264 of cEMI; a TUNNELING_REQUEST of 274.
+	Bytes longest = extended(0x11, 254, 0x0000, 0x1105);
+	REQUIRE(longest.size() == 264);
+	f.send(31, upper_hex(longest));
+	REQUIRE(f.requests().size() == 2);
+	CHECK(f.requests()[1] == longest);
+	CHECK(f.socket.last().data.size() == 274);
+	CHECK(hex(Bytes(f.socket.last().data.begin(), f.socket.last().data.begin() + 6)) == "06 10 04 20 01 12");
+	f.ack(1);
+	f.gateway(extended(0x2E, 254, 0x11FA, 0x1105));
+	CHECK(f.last("sent")["outcome"].text == "confirmed");
+
+	// A long indication of the device (a memory response) comes to E-Home as it is, with its additional
+	// information.
+	Bytes response = extended(0x29, 200, 0x1105, 0x11FA);
+	response[1] = 2; // two octets of additional information
+	response.insert(response.begin() + 2, {0x03, 0x00});
+	f.gateway(response);
+	REQUIRE(f.events("frames").size() == 1);
+	CHECK(f.last("frames")["frames"].items[0].text == upper_hex(response));
+	CHECK(f.capture.sink.contains("not decoded: TPDU longer than 32 octets"));
+	CHECK_FALSE(f.capture.sink.contains("W hc.knx: dropping a tunnelled frame"));
+
+	// One octet more than the longest is refused.
+	Bytes too_long = extended(0x11, 254, 0x0000, 0x1105);
+	too_long.push_back(0);
+	f.send(32, upper_hex(too_long));
+	CHECK(f.last("refused")["code"].text == "bus.bad_frame");
+	CHECK(f.last("refused")["error"].text == "the frame has 265 octets, more than the 264 forwarded");
+	CHECK(f.requests().size() == 2);
+}
+
+TEST_CASE("Bus session: every refusal comes with its code and text") {
+	SUBCASE("no KNX tunnel") {
+		BusFixture f(false);
+		f.bus("\"op\":\"open\",\"ref\":1");
+		CHECK(f.last("refused")["code"].text == "bus.knx_unavailable");
+		CHECK(f.last("refused")["error"].text == "this controller has no KNX tunnel");
+		CHECK(f.capture.sink.contains("W hc.ehome: bus open 1 refused: this controller has no KNX tunnel (bus.knx_unavailable)"));
+	}
+	SUBCASE("the tunnel is down") {
+		BusFixture f;
+		f.tunnel.stop();
+		f.bus("\"op\":\"open\",\"ref\":1");
+		CHECK(f.last("refused")["code"].text == "bus.tunnel_down");
+		CHECK(f.last("refused")["error"].text == "the KNX tunnel is not up (stopped)");
+		CHECK_FALSE(f.link.bus().holds_memory());
+	}
+	SUBCASE("no session") {
+		BusFixture f;
+		f.send(1, compact(kConnect));
+		CHECK(f.last("refused")["code"].text == "bus.no_session");
+		CHECK(f.last("refused")["op"].text == "send");
+		f.bus("\"op\":\"close\",\"ref\":2");
+		CHECK(f.last("refused")["code"].text == "bus.no_session");
+		CHECK(f.last("refused")["op"].text == "close");
+		CHECK(f.requests().empty());
+	}
+	SUBCASE("bad frames") {
+		BusFixture f;
+		f.open();
+		const char* frames[][2] = {
+			{"11 00 B0 60 00 00 11 05 00 8", "\"frame\" is an even number of hex digits"},
+			{"11 00 B0 60 00 00 11 05 00 8G", "\"frame\" holds a character that is no hex digit"},
+			{"", "\"frame\" is an even number of hex digits"},
+			{"2E 00 B0 60 00 00 11 05 00 80", "the frame is no L_Data.req (message code 11)"},
+			{"11 00 B0 60 00 00 11 05 01 80", "cEMI length field disagrees with the frame length"},
+			{"10 00 B0 60 00 00 11 05 00 80", "cEMI message code is not L_Data.req/con/ind"},
+			{"11 00 BC E0 00 00 08 01 01 00 81",
+				"the frame is a group telegram: the session sends to individual addresses and broadcasts (group "
+				"telegrams: the monitor's send)"},
+		};
+		int ref = 100;
+		for (const auto& item : frames) {
+			f.send(ref, compact(item[0]));
+			Json refused = f.last("refused");
+			CHECK(refused["ref"].number == ref);
+			CHECK(refused["code"].text == "bus.bad_frame");
+			CHECK(refused["error"].text == item[1]);
+			++ref;
+		}
+		f.bus("\"op\":\"send\",\"ref\":7,\"frame\":17");
+		CHECK(f.last("refused")["error"].text == "\"frame\" is a cEMI L_Data.req in hex digits");
+		CHECK(f.requests().empty());
+		// A broadcast is a frame the session sends (A_IndividualAddress_Read).
+		f.send(8, "1100B0E00000000001 00");
+		f.send(9, compact("11 00 B0 E0 00 00 00 00 01 01 00"));
+		CHECK(f.requests().size() == 1);
+		CHECK(f.link.bus().is_open());
+	}
+	SUBCASE("the queue is full") {
+		BusFixture f;
+		f.open();
+		for (int i = 0; i < 4; ++i) {
+			f.send(i, compact(kConnect));
+		}
+		f.send(4, compact(kConnect));
+		CHECK(f.last("refused")["ref"].number == 4);
+		CHECK(f.last("refused")["code"].text == "bus.queue_full");
+		CHECK(f.last("refused")["error"].text == "4 frames of the session wait for their outcome: wait for one");
+		f.ack(0);
+		f.gateway(bytes(kConnectCon));
+		f.send(5, compact(kConnect)); // room again
+		CHECK(f.last("refused")["ref"].number == 4);
+	}
+	SUBCASE("the tunnel's queue is full of the controller's own telegrams") {
+		BusFixture f;
+		f.open();
+		hc::knx::LData own;
+		uint8_t on = 1;
+		REQUIRE(hc::knx::make_group_request(own, hc::knx::GroupAddress::of(1, 0, 1), hc::knx::GroupService::write, &on, 1, true));
+		while (f.tunnel.queued() < hc::knx::KnxTunnel::kQueueCapacity) {
+			REQUIRE(f.tunnel.send(own) != 0);
+		}
+		f.send(6, compact(kConnect));
+		CHECK(f.last("refused")["code"].text == "bus.queue_full");
+		CHECK(f.last("refused")["error"].text == "the KNX tunnel's queue is full: try again");
+	}
+	SUBCASE("malformed messages") {
+		BusFixture f;
+		f.bus("\"ref\":1");
+		CHECK(f.last("refused")["code"].text == "bus.bad_request");
+		CHECK(f.last("refused")["error"].text == "a bus message carries \"op\": open, send or close");
+		f.bus("\"op\":\"reset\",\"ref\":1");
+		CHECK(f.last("refused")["error"].text == "\"op\" is open, send or close");
+		f.bus("\"op\":\"open\",\"ref\":[1]");
+		CHECK(f.last("refused")["error"].text == "\"ref\" is a number or a string of at most 37 bytes");
+		f.open();
+		f.bus("\"op\":\"send\",\"frame\":\"" + compact(kConnect) + "\"");
+		CHECK(f.last("refused")["code"].text == "bus.bad_request");
+		CHECK(f.last("refused")["error"].text == "a send needs a \"ref\": its outcome is reported under it");
+		CHECK(f.requests().empty());
+	}
+}
+
+TEST_CASE("Bus session: the tunnel going down reports the session's frames lost, then ends the session") {
+	BusFixture f;
+	f.open();
+	f.send(40, compact(kConnect));
+	f.send(41, compact(kConnect));
+	f.socket.inject(hc_test::disconnect_request(7));
+	f.run();
+	CHECK_FALSE(f.link.bus().is_open());
+	std::vector<std::string> order = f.order();
+	REQUIRE(order.size() == 4);
+	CHECK(order[0] == "opened");
+	CHECK(order[1] == "sent");
+	CHECK(order[2] == "sent");
+	CHECK(order[3] == "closed");
+	CHECK(f.events("sent")[0]["outcome"].text == "lost");
+	CHECK(f.events("sent")[1]["ref"].number == 41);
+	Json closed = f.last("closed");
+	CHECK(closed["code"].text == "bus.tunnel_down");
+	CHECK(closed["reason"].text == "the KNX tunnel went down: the gateway closed the tunnel (DISCONNECT_REQUEST)");
+	CHECK_FALSE(f.link.bus().holds_memory());
+}
+
+TEST_CASE("Bus session: messages wait for room in the send queue and leave in order; an outbox full drops indications, counted") {
+	BusFixture f;
+	f.open();
+	f.client.fail_sends = true;
+	f.send(50, compact(kConnect));
+	f.ack(0);
+	f.gateway(bytes(kConnectCon));
+	f.gateway(bytes(kAckFromDevice));
+	f.gateway(bytes(kAddressResponse));
+	size_t messages = f.client.sent("bus").size();
+	f.client.fail_sends = false;
+	f.client.drain(SIZE_MAX); // the link hears ws_client_writable()
+	std::vector<std::string> order = f.order();
+	REQUIRE(order.size() == messages + 2);
+	CHECK(order[messages] == "sent");
+	CHECK(order[messages + 1] == "frames");
+	CHECK(f.last("frames")["frames"].items.size() == 2);
+
+	// The outbox keeps its reserve for answers: indications beyond it are dropped and counted.
+	f.client.fail_sends = true;
+	Bytes response = extended(0x29, 200, 0x1105, 0x11FA);
+	for (int i = 0; i < 8; ++i) {
+		f.gateway(response);
+	}
+	f.client.fail_sends = false;
+	f.wait(1000); // the tick sends what waits
+	Json frames = f.last("frames");
+	// 7 records of 213 octets fit the 2048 - 512 octets indications may take; the 8th is dropped.
+	CHECK(frames["frames"].items.size() == 7);
+	CHECK(frames["dropped"].number == 1);
+	f.bus("\"op\":\"close\"");
+	CHECK(f.last("closed")["dropped"].number == 1);
+	CHECK(f.last("closed")["received"].number == 9);
+}
+
+TEST_CASE("Bus session: frames of an ended session are still sent; their memory is given back after the outcome") {
+	BusFixture f;
+	f.open();
+	f.send(60, compact(kConnect));
+	f.client.drop("connection reset");
+	CHECK_FALSE(f.link.bus().is_open());
+	CHECK(f.link.bus().holds_memory()); // the tunnel still holds the frame
+	f.ack(0);
+	f.gateway(bytes(kConnectCon));
+	CHECK_FALSE(f.link.bus().holds_memory());
+	f.advance(1100);
+	f.handshake();
+	f.open(); // a new session starts clean
+	CHECK(f.events("sent").empty());
+}
+
+TEST_CASE("Bus session: answers that outrun the connection end the session with bus.overflow, visibly") {
+	BusFixture f;
+	f.open();
+	f.client.fail_sends = true;
+	for (int i = 0; i < 20; ++i) {
+		f.send(i, "XX"); // each refused: the answers pile up in the outbox
+	}
+	CHECK_FALSE(f.link.bus().is_open());
+	CHECK(f.capture.sink.contains("W hc.ehome: the bus session's messages to E-Home outran the connection"));
+	f.client.fail_sends = false;
+	f.client.drain(SIZE_MAX);
+	f.wait(1000);
+	Json closed = f.last("closed");
+	CHECK(closed["code"].text == "bus.overflow");
+	CHECK(closed["reason"].text == "the messages to E-Home outran the connection");
+	CHECK(f.last("refused")["code"].text == "bus.no_session"); // the sends after the end
+	CHECK_FALSE(f.link.bus().holds_memory());
+}
+
+TEST_CASE("Bus session probe: a long group telegram during a session stays out of the session") {
+	BusFixture f;
+	f.open();
+	// An extended group write of 40 octets of APDU to 1/0/1: a group telegram, however long.
+	Bytes group = extended(0x29, 40, 0x1105, 0x0801);
+	group[3] = 0xE0; // group destination
+	f.gateway(group);
+	CHECK(f.events("frames").empty());
+	CHECK(f.status()["bus"]["received"].number == 0);
+	// A frame for the tunnel right after it still comes through.
+	f.gateway(bytes(kAckFromDevice));
+	REQUIRE(f.events("frames").size() == 1);
+	CHECK(f.last("frames")["frames"].items[0].text == compact(kAckFromDevice));
+}

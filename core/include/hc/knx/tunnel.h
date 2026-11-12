@@ -44,6 +44,26 @@ const char* send_outcome_name(SendOutcome outcome);
 
 class KnxTunnel;
 
+/// A cEMI L_Data.req sent as it is, without the TPDU limit of LData (the bus session, spec/api.md
+/// "Bus session": E-Home's management frames, extended frames included). The cEMI frame follows
+/// kHeadroom octets, into which the tunnel writes the KNXnet/IP headers when it sends the frame. The
+/// owner leaves it unchanged until the listeners' tunnel_raw_sent() reports its token.
+struct RawFrame {
+	static constexpr size_t kHeadroom = ip::kTunnelingHeader;
+	/// The longest APDU forwarded (the length field of an extended frame; 255 is reserved).
+	static constexpr size_t kMaxApdu = 254;
+	/// The longest cEMI frame: message code, additional information length, two control fields, two
+	/// addresses, the length field, the TPCI octet and the APDU.
+	static constexpr size_t kMaxCemi = 10 + kMaxApdu;
+
+	uint8_t octets[kHeadroom + kMaxCemi] = {};
+	/// The octets of the cEMI frame (at cemi()).
+	uint16_t length = 0;
+
+	uint8_t* cemi() { return octets + kHeadroom; }
+	const uint8_t* cemi() const { return octets + kHeadroom; }
+};
+
 /// Observes a tunnel. Called on the event loop's thread, in registration order. A listener may
 /// send() from any callback; it must not call start(), stop() or set_gateway() from
 /// tunnel_state_changed() (refused and logged).
@@ -59,6 +79,22 @@ public:
 	virtual void tunnel_frame(const KnxTunnel& tunnel, const LData& frame) {
 		(void) tunnel;
 		(void) frame;
+	}
+
+	/// An L_Data.ind arrived, as the gateway sent it (`cemi`, `length` octets, additional
+	/// information included), before it is decoded: every indication, also one too long for LData.
+	/// Valid during the call only.
+	virtual void tunnel_raw_frame(const KnxTunnel& tunnel, const uint8_t* cemi, size_t length) {
+		(void) tunnel;
+		(void) cemi;
+		(void) length;
+	}
+
+	/// A frame given to send_raw() is done (its RawFrame is free again).
+	virtual void tunnel_raw_sent(const KnxTunnel& tunnel, uint32_t token, SendOutcome outcome) {
+		(void) tunnel;
+		(void) token;
+		(void) outcome;
 	}
 
 	/// A frame given to send() is done. For `confirmed` and `negative`, `frame` is the gateway's
@@ -91,9 +127,12 @@ protected:
 ///   sequence counter; without a TUNNELING_ACK after kAckTimeoutMs it is repeated once, a second
 ///   miss ends the connection. After the ACK the next frame waits for the gateway's L_Data.con (at
 ///   most kConfirmTimeoutMs), which paces the queue to the bus and tells the sender the outcome.
+///   send_raw() puts a frame of the bus session into the same queue, sent as it is and confirmed by
+///   an L_Data.con read in place (no TPDU limit).
 /// - Receiving: a TUNNELING_REQUEST with the expected sequence number is acknowledged and
 ///   delivered; one with the previous number (the gateway repeats a request whose ACK it missed)
-///   is acknowledged again but not delivered; any other is ignored (logged).
+///   is acknowledged again but not delivered; any other is ignored (logged). Every L_Data.ind goes
+///   to tunnel_raw_frame() as received, then, if it decodes into LData, to tunnel_frame().
 /// - The gateway's DISCONNECT_REQUEST is answered and ends the connection (reconnect follows).
 /// - stop() sends a DISCONNECT_REQUEST and does not reconnect.
 ///
@@ -135,6 +174,12 @@ public:
 	/// tunnel_sent() reports with the outcome; 0 when refused (logged): the tunnel is not up, the
 	/// queue is full, or the frame does not encode.
 	uint32_t send(const LData& frame);
+
+	/// Queues `frame` (a cEMI L_Data.req of at most RawFrame::kMaxCemi octets) to be sent as it is,
+	/// in the same queue as send()'s frames. The caller keeps `frame` unchanged until the listeners'
+	/// tunnel_raw_sent() reports the token. Returns the token (never 0); 0 when refused (logged): the
+	/// tunnel is not up, the queue is full, or the octets are no L_Data.req.
+	uint32_t send_raw(RawFrame& frame);
 
 	/// Registers a listener; false (logged) when kListenerCapacity are registered.
 	bool add_listener(KnxTunnelListener* listener);
@@ -181,6 +226,7 @@ private:
 	struct Pending {
 		LData frame;
 		uint32_t token;
+		RawFrame* raw; ///< A frame of send_raw() (then `frame` is unused).
 	};
 
 	bool can_connect(const char** why) const;
@@ -199,6 +245,8 @@ private:
 	void send_head();
 	void pump();
 	void complete(SendOutcome outcome, const LData* confirmation);
+	bool enqueue(const LData* frame, RawFrame* raw, uint32_t& token);
+	void handle_raw_confirmation(const uint8_t* cemi, const RawView& view);
 	void flush_queue();
 	void broken(const char* reason);
 	void fail(const char* reason, bool retry);
@@ -258,6 +306,8 @@ private:
 	/// An L_Data.con for the head that arrived before its TUNNELING_ACK.
 	bool early_confirm_ = false;
 	LData early_frame_;
+	/// For a head of send_raw(): the early L_Data.con was negative.
+	bool early_negative_ = false;
 	uint32_t next_token_ = 1;
 
 	KnxTunnelListener* listeners_[kListenerCapacity] = {};

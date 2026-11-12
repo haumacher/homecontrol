@@ -127,6 +127,17 @@ _RESPONSE, TUNNELING_REQUEST and _ACK, and SEARCH_RESPONSE with the device infor
 status, individual address, installation id, serial number, routing multicast address, MAC, friendly
 name) and the supported service families; the gateway search below uses them.
 
+The bus session of the E-Home connection (homecontrol #85, spec/api.md "Bus session",
+`hc::BusSession`) forwards frames the decoded form cannot hold: management frames and extended frames
+up to an APDU of 254 octets. `KnxTunnel::send_raw()` takes such a frame as octets (`RawFrame`, with
+room in front for the KNXnet/IP headers, so a send copies nothing) into the same queue as the
+controller's own telegrams, and matches its L_Data.con read in place (`cemi.h` `view()`, `confirms()`
+on octets; no TPDU limit); its outcome goes to `tunnel_raw_sent()`. Every L_Data.ind goes to the
+listeners' `tunnel_raw_frame()` as received before it is decoded, so an indication too long for
+`LData` is no longer lost: a group telegram that does not decode is still a warning, any other is a
+debug line. For these frames the platform's UDP datagram limit is 320 octets (274 for the longest
+TUNNELING_REQUEST the session sends, plus room for the additional information of an indication).
+
 ## Gateway search
 
 `hc::knx::GatewaySearch` (`gateway_search.h`) is the KNXnet/IP discovery of KNX 03.08.02 behind the

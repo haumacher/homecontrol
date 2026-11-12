@@ -130,6 +130,16 @@ I hc.ehome: connection closed: switched off by the owner
 I hc.ehome: disconnected from E-Home at https://ehome.example: the enrollment is erased
 ```
 
+A bus session (spec/api.md "Bus session": E-Home programs devices through the controller's KNX
+tunnel) logs its begin and its end, every refusal and every frame whose outcome is not `confirmed`:
+
+```
+I hc.ehome: bus session opened by E-Home: tunnel address 1.1.250
+I hc.ehome: bus session: frame 11 negative confirmation
+W hc.ehome: bus send 32 refused: the frame has 265 octets, more than the 264 forwarded (bus.bad_frame)
+I hc.ehome: bus session ended (closed by E-Home): 40 frames sent, 38 received, 0 dropped, after 95 s
+```
+
 A failure is a warning the first time and info while it repeats unchanged (the backoff retries a
 dead E-Home every minute). The `hc.ws` line is the ESP platform's: the client task's stack reserve
 after the TLS handshake and the heap at that moment.
@@ -191,6 +201,7 @@ Nothing is allocated while the controller is not enrolled or the connection is o
 | Client structure, configuration, its event loop, locks | about 1500 |
 | TLS steady state with dynamic buffers (context, session, record buffers per record) | 3000 to 5000 |
 | **Connected, total** | **about 29 500 to 31 500** |
+| A bus session (`BusSession`, heap from `open` until it ended and its last frame left the tunnel): 4 frames of 264 octets for the tunnel and the 2 KB outbox | about 3400 |
 | A request body announced with `length` (heap, freed after the answer) | its length; a `PUT /api/image` body goes to the staging area behind the updater's image instead (#66, doc/ota.md "The staging area": 0 B of heap, up to 148 KB on the C6), to the heap when the area declines (logged), 507 when no block is that large either |
 
 The TLS handshake is the peak: with `CONFIG_MBEDTLS_DYNAMIC_BUFFER` the incoming record buffer is

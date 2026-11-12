@@ -211,7 +211,8 @@ EhomeLink::EhomeLink(WebApi& api, LiveFeed& feed, WebSocketClient& client, HttpF
 	  client_(client),
 	  fetcher_(fetcher),
 	  loop_(api.controller().loop()),
-	  backoff_(kBackoffInitialMs, kBackoffCapMs) {}
+	  backoff_(kBackoffInitialMs, kBackoffCapMs),
+	  bus_(api.controller().loop(), api.controller().clock(), client) {}
 
 EhomeLink::~EhomeLink() {
 	loop_.cancel(tick_timer_);
@@ -240,6 +241,7 @@ void EhomeLink::reload() {
 
 void EhomeLink::start() {
 	api_.set_ehome(this);
+	bus_.set_tunnel(api_.knx_tunnel());
 	since_ms_ = api_.controller().clock().monotonic_ms();
 	tick_timer_ = loop_.schedule_periodic(since_ms_ + kTickMs, kTickMs, Callback::member<EhomeLink, &EhomeLink::tick>(this));
 	if (!tick_timer_.valid()) {
@@ -331,6 +333,7 @@ void EhomeLink::attempt() {
 }
 
 void EhomeLink::stop_socket(uint16_t code, const char* reason) {
+	bus_.connection_ended();
 	drop_request();
 	drop_pending_key("the connection ended");
 	feed_.detach_ehome();
@@ -426,6 +429,7 @@ void EhomeLink::tick() {
 				stream_waiting_ = false;
 				schedule_stream(); // the writable callback could not be posted
 			}
+			bus_.tick();
 			break;
 	}
 }
@@ -471,6 +475,7 @@ void EhomeLink::ws_client_writable() {
 		stream_waiting_ = false;
 		schedule_stream();
 	}
+	bus_.writable();
 	feed_.writable();
 }
 
@@ -553,6 +558,11 @@ void EhomeLink::ws_client_text(const char* text, size_t length) {
 	}
 	if (json_string_equals(type, "key")) {
 		key_message(message);
+		return;
+	}
+	if (json_string_equals(type, "bus")) {
+		bus_.set_tunnel(api_.knx_tunnel()); // a platform may hand the tunnel to the API after start()
+		bus_.message(message);
 		return;
 	}
 	feed_.ehome_message(text, length);
@@ -1636,6 +1646,8 @@ void EhomeLink::write_status(JsonWriter& json) const {
 	if (error_[0] != '\0') {
 		json.member("error", error_);
 	}
+	json.key("bus"); // the member's presence: this firmware has the bus session (homecontrol #85)
+	bus_.write_status(json);
 	json.end_object();
 }
 

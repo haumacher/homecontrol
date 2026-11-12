@@ -105,6 +105,11 @@ void build_disconnect_response(FrameBuffer& out, uint8_t channel, uint8_t status
 bool build_tunneling_request(FrameBuffer& out, uint8_t channel, uint8_t sequence, const LData& frame,
 	CemiResult* result = nullptr);
 
+/// The 10 octets in front of a cEMI frame of `cemi_length` octets that make it a TUNNELING_REQUEST
+/// (header and connection header), for a frame sent as it is (KnxTunnel::send_raw()).
+constexpr size_t kTunnelingHeader = 10;
+void write_tunneling_header(uint8_t* out, uint8_t channel, uint8_t sequence, size_t cemi_length);
+
 /// TUNNELING_ACK. 10 octets.
 void build_tunneling_ack(FrameBuffer& out, uint8_t channel, uint8_t sequence, uint8_t status);
 

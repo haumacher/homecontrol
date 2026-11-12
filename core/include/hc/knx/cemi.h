@@ -142,6 +142,34 @@ CemiResult make_group_request(LData& frame, GroupAddress destination, GroupServi
 /// same TPDU.
 bool confirms(const LData& confirmation, const LData& request);
 
+/// The fields of a cEMI L_Data frame read in place, without the TPDU limit of decode(): what the bus
+/// session (spec/api.md "Bus session") needs to check, route and match frames it forwards as they
+/// are, extended frames included.
+struct RawView {
+	MessageCode code = MessageCode::ldata_req;
+	/// Control field 2 bit 7: the destination is a group address (0 with it: a broadcast).
+	bool group = false;
+	uint16_t destination = 0;
+	/// Control field 1 bit 0 (meaningful in an L_Data.con: not sent).
+	bool confirm_error = false;
+	/// Where the TPDU starts in the frame, and its length (the length field plus one).
+	size_t tpdu_offset = 0;
+	size_t tpdu_length = 0;
+
+	/// A broadcast: the group flag with destination 0.
+	bool broadcast() const { return group && destination == 0; }
+};
+
+/// Reads a cEMI L_Data frame of any length in place. Refused: a message code other than
+/// L_Data.req/con/ind (unsupported), a frame shorter than its fields or with a length field that
+/// disagrees with the octets (wrong_length).
+CemiResult view(const uint8_t* data, size_t length, RawView& out);
+
+/// Whether the L_Data.con `confirmation` confirms the frame `request` (both read with view()): same
+/// address type and destination, same TPDU.
+bool confirms(const uint8_t* confirmation, const RawView& confirmation_view, const uint8_t* request,
+	const RawView& request_view);
+
 } // namespace knx
 } // namespace hc
 

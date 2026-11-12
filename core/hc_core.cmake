@@ -147,6 +147,7 @@ list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/diagnostics.cpp")
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/language_packs.cpp")
 # The E-Home connection: the enrollment and the outbound socket (issue #41, doc/ehome.md).
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/ehome_link.cpp")
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/bus_session.cpp")
 # The MQTT client: Home Assistant discovery, commands, history export (issue #18, doc/mqtt.md).
 list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/mqtt.cpp"
