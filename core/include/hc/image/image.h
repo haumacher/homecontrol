@@ -14,7 +14,7 @@ namespace image {
 
 /// The runtime image (spec/runtime-image.md): what E-Home deploys, as one JSON document.
 
-/// The schema version this firmware reads, the only place it is set: major 1, minor 6 (1.1 adds the
+/// The schema version this firmware reads, the only place it is set: major 1, minor 7 (1.1 adds the
 /// control pages `ui.pages`, issue #54; 1.2 the adjustable schedule members, issue #58, and the
 /// history archives, issue #56; 1.3 the blocks, issue #60; 1.4 the enumeration press of a button with
 /// its `presses`, the Zigbee remotes, haumacher/ehome #70; 1.5 the parameter ids of the rule-id
