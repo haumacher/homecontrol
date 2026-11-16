@@ -13,7 +13,6 @@
 #include "hc/json.h"
 #include "hc/log_ring.h"
 #include "hc/platform/blob_store.h"
-#include "hc/platform/image_staging.h"
 #include "hc/platform/web_host.h"
 #include "hc/storage_stats.h"
 #include "hc/zigbee/adapter.h"
@@ -33,7 +32,6 @@ class TelegramLog;
 }
 
 namespace image {
-class ImageBody;
 class ImageService;
 }
 
@@ -54,17 +52,17 @@ struct WebRequest {
 	const char* cookie = nullptr;     ///< Cookie
 	const char* authorization = nullptr; ///< Authorization
 	const char* requested_with = nullptr; ///< X-Requested-With
-	/// X-Image-Signature: the detached Ed25519 signature of a PUT /api/image body, 128 hex digits
-	/// (spec/api.md "Signed runtime images"); over the E-Home connection the request's `signature`.
+	/// X-Image-Signature, the detached signature of firmware up to 1.2: a PUT /api/image that carries it
+	/// (or the E-Home connection's `signature`) is refused 400 image.bad_request (spec/api.md: the
+	/// signature is part of the binary image).
 	const char* image_signature = nullptr;
 	const char* source = "";          ///< The client's address (rate limiting, log).
 	const char* body = nullptr;
 	size_t body_length = 0;
-	/// The receiver's ImageBody that holds `body` (its text()), or nullptr for a buffer that ends with
-	/// the request. A route that reads the body after handle() returned takes it over
-	/// (ImageBody::take): PUT /api/image while its image is stored off the loop (homecontrol #68).
-	/// The receiver releases what is left with it as before.
-	image::ImageBody* body_holder = nullptr;
+	/// PUT /api/image whose body the receiver wrote into the image slot itself (issue #87): it called
+	/// WebApi::image_begin() with the request's first bytes, then ImageService::receive_write() for the
+	/// whole body; `body` is unused and handle() ends the receive (ImageService::receive_end()).
+	bool image_streamed = false;
 	/// Set by the platform on the second pass, after it computed the hash WebResponse asked for.
 	const PasswordHash* hash = nullptr;
 	/// The request came over the E-Home connection (doc/ehome.md): the principal "E-Home", with a
@@ -87,7 +85,8 @@ struct WebResponse {
 	size_t capacity;
 	size_t length = 0;
 
-	/// The body is the stored runtime image (GET /api/image), too large for the buffer: the platform
+	/// The body is the loaded runtime image (GET /api/image) or its control pages (GET /api/pages), too
+	/// large for the buffer: the platform
 	/// sends `stream_length` bytes, fetching them in pieces with WebApi::read_stream(stream_token, ...)
 	/// on the event loop. `body` is empty then.
 	bool stream = false;
@@ -150,10 +149,8 @@ public:
 	/// waits before it gives up (504 api.timeout; the core answers before).
 	static constexpr uint32_t kDeferredPollMs = 100;
 	static constexpr uint32_t kDeferredLimitMs = 60000;
-	/// WebResponse::deferred_kind: the E-Home enrollment's answer; the store of a deployed image
-	/// (homecontrol #68: PUT /api/image is answered when the image is on the flash).
+	/// WebResponse::deferred_kind: the E-Home enrollment's answer.
 	static constexpr uint8_t kDeferredEnroll = 1;
-	static constexpr uint8_t kDeferredImageStore = 2;
 
 	WebApi(Controller& controller, DatapointModel& model, Auth& auth, WebHost& host);
 
@@ -205,29 +202,35 @@ public:
 	void set_image(image::ImageService* image);
 	image::ImageService* image() const { return image_; }
 
-	/// The largest body a request may carry: kMaxBody; for PUT /api/image what the image service
-	/// receives (ImageService::receivable(): the staging area's capacity, homecontrol #52, else
-	/// kMaxImageBytes). The platforms refuse longer bodies with 413 `api.body_too_large` before they
-	/// read them, with the reason of body_too_long(). Any thread (the limit is fixed after start).
+	/// The largest body a request may carry: kMaxBody; for PUT /api/image the image slot's size
+	/// (ImageService::slot_size(), spec/runtime-image.md 7). The platforms refuse longer bodies with 413
+	/// and the code and reason of body_too_long() before they read them. Any thread (the limit is fixed
+	/// after start).
 	size_t body_limit(HttpMethod method, const char* path) const;
 
-	/// The reason of the 413 for a body of `bytes` above body_limit() into `text` (of `size` bytes, 128
-	/// suffice): for an image its size, the limit and why.
-	void body_too_long(HttpMethod method, const char* path, size_t bytes, char* text, size_t size) const;
-
-	/// Where a receiver puts the body of `method` `path`: the image service's staging area for
-	/// PUT /api/image (homecontrol #66), nullptr (a heap buffer) for everything else.
-	ImageStaging* body_staging(HttpMethod method, const char* path) const;
+	/// The code and reason of the 413 for a body of `bytes` above body_limit(): `image.too_large` with
+	/// `the image has N bytes; the device holds at most M (its image slot)` for an image,
+	/// `api.body_too_large` otherwise. `text` of `size` bytes (128 suffice).
+	const char* body_too_long(HttpMethod method, const char* path, size_t bytes, char* text, size_t size) const;
 
 	/// Why a body for `method` `path` would be refused now, before a receiver takes it (nullptr: it
-	/// would not): PUT /api/image while the previous image is still being stored off the loop
-	/// (homecontrol #68). The receivers answer 503 "image.busy" with this reason and Retry-After
-	/// kBusyRetryS, without reading the body. Any thread; load() decides in the end.
+	/// would not): PUT /api/image while another image is being received. The receivers answer 503
+	/// "image.busy" with this reason and Retry-After kBusyRetryS, without reading the body. Any thread.
 	const char* body_refusal(HttpMethod method, const char* path) const;
+
+	/// The receive of PUT /api/image by a platform that writes the body into the slot as it arrives
+	/// (the ESP's HTTP server, the E-Home connection; issue #87, spec/runtime-image.md 6), on the loop:
+	/// authenticates `request` as handle() would, refuses a request with `image_signature`, and hands
+	/// `request.body` (the body's first min(32, length) bytes) to ImageService::receive_begin() with the
+	/// announced `length`. True: the slot is the receiver's to write the whole body into (from its
+	/// first byte) with ImageService::receive_write(), from any thread; then it calls handle() with the
+	/// request and WebRequest::image_streamed, or ImageService::receive_abort() when the body broke off.
+	/// False: `response` holds the refusal (the running image untouched).
+	bool image_begin(const WebRequest& request, size_t length, WebResponse& response);
 	static constexpr uint32_t kBusyRetryS = 1;
 
-	/// A piece of the stored image for a streamed response (WebResponse::stream), on the loop. False
-	/// when the stored image changed since the response began (the platform aborts the transfer).
+	/// A piece of a streamed response (WebResponse::stream: the loaded image or its pages), on the
+	/// loop. False when the image changed since the response began (the platform aborts the transfer).
 	bool read_stream(uint32_t token, size_t offset, char* buffer, size_t size, size_t& length);
 
 	void handle(const WebRequest& request, WebResponse& response);
@@ -261,8 +264,9 @@ public:
 
 private:
 	void image_changed();
-	/// The store of a deployed image ended (on the loop): a deferred answer is ready.
-	void image_stored();
+	/// The principal checks of handle() for a state-changing request (image_begin()); false with the
+	/// refusal in `response`.
+	bool authorized(const WebRequest& request, WebResponse& response);
 	void auth_session(const WebRequest& request, WebResponse& response);
 	void auth_onboard(const WebRequest& request, WebResponse& response);
 	void auth_login(const WebRequest& request, WebResponse& response);

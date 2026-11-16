@@ -289,26 +289,25 @@ public:
 	Engine(const Engine&) = delete;
 	Engine& operator=(const Engine&) = delete;
 
-	/// Validates and compiles `rules` (the `rules` member of an image) and swaps it in (spec 7.6:
-	/// what survives by rule id, timer id and state id; overrides checked against the new
-	/// declarations; the first load is a boot and reads the persisted overrides). Does not start
-	/// the rules: call start() (boot after the first load, image after a swap). A refused load
-	/// changes nothing. Pending external events are processed with the old rules first.
-	LoadResult load(const JsonValue& rules, const ScheduleDirectory* schedules) {
-		return load(rules, schedules, nullptr);
-	}
+	/// What a swap carries from the old rules to the new (spec/runtime-image.md 12): each rule's runtime
+	/// (diagnostics, state, running timers, overrides, the inhabitant's timeline) and the change
+	/// tracking, keyed by FNV-1a hashes of the ids, in RAM: the old image's slot may be rewritten after
+	/// detach(). Freed with free_carry().
+	struct Carry;
+	/// Ends the loaded rules before their image goes (flushes the queues, writes the delayed states
+	/// and timelines) and returns what the next rules take over (nullptr without rules, or without
+	/// memory: logged). The engine has no rules afterwards.
+	Carry* detach();
+	static void free_carry(Carry* carry);
 
-	/// As above, after the datapoint model was replaced (the image swap): `previous_ids[id]` is the
-	/// id the datapoint `id` of the new model had in the previous one, or kNone for a new datapoint
-	/// (one entry per datapoint of the model). The change records (7.7) and the diagnostics follow
-	/// a datapoint by it. Call flush() before the model is replaced: queued events carry old ids.
-	LoadResult load(const JsonValue& rules, const ScheduleDirectory* schedules, const uint16_t* previous_ids);
-
-	/// As load() with `previous_ids`, for a set the caller compiled and validated already against a
-	/// model whose datapoints have the ids of this engine's model (the image loader's check, which
-	/// compiles the rules once per image: homecontrol #66). Swaps it in like load(); on refusal (no
-	/// memory for the runtime) nothing changes and `set` is gone.
-	LoadResult adopt(RuleSet&& set, const uint16_t* previous_ids);
+	/// Installs `set` (bound to the image that is now loaded): a rule whose id hash is in `carry`
+	/// keeps its state (if declared again), its running timers (by id), its overrides (if they fit)
+	/// and its diagnostics; the change tracking of datapoints tracked again continues; everything
+	/// else starts fresh. The parameter and state datapoints are bound (bind_parameters()). Out of
+	/// memory: refused, no rules; `carry` stays the caller's either way.
+	LoadResult adopt(RuleSet&& set, const Carry* carry);
+	/// The same without a swap (tests): detaches the current rules and carries them.
+	LoadResult adopt(RuleSet&& set);
 
 	/// Starts every rule with `reason` (boot or image, spec 7.5), each in its own cascade, after
 	/// re-baselining the match memories (7.4). Queued; runs on the loop.
@@ -527,7 +526,7 @@ private:
 		const char* text);
 
 	// Swap.
-	bool install(RuleSet&& next, LoadResult& result, const uint16_t* previous_ids);
+	bool install(RuleSet&& next, LoadResult& result, const Carry* carry);
 
 	// Timelines (spec 7.13).
 	void change_state(size_t rule, uint8_t to, bool exit_actions);

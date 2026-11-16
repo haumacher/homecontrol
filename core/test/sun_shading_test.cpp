@@ -582,22 +582,6 @@ TEST_CASE("SunShading: a start writes only what the automatic holds; the failsaf
 	CHECK(rig.number("ud") == 1);
 }
 
-TEST_CASE("SunShading: an output bound to one of the block's inputs is refused (B22)") {
-	hc_test::blocks::Rig rig(shading_block(""), nullptr, shading_datapoints());
-	hc::JsonSpan span;
-	std::string text = shading_block("", R"("manual": ["sw", "ud"])", R"("upDown": "ud")");
-	REQUIRE(hc::json_parse(text.data(), text.size(), span, nullptr, 48));
-	struct NoOwners : hc::blocks::BlockDirectory {
-		const char* owner(const char*) const override { return nullptr; }
-	} owners;
-	hc::blocks::BlockSet set;
-	hc::blocks::BlockLoadResult result = set.load(span, rig.model(), owners, hc_test::corpus_registry());
-	CHECK(!result.ok());
-	CHECK(std::string(result.path) == "blocks[0].outputs.upDown");
-	CHECK(std::string(hc::blocks::block_error_name(result.error)) == "forbidden");
-	MESSAGE(result.text);
-}
-
 TEST_CASE("SunShading: no allocation in steady state; the cost of an instance is at most a room controller's") {
 	Rig rig(shading_block(R"("slatMode": "tracking", "minMoveInterval": 0, "brightnessOnDelay": 0)", kAllInputs,
 				R"("position": "pos", "slat": "slat", "upDown": "ud")"),

@@ -3,8 +3,10 @@
  */
 // Dynamic datapoints in the image-loaded model (issue #29, doc/image.md "Dynamic datapoints"): the
 // image service with a fake provider (reloads that keep values, rule state and the KNX mapping;
-// refused duplicates; no image; the rate limit), the image's `zigbee` bindings in the loader, and
-// the Zigbee adapter as a provider with bindings from a loaded image.
+// refused duplicates; no image; the rate limit), the image's `zigbee` bindings in the loader (the
+// device's checks of spec/runtime-image.md 10.8 on a compiled image), and the Zigbee adapter as a
+// provider with bindings from a loaded image. A reload rebuilds the model from the plan of the
+// image in the slot (issue #87).
 
 #include <algorithm>
 #include <cstring>
@@ -18,9 +20,13 @@
 #include "hc/image/dynamic_specs.h"
 #include "hc/image/image_service.h"
 #include "hc/image/loader.h"
+#include "hc/image/memory_image_slot.h"
+#include "hc/image/validator.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
 #include "hc/zigbee/adapter.h"
+#include "image_support.h"
+#include "json_reader.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "test_support.h"
@@ -32,6 +38,7 @@ using hc::ValueType;
 using hc::image::DynamicSpec;
 using hc::image::ImageBindings;
 using hc::image::ImageService;
+using hc::image::MemoryImageSlot;
 using hc::image::Loader;
 using hc::image::Plan;
 using hc::image::Report;
@@ -46,13 +53,7 @@ std::string fixture(const std::string& name) {
 	return text;
 }
 
-std::string describe(const Report& report) {
-	std::string out = std::string(hc::image::report_kind_name(report.kind)) + ":";
-	for (size_t i = 0; i < report.count; ++i) {
-		out += std::string("\n  ") + report.refusals[i].path + ": " + report.refusals[i].reason;
-	}
-	return out;
-}
+using hc_test::describe;
 
 bool has_refusal(const Report& report, const std::string& path, const std::string& reason) {
 	for (size_t i = 0; i < report.count; ++i) {
@@ -127,8 +128,9 @@ struct DynamicFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), p.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), p.clock, model, tunnel};
 	hc_test::FakeBlobStore blobs;
+	MemoryImageSlot slot;
 	FakeProvider provider{"fake"}; // outlives the service, which unregisters from it
-	ImageService service{controller, model, blobs, adapter, &tunnel};
+	ImageService service{controller, model, blobs, slot, adapter, &tunnel};
 	size_t handled = 0;
 	uint8_t gateway_sequence = 0;
 	std::vector<std::string> telegrams;
@@ -143,7 +145,7 @@ struct DynamicFixture {
 		}
 	}
 
-	bool load(const std::string& text) { return service.load(text.data(), text.size(), Source::api, true); }
+	bool load(const std::string& text) { return hc_test::deploy(service, text); }
 
 	void connect() {
 		std::optional<hc::knx::GatewayAddress> gateway = hc::knx::GatewayAddress::parse("192.0.2.1");
@@ -218,10 +220,27 @@ struct DynamicFixture {
 	}
 };
 
-bool parse(const std::string& text, Plan& plan, Report& report) {
+/// A compiled image and the plan the device builds of it (the checks of a receipt, then the
+/// loader's of spec/runtime-image.md 10.8).
+struct Built {
+	std::vector<uint8_t> bytes;
+	hc::image::bin::View view;
+	Plan plan;
+	Report report;
+};
+
+/// Compiles `text` and builds its plan as the device does; false with `built.report` when refused.
+bool build(const std::string& text, Built& built) {
+	built.bytes = hc_test::compiled(text);
+	const uint8_t* b = built.bytes.data();
+	if (!hc::image::check_header(b, built.bytes.size(), built.bytes.size(), built.report) ||
+		!hc::image::check_crc(b, built.report) || !hc::image::check_structure(b, built.report)) {
+		return false;
+	}
+	built.view.open(b);
 	hc_test::FakeClock clock;
 	Loader loader(clock, hc::HistoryLimits().cap_bytes);
-	return loader.parse(text.data(), text.size(), plan, report);
+	return loader.build(built.view, built.plan, built.report);
 }
 
 /// A minimal image with the given datapoints (JSON objects, comma-separated) and extra members.
@@ -318,14 +337,24 @@ TEST_CASE("Image.DynamicDuplicateNamesAreRefused") {
 	CHECK(f.model.size() == 22);
 	CHECK(f.model.find("fake.a") != nullptr);
 	REQUIRE(f.service.dynamic_refusal() != nullptr);
-	CHECK(std::string(f.service.dynamic_refusal()->path) == "datapoints[8].id");
+	CHECK(std::string(f.service.dynamic_refusal()->path) == "datapoints[8].name");
 	CHECK(std::string(f.service.dynamic_refusal()->reason) == "'hall.light' is also a datapoint of the provider 'fake'");
 	CHECK(f.p.sink.contains("the datapoints do not compose; the model stays as it is"));
-	// An image that clashes with the provider is refused with the path; the loaded one stays.
+	// An image that clashes with the provider is refused with the path. It was written into the slot:
+	// the device has no image then (spec/runtime-image.md I9), the provider's datapoints remain.
 	std::string next = image_with("{\"id\": \"fake.a\", \"type\": \"unsigned\"}");
 	CHECK_FALSE(f.load(next));
-	CHECK(f.service.report().kind == Report::Kind::invalid);
-	CHECK(has_refusal(f.service.report(), "datapoints[0].id", "'fake.a' is also a datapoint of the provider 'fake'"));
+	CHECK(f.service.report().kind == Report::Kind::apply);
+	CHECK_MESSAGE(has_refusal(f.service.report(), "datapoints[0].name", "'fake.a' is also a datapoint of the provider 'fake'"),
+		describe(f.service.report()));
+	CHECK_FALSE(f.service.loaded());
+	CHECK(f.model.size() == 2); // the provider's, "hall.light" among them
+	CHECK(f.model.find("fake.a") != nullptr);
+	// The provider without the clash, then the example again, for what follows.
+	f.provider.set({"fake.a"});
+	f.run_for(2000);
+	CHECK(f.model.size() == 1);
+	REQUIRE_MESSAGE(f.load(fixture("example.json")), describe(f.service.report()));
 	CHECK(f.service.info().revision == 7);
 	CHECK(f.model.size() == 22);
 	// Two providers that need the same name.
@@ -388,10 +417,12 @@ TEST_CASE("Image.DynamicWithoutImage") {
 	CHECK(f.model.size() == 2);
 	CHECK(f.dp("fake.a").id() == 0);
 	CHECK(f.dp("fake.a").value() == Value::of_unsigned(3));
-	// After a restart the stored image composes with the provider at boot.
+	// After a restart the slot's image composes with the provider at boot.
 	REQUIRE(f.load(fixture("minimal.json")));
 	DynamicFixture h(false);
 	h.blobs.blobs = f.blobs.blobs;
+	REQUIRE(h.slot.size() == f.slot.size());
+	std::memcpy(h.slot.bytes(), f.slot.bytes(), f.slot.size());
 	h.provider.names = {"fake.z"};
 	h.service.start();
 	CHECK(h.service.loaded());
@@ -424,12 +455,15 @@ TEST_CASE("Image.DynamicReloadRateLimit") {
 	f.run_for(1);
 	CHECK(f.service.dynamic_reloads() == base + 2);
 	CHECK(f.model.size() == 25);
-	// An image load composes the providers itself: a pending reload is dropped.
+	// An image load composes the providers itself: a pending reload is dropped, and the deploy does
+	// not reload (while the slot is written the model is empty; the providers' datapoints come back
+	// with the new image, their values through the swap table, without a generic interim).
 	f.provider.set({"a"});
 	CHECK(f.service.reload_pending());
 	REQUIRE(f.load(fixture("example.json")));
 	CHECK_FALSE(f.service.reload_pending());
 	CHECK(f.model.size() == 22);
+	CHECK(f.service.dynamic_reloads() == base + 2);
 	f.run_for(5000);
 	CHECK(f.service.dynamic_reloads() == base + 2);
 }
@@ -445,9 +479,9 @@ TEST_CASE("Image.ZigbeeBindingsValidated") {
 		"\"zigbee\": {\"ieee\": \"00124b0001020304\", \"endpoint\": 11, \"cluster\": 8, \"attribute\": 0}}, "
 		"{\"id\": \"hall.button\", \"type\": \"enumeration\", "
 		"\"zigbee\": {\"ieee\": \"000b57fffe112233\", \"endpoint\": 1, \"cluster\": 6, \"client\": true}}";
-	Plan plan;
-	Report report;
-	REQUIRE_MESSAGE(parse(image_with(ok_dp), plan, report), describe(report));
+	Built built;
+	REQUIRE_MESSAGE(build(image_with(ok_dp), built), describe(built.report));
+	const Plan& plan = built.plan;
 	REQUIRE(plan.zigbee_count == 3);
 	CHECK(plan.info.zigbee_datapoints == 3);
 	CHECK(std::string(plan.zigbee[0].name) == "living.ceiling");
@@ -458,6 +492,8 @@ TEST_CASE("Image.ZigbeeBindingsValidated") {
 	CHECK(plan.zigbee[2].client);
 	CHECK(plan.bindings[0] == hc::image::Binding::zigbee);
 
+	// The device's checks against its function table (spec/runtime-image.md 10.8, spec/zigbee.md
+	// "Bindings"), on the compiled `zigbee.bindings`.
 	struct Case {
 		std::string datapoints;
 		std::string path;
@@ -465,52 +501,30 @@ TEST_CASE("Image.ZigbeeBindingsValidated") {
 	};
 	const std::string zb = "\"zigbee\": {\"ieee\": \"00124b0001020304\", \"endpoint\": 11, ";
 	std::vector<Case> cases = {
-		{"{\"id\": \"a\", \"type\": \"boolean\", \"zigbee\": {\"ieee\": \"00124b00010203\", \"endpoint\": 1, \"cluster\": "
-		 "6, \"attribute\": 0}}", "datapoints[0].zigbee.ieee", "\"00124b00010203\" is not an IEEE address"},
 		{"{\"id\": \"a\", \"type\": \"boolean\", \"zigbee\": {\"ieee\": \"0000000000000000\", \"endpoint\": 1, "
-		 "\"cluster\": 6, \"attribute\": 0}}", "datapoints[0].zigbee.ieee", "not 0 and not all ones"},
-		{"{\"id\": \"a\", \"type\": \"boolean\", \"zigbee\": {\"endpoint\": 1, \"cluster\": 6, \"attribute\": 0}}",
-		 "datapoints[0].zigbee.ieee", "ieee is missing"},
+		 "\"cluster\": 6, \"attribute\": 0}}", "zigbee.bindings[0].cluster", "reserved IEEE address"},
 		{"{\"id\": \"a\", \"type\": \"boolean\", \"zigbee\": {\"ieee\": \"00124b0001020304\", \"endpoint\": 241, "
-		 "\"cluster\": 6, \"attribute\": 0}}", "datapoints[0].zigbee.endpoint", "endpoint must be 1..240"},
-		{"{\"id\": \"a\", \"type\": \"boolean\", " + zb + "\"cluster\": 6, \"attribute\": 5}}", "datapoints[0].zigbee",
-		 "cluster 6 attribute 5: no known function for this cluster and attribute"},
-		{"{\"id\": \"a\", \"type\": \"boolean\", " + zb + "\"cluster\": 6}}", "datapoints[0].zigbee",
-		 "attribute is missing"},
-		{"{\"id\": \"a\", \"type\": \"boolean\", " + zb + "\"cluster\": 1026, \"attribute\": 0}}", "datapoints[0].zigbee",
-		 "the function temperature carries real values, the datapoint is boolean"},
+		 "\"cluster\": 6, \"attribute\": 0}}", "zigbee.bindings[0].endpoint", "241"},
+		{"{\"id\": \"a\", \"type\": \"boolean\", " + zb + "\"cluster\": 6, \"attribute\": 5}}",
+		 "zigbee.bindings[0].cluster", "cluster 6 attribute 5: no known function for this cluster and attribute"},
+		{"{\"id\": \"a\", \"type\": \"boolean\", " + zb + "\"cluster\": 1026, \"attribute\": 0}}",
+		 "zigbee.bindings[0].cluster", "the function temperature carries real values, the datapoint is boolean"},
 		{"{\"id\": \"a\", \"type\": \"boolean\", \"transmit\": true, " + zb + "\"cluster\": 6, \"attribute\": 0}}",
-		 "datapoints[0].zigbee", "a transmitting Zigbee datapoint needs the cluster its commands go to (command)"},
+		 "zigbee.bindings[0].command", "a transmitting Zigbee datapoint needs the cluster its commands go to (command)"},
 		{"{\"id\": \"a\", \"type\": \"boolean\", " + zb + "\"cluster\": 6, \"attribute\": 0, \"command\": 768}}",
-		 "datapoints[0].zigbee", "the command cluster cannot set this attribute"},
+		 "zigbee.bindings[0].cluster", "the command cluster cannot set this attribute"},
 		{"{\"id\": \"a\", \"type\": \"enumeration\", " + zb + "\"cluster\": 6, \"client\": true, \"command\": 6}}",
-		 "datapoints[0].zigbee", "a client binding (button commands) cannot be commanded"},
-		{"{\"id\": \"a\", \"type\": \"boolean\", \"knx\": {\"dpt\": \"1.001\", \"send\": \"1/1/1\"}, " + zb +
-		 "\"cluster\": 6, \"attribute\": 0}}", "datapoints[0].zigbee", "a datapoint is either knx or zigbee"},
-		{"{\"id\": \"a\", \"type\": \"boolean\", \"virtual\": {}, " + zb + "\"cluster\": 6, \"attribute\": 0}}",
-		 "datapoints[0].zigbee", "a datapoint is either zigbee or virtual"},
-		{"{\"id\": \"a\", \"type\": \"boolean\", " + zb + "\"cluster\": 6, \"attribute\": 0}}, "
-		 "{\"id\": \"b\", \"type\": \"boolean\", " + zb + "\"cluster\": 6, \"attribute\": 0}}",
-		 "datapoints[1].zigbee", "device 00124b0001020304 endpoint 11: the function on_off is bound twice (also "
-		 "datapoints[0] 'a')"},
-		{"{\"id\": \"a\", \"type\": \"boolean\", \"zigbee\": \"00124b0001020304\"}", "datapoints[0].zigbee",
-		 "zigbee must be an object"},
+		 "zigbee.bindings[0].cluster", "a client binding (button commands) cannot be commanded"},
+		{"{\"id\": \"a\", \"type\": \"real\", " + zb + "\"cluster\": 1026, \"attribute\": 0, "
+		 "\"reporting\": {\"min\": 900, \"max\": 30}}}", "zigbee.bindings[0].reportMax", "max must not be below min"},
 	};
 	for (const Case& c : cases) {
 		CAPTURE(c.datapoints);
-		Plan p;
-		Report r;
-		CHECK_FALSE(parse(image_with(c.datapoints), p, r));
-		CHECK(r.kind == Report::Kind::invalid);
-		CHECK_MESSAGE(has_refusal(r, c.path, c.reason), describe(r));
+		Built r;
+		CHECK_FALSE(build(image_with(c.datapoints), r));
+		CHECK(r.report.kind == Report::Kind::invalid);
+		CHECK_MESSAGE(has_refusal(r.report, c.path, c.reason), describe(r.report));
 	}
-	// A schedule cannot own a Zigbee datapoint.
-	Plan p;
-	Report r;
-	CHECK_FALSE(parse(image_with("{\"id\": \"a\", \"type\": \"boolean\", " + zb + "\"cluster\": 6, \"attribute\": 0}}",
-		", \"schedules\": [{\"id\": \"s\", \"kind\": \"weekly\", \"time\": \"07:00\", \"output\": \"a\"}]"), p, r));
-	CHECK_MESSAGE(has_refusal(r, "schedules[0].output", "outputConflict: output 'a' is owned by the Zigbee adapter"),
-		describe(r));
 }
 
 // ---- The Zigbee adapter as a provider -------------------------------------------------------------
@@ -526,10 +540,11 @@ struct ZigbeeImageFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), p.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter knx{controller.loop(), p.clock, model, tunnel};
 	hc_test::FakeBlobStore blobs;
+	MemoryImageSlot slot;
 	hc_test::FakeBlobStore zigbee_store;
 	hc_test::FakeZigbeeDriver driver;
 	hc::zigbee::ZigbeeAdapter zigbee{controller.loop(), p.clock, model, driver, &zigbee_store}; // outlives the service
-	ImageService service{controller, model, blobs, knx, &tunnel};
+	ImageService service{controller, model, blobs, slot, knx, &tunnel};
 	hc_test::ZigbeeActions device{zigbee};
 
 	ZigbeeImageFixture() {
@@ -557,7 +572,7 @@ struct ZigbeeImageFixture {
 		}
 	}
 
-	bool load(const std::string& text) { return service.load(text.data(), text.size(), Source::api, true); }
+	bool load(const std::string& text) { return hc_test::deploy(service, text); }
 
 	const hc::Datapoint* dp(const char* name) const { return model.find(name); }
 };
@@ -672,11 +687,24 @@ TEST_CASE("Image.ZigbeeRemoteIsAButtonWithItsPresses") {
 	f.run_for(2000);
 	const hc::image::ModelView& view = f.service.view();
 	REQUIRE(view.function_count() == 1);
-	REQUIRE(view.function(0).presses != nullptr);
-	CHECK(std::string(view.function(0).presses) ==
-		"{\"press\": [2], \"on\": [1], \"off\": [0], \"up\": [3], \"down\": [4], \"release\": [5]}");
-	REQUIRE(view.function(0).role_count == 1);
-	CHECK(view.function(0).roles[0].datapoint == f.dp("hall.remote")->id());
+	char buffer[1024];
+	hc::JsonWriter json(buffer, sizeof(buffer));
+	view.write_function(json, 0);
+	REQUIRE_FALSE(json.overflowed());
+	hc_test::Json function;
+	std::string error;
+	std::string text(json.data(), json.length());
+	REQUIRE_MESSAGE(hc_test::JsonReader(text).parse(function, error), error << ": " << text);
+	const char* const kinds[] = {"press", "on", "off", "up", "down", "release"};
+	const double elements[] = {2, 1, 0, 3, 4, 5};
+	REQUIRE(function["presses"].members.size() == 6);
+	for (size_t k = 0; k < 6; ++k) {
+		CAPTURE(kinds[k]);
+		REQUIRE(function["presses"][kinds[k]].items.size() == 1);
+		CHECK(function["presses"][kinds[k]].items[0].number == elements[k]);
+	}
+	REQUIRE(function["datapoints"].members.size() == 1);
+	CHECK(function["datapoints"]["press"].number == f.dp("hall.remote")->id());
 
 	auto press = [&](uint16_t on_cluster, uint8_t command, uint8_t argument) {
 		uint8_t payload[] = {argument, 0};
@@ -745,6 +773,15 @@ std::string sensor_image(int revision, const std::string& temperature_reporting)
 		"\"cluster\": 1029, \"attribute\": 0}}]}";
 }
 
+/// The driver's calls, for messages.
+std::string calls_of(const hc_test::FakeZigbeeDriver& driver) {
+	std::string out;
+	for (const std::string& call : driver.calls) {
+		out += call + "; ";
+	}
+	return out;
+}
+
 std::string export_json(const hc::zigbee::ZigbeeAdapter& adapter, size_t index) {
 	char buffer[8192];
 	hc::JsonWriter json(buffer, sizeof(buffer));
@@ -757,9 +794,9 @@ std::string export_json(const hc::zigbee::ZigbeeAdapter& adapter, size_t index) 
 
 TEST_CASE("Image.ZigbeeBindingsWithoutReportingLoadAsBefore") {
 	// spec/fixtures/images/zigbee-bindings.json is an image as E-Home wrote them before `reporting`.
-	Plan plan;
-	Report report;
-	REQUIRE_MESSAGE(parse(fixture("zigbee-bindings.json"), plan, report), describe(report));
+	Built built;
+	REQUIRE_MESSAGE(build(fixture("zigbee-bindings.json"), built), describe(built.report));
+	const Plan& plan = built.plan;
 	REQUIRE(plan.zigbee_count == 4);
 	for (size_t i = 0; i < plan.zigbee_count; ++i) {
 		CHECK(plan.zigbee[i].reporting.set == 0);
@@ -780,10 +817,10 @@ TEST_CASE("Image.ZigbeeBindingsWithoutReportingLoadAsBefore") {
 }
 
 TEST_CASE("Image.ZigbeeReportingOverrideReachesTheDeviceAndTheExport") {
-	Plan plan;
-	Report report;
-	REQUIRE_MESSAGE(parse(sensor_image(1, ", \"reporting\": {\"min\": 30, \"max\": 900, \"change\": 0.5}"), plan, report),
-		describe(report));
+	Built built;
+	REQUIRE_MESSAGE(build(sensor_image(1, ", \"reporting\": {\"min\": 30, \"max\": 900, \"change\": 0.5}"), built),
+		describe(built.report));
+	const Plan& plan = built.plan;
 	REQUIRE(plan.zigbee_count == 2);
 	CHECK(plan.zigbee[0].reporting.set == (hc::zigbee::ReportingOverride::kMin | hc::zigbee::ReportingOverride::kMax |
 		hc::zigbee::ReportingOverride::kChange));
@@ -816,21 +853,20 @@ TEST_CASE("Image.ZigbeeReportingOverrideReachesTheDeviceAndTheExport") {
 	REQUIRE_MESSAGE(f.load(sensor_image(2, ", \"reporting\": {\"max\": 65535}")), describe(f.service.report()));
 	f.run_for(10);
 	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..65535 10"));
-	CHECK(f.driver.count("configure") == 1);
+	CHECK_MESSAGE(f.driver.count("configure") == 1, calls_of(f.driver));
 	CHECK(f.zigbee.stale_timeout_s(hc_test::kSensor) == 1800); // the humidity's 600 s remain
 	view = export_json(f.zigbee, 0);
 	CHECK(view.find("\"reporting\":{\"min\":30,\"max\":65535,\"change\":0.1},\"datapoint\":\"bath.temperature\"") !=
 		std::string::npos);
 
-	// A refused image changes nothing on the device.
+	// A refused image: it was written into the slot, so the device has no image then
+	// (spec/runtime-image.md I9), as after an unload: every function of the now generic device gets
+	// the defaults it lacks.
 	f.driver.calls.clear();
 	CHECK_FALSE(f.load(sensor_image(3, ", \"reporting\": {\"min\": 900, \"max\": 30}")));
-	CHECK(has_refusal(f.service.report(), "datapoints[0].zigbee.reporting.max", "max must not be below min"));
-	CHECK(f.driver.count("configure") == 0);
-
-	// Removing the image: every function of the now generic device gets the defaults it lacks.
-	const char* error = nullptr;
-	REQUIRE(f.service.unload(&error));
+	CHECK_MESSAGE(has_refusal(f.service.report(), "zigbee.bindings[0].reportMax", "max must not be below min"),
+		describe(f.service.report()));
+	CHECK_FALSE(f.service.loaded());
 	f.run_for(10);
 	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..600 10"));
 	CHECK(f.driver.has("configure 0x3c4d 1 0x0001 0x0021 3600..21600 2"));
@@ -897,7 +933,8 @@ TEST_CASE("Image.ZigbeeReportingProbeMixedPeriodicAndOnChangeStaleRule") {
 		"\"cluster\": 1029, \"attribute\": 0, \"reporting\": {\"max\": 0, \"change\": 2}}}]}";
 	REQUIRE_MESSAGE(f.load(both), describe(f.service.report()));
 	f.run_for(10);
-	CHECK(f.driver.calls == std::vector<std::string>{"bind 0x3c4d 1 0x0405", "configure 0x3c4d 1 0x0405 0x0000 30..0 200"});
+	const std::vector<std::string> reconfigured = {"bind 0x3c4d 1 0x0405", "configure 0x3c4d 1 0x0405 0x0000 30..0 200"};
+	CHECK_MESSAGE(f.driver.calls == reconfigured, calls_of(f.driver));
 	CHECK(f.zigbee.stale_timeout_s(hc_test::kSensor) == 0);
 	f.run_for(24 * 3600 * 1000);
 	CHECK(f.dp("bath.temperature")->quality() == hc::Quality::good);
@@ -906,7 +943,7 @@ TEST_CASE("Image.ZigbeeReportingProbeMixedPeriodicAndOnChangeStaleRule") {
 		std::string::npos);
 }
 
-// ---- Reloads without a kept plan (issue #45 item 9) ---------------------------------------------
+// ---- Reloads from the image in the slot (issues #45 item 9, #87) --------------------------------
 
 namespace {
 
@@ -958,13 +995,11 @@ void check_same(const ModelShape& before, const ModelShape& after) {
 
 } // namespace
 
-TEST_CASE("Image.ReloadParsesTheStoredImageAgainAndKeepsNoPlan") {
+TEST_CASE("Image.ReloadRebuildsTheModelFromTheImageInTheSlot") {
 	DynamicFixture f;
 	f.connect();
 	REQUIRE_MESSAGE(f.load(fixture("example.json")), describe(f.service.report()));
 	f.pump();
-	CHECK_FALSE(f.service.keeps_plan());
-	CHECK(f.service.stored_ok());
 	f.receive(0x0902, "00 81"); // living.light.state on
 	ModelShape before = ModelShape::of(f, f.model.size());
 	REQUIRE(before.entries.size() == 21);
@@ -975,55 +1010,11 @@ TEST_CASE("Image.ReloadParsesTheStoredImageAgainAndKeepsNoPlan") {
 	REQUIRE(f.model.size() == 22);
 	CHECK(f.service.dynamic_refusal() == nullptr);
 	check_same(before, ModelShape::of(f, 21));
-	CHECK_FALSE(f.service.keeps_plan());
-	// And the same once more (a device leaves): the stored image is read again each time.
+	// And the same once more (a device leaves).
 	f.provider.set({});
 	f.run_for(2000);
 	REQUIRE(f.model.size() == 21);
 	check_same(before, ModelShape::of(f, 21));
-	CHECK_FALSE(f.service.keeps_plan());
-}
-
-TEST_CASE("Image.ReloadKeepsThePlanOnlyForAnImageThatCannotBeReadBack") {
-	SUBCASE("loaded without storing: the plan is kept, the reload uses it") {
-		DynamicFixture f;
-		std::string text = fixture("example.json");
-		REQUIRE(f.service.load(text.data(), text.size(), Source::api, false));
-		CHECK(f.service.keeps_plan());
-		ModelShape before = ModelShape::of(f, f.model.size());
-		f.provider.set({"fake.a"});
-		f.run_for(2000);
-		REQUIRE(f.model.size() == 22);
-		check_same(before, ModelShape::of(f, 21));
-	}
-	SUBCASE("its store failed: the plan is kept from the text before it goes") {
-		DynamicFixture f;
-		f.blobs.fail_writes = true;
-		REQUIRE(f.load(fixture("example.json")));
-		CHECK_FALSE(f.service.stored_ok());
-		CHECK(f.service.keeps_plan());
-		CHECK(f.p.sink.contains("kept for the providers' reloads"));
-		ModelShape before = ModelShape::of(f, f.model.size());
-		f.blobs.fail_writes = false;
-		f.provider.set({"fake.a"});
-		f.run_for(2000);
-		REQUIRE(f.model.size() == 22);
-		check_same(before, ModelShape::of(f, 21));
-	}
-	SUBCASE("the stored image changed behind the loaded one: the reload refuses, saying why") {
-		DynamicFixture f;
-		REQUIRE(f.load(fixture("example.json")));
-		CHECK_FALSE(f.service.keeps_plan());
-		std::string other = image_with(R"({"id": "x", "type": "boolean"})");
-		hc::image::ImageStore store(f.blobs);
-		const char* error = nullptr;
-		REQUIRE(store.write(other.data(), other.size(), &error));
-		f.provider.set({"fake.a"});
-		f.run_for(2000);
-		CHECK(f.model.size() == 21);
-		REQUIRE(f.service.dynamic_refusal() != nullptr);
-		CHECK(std::string(f.service.dynamic_refusal()->reason).find("not the loaded one") != std::string::npos);
-		CHECK(f.p.sink.contains("model not reloaded"));
-		CHECK(f.service.loaded());
-	}
+	// The image still runs in place from the slot.
+	CHECK(f.service.image().bytes() == f.slot.bytes());
 }

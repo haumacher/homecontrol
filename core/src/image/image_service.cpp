@@ -3,16 +3,16 @@
  */
 #include "hc/image/image_service.h"
 
-#include "hc/mqtt.h"
-
+#include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
-#include <algorithm>
 #include <cstring>
 #include <new>
 
-#include "hc/json_document.h"
+#include "hc/image/validator.h"
+#include "hc/mqtt.h"
 #include "hc/network_settings.h"
 #include "hc/signature.h"
 
@@ -23,56 +23,125 @@ namespace {
 
 constexpr const char* kTag = "hc.image";
 
-/// The `rules` of an image without rules.
-constexpr char kNoRules[] = "[]";
-
-struct PlanSchedules : rules::ScheduleDirectory {
-	explicit PlanSchedules(const Plan& p) : plan(p) {}
-	bool has_schedule(const char* id) const override { return plan.has_schedule(id); }
-	bool owns_output(const char* datapoint) const override { return plan.schedule_owns_output(datapoint); }
-	bool technology_reads(const char* datapoint) const override { return plan.technology_reads(datapoint); }
-	const Plan& plan;
-};
-
-struct NoSchedules : rules::ScheduleDirectory {
-	bool has_schedule(const char*) const override { return false; }
-};
-
-const char* report_code(Report::Kind kind) {
+const char* report_text(Report::Kind kind) {
 	switch (kind) {
-		case Report::Kind::syntax: return "image.bad_json";
-		case Report::Kind::version: return "image.version";
-		case Report::Kind::too_large: return "image.too_large";
-		case Report::Kind::no_memory: return "image.no_memory";
-		case Report::Kind::apply: return "image.apply_failed";
-		case Report::Kind::unsigned_image: return "image.unsigned";
-		case Report::Kind::bad_signature: return "image.bad_signature";
-		case Report::Kind::busy: return "image.busy";
-		default: return "image.invalid";
+		case Report::Kind::format: return "the body is not a binary runtime image";
+		case Report::Kind::version: return "the image's format is not one this firmware reads";
+		case Report::Kind::too_large: return "the image is larger than the device's image slot";
+		case Report::Kind::unsigned_image: return "the device holds the installation key: the image must be signed";
+		case Report::Kind::damaged: return "the image was damaged on the way or in the slot";
+		case Report::Kind::bad_signature: return "the image's signature does not verify under the installation key";
+		case Report::Kind::no_memory: return "the device has not enough memory for the image";
+		case Report::Kind::apply: return "the image was valid but could not be applied";
+		case Report::Kind::busy: return "another image is being received; deploy again in a moment";
+		default: return "the image is invalid";
 	}
 }
 
-const char* report_text(Report::Kind kind) {
-	switch (kind) {
-		case Report::Kind::syntax: return "the image is not valid JSON";
-		case Report::Kind::version: return "the image's schema version is newer than this firmware reads";
-		case Report::Kind::too_large: return "the image is larger than the device accepts";
-		case Report::Kind::no_memory: return "the device has not enough memory for the image";
-		case Report::Kind::apply: return "the image was valid but could not be applied";
-		case Report::Kind::unsigned_image: return "the device holds the installation key: the image needs its signature";
-		case Report::Kind::bad_signature: return "the image's signature does not verify under the installation key";
-		case Report::Kind::busy: return "the previous image is still being stored; deploy again in a moment";
-		default: return "the image is invalid";
+void log_report(const Report& report, Source source, bool untouched, bool loaded) {
+	Log::warn(kTag, "image from %s refused (%s): %u problem%s; %s", source_name(source), report_kind_name(report.kind),
+		static_cast<unsigned>(report.total), report.total == 1 ? "" : "s",
+		untouched ? (loaded ? "the running image stays" : "the device keeps no image") : "the device has no image");
+	for (size_t i = 0; i < report.count; ++i) {
+		Log::warn(kTag, "  %s: %s", report.refusals[i].path[0] != '\0' ? report.refusals[i].path : "(image)",
+			report.refusals[i].reason);
 	}
 }
 
 } // namespace
 
-ImageService::ImageService(Controller& controller, DatapointModel& model, BlobStore& blobs,
+/// The values of the datapoints across a swap (spec/runtime-image.md 12), and what the rule engine
+/// carries; kept until an image has been applied. The entries in chunks of kPer and an index sorted
+/// by hash (homecontrol #70: no block of the values' size beside the new image).
+struct ImageService::SwapTable {
+	struct Entry {
+		uint64_t hash;
+		uint64_t updated_ms;
+		Value value;
+		Quality quality;
+		bool pending; ///< A command held for sending (DatapointModel pending mark).
+		bool dropped;
+	};
+	static constexpr size_t kPer = 16;
+	Entry** chunks = nullptr;
+	size_t chunk_count = 0;
+	uint16_t* order = nullptr; ///< Entry indices sorted by hash.
+	size_t count = 0;
+	rules::Engine::Carry* carry = nullptr;
+
+	~SwapTable() {
+		release();
+		rules::Engine::free_carry(carry);
+	}
+	void release() {
+		for (size_t k = 0; k < chunk_count; ++k) {
+			delete[] chunks[k];
+		}
+		delete[] chunks;
+		delete[] order;
+		chunks = nullptr;
+		order = nullptr;
+		chunk_count = 0;
+		count = 0;
+	}
+	Entry& at(size_t i) const { return chunks[i / kPer][i % kPer]; }
+	bool allocate(size_t n) {
+		if (n == 0) {
+			return true;
+		}
+		chunk_count = (n + kPer - 1) / kPer;
+		chunks = new (std::nothrow) Entry*[chunk_count]();
+		order = new (std::nothrow) uint16_t[n];
+		if (chunks == nullptr || order == nullptr) {
+			delete[] chunks;
+			chunks = nullptr;
+			chunk_count = 0;
+			return false;
+		}
+		for (size_t k = 0; k < chunk_count; ++k) {
+			chunks[k] = new (std::nothrow) Entry[kPer];
+			if (chunks[k] == nullptr) {
+				return false; // release() frees what was taken
+			}
+		}
+		return true;
+	}
+	void sort() {
+		for (size_t i = 0; i < count; ++i) {
+			order[i] = static_cast<uint16_t>(i);
+		}
+		std::sort(order, order + count, [this](uint16_t a, uint16_t b) { return at(a).hash < at(b).hash; });
+		for (size_t i = 1; i < count; ++i) {
+			Entry& a = at(order[i - 1]);
+			Entry& b = at(order[i]);
+			if (a.hash == b.hash) {
+				Log::warn(kTag, "swap: 2 datapoints share the hash 0x%016" PRIx64 "; their values are not carried", a.hash);
+				a.dropped = true;
+				b.dropped = true;
+			}
+		}
+	}
+	const Entry* find(uint64_t hash) const {
+		size_t lo = 0, hi = count;
+		while (lo < hi) {
+			size_t mid = (lo + hi) / 2;
+			if (at(order[mid]).hash < hash) {
+				lo = mid + 1;
+			} else {
+				hi = mid;
+			}
+		}
+		return lo < count && at(order[lo]).hash == hash && !at(order[lo]).dropped ? &at(order[lo]) : nullptr;
+	}
+};
+
+ImageService::ImageService(Controller& controller, DatapointModel& model, BlobStore& blobs, ImageSlot& slot,
 	knx::KnxAdapter& adapter, const knx::KnxTunnel* tunnel, const HistoryLimits& history_limits,
 	const ValueStoreLimits& value_limits)
 	: controller_(controller),
 	  model_(model),
+	  blobs_(blobs),
+	  slot_(slot),
 	  adapter_(adapter),
 	  tunnel_(tunnel),
 	  history_limits_(history_limits),
@@ -82,32 +151,69 @@ ImageService::ImageService(Controller& controller, DatapointModel& model, BlobSt
 	  blocks_(controller.loop(), model, controller.clock(), controller.settings(), blobs, engine_),
 	  value_store_(controller.loop(), controller.clock(), model, blobs, value_limits),
 	  history_(controller.loop(), controller.clock(), model, blobs, history_limits, &controller.time_zone_platform()),
-	  time_master_(controller.loop(), controller.time(), model, adapter),
-	  store_(blobs) {
+	  time_master_(controller.loop(), controller.time(), model, adapter) {
 	scheduler_.defer_time_reports(true); // published quietly after each load (bind_technologies)
 	engine_.set_timeline_store(&blobs);   // the inhabitant's timelines (spec/rules.md 8.7)
-	scheduler_.set_quiet_reports(this); // the outputs' first values after a load (issue #67)
+	scheduler_.set_quiet_reports(this);   // the outputs' first values after a load (issue #67)
 }
 
 ImageService::~ImageService() {
-	if (store_pending()) {
-		// The worker still reads the held body: it must have finished before (doc of set_worker()).
-		Log::error(kTag, "the image service goes while its image is being stored off the loop");
-	}
 	if (reload_pending_) {
 		controller_.loop().cancel(reload_timer_);
 	}
 	for (size_t i = 0; i < provider_count_; ++i) {
 		providers_[i]->set_spec_listener(nullptr);
 	}
-	delete plan_;
+	delete swap_;
 	delete dynamic_refusal_;
+	if (mapped_ != nullptr) {
+		slot_.unmap();
+	}
 	if (started_) {
 		controller_.set_led_input(nullptr);
 		controller_.time().remove_listener(scheduler_);
 		controller_.time().remove_listener(time_master_);
 		controller_.time().remove_listener(engine_);
 		scheduler_.remove_listener(*this);
+	}
+}
+
+void ImageService::remove_json_images() {
+	// The JSON images of firmware up to 1.2 (spec/runtime-image.md 7): `image.idx` and the chunks
+	// `image.a.<n>`, `image.b.<n>`. Collected first, removed after the visit.
+	struct Collect : BlobVisitor {
+		char names[16][24] = {};
+		size_t count = 0;
+		bool more = false;
+		void blob(const char* name, size_t) override {
+			bool ours = std::strcmp(name, "image.idx") == 0 || std::strncmp(name, "image.a.", 8) == 0 ||
+				std::strncmp(name, "image.b.", 8) == 0;
+			if (!ours) {
+				return;
+			}
+			if (count < 16 && std::strlen(name) < sizeof(names[0])) {
+				std::snprintf(names[count++], sizeof(names[0]), "%s", name);
+			} else {
+				more = true;
+			}
+		}
+	};
+	size_t removed = 0;
+	for (int round = 0; round < 16; ++round) {
+		Collect collect;
+		blobs_.visit(collect);
+		for (size_t i = 0; i < collect.count; ++i) {
+			if (blobs_.remove(collect.names[i]) == BlobStatus::ok) {
+				++removed;
+			}
+		}
+		if (!collect.more) {
+			break;
+		}
+	}
+	if (removed > 0) {
+		Log::info(kTag, "removed %u blob(s) of the JSON image of firmware up to 1.2 (the image lives in its slot now)",
+			static_cast<unsigned>(removed));
 	}
 }
 
@@ -128,260 +234,397 @@ void ImageService::start() {
 	}
 	scheduler_.add_listener(*this);
 	controller_.set_led_input(this);
-	store_.collect_garbage();
-	size_t bytes = 0;
-	if (!store_.stored(bytes)) {
-		Log::info(kTag, "no runtime image stored: PUT /api/image deploys one (doc/image.md)");
+	remove_json_images();
+	size_t size = slot_.size();
+	if (size == 0) {
+		Log::error(kTag, "no image slot: the device cannot hold a runtime image");
 	} else {
-		load_stored(Source::boot);
+		const uint8_t* bytes = slot_.map();
+		if (bytes == nullptr) {
+			Log::error(kTag, "the image slot cannot be mapped: the device runs without an image");
+		} else {
+			bool erased = false;
+			report_.clear();
+			if (check_slot_header(bytes, size, erased, report_)) {
+				apply_slot(reinterpret_cast<const bin::Header*>(bytes)->length, Source::boot, false);
+			} else if (erased) {
+				slot_.unmap();
+				Log::info(kTag, "no runtime image in the slot (%u KB): PUT /api/image deploys one (doc/image.md)",
+					static_cast<unsigned>(size / 1024));
+			} else {
+				slot_.unmap();
+				log_report(report_, Source::boot, false, false);
+			}
+		}
 	}
 	if (!loaded_ && provider_count_ > 0) {
 		reload_dynamic("start without an image");
 	}
 }
 
-bool ImageService::load_stored(Source source) {
-	if (store_pending()) {
-		// The image being stored off the loop is the one to return to (the flash holds the previous
-		// one or is being switched to this one): its text is at hand, the store keeps running.
-		Log::info(kTag, "the image being stored is loaded again from its received text");
-		return load(pending_text_, pending_length_, source, false);
-	}
-	size_t bytes = 0;
-	if (!store_.stored(bytes)) {
-		return false;
-	}
-	// In the stored staging when it takes it, parsed in place there (homecontrol #71): no heap block
-	// of the image's size, which a fragmented heap during a restore may not have.
-	ImageBody body;
-	const char* refusal = nullptr;
-	if (!body.begin(bytes, stored_staging_, &refusal)) {
-		report_.clear();
-		report_.add(Report::Kind::no_memory, "", "no memory to read the stored image (%u bytes)%s%s",
-			static_cast<unsigned>(bytes), refusal != nullptr ? "; the staging area declined: " : "",
-			refusal != nullptr ? refusal : "");
-		Log::error(kTag, "stored image not loaded: no memory for its %u bytes%s%s", static_cast<unsigned>(bytes),
-			refusal != nullptr ? "; the staging area declined: " : "", refusal != nullptr ? refusal : "");
-		return false;
-	}
-	if (refusal != nullptr) {
-		Log::warn(kTag, "the stored image (%u bytes) is read into the heap: the staging area declined: %s",
-			static_cast<unsigned>(bytes), refusal);
-	}
-	bool missing = false;
-	const char* error = nullptr;
-	bool ok = store_.read(body, missing, &error);
-	if (!ok) {
-		report_.clear();
-		report_.add(Report::Kind::invalid, "", "the stored image cannot be read: %s", error);
-		Log::error(kTag, "stored image not loaded: %s", error);
-	} else {
-		ok = load(body.text(), body.size(), source, false);
-		if (ok) {
-			stored_ok_ = true;
-		}
-	}
-	body.release();
-	return ok;
-}
+// ---- Receiving (spec/runtime-image.md 6) --------------------------------------------------------
 
-bool ImageService::authorize(const char* text, size_t length, Source source, const uint8_t* signature) {
-	if (source == Source::boot || source == Source::restore) {
-		return true; // the stored image passed the gate when it was stored
-	}
-	uint8_t key[kEd25519KeySize];
-	KeyState state = load_installation_key(controller_.settings(), key);
-	if (state == KeyState::none) {
-		if (signature != nullptr) {
-			Log::info(kTag, "image from %s: its signature is not checked (the device holds no installation key)",
-				source_name(source));
-		}
-		return true;
+bool ImageService::receive_begin(const uint8_t* head, size_t available, size_t length, Source source) {
+	if (receiving()) {
+		// The open receive's own report is written by its receive_end(), which starts from a clear one.
+		Log::warn(kTag, "image from %s refused: another image is being received", source_name(source));
+		report_.clear();
+		report_.add(Report::Kind::busy, "", "another image is being received: deploy again in a moment");
+		return false;
 	}
 	report_.clear();
+	if (length > slot_.size()) {
+		report_.add(Report::Kind::too_large, "header.length", "the image has %u bytes; the device holds at most %u (its image slot)",
+			static_cast<unsigned>(length), static_cast<unsigned>(slot_.size()));
+		log_report(report_, source, true, loaded_);
+		return false;
+	}
+	if (!check_header(head, available, length, report_)) {
+		log_report(report_, source, true, loaded_);
+		return false;
+	}
+	bin::Header h;
+	std::memcpy(&h, head, sizeof(h)); // the receiver's buffer need not be aligned
+	uint8_t key[kEd25519KeySize];
+	KeyState state = load_installation_key(controller_.settings(), key);
 	if (state == KeyState::damaged) {
-		report_.add(Report::Kind::bad_signature, "",
-			"the stored installation key (setting %s) is damaged: disconnect from E-Home and enroll again",
-			setting::kEhomeKey);
-	} else {
+		report_.add(Report::Kind::bad_signature, "signature", "the installation key stored on the device is damaged");
+		log_report(report_, source, true, loaded_);
+		return false;
+	}
+	if (state == KeyState::ok && (h.flags & bin::kFlagSigned) == 0) {
 		char fingerprint[kFingerprintSize];
 		key_fingerprint(key, fingerprint);
-		if (signature == nullptr) {
-			report_.add(Report::Kind::unsigned_image, "",
-				"the image is not signed; the device accepts only images signed with the installation key %s",
-				fingerprint);
-		} else {
-			uint64_t start = controller_.clock().monotonic_ms();
-			if (image_signature_valid(text, length, signature, key)) {
-				Log::info(kTag, "image from %s: signature verified (installation key %s, %u bytes in %u ms)",
-					source_name(source), fingerprint, static_cast<unsigned>(length),
-					static_cast<unsigned>(controller_.clock().monotonic_ms() - start));
-				return true;
-			}
-			report_.add(Report::Kind::bad_signature, "",
-				"the signature does not match the image under the installation key %s (another key, or the image "
-				"changed after signing)", fingerprint);
-		}
+		report_.add(Report::Kind::unsigned_image, "header.flags",
+			"the image is not signed; the device accepts only images signed with the installation key %s", fingerprint);
+		log_report(report_, source, true, loaded_);
+		return false;
 	}
-	Log::warn(kTag, "image from %s refused (%s): %s; the %s", source_name(source), report_kind_name(report_.kind),
-		report_.refusals[0].reason, loaded_ ? "loaded image stays" : "device keeps no image");
-	return false;
+	Log::info(kTag, "receiving an image of %u bytes from %s (format %u.%u, %s)", static_cast<unsigned>(length),
+		source_name(source), static_cast<unsigned>(h.major), static_cast<unsigned>(h.minor),
+		(h.flags & bin::kFlagSigned) != 0 ? "signed" : "unsigned");
+	stop_image(true);
+	slot_.begin_write();
+	receive_length_ = length;
+	received_ = 0;
+	receive_failed_ = false;
+	receive_error_ = nullptr;
+	receive_source_ = source;
+	receiving_.store(true, std::memory_order_release);
+	return true;
 }
 
-bool ImageService::load(const char* text, size_t length, Source source, bool store, const uint8_t* signature,
-	ImageBody* holder, Callback stored) {
-	bool outer = load_depth_++ == 0;
-	if (outer && probe_ != nullptr) {
+bool ImageService::receive_write(const void* data, size_t length) {
+	if (!receiving() || receive_failed_) {
+		return false;
+	}
+	if (length > receive_length_ - received_) {
+		receive_failed_ = true;
+		receive_error_ = "the body is longer than the header says";
+		return false;
+	}
+	const char* error = nullptr;
+	if (!slot_.write(received_, data, length, &error)) {
+		receive_failed_ = true;
+		receive_error_ = error != nullptr ? error : "the slot refused a write";
+		return false;
+	}
+	received_ += length;
+	return true;
+}
+
+bool ImageService::receive_end() {
+	if (!receiving()) {
+		return false;
+	}
+	receiving_.store(false, std::memory_order_release);
+	report_.clear();
+	if (receive_failed_) {
+		report_.add(receive_error_ != nullptr && std::strstr(receive_error_, "longer") != nullptr ? Report::Kind::format
+																							   : Report::Kind::apply,
+			"", "%s (%u of %u bytes written)", receive_error_ != nullptr ? receive_error_ : "the slot refused a write",
+			static_cast<unsigned>(received_), static_cast<unsigned>(receive_length_));
+		log_report(report_, receive_source_, false, false);
+		if (changed_) {
+			changed_();
+		}
+		return false;
+	}
+	if (received_ < receive_length_) {
+		report_.add(Report::Kind::format, "header.length", "the header says %u bytes, the body has %u",
+			static_cast<unsigned>(receive_length_), static_cast<unsigned>(received_));
+		log_report(report_, receive_source_, false, false);
+		if (changed_) {
+			changed_();
+		}
+		return false;
+	}
+	return apply_slot(receive_length_, receive_source_, true);
+}
+
+void ImageService::receive_abort() {
+	if (!receiving()) {
+		return;
+	}
+	receiving_.store(false, std::memory_order_release);
+	report_.clear();
+	report_.add(Report::Kind::format, "header.length", "the header says %u bytes, the body has %u",
+		static_cast<unsigned>(receive_length_), static_cast<unsigned>(received_));
+	log_report(report_, receive_source_, false, false);
+	if (changed_) {
+		changed_();
+	}
+}
+
+bool ImageService::load(const uint8_t* bytes, size_t length, Source source) {
+	size_t head = length < bin::kHeaderSize ? length : bin::kHeaderSize;
+	if (!receive_begin(bytes, head, length, source)) {
+		return false;
+	}
+	receive_write(bytes, length);
+	return receive_end();
+}
+
+ImageService::SwapTable* ImageService::capture_values(const SwapTable* merge) {
+	SwapTable* next = new (std::nothrow) SwapTable();
+	size_t n = 0;
+	for (size_t i = 0; i < model_.size(); ++i) {
+		n += model_.get(static_cast<uint16_t>(i))->quality() != Quality::unknown ? 1 : 0;
+	}
+	size_t old = merge != nullptr ? merge->count : 0;
+	if (next == nullptr || !next->allocate(n + old)) {
+		Log::error(kTag, "no memory to keep %u values across the swap: they start unknown", static_cast<unsigned>(n + old));
+		delete next;
+		return nullptr;
+	}
+	for (size_t i = 0; i < model_.size(); ++i) {
+		const Datapoint* dp = model_.get(static_cast<uint16_t>(i));
+		if (dp->quality() == Quality::unknown) {
+			continue;
+		}
+		SwapTable::Entry& e = next->at(next->count++);
+		e.hash = bin::fnv1a(dp->name());
+		e.updated_ms = dp->updated_ms();
+		e.value = dp->value();
+		e.quality = dp->quality();
+		e.pending = dp->pending();
+		e.dropped = false;
+	}
+	size_t own = next->count;
+	for (size_t i = 0; i < old; ++i) {
+		const SwapTable::Entry& e = merge->at(i);
+		bool present = false;
+		for (size_t k = 0; k < own && !present; ++k) {
+			present = next->at(k).hash == e.hash;
+		}
+		if (!present) {
+			next->at(next->count++) = e;
+		}
+	}
+	next->sort();
+	return next;
+}
+
+size_t ImageService::restore_values(const SwapTable* table) {
+	size_t carried = 0;
+	for (size_t i = 0; table != nullptr && i < model_.size(); ++i) {
+		const Datapoint* dp = model_.get(static_cast<uint16_t>(i));
+		const SwapTable::Entry* e = table->find(bin::fnv1a(dp->name()));
+		if (e != nullptr && e->value.type() == dp->type() &&
+			model_.carry(static_cast<uint16_t>(i), e->value, e->quality, e->updated_ms, e->pending) == DatapointStatus::ok) {
+			++carried;
+		}
+	}
+	return carried;
+}
+
+void ImageService::stop_image(bool keep) {
+	engine_.flush();
+	value_store_.flush();
+	history_.flush();
+	blocks_.flush();
+	if (keep) {
+		// The values of the model (the image's datapoints and the providers') by id hash (section 12).
+		// A table a failed image left keeps its entries where the model has none of that hash (the
+		// image's values; the model then holds only the providers').
+		SwapTable* next = capture_values(swap_);
+		if (loaded_) {
+			rules::Engine::Carry* carry = engine_.detach();
+			if (next != nullptr) {
+				next->carry = carry;
+			} else {
+				rules::Engine::free_carry(carry);
+			}
+		} else if (next != nullptr && swap_ != nullptr) {
+			next->carry = swap_->carry; // the rules of the image before the failed one
+			swap_->carry = nullptr;
+			rules::Engine::free_carry(engine_.detach());
+		} else {
+			rules::Engine::free_carry(engine_.detach());
+		}
+		if (next != nullptr || loaded_) {
+			delete swap_;
+			swap_ = next;
+		}
+	} else {
+		rules::Engine::free_carry(engine_.detach());
+	}
+	adapter_.clear();
+	time_master_.clear();
+	scheduler_.clear();
+	if (external_ != nullptr) {
+		external_->clear();
+	}
+	if (mqtt_ != nullptr) {
+		mqtt_->clear();
+	}
+	model_.clear();
+	for (size_t i = 0; i < provider_count_; ++i) {
+		providers_[i]->model_cleared();
+	}
+	dynamic_count_ = 0;
+	model_view_.clear();
+	view_.close();
+	if (mapped_ != nullptr) {
+		slot_.unmap();
+		mapped_ = nullptr;
+	}
+	loaded_ = false;
+	has_knx_ = false;
+	info_ = ImageInfo();
+	++token_;
+	// The providers' datapoints come back with the new image (their values through the table), or
+	// with the reload after a refusal; a generic interim would reconfigure their devices.
+	if (changed_) {
+		changed_();
+	}
+}
+
+void ImageService::drop_swap() {
+	delete swap_;
+	swap_ = nullptr;
+}
+
+bool ImageService::apply_slot(size_t length, Source source, bool check_signature) {
+	uint64_t begin = controller_.clock().monotonic_ms();
+	report_.clear();
+	(void)length;
+	mapped_ = slot_.map();
+	if (mapped_ == nullptr) {
+		report_.add(Report::Kind::apply, "", "the image slot cannot be mapped");
+		log_report(report_, source, false, false);
+		if (changed_) {
+			changed_();
+		}
+		return false;
+	}
+	auto refuse = [&]() {
+		log_report(report_, source, false, false);
+		view_.close();
+		slot_.unmap();
+		mapped_ = nullptr;
+		blocks_.clear(false); // the records and overrides stay for the image deployed next
+		if (provider_count_ > 0) {
+			reload_dynamic("no image");
+			restore_values(swap_);
+		}
+		if (changed_) {
+			changed_();
+		}
+		return false;
+	};
+	if (!check_crc(mapped_, report_)) {
+		return refuse();
+	}
+	const bin::Header& h = *reinterpret_cast<const bin::Header*>(mapped_);
+	if (check_signature && (h.flags & bin::kFlagSigned) != 0) {
+		uint8_t key[kEd25519KeySize];
+		if (load_installation_key(controller_.settings(), key) == KeyState::ok) {
+			size_t signed_end = h.length - bin::kSignatureSize;
+			if (!image_signature_valid(reinterpret_cast<const char*>(mapped_), signed_end, mapped_ + signed_end, key)) {
+				char fingerprint[kFingerprintSize];
+				key_fingerprint(key, fingerprint);
+				report_.add(Report::Kind::bad_signature, "signature",
+					"the signature does not verify under the installation key %s", fingerprint);
+				return refuse();
+			}
+		}
+	}
+	if (!check_structure(mapped_, report_)) {
+		return refuse();
+	}
+	if (probe_ != nullptr && !probe_open_) {
 		probe_open_ = true;
 		probe_->load_begun();
 	}
-	bool ok = load_steps(text, length, source, store, signature, holder, stored);
-	if (outer) {
-		end_probe(ok);
-	}
-	--load_depth_;
-	return ok;
-}
-
-void ImageService::end_probe(bool ok) {
-	// Only the outer load's: a restore within a failed load reports its phases into the outer one.
-	if (probe_open_ && load_depth_ == 1) {
-		probe_open_ = false;
-		if (probe_ != nullptr) {
-			probe_->load_ended(ok);
-		}
-	}
-}
-
-bool ImageService::load_steps(const char* text, size_t length, Source source, bool store, const uint8_t* signature,
-	ImageBody* holder, Callback stored) {
-	uint64_t begin = controller_.clock().monotonic_ms();
-	if (store && store_pending()) {
-		// The worker reads the previous image's body: refused before anything is looked at (#68).
-		report_.clear();
-		report_.add(Report::Kind::busy, "", "the previous image (revision %u) is still being stored: deploy again "
-			"in a moment", static_cast<unsigned>(answer_.info.revision));
-		Log::warn(kTag, "image from %s refused: the previous one is still being stored; the %s", source_name(source),
-			loaded_ ? "loaded image stays" : "device keeps no image");
-		return false;
-	}
-	// An image above the limit is refused as too large by the loader, before its signature counts.
-	if (length <= kMaxImageBytes && !authorize(text, length, source, signature)) {
-		return false;
-	}
-	// The steps' times for the split line below (homecontrol #66: the load holds the loop).
-	const Clock& clock = controller_.clock();
-	uint64_t t_signature = clock.monotonic_ms();
-	phase("signature");
+	phase("validated");
+	uint64_t t_validated = controller_.clock().monotonic_ms();
+	view_.open(mapped_);
 	Plan* plan = new (std::nothrow) Plan();
 	if (plan == nullptr) {
-		report_.clear();
 		report_.add(Report::Kind::no_memory, "", "no memory to start the load");
-		Log::error(kTag, "image (%s) not loaded: no memory", source_name(source));
-		return false;
+		return refuse();
 	}
-	if (!parse_plan(text, length, *plan, report_, probe_)) {
-		Log::warn(kTag, "image from %s refused (%s): %u problem%s; the %s", source_name(source),
-			report_kind_name(report_.kind), static_cast<unsigned>(report_.total), report_.total == 1 ? "" : "s",
-			loaded_ ? "loaded image stays" : "device keeps no image");
-		for (size_t i = 0; i < report_.count; ++i) {
-			Log::warn(kTag, "  %s: %s", report_.refusals[i].path[0] != '\0' ? report_.refusals[i].path : "(image)",
-				report_.refusals[i].reason);
-		}
+	char language[setting::kMaxUiLangLength + 1];
+	read_ui_lang(controller_.settings(), language, kTag); // labels in the device's language (spec/rules.md 2.2)
+	Loader loader(controller_.clock(), history_limits_.cap_bytes, language);
+	loader.set_archive_cap(history_limits_.archive_cap_bytes);
+	loader.set_probe(probe_);
+	if (!loader.build(view_, *plan, report_)) {
 		delete plan;
+		return refuse();
+	}
+	uint64_t t_plan = controller_.clock().monotonic_ms();
+	if (!apply(*plan, source)) {
+		delete plan;
+		view_.close();
+		slot_.unmap();
+		mapped_ = nullptr;
 		return false;
 	}
-	size_t arena = plan->arena.bytes();
-	size_t arena_used = plan->arena.used();
-	uint64_t t_parse = clock.monotonic_ms();
-	// A provider reload parses the text again (issue #45 item 9) when it can be read back: stored now
-	// or off the loop, or the stored image itself.
-	bool readable = store || source == Source::boot || source == Source::restore;
-	bool ok = apply(*plan, source, readable);
-	if (plan != plan_) {
-		delete plan; // not kept for the providers' reloads
-	}
-	if (!ok) {
-		return false;
-	}
-	loaded_length_ = length;
-	loaded_crc_ = persist::crc32(0, text, length);
-	phase("release");
-	uint64_t t_apply = clock.monotonic_ms();
-	// 7c: the MQTT client, from the applied text (its datapoints are resolved by name against the
-	// model just loaded; without an `mqtt` member it is cleared). The loader checked the member, so
-	// a refusal here is a resource problem: logged, and MQTT stands down rather than keep the old image's.
+	// The components hold what they need (copies, or pointers into the slot): the plan's tables go.
+	// A reload for the providers builds them again from the slot (no parse; reload_dynamic()).
+	bool has_mqtt = plan->has_mqtt;
+	size_t tables = plan->arena.bytes();
+	delete plan;
+	drop_swap(); // applied: the values found their datapoints
+	uint64_t t_apply = controller_.clock().monotonic_ms();
 	if (mqtt_ != nullptr) {
 		const char* mqtt_error = nullptr;
-		if (!mqtt_->configure_image(text, length, &mqtt_error)) {
-			Log::error(kTag, "the MQTT client refused the image's mqtt member: %s; MQTT is off until the next load",
+		if (has_mqtt && !mqtt_->configure_image(view_, &mqtt_error)) {
+			Log::error(kTag, "the MQTT client refused the image's mqtt record: %s; MQTT is off until the next load",
 				mqtt_error != nullptr ? mqtt_error : "?");
+			mqtt_->clear();
+		} else if (!has_mqtt) {
 			mqtt_->clear();
 		}
 	}
-	report_.clear();
-	uint64_t t_mqtt = clock.monotonic_ms();
-	phase("mqtt");
-	view_.build(text, length, model_);
-	uint64_t t_view = clock.monotonic_ms();
-	phase("view");
-	bool background = false;
-	if (store && holder != nullptr && worker_ != nullptr) {
-		background = store_off_loop(text, length, *holder, stored);
-	}
-	if (store && !background) {
-		const char* error = nullptr;
-		stored_ok_ = store_.write(text, length, &error);
-		std::snprintf(store_error_, sizeof(store_error_), "%s", stored_ok_ ? "" : error);
-		if (!stored_ok_) {
-			stored_beyond(length, store_error_, sizeof(store_error_));
-			Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", store_error_);
-			keep_plan_of(text, length);
-		} else {
-			warn_storable(length);
-		}
-		if (stats_ != nullptr) {
-			stats_->refresh();
-		}
-	} else if (background) {
-		// stored_ok_/store_error_ say "being stored" (store_off_loop) until store_done().
-	} else if (source != Source::boot && source != Source::restore) {
-		stored_ok_ = false;
-		std::snprintf(store_error_, sizeof(store_error_), "not stored");
-	}
-	uint64_t t_store = clock.monotonic_ms();
-	phase("store");
-	end_probe(true); // before the summary reads the heap (the ESP probe's phase minimum ends with it)
+	model_view_.build(view_, model_);
+	++token_;
+	end_probe(true);
 	MemoryInfo memory = controller_.system().memory();
-	Log::info(kTag, "image '%s' revision %u (%s, schema %s) loaded from %s in %u ms: %u datapoints (%u KNX), %u rules, "
-		"%u schedules, %u functions, %u locations, %u history rings%s; %u bytes, load tables %u of %u bytes used%s, "
-		"UI model %u of %u bytes used",
+	Log::info(kTag, "image '%s' revision %u (%s, format %u.%u, schema %s) loaded from %s in %u ms: %u datapoints (%u KNX), "
+		"%u rules, %u schedules, %u functions, %u locations, %u history rings%s; %u bytes in the slot, tables %u B",
 		info_.project_id, static_cast<unsigned>(info_.revision), info_.name[0] != '\0' ? info_.name : "unnamed",
-		info_.schema_version, source_name(source), static_cast<unsigned>(controller_.clock().monotonic_ms() - begin),
+		static_cast<unsigned>(info_.format_major), static_cast<unsigned>(info_.format_minor), info_.schema_version,
+		source_name(source), static_cast<unsigned>(controller_.clock().monotonic_ms() - begin),
 		static_cast<unsigned>(info_.datapoints), static_cast<unsigned>(info_.knx_datapoints),
 		static_cast<unsigned>(info_.rules), static_cast<unsigned>(info_.schedules),
 		static_cast<unsigned>(info_.functions), static_cast<unsigned>(info_.locations),
 		static_cast<unsigned>(info_.history_rings), info_.time_master ? ", time master" : "",
-		static_cast<unsigned>(length), static_cast<unsigned>(arena_used), static_cast<unsigned>(arena),
-		plan_ != nullptr ? " (kept for the providers' reloads)" : "", static_cast<unsigned>(view_.used()),
-		static_cast<unsigned>(view_.bytes()));
+		static_cast<unsigned>(info_.bytes), static_cast<unsigned>(tables));
 	if (blocks_.size() > 0) {
 		blocks::BlockMemory bm = blocks_.memory();
 		Log::info(kTag, "  %u block%s: runtime %u B, compiled %u B", static_cast<unsigned>(blocks_.size()),
 			blocks_.size() == 1 ? "" : "s", static_cast<unsigned>(bm.runtime), static_cast<unsigned>(bm.set));
 	}
-	// Its own line: the one above is cut at the log's message length. The lowest figure since boot
-	// covers this load (homecontrol #66: it must stay above 30 KB during a deploy).
 	Log::info(kTag, "  heap after the load %u B free, lowest since boot %u B", static_cast<unsigned>(memory.free_bytes),
 		static_cast<unsigned>(memory.min_free_bytes));
-	Log::info(kTag, "  steps: signature %u ms, parse %u ms, apply %u ms, MQTT %u ms, UI model %u ms, store %u ms%s",
-		static_cast<unsigned>(t_signature - begin), static_cast<unsigned>(t_parse - t_signature),
-		static_cast<unsigned>(t_apply - t_parse), static_cast<unsigned>(t_mqtt - t_apply),
-		static_cast<unsigned>(t_view - t_mqtt), static_cast<unsigned>(t_store - t_view),
-		background ? " (started off the loop)" : "");
+	Log::info(kTag, "  steps: checks %u ms, tables %u ms, apply %u ms", static_cast<unsigned>(t_validated - begin),
+		static_cast<unsigned>(t_plan - t_validated), static_cast<unsigned>(t_apply - t_plan));
 	if (info_.zigbee_datapoints > 0 || dynamic_count_ > 0) {
-		Log::info(kTag, "  %u Zigbee binding(s); %u datapoint(s) of the providers", static_cast<unsigned>(info_.zigbee_datapoints),
-			static_cast<unsigned>(dynamic_count_));
+		Log::info(kTag, "  %u Zigbee binding(s); %u datapoint(s) of the providers",
+			static_cast<unsigned>(info_.zigbee_datapoints), static_cast<unsigned>(dynamic_count_));
 	}
 	if (changed_) {
 		changed_();
@@ -389,95 +632,16 @@ bool ImageService::load_steps(const char* text, size_t length, Source source, bo
 	return true;
 }
 
-bool ImageService::store_off_loop(const char* text, size_t length, ImageBody& holder, Callback stored) {
-	if (holder.text() != text || !holder.active()) {
-		Log::warn(kTag, "the image is stored on the loop: the body handed over does not hold its text");
-		return false;
+void ImageService::end_probe(bool ok) {
+	if (probe_ != nullptr && probe_open_) {
+		probe_open_ = false;
+		probe_->load_ended(ok);
 	}
-	// The fields the job reads, before it may start.
-	pending_text_ = text;
-	pending_length_ = length;
-	job_ok_ = false;
-	job_error_ = nullptr;
-	job_ms_ = 0;
-	store_pending_.store(true, std::memory_order_release);
-	const char* error = nullptr;
-	if (!worker_->run(Callback{&ImageService::store_job, this}, Callback::member<ImageService, &ImageService::store_done>(this),
-			&error)) {
-		store_pending_.store(false, std::memory_order_release);
-		pending_text_ = nullptr;
-		pending_length_ = 0;
-		Log::warn(kTag, "the image is stored on the loop: the worker did not start (%s)", error != nullptr ? error : "?");
-		return false;
-	}
-	pending_body_.take(holder);
-	stored_ = stored;
-	stored_ok_ = false;
-	std::snprintf(store_error_, sizeof(store_error_), "being stored");
-	answer_.ticket = answer_.ticket + 1 != 0 ? answer_.ticket + 1 : 1;
-	answer_.info = info_;
-	answer_.source = source_;
-	answer_.stored = false;
-	answer_.error[0] = '\0';
-	return true;
-}
-
-void ImageService::store_job(void* context) {
-	// On the worker's thread: only the held text and the ImageStore (doc/persistence.md "Threads").
-	ImageService& self = *static_cast<ImageService*>(context);
-	uint64_t start = self.controller_.clock().monotonic_ms();
-	const char* error = nullptr;
-	self.job_ok_ = self.store_.write(self.pending_text_, self.pending_length_, &error);
-	self.job_error_ = error;
-	self.job_ms_ = static_cast<uint32_t>(self.controller_.clock().monotonic_ms() - start);
-}
-
-void ImageService::store_done() {
-	stored_ok_ = job_ok_;
-	std::snprintf(store_error_, sizeof(store_error_), "%s",
-		job_ok_ ? "" : job_error_ != nullptr ? job_error_ : "the storage refused a write");
-	if (!job_ok_) {
-		stored_beyond(pending_length_, store_error_, sizeof(store_error_));
-	}
-	answer_.stored = stored_ok_;
-	std::snprintf(answer_.error, sizeof(answer_.error), "%s", store_error_);
-	if (stored_ok_) {
-		Log::info(kTag, "image '%s' revision %u stored (%u bytes in %u ms, off the loop)", answer_.info.project_id,
-			static_cast<unsigned>(answer_.info.revision), static_cast<unsigned>(pending_length_),
-			static_cast<unsigned>(job_ms_));
-		warn_storable(pending_length_);
-	} else {
-		Log::error(kTag, "the image runs but is not stored (%s): after a restart the previous one loads", store_error_);
-		keep_plan_of(pending_text_, pending_length_);
-	}
-	if (stats_ != nullptr) {
-		stats_->refresh(); // the next poll's free space and storable (homecontrol #74)
-	}
-	pending_text_ = nullptr;
-	pending_length_ = 0;
-	pending_body_.release(); // the staging area is free for the next deploy
-	store_pending_.store(false, std::memory_order_release);
-	Callback stored = stored_;
-	stored_ = Callback();
-	if (stored) {
-		stored();
-	}
-}
-
-ImageService::StoreAnswer ImageService::store_answer(uint32_t ticket, JsonWriter& json) const {
-	if (ticket == 0 || ticket != answer_.ticket) {
-		return StoreAnswer::superseded;
-	}
-	if (store_pending()) {
-		return StoreAnswer::pending;
-	}
-	write_info_of(json, answer_.info, answer_.source, answer_.stored, answer_.error);
-	return StoreAnswer::ready;
 }
 
 void ImageService::apply_settings(const Plan& plan) {
 	Settings& settings = controller_.settings();
-	if (plan.has_tz && std::strcmp(controller_.time_zone(), plan.tz) != 0) {
+	if (plan.tz != nullptr && std::strcmp(controller_.time_zone(), plan.tz) != 0) {
 		const char* error = nullptr;
 		if (controller_.set_time_zone(plan.tz, &error)) {
 			Log::info(kTag, "time zone set by the image: %s", plan.tz);
@@ -499,7 +663,7 @@ void ImageService::apply_settings(const Plan& plan) {
 			}
 		}
 	}
-	if (plan.has_ntp) {
+	if (plan.ntp != nullptr) {
 		char current[Settings::kMaxStringLength + 1] = {};
 		if (settings.get_string(setting::kNtpServer, current, sizeof(current)) != SettingsStatus::ok ||
 			std::strcmp(current, plan.ntp) != 0) {
@@ -559,13 +723,11 @@ bool ImageService::compose(const Plan* plan, Composed& out, Report& report) {
 		total += count;
 	}
 	if (total > DatapointModel::kMaxDatapoints) {
-		report.add(Report::Kind::invalid, "", "the image and the providers need %u datapoints, more than the model holds",
+		report.add(Report::Kind::apply, "", "the image and the providers need %u datapoints, more than the model holds",
 			static_cast<unsigned>(total));
 		return false;
 	}
 	if (total == out.image_count) {
-		// The providers add nothing: the plan's table as it is (its names are unique, the loader
-		// checked them), no copy beside the old image (homecontrol #70).
 		out.specs = out.image_count > 0 ? plan->datapoints : nullptr;
 		out.count = total;
 		return true;
@@ -586,7 +748,7 @@ bool ImageService::compose(const Plan* plan, Composed& out, Report& report) {
 		for (size_t k = 0; k < part.count; ++k) {
 			composed[part.first + k] = part.specs[k].spec;
 			if (part.specs[k].spec.name == nullptr) {
-				report.add(Report::Kind::invalid, "", "the provider '%s' gave a datapoint without a name",
+				report.add(Report::Kind::apply, "", "the provider '%s' gave a datapoint without a name",
 					part.provider->provider_name());
 				ok = false;
 			}
@@ -596,7 +758,6 @@ bool ImageService::compose(const Plan* plan, Composed& out, Report& report) {
 	if (!ok) {
 		return false;
 	}
-	// Names are unique across the image and the providers.
 	for (size_t i = 0; i < total; ++i) {
 		order[i] = static_cast<uint32_t>(i);
 	}
@@ -622,11 +783,11 @@ bool ImageService::compose(const Plan* plan, Composed& out, Report& report) {
 		ok = false;
 		if (a < out.image_count) {
 			char path[32];
-			std::snprintf(path, sizeof(path), "datapoints[%u].id", static_cast<unsigned>(a));
-			report.add(Report::Kind::invalid, path, "'%s' is also a datapoint of the provider '%s'", specs[a].name,
+			std::snprintf(path, sizeof(path), "datapoints[%u].name", static_cast<unsigned>(a));
+			report.add(Report::Kind::apply, path, "'%s' is also a datapoint of the provider '%s'", specs[a].name,
 				provider_of(b));
 		} else {
-			report.add(Report::Kind::invalid, "", "'%s' is a datapoint of the provider '%s' and of the provider '%s'",
+			report.add(Report::Kind::apply, "", "'%s' is a datapoint of the provider '%s' and of the provider '%s'",
 				specs[a].name, provider_of(a), provider_of(b));
 		}
 	}
@@ -667,10 +828,9 @@ bool ImageService::bind_persistence(const Plan& plan, Source source) {
 }
 
 bool ImageService::bind_technologies(const Plan& plan, Source source) {
-	// 6: KNX.
 	const char* error = nullptr;
 	if (!adapter_.configure(plan.mappings, plan.mapping_count, &error)) {
-		return fail_applied(source, "datapoints", "the KNX adapter refused the mapping: %s", error);
+		return fail_applied(source, "knx.bindings", "the KNX adapter refused the mapping: %s", error);
 	}
 	if (plan.has_time_master) {
 		if (!time_master_.configure(plan.time_master, &error)) {
@@ -679,7 +839,7 @@ bool ImageService::bind_technologies(const Plan& plan, Source source) {
 		size_t total = plan.mapping_count + knx::TimeMaster::kMaxOutputs;
 		knx::KnxMapping* merged = new (std::nothrow) knx::KnxMapping[total];
 		if (merged == nullptr) {
-			return fail_applied(source, "knx", "no memory for the merged KNX mapping");
+			return fail_applied(source, "knx.bindings", "no memory for the merged KNX mapping");
 		}
 		for (size_t i = 0; i < plan.mapping_count; ++i) {
 			merged[i] = plan.mappings[i];
@@ -693,19 +853,15 @@ bool ImageService::bind_technologies(const Plan& plan, Source source) {
 	} else {
 		time_master_.clear();
 	}
-
-	// 7: schedules. Their time datapoints take their values as no events (spec/schedules.md 2.2).
 	ScheduleStatus schedule_status = scheduler_.load(plan.schedules, plan.schedule_count);
 	if (schedule_status != ScheduleStatus::ok) {
 		return fail_applied(source, "schedules", "the scheduler refused: %s", schedule_status_name(schedule_status));
 	}
 	engine_.quietly([this] { scheduler_.publish_times(); });
-
-	// 7b: external values, after the model they bind to.
 	if (external_ != nullptr) {
-		if (plan.has_external) {
-			if (!external_->configure_json(plan.external.data, plan.external.length, &error)) {
-				return fail_applied(source, "external", "the external values refused: %s", error);
+		if (plan.external_count > 0) {
+			if (!external_->configure(plan.external, plan.external_count, &error)) {
+				return fail_applied(source, "external.sources", "the external values refused: %s", error);
 			}
 		} else {
 			external_->clear();
@@ -714,110 +870,73 @@ bool ImageService::bind_technologies(const Plan& plan, Source source) {
 	return true;
 }
 
-bool ImageService::apply(Plan& plan, Source source, bool readable) {
-	report_.clear();
-	bool keep = provider_count_ > 0 && !readable;
-	// A plan kept for the reloads: the `external` text must not point into the image text, which is
-	// freed after the load (the rules are not loaded again).
-	if (keep && plan.has_external) {
-		char* copy = plan.arena.copy(plan.external.data, plan.external.length);
-		if (copy == nullptr) {
-			report_.add(Report::Kind::no_memory, "external", "no memory to keep the external sources");
-			return false;
-		}
-		plan.external.data = copy;
-	}
-	// The model: the image's datapoints, then the providers'.
+bool ImageService::apply(const Plan& constant_plan, Source source) {
+	Plan& plan = const_cast<Plan&>(constant_plan);
 	Composed composed;
 	if (!compose(&plan, composed, report_)) {
-		Log::warn(kTag, "image from %s refused: it does not compose with the providers' datapoints; the %s",
-			source_name(source), loaded_ ? "loaded image stays" : "device keeps no image");
-		for (size_t i = 0; i < report_.count; ++i) {
-			Log::warn(kTag, "  %s: %s", report_.refusals[i].path[0] != '\0' ? report_.refusals[i].path : "(image)",
-				report_.refusals[i].reason);
+		log_report(report_, source, false, false);
+		blocks_.clear(false);
+		if (provider_count_ > 0) {
+			reload_dynamic("no image");
+			restore_values(swap_);
+		}
+		if (changed_) {
+			changed_();
 		}
 		return false;
 	}
-	// Where each datapoint of the new model was in the old one (the rules follow it by that); its own
-	// allocation of two bytes per datapoint, not an arena block (homecontrol #70).
-	struct Previous {
-		uint16_t* ids = nullptr;
-		~Previous() { delete[] ids; }
-	} previous_table;
-	previous_table.ids = composed.count > 0 ? new (std::nothrow) uint16_t[composed.count] : nullptr;
-	uint16_t* previous = previous_table.ids;
-	if (composed.count > 0 && previous == nullptr) {
-		report_.add(Report::Kind::no_memory, "", "no memory for the swap table");
-		return false;
-	}
-	for (size_t i = 0; i < composed.count; ++i) {
-		const Datapoint* old = model_.find(composed.specs[i].name);
-		previous[i] = old != nullptr ? old->id() : rules::kNone;
-	}
 	phase("compose");
-
-	// 1, 2: the rules' queued events still name the old ids; then the model.
-	engine_.flush();
-	DatapointStatus status = model_.load(composed.specs, composed.count, true);
+	DatapointStatus status = model_.load(composed.specs, composed.count);
 	if (status != DatapointStatus::ok) {
 		report_.add(status == DatapointStatus::out_of_memory ? Report::Kind::no_memory : Report::Kind::apply,
-			"datapoints", "the datapoint model refused the image: %s; the %s", datapoint_status_name(status),
-			loaded_ ? "loaded image stays" : "device keeps no image");
-		Log::error(kTag, "image not applied: the datapoint model refused it (%s)", datapoint_status_name(status));
+			"datapoints", "the datapoint model refused the image: %s", datapoint_status_name(status));
+		log_report(report_, source, false, false);
+		blocks_.clear(false);
+		if (provider_count_ > 0) {
+			reload_dynamic("no image");
+			restore_values(swap_);
+		}
+		if (changed_) {
+			changed_();
+		}
 		return false;
 	}
+	// The values of the swap (spec 12): a datapoint whose id hash and value type are in the table.
+	if (swap_ != nullptr && swap_->count > 0) {
+		size_t carried = restore_values(swap_);
+		Log::info(kTag, "swap: %u of %u kept values found their datapoint", static_cast<unsigned>(carried),
+			static_cast<unsigned>(swap_->count));
+	}
 	phase("model");
-	// From here on the previous image is gone from RAM.
-	bool was_loaded = loaded_;
-	loaded_ = false;
 	bind_providers(&plan, composed);
-	// The applied image's composition includes every provider change until now.
 	if (reload_pending_) {
 		controller_.loop().cancel(reload_timer_);
 		reload_pending_ = false;
 	}
-
-	// 3: settings.
 	apply_settings(plan);
-
-	// 4: persistence, before anything reports (the scheduler's outputs).
 	if (!bind_persistence(plan, source)) {
 		return false;
 	}
 	phase("persistence");
-
-	// 5: rules.
-	JsonSpanDocument document;
-	JsonSpan rules_span = plan.rules;
-	if (!plan.has_rules) {
-		rules_span = JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array};
-	}
-	PlanSchedules schedules(plan);
-	// The set the loader's check compiled; the text is compiled here only for a plan without one
-	// (an image without rules).
-	rules::LoadResult result = plan.rules_compiled ? engine_.adopt(std::move(plan.rule_set), previous)
-		: engine_.load(document.value(rules_span), &schedules, previous);
-	plan.rules_compiled = false;
+	rules::LoadResult result = engine_.adopt(std::move(plan.rule_set), swap_ != nullptr ? swap_->carry : nullptr);
 	if (!result.ok()) {
-		return fail_applied(source, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
+		Report::Kind kind = result.error == rules::LoadError::out_of_memory ? Report::Kind::no_memory : Report::Kind::apply;
+		fail_applied(source, result.path, "rule '%s': %s: %s", result.rule, rules::load_error_name(result.error),
 			result.text);
+		report_.kind = kind;
+		return false;
 	}
 	phase("engine");
-	// 5b: the blocks, compiled by the loader's check (spec/blocks.md); the engine calls them.
-	bool blocks_adopted = plan.blocks_compiled ? blocks_.adopt(std::move(plan.block_set)) : blocks_.adopt(blocks::BlockSet());
-	plan.blocks_compiled = false;
-	if (!blocks_adopted) {
-		return fail_applied(source, "blocks", "no memory for the blocks' runtime");
+	if (!blocks_.adopt(std::move(plan.block_set))) {
+		fail_applied(source, "blocks", "no memory for the blocks' runtime");
+		report_.kind = Report::Kind::no_memory;
+		return false;
 	}
 	phase("block runtime");
-
-	// 6, 7, 7b: KNX and the time master, the schedules, the external values.
 	if (!bind_technologies(plan, source)) {
 		return false;
 	}
 	phase("technologies");
-
-	// 8: start.
 	info_ = plan.info;
 	source_ = source;
 	loaded_ = true;
@@ -827,122 +946,9 @@ bool ImageService::apply(Plan& plan, Source source, bool readable) {
 	rules::StartReason reason = rules_started_ ? rules::StartReason::image : rules::StartReason::boot;
 	rules_started_ = true;
 	engine_.start(reason);
-	if (was_loaded) {
-		Log::info(kTag, "image swapped; rules started (%s)", rules::start_reason_name(reason));
-	}
+	Log::info(kTag, "image applied; rules started (%s)", rules::start_reason_name(reason));
 	phase("start");
-	// Kept for the providers' reloads only when the text cannot be read back; the rules' text is
-	// gone with the image text.
-	drop_plan();
-	if (keep) {
-		plan.has_rules = false;
-		plan.rules = JsonSpan{};
-		plan_ = &plan;
-	}
 	return true;
-}
-
-bool ImageService::parse_plan(const char* text, size_t length, Plan& plan, Report& report, LoadProbe* probe) {
-	char language[setting::kMaxUiLangLength + 1];
-	read_ui_lang(controller_.settings(), language, kTag); // as the engine reads it: the rules compile once
-	Loader loader(controller_.clock(), history_limits_.cap_bytes, language);
-	loader.set_archive_cap(history_limits_.archive_cap_bytes);
-	loader.set_probe(probe);
-	return loader.parse(text, length, plan, report);
-}
-
-void ImageService::keep_plan_of(const char* text, size_t length) {
-	if (provider_count_ == 0 || !loaded_ || plan_ != nullptr || text == nullptr || length != loaded_length_ ||
-		persist::crc32(0, text, length) != loaded_crc_) {
-		return;
-	}
-	Plan* plan = new (std::nothrow) Plan();
-	Report* report = plan != nullptr ? new (std::nothrow) Report() : nullptr;
-	bool ok = report != nullptr && parse_plan(text, length, *plan, *report, nullptr);
-	if (ok && plan->has_external) {
-		char* copy = plan->arena.copy(plan->external.data, plan->external.length);
-		ok = copy != nullptr;
-		plan->external.data = copy;
-	}
-	delete report;
-	if (!ok) {
-		delete plan;
-		Log::warn(kTag, "the image's tables are not kept for the providers' reloads (no memory): a Zigbee device "
-			"that joins appears with the next image load");
-		return;
-	}
-	plan->has_rules = false;
-	plan->rules = JsonSpan{};
-	plan->has_mqtt = false;
-	plan->mqtt = JsonSpan{};
-	plan->rule_set = rules::RuleSet();
-	plan->rules_compiled = false;
-	plan->block_set = blocks::BlockSet();
-	plan->blocks_compiled = false;
-	plan_ = plan;
-	Log::info(kTag, "the image's tables are kept for the providers' reloads (%u bytes): it cannot be read back",
-		static_cast<unsigned>(plan->arena.bytes()));
-}
-
-Plan* ImageService::reparse(ImageBody& body, const char* why) {
-	const char* text = nullptr;
-	size_t length = 0;
-	if (store_pending()) {
-		text = pending_text_; // the received text, held while it is stored (the loaded image)
-		length = pending_length_;
-	} else {
-		size_t bytes = 0;
-		if (!store_.stored(bytes)) {
-			refuse_dynamic("", "the loaded image is not stored: the providers' datapoints join with the next image load");
-			Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
-			return nullptr;
-		}
-		const char* refusal = nullptr;
-		bool missing = false;
-		const char* error = nullptr;
-		if (!body.begin(bytes, stored_staging_, &refusal) || !store_.read(body, missing, &error)) {
-			refuse_dynamic("", "the stored image cannot be read for the reload (%u bytes): %s",
-				static_cast<unsigned>(bytes), error != nullptr ? error : "no memory");
-			Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
-			return nullptr;
-		}
-		text = body.text();
-		length = body.size();
-	}
-	if (text == nullptr || length != loaded_length_ || persist::crc32(0, text, length) != loaded_crc_) {
-		refuse_dynamic("", "the stored image is not the loaded one (its store failed or it changed): the providers' "
-			"datapoints join with the next image load");
-		Log::warn(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
-		return nullptr;
-	}
-	Plan* plan = new (std::nothrow) Plan();
-	Report* report = plan != nullptr ? new (std::nothrow) Report() : nullptr;
-	if (report == nullptr) {
-		delete plan;
-		refuse_dynamic("", "no memory to read the loaded image again for the reload");
-		Log::error(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
-		return nullptr;
-	}
-	bool ok = parse_plan(text, length, *plan, *report, nullptr);
-	if (!ok) {
-		refuse_dynamic(report->count > 0 ? report->refusals[0].path : "", "the loaded image does not parse again: %s",
-			report->count > 0 ? report->refusals[0].reason : "?");
-		Log::error(kTag, "model not reloaded (%s): %s", why, dynamic_refusal()->reason);
-		delete report;
-		delete plan;
-		return nullptr;
-	}
-	delete report;
-	// What the reload uses: the tables of the datapoints, the bindings, the history, the schedules
-	// and the KNX mapping; the rules and blocks the check compiled go (the engine keeps its own).
-	plan->rule_set = rules::RuleSet();
-	plan->block_set = blocks::BlockSet();
-	return plan;
-}
-
-void ImageService::drop_plan() {
-	delete plan_;
-	plan_ = nullptr;
 }
 
 const Report::Refusal* ImageService::dynamic_refusal() const {
@@ -979,24 +985,24 @@ bool ImageService::reload_dynamic(const char* why) {
 		Log::error(kTag, "model reload (%s) refused from a datapoint listener", why);
 		return false;
 	}
-	// The loaded image's tables: parsed again from its text for this reload (issue #45 item 9), freed
-	// with the reload; or the plan kept for an image that cannot be read back.
-	struct Reparsed {
-		ImageBody body;
+	// The loaded image's tables, built again from the slot for this reload and freed with it.
+	struct Tables {
 		Plan* plan = nullptr;
-		~Reparsed() {
-			delete plan;
-			body.release();
-		}
-	} reparsed;
-	const Plan* plan = loaded_ ? plan_ : nullptr;
-	if (loaded_ && plan == nullptr) {
-		reparsed.plan = reparse(reparsed.body, why);
-		if (reparsed.plan == nullptr) {
+		~Tables() { delete plan; }
+	} tables;
+	if (loaded_) {
+		tables.plan = new (std::nothrow) Plan();
+		Report refusals;
+		Loader loader(controller_.clock(), history_limits_.cap_bytes);
+		loader.set_archive_cap(history_limits_.archive_cap_bytes);
+		loader.set_tables_only(true);
+		if (tables.plan == nullptr || !loader.build(view_, *tables.plan, refusals)) {
+			refuse_dynamic("", "no memory for the image's tables");
+			Log::error(kTag, "model not reloaded (%s): the image's tables could not be built", why);
 			return false;
 		}
-		plan = reparsed.plan;
 	}
+	const Plan* plan = tables.plan;
 	Report* report = new (std::nothrow) Report();
 	if (report == nullptr) {
 		Log::error(kTag, "model not reloaded (%s): no memory", why);
@@ -1028,20 +1034,20 @@ bool ImageService::reload_dynamic(const char* why) {
 		return false;
 	}
 	bind_providers(plan, composed);
-	// The load dropped the rule engine's binding of the parameter datapoints (spec/rules.md 8.6) and
-	// the block runtime's of its mirrors (spec/blocks.md 6).
-	engine_.bind_parameters();
-	blocks_.bind();
+	if (loaded_) {
+		// The load dropped the engine's binding of the parameter datapoints and the block runtime's
+		// of its mirrors.
+		engine_.bind_parameters();
+		blocks_.bind();
+	}
 	accept_dynamic();
 	++dynamic_reloads_;
-	// The image's datapoints are at their positions: the rules' ids stay valid. Every component that
-	// binds or indexes datapoints takes the new model, as in a swap (the bindings were dropped).
 	if (plan != nullptr && (!bind_persistence(*plan, source_) || !bind_technologies(*plan, source_))) {
-		return false; // torn down and restored (fail_applied)
+		return false; // torn down (fail_applied)
 	}
 	Log::info(kTag, "model reloaded (%s): %u datapoint(s) of the image, %u of the providers", why,
 		static_cast<unsigned>(composed.image_count), static_cast<unsigned>(dynamic_count_));
-	if (mqtt_ != nullptr) {
+	if (mqtt_ != nullptr && loaded_) {
 		const char* mqtt_error = nullptr;
 		if (!mqtt_->model_reloaded(&mqtt_error)) {
 			Log::error(kTag, "the MQTT client did not follow the model reload: %s", mqtt_error != nullptr ? mqtt_error : "?");
@@ -1120,9 +1126,6 @@ bool ImageService::remove_provider(DynamicSpecProvider& provider) {
 	if (started_) {
 		reload_dynamic("a provider was removed");
 	}
-	if (provider_count_ == 0) {
-		drop_plan();
-	}
 	return true;
 }
 
@@ -1134,43 +1137,26 @@ bool ImageService::fail_applied(Source source, const char* path, const char* for
 	va_end(args);
 	char where[Report::kMaxPath + 1];
 	std::snprintf(where, sizeof(where), "%s", path != nullptr ? path : "");
-	Log::error(kTag, "image from %s failed while it was applied at %s: %s", source_name(source), where, reason);
+	Log::error(kTag, "image from %s failed while it was applied at %s: %s; the device has no image", source_name(source),
+		where, reason);
 	tear_down();
-	if (!restoring_) {
-		size_t bytes = 0;
-		if (store_pending() || store_.stored(bytes)) {
-			Log::warn(kTag, "loading the stored image again");
-			restoring_ = true;
-			load_stored(Source::restore);
-			restoring_ = false;
-		} else {
-			Log::warn(kTag, "no stored image to return to: the device has no image");
-		}
-	}
-	if (!restoring_ && !loaded_ && provider_count_ > 0) {
+	if (provider_count_ > 0) {
 		reload_dynamic("no image after a failed apply");
+		restore_values(swap_);
 	}
 	report_.clear();
 	report_.add(Report::Kind::apply, where, "%s", reason);
-	if (changed_ && !restoring_) {
-		changed_(); // the model was torn down (and maybe restored)
+	if (changed_) {
+		changed_();
 	}
 	return false;
 }
 
 void ImageService::tear_down() {
-	// Without deleting persisted state: the stored image is loaded again next.
+	// The persisted state stays for the image deployed next; so does the swap table (I9).
 	engine_.flush();
-	model_.clear();
-	for (size_t i = 0; i < provider_count_; ++i) {
-		providers_[i]->model_cleared();
-	}
-	dynamic_count_ = 0;
-	drop_plan();
-	blocks_.clear(false); // the records and overrides stay for the image loaded next
-	NoSchedules none;
-	JsonSpanDocument document;
-	engine_.load(document.value(JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array}), &none, nullptr);
+	rules::Engine::free_carry(engine_.detach()); // a swap table of an image before stays (I9)
+	blocks_.clear(false);
 	adapter_.clear();
 	time_master_.clear();
 	scheduler_.clear();
@@ -1180,58 +1166,53 @@ void ImageService::tear_down() {
 	if (mqtt_ != nullptr) {
 		mqtt_->clear();
 	}
+	model_.clear();
+	for (size_t i = 0; i < provider_count_; ++i) {
+		providers_[i]->model_cleared();
+	}
+	dynamic_count_ = 0;
+	model_view_.clear();
+	view_.close();
+	if (mapped_ != nullptr) {
+		slot_.unmap();
+		mapped_ = nullptr;
+	}
 	loaded_ = false;
 	has_knx_ = false;
 	info_ = ImageInfo();
+	++token_;
 }
 
 bool ImageService::unload(const char** error) {
-	if (store_pending()) {
-		*error = "the image is still being stored: remove it in a moment";
-		Log::warn(kTag, "unload refused: the image is still being stored");
+	if (receiving()) {
+		*error = "an image is being received: remove it in a moment";
+		Log::warn(kTag, "unload refused: an image is being received");
 		return false;
 	}
-	engine_.flush();
 	bool had = loaded_;
-	loaded_ = false;
-	drop_plan();
-	// The providers' datapoints stay, with their values; everything else goes.
-	if (provider_count_ == 0 || !reload_dynamic("the image is removed")) {
-		model_.clear();
-		for (size_t i = 0; i < provider_count_; ++i) {
-			providers_[i]->model_cleared();
-		}
-		dynamic_count_ = 0;
-	}
+	size_t length = loaded_ ? info_.bytes : 0;
+	engine_.flush();
+	drop_swap();
+	SwapTable* values = provider_count_ > 0 ? capture_values(nullptr) : nullptr; // the providers' stay
+	tear_down();
 	blocks_.clear(true); // with their persisted records and overrides
-	NoSchedules none;
-	JsonSpanDocument document;
-	engine_.load(document.value(JsonSpan{kNoRules, sizeof(kNoRules) - 1, JsonSpan::Kind::array}), &none, nullptr);
-	if (external_ != nullptr) {
-		external_->clear();
-	}
-	if (mqtt_ != nullptr) {
-		mqtt_->clear();
-	}
-	adapter_.clear();
-	time_master_.clear();
 	scheduler_.load(nullptr, 0);
 	value_store_.load();
 	history_.load(nullptr, 0, 0);
-	has_knx_ = false;
-	info_ = ImageInfo();
+	if (provider_count_ > 0) {
+		reload_dynamic("the image is removed");
+		restore_values(values);
+	}
+	delete values;
 	report_.clear();
-	stored_ok_ = false;
-	store_error_[0] = '\0';
-	view_.clear();
 	if (changed_) {
 		changed_();
 	}
-	bool removed = store_.remove(error);
-	if (stats_ != nullptr) {
-		stats_->refresh();
+	if (length == 0) {
+		length = ImageSlot::kSector; // whatever the slot holds: its header goes
 	}
-	if (!removed) {
+	if (!slot_.erase(length, error)) {
+		Log::error(kTag, "the image slot could not be erased: %s", *error != nullptr ? *error : "?");
 		return false;
 	}
 	Log::info(kTag, "image %s: the device has no image (persisted values, rings and overrides removed)",
@@ -1258,101 +1239,68 @@ void ImageService::quietly(void (*report)(void* ctx), void* ctx) {
 	engine_.quietly([report, ctx] { report(ctx); });
 }
 
-ImageService::Storable ImageService::storable() const {
-	StorableKey key;
-	if (stats_ != nullptr) {
-		const StorageStats::Figures& figures = stats_->figures();
-		key.known = figures.has_free;
-		key.free = figures.free;
-	} else {
-		key.known = store_.free_space(key.free);
-	}
-	key.reserve = key.known ? history_.flash_to_come() : 0;
-	// A body takes one byte more in the staging: the NUL after the text (ImageBody::begin()).
-	key.shared = kMaxImageBytes + 1;
-	if (stored_staging_ != nullptr && stored_staging_->capacity() > 0 && stored_staging_->shared_capacity() <= kMaxImageBytes) {
-		key.shared = stored_staging_->shared_capacity();
-	}
-	if (storable_valid_ && key == storable_key_) {
-		return storable_;
-	}
-	Storable out;
-	out.storage = kMaxImageBytes;
-	if (key.known) {
-		out.storage = store_.storable(key.free > key.reserve ? key.free - key.reserve : 0);
-	}
-	out.staging = kMaxImageBytes;
-	if (key.shared <= kMaxImageBytes) {
-		out.staging = key.shared > 0 ? key.shared - 1 : 0;
-	}
-	out.bytes = out.storage < out.staging ? out.storage : out.staging;
-	storable_key_ = key;
-	storable_ = out;
-	storable_valid_ = true;
-	++storable_computations_;
-	return out;
+namespace {
+
+void write_crc(JsonWriter& json, const char* name, uint32_t crc) {
+	char text[12];
+	std::snprintf(text, sizeof(text), "%08x", static_cast<unsigned>(crc));
+	json.member(name, text);
 }
 
-size_t ImageService::receivable() const {
-	if (staging_ != nullptr && staging_->capacity() > 0 && staging_->capacity() <= kMaxImageBytes) {
-		return staging_->capacity() - 1; // and the NUL after the text
-	}
-	return kMaxImageBytes;
+void write_format(JsonWriter& json, const char* name, uint16_t major, uint16_t minor) {
+	char text[16];
+	std::snprintf(text, sizeof(text), "%u.%u", static_cast<unsigned>(major), static_cast<unsigned>(minor));
+	json.member(name, text);
 }
 
-void ImageService::stored_beyond(size_t length, char* error, size_t size) const {
-	Storable limit = storable();
-	if (length > limit.storage) {
-		size_t used = std::strlen(error);
-		std::snprintf(error + used, size - used, " (it stores at most %u bytes)", static_cast<unsigned>(limit.storage));
-	}
-}
-
-void ImageService::warn_storable(size_t length) const {
-	Storable limit = storable();
-	if (length > limit.staging) {
-		Log::warn(kTag, "the image (%u bytes) is stored, but larger than the %u bytes the device is sure to load again "
-			"beside a failed image: should a later deploy fail while applied, no image may run until a restart",
-			static_cast<unsigned>(length), static_cast<unsigned>(limit.staging));
-	}
-}
+} // namespace
 
 void ImageService::write_status(JsonWriter& json, bool full) const {
-	if (full) {
-		json.member("storable", static_cast<uint32_t>(storable().bytes));
-	}
+	(void)full;
 	json.member("loaded", loaded_);
+	json.member("slot", static_cast<uint32_t>(slot_.size()));
 	if (loaded_) {
 		json.member("project", info_.project_id)
 			.member("revision", info_.revision)
 			.member("name", info_.name)
-			.member("source", source_name(source_))
-			.member("datapoints", static_cast<uint32_t>(info_.datapoints))
+			.member("source", source_name(source_));
+		write_format(json, "format", info_.format_major, info_.format_minor);
+		json.member("schemaVersion", info_.schema_version).member("bytes", static_cast<uint32_t>(info_.bytes));
+		write_crc(json, "crc", info_.crc);
+		json.member("datapoints", static_cast<uint32_t>(info_.datapoints))
 			.member("rules", static_cast<uint32_t>(info_.rules))
 			.member("schedules", static_cast<uint32_t>(info_.schedules))
 			.member("blocks", static_cast<uint32_t>(info_.blocks))
 			.member("degraded", image_degraded());
+	} else if (receiving()) {
+		json.member("receiving", true);
 	} else if (!report_.ok()) {
-		json.member("refused", report_code(report_.kind));
+		json.member("refused", report_kind_code(report_.kind));
+		if (report_.count > 0) {
+			char reason[Report::kMaxPath + Report::kMaxReason + 4];
+			std::snprintf(reason, sizeof(reason), "%s: %s", report_.refusals[0].path, report_.refusals[0].reason);
+			json.member("reason", reason);
+		}
 	}
 }
 
 void ImageService::write_info(JsonWriter& json) const {
-	write_info_of(json, info_, source_, stored_ok_, store_error_);
+	write_info_of(json, info_, source_);
 }
 
-void ImageService::write_info_of(JsonWriter& json, const ImageInfo& info, Source source, bool stored,
-	const char* store_error) {
+void ImageService::write_info_of(JsonWriter& json, const ImageInfo& info, Source source) {
 	json.member("ok", true);
-	json.key("image").begin_object()
-		.member("schemaVersion", info.schema_version)
+	json.key("image").begin_object();
+	write_format(json, "format", info.format_major, info.format_minor);
+	json.member("schemaVersion", info.schema_version)
 		.member("projectId", info.project_id)
 		.member("revision", info.revision)
 		.member("generatedAt", info.generated_at)
 		.member("generator", info.generator)
 		.member("name", info.name)
-		.member("bytes", static_cast<uint32_t>(info.bytes))
-		.end_object();
+		.member("bytes", static_cast<uint32_t>(info.bytes));
+	write_crc(json, "crc", info.crc);
+	json.member("signed", info.is_signed).end_object();
 	json.key("counts").begin_object()
 		.member("datapoints", static_cast<uint32_t>(info.datapoints))
 		.member("knx", static_cast<uint32_t>(info.knx_datapoints))
@@ -1364,14 +1312,10 @@ void ImageService::write_info_of(JsonWriter& json, const ImageInfo& info, Source
 		.member("timeMaster", info.time_master)
 		.end_object();
 	json.member("source", source_name(source));
-	json.member("stored", stored);
-	if (!stored && store_error != nullptr && store_error[0] != '\0') {
-		json.member("storeError", store_error);
-	}
 }
 
 void ImageService::write_report(JsonWriter& json) const {
-	json.member("error", report_text(report_.kind)).member("code", report_code(report_.kind));
+	json.member("error", report_text(report_.kind)).member("code", report_kind_code(report_.kind));
 	json.key("refusals").begin_array();
 	for (size_t i = 0; i < report_.count; ++i) {
 		json.begin_object()

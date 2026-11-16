@@ -662,6 +662,100 @@ bool Timeline::parse(const JsonValue& json, const TimelineStates& states, bool i
 	return true;
 }
 
+namespace {
+
+/// The image's timeline as its source text (spec/rules.md 2.8), written from the binary records.
+void write_image_timeline(JsonWriter& json, const image::bin::View& view, size_t index,
+	const TimelineStates& states) {
+	using namespace image::bin;
+	struct TimelineRec {
+		uint16_t first_plan, first_assignment;
+		uint8_t plan_count, assignment_count, flags, reserved;
+	};
+	struct PlanRec {
+		uint32_t id, label;
+		uint16_t first_point;
+		uint8_t point_count, reserved;
+	};
+	struct AssignmentRec {
+		uint8_t plan, days;
+	};
+	static_assert(sizeof(TimelineRec) == 8 && sizeof(PlanRec) == 12 && sizeof(AssignmentRec) == 2, "records");
+	const TimelineRec& t = view.at<TimelineRec>(kRuleTimelines, index);
+	json.begin_object().member("adjustable", (t.flags & 0x01) != 0).key("plans").begin_array();
+	for (size_t p = 0; p < t.plan_count; ++p) {
+		const PlanRec& plan = view.at<PlanRec>(kRulePlans, t.first_plan + p);
+		json.begin_object().member("id", view.str(plan.id)).key("label");
+		write_label(json, view, plan.label);
+		json.key("points").begin_array();
+		for (size_t k = 0; k < plan.point_count; ++k) {
+			const TimelinePoint& pt = view.at<TimelinePoint>(kRulePoints, plan.first_point + k);
+			json.begin_object();
+			if (!pt.is_sun()) {
+				json.key("time");
+				write_time(json, pt.seconds);
+			} else {
+				json.member("sun", kSunNames[pt.sun - 1]);
+				if (pt.seconds != 0) {
+					json.member("offset", static_cast<int64_t>(pt.seconds) * 1000);
+				}
+				if ((pt.flags & TimelinePoint::kNotBefore) != 0) {
+					json.key("notBefore");
+					write_time(json, pt.not_before);
+				}
+				if ((pt.flags & TimelinePoint::kNotAfter) != 0) {
+					json.key("notAfter");
+					write_time(json, pt.not_after);
+				}
+			}
+			json.member("state", pt.state < states.count() ? states.id(pt.state) : "?");
+			json.end_object();
+		}
+		json.end_array().end_object();
+	}
+	json.end_array().key("assignments").begin_array();
+	for (size_t i = 0; i < t.assignment_count; ++i) {
+		const AssignmentRec& a = view.at<AssignmentRec>(kRuleAssignments, t.first_assignment + i);
+		json.begin_object();
+		if (a.days != 0) {
+			json.key("days").begin_array();
+			for (int d = 0; d < 7; ++d) {
+				if ((a.days & (1u << d)) != 0) {
+					json.number(static_cast<int32_t>(d + 1));
+				}
+			}
+			json.end_array();
+		}
+		const PlanRec& plan = view.at<PlanRec>(kRulePlans, t.first_plan + a.plan);
+		json.member("plan", view.str(plan.id));
+		json.end_object();
+	}
+	json.end_array().end_object();
+}
+
+} // namespace
+
+bool Timeline::from_image(const image::bin::View& view, size_t index, const TimelineStates& states, Timeline& out,
+	TimelineRefusal& refusal) {
+	refusal = TimelineRefusal();
+	JsonWriter counter = JsonWriter::counter();
+	write_image_timeline(counter, view, index, states);
+	size_t length = counter.length();
+	char* text = new (std::nothrow) char[length + 1];
+	if (text == nullptr) {
+		refusal.error = LoadError::out_of_memory;
+		std::snprintf(refusal.text, sizeof(refusal.text), "no memory for the timeline (%u bytes)",
+			static_cast<unsigned>(length));
+		return false;
+	}
+	JsonWriter json(text, length + 1);
+	write_image_timeline(json, view, index, states);
+	text[length] = '\0';
+	bool ok = parse_text(text, length, states, true, &out, refusal);
+	delete[] text;
+	return ok;
+}
+
 bool Timeline::parse_text(const char* text, size_t length, const TimelineStates& states, bool image, Timeline* out,
 	TimelineRefusal& refusal) {
 	JsonSpan span;

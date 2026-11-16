@@ -1,32 +1,41 @@
 /*
  * Copyright (c) 2026 Bernhard Haumacher
  */
-// The heap of an image swap per phase (homecontrol #70, doc/image.md "Memory of a swap"): an image
-// with k blocks deployed over the same image with k blocks (and over k - 1), the whole heap of the
-// test binary counted at every phase the image service reports (LoadProbe).
+// The heap of an image swap per phase (homecontrol #70, doc/image.md "Memory of a swap", issue #87):
+// an image with k blocks deployed over the same image with k blocks (and over k - 1), the whole heap
+// of the test binary counted from before the receive to the end of the apply, and at every phase
+// the image service reports (LoadProbe). The image is binary and runs in place from its slot (flash
+// on the device, kept out of the counted heap here): during the receive the device holds only the
+// swap table of the values and the rules' Engine::Carry (spec/runtime-image.md 12), no image text.
+//
+// The 32-bit model build (scripts/c6-model) compiles this file with the core; the images are
+// written in the JSON source form and compiled by the test compiler (image_compiler.cpp), which that
+// build must therefore compile too.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "allocation_counter.h"
 #include "doctest.h"
 #include "fake_blob_store.h"
-#include "fake_image_staging.h"
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/external_values.h"
-#include "hc/image/image_body.h"
 #include "hc/image/image_service.h"
-#include "hc/image/image_store.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "test_support.h"
 
 using hc::image::ImageService;
+using hc::image::MemoryImageSlot;
 using hc::image::Source;
 
 namespace {
@@ -37,11 +46,46 @@ std::string fixture_text(const std::string& name) {
 	return text;
 }
 
-/// A provider of dynamic datapoints, as the Zigbee adapter is on the C6: with one registered the
-/// service keeps the applied plan for the providers' reloads. Armed (fail_next()), it makes the next
-/// apply fail after the model was replaced (homecontrol #71): when the model is loaded it binds the
-/// image's datapoint `victim` to a technology of its own, so the KNX adapter refuses its mapping in
-/// the step `technologies` and the service returns to the stored image.
+/// The test-system template with its "GA:<name>" placeholders replaced by 31/7/n, in order of first
+/// appearance (as image_test.cpp fills it: addresses no real project here uses).
+std::string filled_template() {
+	std::string text = fixture_text("test-system.template.json");
+	std::map<std::string, unsigned> names;
+	std::string out;
+	size_t pos = 0;
+	for (;;) {
+		size_t at = text.find("\"GA:", pos);
+		while (at != std::string::npos && at > 0 && text[at - 1] == '\\') {
+			at = text.find("\"GA:", at + 1); // the comment's \"GA:<name>\"
+		}
+		if (at == std::string::npos) {
+			out += text.substr(pos);
+			break;
+		}
+		size_t end = text.find('"', at + 1);
+		std::string name = text.substr(at + 4, end - at - 4);
+		if (names.count(name) == 0) {
+			unsigned n = static_cast<unsigned>(names.size() + 1);
+			names[name] = n;
+		}
+		out += text.substr(pos, at - pos);
+		out += "\"31/7/" + std::to_string(names[name]) + "\"";
+		pos = end + 1;
+	}
+	return out;
+}
+
+/// The source `json` compiled; the bytes stand for the body arriving from the network (on the
+/// device in pieces through the HTTP server's buffer), so they are kept out of the counted heap.
+std::vector<uint8_t> compile(const std::string& json) {
+	hc_test::HeapExclusion network;
+	return hc_test::compiled(json);
+}
+
+/// A provider of dynamic datapoints, as the Zigbee adapter is on the C6. Armed (fail_next()), it
+/// makes the next apply fail after the model was replaced (homecontrol #71): when the model is loaded
+/// it binds the image's datapoint `victim` to a technology of its own, so the KNX adapter refuses its
+/// mapping in the step `technologies` and the device is left without an image (spec I9).
 class NoDevices : public hc::image::DynamicSpecProvider {
 public:
 	const char* provider_name() const override { return "zigbee"; }
@@ -56,7 +100,10 @@ public:
 			return;
 		}
 		const hc::Datapoint* dp = model_->find(victim_);
-		if (dp != nullptr && model_->bind(dp->id(), hijack_) == hc::DatapointStatus::ok) {
+		if (dp == nullptr) {
+			return; // the model without the image (during the receive): armed for the image's
+		}
+		if (model_->bind(dp->id(), hijack_) == hc::DatapointStatus::ok) {
 			++failures_caused;
 		}
 		model_ = nullptr; // once
@@ -79,49 +126,45 @@ private:
 	hc_test::TestTechnology hijack_;
 };
 
-/// The ImageStaging of the device is flash behind the updater: the fake's buffer is not heap.
-class FlashStaging : public hc::ImageStaging {
-public:
-	size_t capacity() const override { return fake.capacity(); }
-	bool begin(size_t size, const char** reason) override {
-		hc_test::HeapExclusion flash;
-		return fake.begin(size, reason);
-	}
-	bool append(const void* data, size_t length) override {
-		hc_test::HeapExclusion flash;
-		return fake.append(data, length);
-	}
-	const char* finish() override {
-		hc_test::HeapExclusion flash;
-		return fake.finish();
-	}
-	void end() override {
-		hc_test::HeapExclusion flash;
-		fake.end();
-	}
+/// The image slot of the device is flash: its RAM stand-in is not heap.
+std::unique_ptr<MemoryImageSlot> flash_slot() {
+	hc_test::HeapExclusion flash;
+	return std::unique_ptr<MemoryImageSlot>(new MemoryImageSlot());
+}
 
-	hc_test::FakeImageStaging fake;
-};
-
-/// Records the peak of the whole heap in each phase, relative to what was held when the load began
-/// (in fixed storage: the probe allocates nothing).
+/// Records the heap in each phase of a load (in fixed storage: the probe allocates nothing): the
+/// absolute peaks, so that the deploy's peak spans the receive before the first phase as well.
 struct PeakProbe : hc::image::LoadProbe {
 	struct Phase {
 		char name[24];
 		long peak;    ///< The most held at once during the phase, above the start of the load.
 		long after;   ///< Held at its end, above the start of the load.
-		long charged; ///< The peak as the C6's heap charges it (allocation_counter.h).
+		long charged; ///< The peak as the C6's heap charges it (allocation_counter.h), above the start.
 		long largest; ///< The largest single block allocated in the phase.
+		size_t peak_abs;
+		size_t charged_abs;
 	};
 	static constexpr size_t kMaxPhases = 32;
 	size_t base = 0;
 	size_t charged_base = 0;
+	/// The segment before load_begun() (the receive: the swap table, the carry), absolute.
+	size_t begun_peak = 0;
+	size_t begun_charged = 0;
+	size_t begun_largest = 0;
+	bool begun = false;
 	Phase phases[kMaxPhases] = {};
 	size_t count = 0;
 
+	void reset() {
+		count = 0;
+		begun = false;
+	}
 	void load_begun() override {
 		count = 0;
-		hc_test::heap_mark();
+		begun = true;
+		begun_charged = hc_test::heap_charged_peak();
+		begun_largest = hc_test::heap_largest();
+		begun_peak = hc_test::heap_mark();
 		base = hc_test::heap_live();
 		charged_base = hc_test::heap_charged();
 	}
@@ -139,25 +182,13 @@ struct PeakProbe : hc::image::LoadProbe {
 		p.after = static_cast<long>(live) - static_cast<long>(base);
 		p.charged = static_cast<long>(charged) - static_cast<long>(charged_base);
 		p.largest = static_cast<long>(largest);
-	}
-	long peak() const {
-		long top = 0;
-		for (size_t i = 0; i < count; ++i) {
-			top = phases[i].peak > top ? phases[i].peak : top;
-		}
-		return top;
+		p.peak_abs = peak;
+		p.charged_abs = charged;
 	}
 	long largest() const {
-		long top = 0;
+		long top = begun ? static_cast<long>(begun_largest) : 0;
 		for (size_t i = 0; i < count; ++i) {
 			top = phases[i].largest > top ? phases[i].largest : top;
-		}
-		return top;
-	}
-	long charged_peak() const {
-		long top = 0;
-		for (size_t i = 0; i < count; ++i) {
-			top = phases[i].charged > top ? phases[i].charged : top;
 		}
 		return top;
 	}
@@ -169,6 +200,17 @@ struct PeakProbe : hc::image::LoadProbe {
 		}
 		return nullptr;
 	}
+};
+
+/// What a deploy cost, relative to the heap before its receive began (the old image in its steady
+/// state).
+struct SwapCost {
+	bool ok = false;
+	long peak = 0;      ///< The most held at once above the start.
+	long charged = 0;   ///< The same as the C6 charges it.
+	long receiving = 0; ///< Held while the slot is written (the old image gone), above the start.
+	long receiving_charged = 0;
+	long largest = 0; ///< The largest single block of the deploy.
 };
 
 /// The blob store of the device keeps its content in the flash: the fake's maps are not heap.
@@ -268,13 +310,14 @@ struct SwapRig {
 	hc::knx::KnxTunnel tunnel{controller.loop(), clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), clock, model, tunnel};
 	FlashBlobs blobs;
+	std::unique_ptr<MemoryImageSlot> slot = flash_slot();
 	NoDevices zigbee;
-	ImageService service{controller, model, blobs, adapter, &tunnel};
+	ImageService service{controller, model, blobs, *slot, adapter, &tunnel};
 	PeakProbe probe;
 	size_t empty = 0;         ///< The heap held before the first image.
 	size_t empty_charged = 0; ///< The same as the C6 charges it.
 
-	/// `start` false: the service is started by start_service() (after the test stored an image).
+	/// `start` false: the service is started by start_service() (after the test wrote the slot).
 	explicit SwapRig(bool start = true) {
 		controller.start();
 		controller.connectivity().link_up("192.0.2.10");
@@ -299,20 +342,77 @@ struct SwapRig {
 		}
 	}
 
-	/// Loads without storing (the store runs off the loop on the device, after the swap) and lets the
-	/// loop settle (the rules' and blocks' start cascades, the first writes).
-	void load(const std::string& text, bool measure) {
-		service.set_load_probe(measure ? &probe : nullptr);
-		bool ok = service.load(text.data(), text.size(), Source::api, false);
+	/// Deploys `bytes` as PUT /api/image does (receive_begin, receive_write, receive_end) and measures
+	/// it. No doctest call in here: a check allocates its message (BlockLimit scopes around it).
+	SwapCost deploy(const std::vector<uint8_t>& bytes) {
+		SwapCost cost;
+		probe.reset();
+		service.set_load_probe(&probe);
+		hc_test::heap_mark();
+		size_t start = hc_test::heap_live();
+		size_t start_charged = hc_test::heap_charged();
+		size_t head = bytes.size() < 32 ? bytes.size() : 32;
+		bool begun = service.receive_begin(bytes.data(), head, bytes.size(), Source::api);
+		cost.receiving = static_cast<long>(hc_test::heap_live()) - static_cast<long>(start);
+		cost.receiving_charged = static_cast<long>(hc_test::heap_charged()) - static_cast<long>(start_charged);
+		if (begun) {
+			service.receive_write(bytes.data(), bytes.size());
+			cost.ok = service.receive_end();
+		}
 		service.set_load_probe(nullptr);
-		REQUIRE_MESSAGE(ok, (service.report().count > 0 ? service.report().refusals[0].reason : "?"));
+		size_t peak = hc_test::heap_peak();
+		size_t charged = hc_test::heap_charged_peak();
+		long largest = static_cast<long>(hc_test::heap_largest());
+		if (probe.begun) {
+			peak = probe.begun_peak > peak ? probe.begun_peak : peak;
+			charged = probe.begun_charged > charged ? probe.begun_charged : charged;
+			for (size_t i = 0; i < probe.count; ++i) {
+				peak = probe.phases[i].peak_abs > peak ? probe.phases[i].peak_abs : peak;
+				charged = probe.phases[i].charged_abs > charged ? probe.phases[i].charged_abs : charged;
+			}
+		}
+		cost.peak = static_cast<long>(peak) - static_cast<long>(start);
+		cost.charged = static_cast<long>(charged) - static_cast<long>(start_charged);
+		cost.largest = probe.largest() > largest ? probe.largest() : largest;
+		return cost;
+	}
+
+	/// Compiles and deploys `text`, lets the loop settle (the rules' and blocks' start cascades, the
+	/// first writes); the deploy's cost.
+	SwapCost load(const std::string& text) {
+		std::vector<uint8_t> bytes = compile(text);
+		SwapCost cost = deploy(bytes);
+		{
+			hc_test::HeapExclusion network;
+			bytes = std::vector<uint8_t>();
+		}
+		REQUIRE_MESSAGE(cost.ok, hc_test::describe(service.report()));
 		settle();
+		return cost;
 	}
 
 	/// The heap the loaded image holds in the steady state.
 	long held() const { return static_cast<long>(hc_test::heap_live()) - static_cast<long>(empty); }
 	long held_charged() const {
 		return static_cast<long>(hc_test::heap_charged()) - static_cast<long>(empty_charged);
+	}
+
+	/// The phases of the last deploy, one per line.
+	std::string phases() const {
+		std::string line;
+		if (probe.begun) {
+			char cell[96];
+			std::snprintf(cell, sizeof(cell), "\n  %-14s largest block %5ld", "receive", static_cast<long>(probe.begun_largest));
+			line += cell;
+		}
+		for (size_t i = 0; i < probe.count; ++i) {
+			const PeakProbe::Phase& ph = probe.phases[i];
+			char cell[128];
+			std::snprintf(cell, sizeof(cell), "\n  %-14s peak %6ld (charged %6ld), held after %6ld, largest block %5ld",
+				ph.name, ph.peak, ph.charged, ph.after, ph.largest);
+			line += cell;
+		}
+		return line;
 	}
 };
 
@@ -366,6 +466,61 @@ std::string with_blocks(std::string base, unsigned revision, size_t k, const std
 	return base;
 }
 
+
+/// The peak of a deploy above the old image's steady state is at most kSwapBudget for an image
+/// without blocks (example.json on the 64-bit host; the 32-bit model build gives the C6's figures, a
+/// little less), plus a block's steady cost per block; no single allocation is above kLargestBlock.
+constexpr long kSwapBudget = 9 * 1024;
+constexpr long kLargestBlock = 3 * 1024;
+
+/// The budget check of one block type: `make(revision, k)` is the image with k instances. k = 0 .. 4
+/// deployed over the same image (a new revision) and over the image with k - 1.
+void check_budget(const char* what, std::string (*make)(std::string, unsigned, size_t), const std::string& base) {
+	long held[5] = {};
+	long over_same[5] = {};
+	for (size_t k = 0; k <= 4; ++k) {
+		SwapRig rig;
+		rig.load(make(base, 1, k));
+		held[k] = rig.held();
+		SwapCost cost = rig.load(make(base, 2, k));
+		CHECK(rig.probe.count < PeakProbe::kMaxPhases);
+		CHECK(rig.held() == held[k]); // a redeploy of the same image holds what the first deploy held
+		over_same[k] = cost.peak;
+		// While the slot is written the old image is gone: what is held then is the swap table and
+		// the carry (spec/runtime-image.md 12), less than the image held.
+		CHECK(cost.receiving < 0);
+		CHECK(cost.largest <= kLargestBlock);
+		MESSAGE(k << " " << std::string(what) << "(s): the image holds " << held[k] << " B, the swap's peak is " << over_same[k]
+			<< " B above it (charged " << cost.charged << "), while receiving " << held[k] + cost.receiving
+			<< " B are held, its largest block " << cost.largest << " B"
+			<< (cost.largest > kLargestBlock ? rig.phases() : std::string()));
+	}
+	CHECK(over_same[0] <= kSwapBudget);
+	for (size_t k = 1; k <= 4; ++k) {
+		long block = (held[k] - held[0]) / static_cast<long>(k); // a block's steady cost in this image
+		CHECK(block > 0);
+		CHECK(over_same[k] <= kSwapBudget + static_cast<long>(k) * block);
+		CHECK(over_same[k] - over_same[0] <= static_cast<long>(k) * block);
+		// Deployed over the image with one block fewer: the old image holds less, the peak above it
+		// is at most what it is above the same image plus the added block's steady cost.
+		SwapRig rig;
+		rig.load(make(base, 1, k - 1));
+		long old = rig.held();
+		CHECK(old == held[k - 1]);
+		SwapCost cost = rig.load(make(base, 2, k));
+		CHECK(rig.held() == held[k]);
+		CHECK(cost.peak <= kSwapBudget + static_cast<long>(k) * block + (held[k] - old));
+		CHECK(cost.largest <= kLargestBlock);
+		MESSAGE(k << " " << std::string(what) << "(s) over " << k - 1 << ": " << cost.peak << " B above the old image (" << old
+			<< " B), a block holds " << block << " B");
+	}
+}
+
+std::string example_blocks(std::string base, unsigned revision, size_t k) {
+	const std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
+	return with_blocks(base, revision, k, "living.temperature", outputs);
+}
+
 } // namespace
 
 TEST_CASE("Swap memory: the peak of each phase (measurement, HC_SWAP_IMAGE)") {
@@ -374,7 +529,7 @@ TEST_CASE("Swap memory: the peak of each phase (measurement, HC_SWAP_IMAGE)") {
 	path = path != nullptr ? path : HC_SWAP_IMAGE_DEFAULT; // the 32-bit model build (doc/image.md)
 #endif
 	if (path == nullptr) {
-		return; // a measurement on a real image (homecontrol #70); the budget test below runs always
+		return; // a measurement on a real image (homecontrol #70, its JSON source form); the tests below run always
 	}
 	std::string base;
 	REQUIRE(hc_test::read_text(path, base));
@@ -386,25 +541,58 @@ TEST_CASE("Swap memory: the peak of each phase (measurement, HC_SWAP_IMAGE)") {
 			}
 			SwapRig rig;
 			size_t before = k > 0 && !over_same ? k - 1 : k;
-			rig.load(with_blocks(base, 12, before, "0/0/28", outputs), false);
+			rig.load(with_blocks(base, 12, before, "0/0/28", outputs));
 			long held = rig.held();
 			long held_charged = rig.held_charged();
-			rig.load(with_blocks(base, 13, k, "0/0/28", outputs), true);
+			SwapCost cost = rig.load(with_blocks(base, 13, k, "0/0/28", outputs));
 			long now = rig.held();
 			long now_charged = rig.held_charged();
-			std::string line;
-			for (size_t i = 0; i < rig.probe.count; ++i) {
-				const PeakProbe::Phase& ph = rig.probe.phases[i];
-				char cell[112];
-				std::snprintf(cell, sizeof(cell), "\n  %-14s peak %6ld (charged %6ld), held after %6ld, largest block %5ld",
-					ph.name, ph.peak, ph.charged, ph.after, ph.largest);
-				line += cell;
-			}
 			MESSAGE(k << " block(s) over " << before << ": the old image held " << held << " B (charged " << held_charged
-				<< "), the new " << now << " B (" << now_charged << "); peak above the old " << rig.probe.peak()
-				<< " B (" << rig.probe.charged_peak() << "), above the new " << held + rig.probe.peak() - now
-				<< " B (" << held_charged + rig.probe.charged_peak() - now_charged << ")" << line);
+				<< "), the new " << now << " B (" << now_charged << "); while receiving " << held + cost.receiving
+				<< " B; peak above the old " << cost.peak << " B (" << cost.charged << "), above the new "
+				<< held + cost.peak - now << " B (" << held_charged + cost.charged - now_charged << ")" << rig.phases());
 		}
+	}
+}
+
+TEST_CASE("Swap memory: the figures of example.json and the test-system template (issue #87)") {
+	// What the report of issue #87 quotes: the heap a loaded image holds in its steady state, what the
+	// swap holds while the slot is written (the swap table and the carry), the peak of a redeploy
+	// above the old image, and the largest block, on the 64-bit host and as the C6's heap charges it
+	// (the 32-bit model build gives the C6's sizes).
+	struct Image {
+		const char* name;
+		std::string text;
+		std::string next; ///< The same at another revision.
+		/// Whether the swap's largest block must stay within kLargestBlock: the template's history ring
+		/// (a day at one sample a minute, 11.5 KB) is one block of the image's steady state.
+		bool small_blocks;
+	};
+	std::vector<Image> images = {{"example.json", fixture_text("example.json"), "", true},
+		{"test-system.template.json", filled_template(), "", false}};
+	for (Image& image : images) {
+		image.next = image.text;
+		set_member(image.next, "revision", "99");
+	}
+	for (const Image& image : images) {
+		CAPTURE(std::string(image.name));
+		SwapRig rig;
+		rig.load(image.text);
+		long held = rig.held();
+		long held_charged = rig.held_charged();
+		SwapCost cost = rig.load(image.next);
+		CHECK(rig.held() == held);
+		CHECK(cost.receiving < 0);
+		CHECK(cost.peak <= kSwapBudget);
+		if (image.small_blocks) {
+			CHECK(cost.largest <= kLargestBlock);
+		}
+		MESSAGE(std::string(image.name) << " (" << rig.service.info().bytes << " bytes in the slot, " << rig.model.size()
+			<< " datapoints, " << rig.service.info().rules << " rules): the loaded image holds " << held
+			<< " B of the heap (charged " << held_charged << "); a redeploy holds " << held + cost.receiving
+			<< " B while the slot is written (charged " << held_charged + cost.receiving_charged << "), peaks "
+			<< cost.peak << " B above the old image (charged " << cost.charged << "), largest block " << cost.largest
+			<< " B" << rig.phases());
 	}
 }
 
@@ -415,54 +603,9 @@ TEST_CASE("Swap memory: a block costs at the peak at most its steady size; the s
 	// swap's budget for the image without blocks plus k times a block's steady cost, and a block adds
 	// to the peak at most its steady cost (doc/image.md "Memory of a swap", doc/blocks.md "Memory").
 	// No single allocation of the swap is larger than kLargestBlock: a fragmented heap refuses one
-	// block with enough free bytes beside it (homecontrol #70, the rule set's 7 KB on the board).
-	// The budgets are of example.json on the 64-bit host (the 32-bit model build of doc/image.md gives
-	// the C6's figures, about 10 % less). They cover the core's allocations only: on the board the
-	// tasks the load holds back add their own (doc/image.md "Memory of a swap", "Model and board").
-	constexpr long kSwapBudget = 9 * 1024;
-	constexpr long kLargestBlock = 3 * 1024;
-	std::string base = fixture_text("example.json");
-	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
-	const size_t ks[] = {0, 1, 2, 3, 4};
-	long held[5] = {};
-	long over_same[5] = {};
-	for (size_t k : ks) {
-		SwapRig rig;
-		rig.load(with_blocks(base, 1, k, "living.temperature", outputs), false);
-		held[k] = rig.held();
-		rig.load(with_blocks(base, 2, k, "living.temperature", outputs), true);
-		CHECK(rig.probe.count < PeakProbe::kMaxPhases);
-		CHECK(rig.held() == held[k]); // a redeploy of the same image holds what the first deploy held
-		over_same[k] = rig.probe.peak();
-		const PeakProbe::Phase* release = rig.probe.find("release");
-		REQUIRE(release != nullptr);
-		CHECK(release->after <= 0); // the old image is gone at the release
-		CHECK(rig.probe.largest() <= kLargestBlock);
-		MESSAGE(k << " block(s): the image holds " << held[k] << " B, the swap's peak is " << over_same[k]
-			<< " B above it, its largest block " << rig.probe.largest() << " B");
-	}
-	CHECK(over_same[0] <= kSwapBudget);
-	for (size_t k : ks) {
-		if (k == 0) {
-			continue;
-		}
-		long block = (held[k] - held[0]) / static_cast<long>(k); // a block's steady cost in this image
-		CHECK(block > 0);
-		CHECK(over_same[k] <= kSwapBudget + static_cast<long>(k) * block);
-		CHECK(over_same[k] - over_same[0] <= static_cast<long>(k) * block);
-		// Deployed over the image with one block fewer: the old image holds less, the peak above it
-		// is at most what it is above the same image plus the added block's steady cost.
-		SwapRig rig;
-		size_t before = k - 1;
-		rig.load(with_blocks(base, 1, before, "living.temperature", outputs), false);
-		long old = rig.held();
-		CHECK(old == held[before]);
-		rig.load(with_blocks(base, 2, k, "living.temperature", outputs), true);
-		CHECK(rig.held() == held[k]);
-		CHECK(rig.probe.peak() <= kSwapBudget + static_cast<long>(k) * block + (held[k] - old));
-		MESSAGE(k << " block(s) over " << before << ": " << rig.probe.peak() << " B above the old image ("
-			<< old << " B), a block holds " << block << " B");
-	}
+	// block with enough free bytes beside it (homecontrol #70). They cover the core's allocations
+	// only: on the board the tasks the load holds back add their own.
+	check_budget("block", example_blocks, fixture_text("example.json"));
 }
 
 namespace {
@@ -491,41 +634,10 @@ std::string with_shadings(std::string base, unsigned revision, size_t k) {
 
 } // namespace
 
+
 TEST_CASE("Swap memory: sun shadings keep the swap's budget and take no large block") {
-	// The test above for the sun shading (homecontrol #63): k = 0 .. 4 instances deployed over the
-	// same image and over the image with one fewer.
-	constexpr long kSwapBudget = 9 * 1024;
-	constexpr long kLargestBlock = 3 * 1024;
-	std::string base = fixture_text("example.json");
-	long held[5] = {};
-	long over_same[5] = {};
-	for (size_t k = 0; k <= 4; ++k) {
-		SwapRig rig;
-		rig.load(with_shadings(base, 1, k), false);
-		held[k] = rig.held();
-		rig.load(with_shadings(base, 2, k), true);
-		CHECK(rig.held() == held[k]);
-		over_same[k] = rig.probe.peak();
-		CHECK(rig.probe.largest() <= kLargestBlock);
-		MESSAGE(k << " sun shading(s): the image holds " << held[k] << " B, the swap's peak is " << over_same[k]
-			<< " B above it, its largest block " << rig.probe.largest() << " B");
-	}
-	CHECK(over_same[0] <= kSwapBudget);
-	for (size_t k = 1; k <= 4; ++k) {
-		long block = (held[k] - held[0]) / static_cast<long>(k);
-		CHECK(block > 0);
-		CHECK(over_same[k] <= kSwapBudget + static_cast<long>(k) * block);
-		CHECK(over_same[k] - over_same[0] <= static_cast<long>(k) * block);
-		SwapRig rig;
-		rig.load(with_shadings(base, 1, k - 1), false);
-		long old = rig.held();
-		rig.load(with_shadings(base, 2, k), true);
-		CHECK(rig.held() == held[k]);
-		CHECK(rig.probe.peak() <= kSwapBudget + static_cast<long>(k) * block + (held[k] - old));
-		CHECK(rig.probe.largest() <= kLargestBlock);
-		MESSAGE(k << " sun shading(s) over " << k - 1 << ": " << rig.probe.peak() << " B above the old image, a block holds "
-			<< block << " B");
-	}
+	// The test above for the sun shading (homecontrol #63).
+	check_budget("sun shading", with_shadings, fixture_text("example.json"));
 }
 
 namespace {
@@ -554,41 +666,10 @@ std::string with_house_modes(std::string base, unsigned revision, size_t k) {
 
 } // namespace
 
+
 TEST_CASE("Swap memory: house modes keep the swap's budget and take no large block") {
-	// The test of the sun shadings for the house mode (homecontrol #64): k = 0 .. 4 instances
-	// deployed over the same image and over the image with one fewer.
-	constexpr long kSwapBudget = 9 * 1024;
-	constexpr long kLargestBlock = 3 * 1024;
-	std::string base = fixture_text("example.json");
-	long held[5] = {};
-	long over_same[5] = {};
-	for (size_t k = 0; k <= 4; ++k) {
-		SwapRig rig;
-		rig.load(with_house_modes(base, 1, k), false);
-		held[k] = rig.held();
-		rig.load(with_house_modes(base, 2, k), true);
-		CHECK(rig.held() == held[k]);
-		over_same[k] = rig.probe.peak();
-		CHECK(rig.probe.largest() <= kLargestBlock);
-		MESSAGE(k << " house mode(s): the image holds " << held[k] << " B, the swap's peak is " << over_same[k]
-			<< " B above it, its largest block " << rig.probe.largest() << " B");
-	}
-	CHECK(over_same[0] <= kSwapBudget);
-	for (size_t k = 1; k <= 4; ++k) {
-		long block = (held[k] - held[0]) / static_cast<long>(k);
-		CHECK(block > 0);
-		CHECK(over_same[k] <= kSwapBudget + static_cast<long>(k) * block);
-		CHECK(over_same[k] - over_same[0] <= static_cast<long>(k) * block);
-		SwapRig rig;
-		rig.load(with_house_modes(base, 1, k - 1), false);
-		long old = rig.held();
-		rig.load(with_house_modes(base, 2, k), true);
-		CHECK(rig.held() == held[k]);
-		CHECK(rig.probe.peak() <= kSwapBudget + static_cast<long>(k) * block + (held[k] - old));
-		CHECK(rig.probe.largest() <= kLargestBlock);
-		MESSAGE(k << " house mode(s) over " << k - 1 << ": " << rig.probe.peak() << " B above the old image, a block holds "
-			<< block << " B");
-	}
+	// The test of the sun shadings for the house mode (homecontrol #64).
+	check_budget("house mode", with_house_modes, fixture_text("example.json"));
 }
 
 namespace {
@@ -618,51 +699,18 @@ std::string with_pv_surplus(std::string base, unsigned revision, size_t k) {
 
 } // namespace
 
+
 TEST_CASE("Swap memory: PV surplus controls keep the swap's budget and take no large block") {
-	// The test of the house modes for the PV surplus control (homecontrol #65): k = 0 .. 4 instances
-	// deployed over the same image and over the image with one fewer.
-	constexpr long kSwapBudget = 9 * 1024;
-	constexpr long kLargestBlock = 3 * 1024;
-	std::string base = fixture_text("example.json");
-	long held[5] = {};
-	long over_same[5] = {};
-	for (size_t k = 0; k <= 4; ++k) {
-		SwapRig rig;
-		rig.load(with_pv_surplus(base, 1, k), false);
-		held[k] = rig.held();
-		rig.load(with_pv_surplus(base, 2, k), true);
-		CHECK(rig.held() == held[k]);
-		over_same[k] = rig.probe.peak();
-		CHECK(rig.probe.largest() <= kLargestBlock);
-		MESSAGE(k << " PV surplus control(s): the image holds " << held[k] << " B, the swap's peak is " << over_same[k]
-			<< " B above it, its largest block " << rig.probe.largest() << " B");
-	}
-	CHECK(over_same[0] <= kSwapBudget);
-	for (size_t k = 1; k <= 4; ++k) {
-		long block = (held[k] - held[0]) / static_cast<long>(k);
-		CHECK(block > 0);
-		CHECK(over_same[k] <= kSwapBudget + static_cast<long>(k) * block);
-		CHECK(over_same[k] - over_same[0] <= static_cast<long>(k) * block);
-		SwapRig rig;
-		rig.load(with_pv_surplus(base, 1, k - 1), false);
-		long old = rig.held();
-		rig.load(with_pv_surplus(base, 2, k), true);
-		CHECK(rig.held() == held[k]);
-		CHECK(rig.probe.peak() <= kSwapBudget + static_cast<long>(k) * block + (held[k] - old));
-		CHECK(rig.probe.largest() <= kLargestBlock);
-		MESSAGE(k << " PV surplus control(s) over " << k - 1 << ": " << rig.probe.peak()
-			<< " B above the old image, a block holds " << block << " B");
-	}
+	// The test of the house modes for the PV surplus control (homecontrol #65).
+	check_budget("PV surplus control", with_pv_surplus, fixture_text("example.json"));
 }
 
 TEST_CASE("Swap memory: a large image swaps while no block above 3.5 KB can be had (6 KB on the 64-bit host)") {
 	// The board refused a deploy for one block of 7 104 bytes (the rule set) with 9.7 KB free
 	// (homecontrol #70). An image of 215 datapoints and 52 rules swaps over itself with no allocation
-	// above 3.5 KB on the C6's sizes (6 KB with the 64-bit host's larger structures; before #70 it
-	// failed at the loader's first table of all datapoints' drafts): the rule set takes one block per
-	// table, the rules' runtime its per-rule tables in chunks, the model its datapoints in
-	// chunks of 32, the loader its per-datapoint scratch in chunks, the block runtime one block per
-	// instance.
+	// above 3.5 KB on the C6's sizes (6 KB with the 64-bit host's larger structures): the rules are
+	// read in place from the slot, the rules' runtime takes its per-rule tables in chunks, the model
+	// its datapoints in chunks of 32, the block runtime one block per instance.
 	std::string base = fixture_text("example.json");
 	std::string datapoints;
 	std::string rules;
@@ -682,201 +730,138 @@ TEST_CASE("Swap memory: a large image swaps while no block above 3.5 KB can be h
 	};
 	insert("\"datapoints\": [", datapoints);
 	insert("\"rules\": [", rules);
-	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
 	SwapRig rig;
-	rig.load(with_blocks(base, 1, 4, "living.temperature", outputs), false);
-	std::string next = with_blocks(base, 2, 4, "living.temperature", outputs);
+	rig.load(example_blocks(base, 1, 4));
+	std::vector<uint8_t> next = compile(example_blocks(base, 2, 4));
 	constexpr size_t kLimit = sizeof(void*) == 4 ? 3584 : 6 * 1024;
 	size_t refused = 0;
-	bool ok = false;
+	SwapCost cost;
 	{
 		// No doctest call in here: a failed check allocates its message.
 		hc_test::BlockLimit limit(kLimit);
-		rig.service.set_load_probe(&rig.probe);
-		ok = rig.service.load(next.data(), next.size(), Source::api, false);
-		rig.service.set_load_probe(nullptr);
+		cost = rig.deploy(next);
 		refused = limit.refused();
 	}
-	CHECK(ok);
+	CHECK(cost.ok);
 	CHECK(refused == 0);
 	if (refused > 0 || rig.service.report().count > 0) {
-		MESSAGE("refused: " << rig.service.report().refusals[0].reason);
+		std::string memory;
+		for (const std::string& line : rig.sink.sink.lines) {
+			if (line.find("memory") != std::string::npos) {
+				memory += "\n  " + line;
+			}
+		}
+		MESSAGE("refused: " << hc_test::describe(rig.service.report()) << memory);
 	}
 	CHECK(rig.service.info().rules >= 50);
 	CHECK(rig.model.size() > 200);
 	MESSAGE("a swap of " << rig.model.size() << " datapoints and " << rig.service.info().rules
-		<< " rules: largest block " << rig.probe.largest() << " B, peak " << rig.probe.peak()
-		<< " B above the old image");
+		<< " rules: largest block " << cost.largest << " B, peak " << cost.peak << " B above the old image");
 }
 
 namespace {
 
-/// The largest single allocation of the probe's phases from the `nth` (0-based) phase named `name` on.
-long largest_from(const PeakProbe& probe, const char* name, int nth, bool& found) {
-	found = false;
-	long top = 0;
-	int seen = 0;
-	for (size_t i = 0; i < probe.count; ++i) {
-		if (!found && std::strcmp(probe.phases[i].name, name) == 0 && seen++ == nth) {
-			found = true;
-		}
-		if (found) {
-			top = probe.phases[i].largest > top ? probe.phases[i].largest : top;
-		}
-	}
-	return top;
-}
-
-int phases_named(const PeakProbe& probe, const char* name) {
-	int n = 0;
-	for (size_t i = 0; i < probe.count; ++i) {
-		n += std::strcmp(probe.phases[i].name, name) == 0 ? 1 : 0;
-	}
-	return n;
-}
-
 /// The heap of the C6 during a swap has no block above 3.5 KB to count on (homecontrol #70, #71).
 constexpr size_t kFragmentedLimit = 3584;
-/// No allocation of a load of the stored image is larger (homecontrol #71).
-constexpr long kStoredLoadLargest = 3 * 1024;
+/// No allocation of a load of the slot's image is larger (homecontrol #71).
+constexpr long kSlotLoadLargest = 3 * 1024;
 
 } // namespace
 
-TEST_CASE("Swap memory: a failed apply on a fragmented heap returns to the stored image, read in place (#71)") {
-	// The new image arrives in the received staging (as PUT /api/image puts it) and fails after the
-	// model was replaced (the KNX adapter refuses its mapping in `technologies`); the service tears it
-	// down and loads the stored image again. Every allocation above 3.5 KB fails meanwhile: the stored
-	// image (7 KB of text and more) is put together in the stored staging through a piece of
-	// ImageStore::kReadPiece and parsed in place, not read into one heap block of its size.
+TEST_CASE("Swap memory: a failed apply on a fragmented heap leaves no image, keeps the values for the next deploy "
+	"and takes no large block (#71, spec I9)") {
+	// The new image fails after the model was replaced (the KNX adapter refuses its mapping in
+	// `technologies`); every allocation above 3.5 KB fails meanwhile. The device is left without an
+	// image (it was written into the slot), the swap table stays, and E-Home's next deployment of the
+	// last valid image finds the values.
 	std::string base = fixture_text("example.json");
-	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
-	std::string old_image = with_blocks(base, 1, 2, "living.temperature", outputs);
-	std::string next = with_blocks(base, 2, 2, "living.temperature", outputs);
-	REQUIRE(old_image.size() > kFragmentedLimit);
+	std::string old_text = example_blocks(base, 1, 2);
+	std::vector<uint8_t> old_image = compile(old_text);
+	std::vector<uint8_t> next = compile(example_blocks(base, 2, 2));
 	SwapRig rig;
-	FlashStaging received;
-	FlashStaging stored;
-	rig.service.set_staging(&received);
-	rig.service.set_stored_staging(&stored);
-	REQUIRE(rig.service.load(old_image.data(), old_image.size(), Source::api, true));
-	REQUIRE(rig.service.stored_ok());
+	rig.load(old_text);
+	REQUIRE(rig.model.command(rig.model.find("away")->id(), hc::Value::of_bool(true)) == hc::DatapointStatus::ok);
 	rig.settle();
 	size_t datapoints = rig.model.size();
 	size_t mappings = rig.adapter.size();
 
-	hc::image::ImageBody body;
-	REQUIRE(body.begin(next.size(), &received));
-	REQUIRE(body.staged());
-	REQUIRE(body.append(next.data(), next.size()));
-	const char* text = body.finish();
-	REQUIRE(text != nullptr);
 	rig.zigbee.fail_next(rig.model, "hall.light");
-	bool ok = true;
+	SwapCost failed;
 	size_t refused = 0;
 	{
 		// No doctest call in here: a failed check allocates its message.
 		hc_test::BlockLimit limit(kFragmentedLimit);
-		rig.service.set_load_probe(&rig.probe);
-		ok = rig.service.load(text, next.size(), Source::api, true, nullptr, &body);
-		rig.service.set_load_probe(nullptr);
+		failed = rig.deploy(next);
 		refused = limit.refused();
 	}
-	CHECK(received.fake.busy); // the failed image stayed in the received staging during the restore
-	body.release();
-	CHECK_FALSE(ok);
+	CHECK_FALSE(failed.ok);
 	CHECK(rig.zigbee.failures_caused == 1);
 	CHECK(rig.service.report().kind == hc::image::Report::Kind::apply);
 	CHECK(refused == 0);
 	if (refused > 0) {
-		MESSAGE("refused: " << rig.service.report().refusals[0].reason);
+		MESSAGE("refused: " << hc_test::describe(rig.service.report()));
 	}
-	// The old image is loaded and running.
+	CHECK(failed.largest <= kSlotLoadLargest);
+	CHECK_FALSE(rig.service.loaded());
+	CHECK(rig.service.swap_kept());
+	CHECK(rig.model.find("away") == nullptr);
+
+	// The last valid image again, on the same heap: the values follow their names.
+	SwapCost again;
+	{
+		hc_test::BlockLimit limit(kFragmentedLimit);
+		again = rig.deploy(old_image);
+		refused = limit.refused();
+	}
+	CHECK(again.ok);
+	CHECK(refused == 0);
+	CHECK(again.largest <= kSlotLoadLargest);
 	CHECK(rig.service.loaded());
 	CHECK(rig.service.info().revision == 1);
-	CHECK(rig.service.source() == Source::restore);
+	CHECK_FALSE(rig.service.swap_kept());
 	CHECK(rig.service.engine().loaded());
 	CHECK(rig.service.blocks().size() == 2);
 	CHECK(rig.model.size() == datapoints);
 	CHECK(rig.adapter.size() == mappings);
-	CHECK(stored.fake.begins == 1);
-	CHECK(stored.fake.ends == 1);
-	CHECK_FALSE(stored.fake.busy);
-	// The restore's allocations: from the tear-down of the failed image (its phase `signature`) to its
-	// end, none above 3 KB.
-	CHECK(phases_named(rig.probe, "signature") == 2);
-	bool found = false;
-	long largest = largest_from(rig.probe, "signature", 1, found);
-	CHECK(found);
-	CHECK(largest <= kStoredLoadLargest);
-	MESSAGE("the restore of " << old_image.size() << " bytes on a heap without blocks above " << kFragmentedLimit
-		<< " B: largest allocation " << largest << " B");
+	REQUIRE(rig.model.find("away") != nullptr);
+	CHECK(rig.model.find("away")->value() == hc::Value::of_bool(true));
+	MESSAGE("a failed apply on a heap without blocks above " << kFragmentedLimit << " B: largest allocation "
+		<< failed.largest << " B; the redeploy " << again.largest << " B");
 	// The device goes on: the next deploy (not failing) runs.
 	rig.settle();
-	REQUIRE(rig.service.load(next.data(), next.size(), Source::api, false));
+	CHECK(rig.deploy(next).ok);
 	CHECK(rig.service.info().revision == 2);
 }
 
-TEST_CASE("Swap memory: without a staging area for the stored image a restore on a fragmented heap has no image "
-	"(the mechanism #71 replaces)") {
-	// The probe that the test above bites: the heap buffer of the stored image's size is refused, the
-	// device is left without an image, and the refusal says why.
+TEST_CASE("Swap memory: the boot load of the slot's image on a fragmented heap reads it in place (#71)") {
 	std::string base = fixture_text("example.json");
-	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
-	std::string old_image = with_blocks(base, 1, 2, "living.temperature", outputs);
-	std::string next = with_blocks(base, 2, 2, "living.temperature", outputs);
-	SwapRig rig;
-	REQUIRE(rig.service.load(old_image.data(), old_image.size(), Source::api, true));
-	rig.settle();
-	rig.zigbee.fail_next(rig.model, "hall.light");
-	bool ok = true;
-	size_t refused = 0;
-	{
-		hc_test::BlockLimit limit(kFragmentedLimit);
-		ok = rig.service.load(next.data(), next.size(), Source::api, false);
-		refused = limit.refused();
-	}
-	CHECK_FALSE(ok);
-	CHECK(refused >= 1);
-	CHECK_FALSE(rig.service.loaded());
-	bool logged = false;
-	for (const std::string& line : rig.sink.sink.lines) {
-		logged = logged || line.find("stored image not loaded: no memory") != std::string::npos;
-	}
-	CHECK(logged);
-}
-
-TEST_CASE("Swap memory: the boot load of the stored image on a fragmented heap reads it in place (#71)") {
-	std::string base = fixture_text("example.json");
-	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
-	std::string image = with_blocks(base, 5, 2, "living.temperature", outputs);
+	std::vector<uint8_t> image = compile(example_blocks(base, 5, 2));
 	SwapRig rig(false);
-	FlashStaging stored;
-	rig.service.set_stored_staging(&stored);
-	{
-		hc::image::ImageStore store(rig.blobs);
-		const char* error = nullptr;
-		REQUIRE(store.write(image.data(), image.size(), &error));
-	}
+	REQUIRE(image.size() <= rig.slot->size());
+	std::memcpy(rig.slot->bytes(), image.data(), image.size());
 	size_t refused = 0;
 	{
 		hc_test::BlockLimit limit(kFragmentedLimit);
+		rig.probe.reset();
+		hc_test::heap_mark();
 		rig.service.set_load_probe(&rig.probe);
 		rig.start_service();
 		rig.service.set_load_probe(nullptr);
 		refused = limit.refused();
 	}
+	long largest = static_cast<long>(hc_test::heap_largest());
+	largest = rig.probe.largest() > largest ? rig.probe.largest() : largest;
 	CHECK(refused == 0);
 	CHECK(rig.service.loaded());
 	CHECK(rig.service.source() == Source::boot);
 	CHECK(rig.service.info().revision == 5);
 	CHECK(rig.service.engine().loaded());
 	CHECK(rig.service.blocks().size() == 2);
-	CHECK(rig.service.stored_ok());
-	CHECK(stored.fake.begins == 1);
-	CHECK(stored.fake.ends == 1);
-	CHECK(rig.probe.largest() <= kStoredLoadLargest);
-	MESSAGE("the boot load of " << image.size() << " bytes: largest allocation " << rig.probe.largest() << " B");
+	CHECK(rig.service.image().bytes() == rig.slot->bytes()); // in place
+	CHECK(largest <= kSlotLoadLargest);
+	MESSAGE("the boot load of " << image.size() << " bytes: largest allocation " << largest << " B");
 }
+
 
 namespace {
 
@@ -891,87 +876,62 @@ public:
 
 } // namespace
 
-TEST_CASE("Swap memory: an image whose external member the device refuses returns to the stored image (how to "
-	"provoke a restore on the board, #71)") {
-	// The loader checks only that `external` is an object; ExternalValues checks its sources in the
-	// step `technologies`, after the model, the rules and the blocks were replaced. A source with a URL
-	// other than http(s) therefore passes the validation and fails the apply: the service returns to
-	// the stored image. On the board the same image (the stored one with this member added, signed if
-	// the device holds the installation key) provokes a restore.
+
+TEST_CASE("Swap memory: an image whose external sources the device refuses leaves no image and takes no large "
+	"block (how to provoke a failed apply on the board, #71)") {
+	// ExternalValues checks its sources in the step `technologies`, after the model, the rules and the
+	// blocks were replaced. A source with a URL other than http(s) therefore passes the image's checks
+	// and fails the apply: the device has no image then (spec I9), the swap table stays for the next
+	// deploy. On the board the same image (the running one with this source added, signed if the device
+	// holds the installation key) provokes a failed apply.
 	std::string base = fixture_text("example.json");
-	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
-	std::string old_image = with_blocks(base, 1, 2, "living.temperature", outputs);
-	std::string next = with_blocks(base, 2, 2, "living.temperature", outputs);
-	REQUIRE(next.back() == '}');
-	next.pop_back();
-	next += R"(, "external": {"sources": [{"id": "restore-probe", "url": "ftp://192.0.2.1/x", "interval": 600, )"
-		R"("bindings": [{"datapoint": "living.temperature", "path": "a"}]}]}})";
+	std::string old_text = example_blocks(base, 1, 2);
+	std::string next_text = example_blocks(base, 2, 2);
+	REQUIRE(next_text.back() == '}');
+	next_text.pop_back();
+	next_text += R"(, "external": {"sources": [{"id": "restore-probe", "url": "ftp://192.0.2.1/x", "interval": 600, )"
+		R"("bindings": [{"datapoint": "outside.temperature", "path": "a"}]}]}})";
+	size_t at = next_text.find("\"datapoints\": [");
+	REQUIRE(at != std::string::npos);
+	next_text.insert(at + std::strlen("\"datapoints\": ["), R"({"id": "outside.temperature", "type": "real"}, )");
+	std::vector<uint8_t> next = compile(next_text);
 	SwapRig rig;
 	NoFetches fetcher;
 	hc::ExternalValues external(rig.controller.loop(), rig.controller.time(), rig.controller.settings(),
 		rig.controller.connectivity(), rig.model, fetcher);
 	rig.service.set_external(&external);
-	FlashStaging stored;
-	rig.service.set_stored_staging(&stored);
-	REQUIRE(rig.service.load(old_image.data(), old_image.size(), Source::api, true));
-	rig.settle();
-	bool ok = true;
+	rig.load(old_text);
+	SwapCost cost;
 	size_t refused = 0;
 	{
 		hc_test::BlockLimit limit(kFragmentedLimit);
-		ok = rig.service.load(next.data(), next.size(), Source::api, true);
+		cost = rig.deploy(next);
 		refused = limit.refused();
 	}
-	CHECK_FALSE(ok);
+	CHECK_FALSE(cost.ok);
 	CHECK(refused == 0);
-	CHECK(rig.service.report().kind == hc::image::Report::Kind::apply);
+	CHECK_MESSAGE(rig.service.report().kind == hc::image::Report::Kind::apply, hc_test::describe(rig.service.report()));
 	REQUIRE(rig.service.report().count > 0);
-	CHECK(std::string(rig.service.report().refusals[0].path) == "external");
+	CHECK(std::string(rig.service.report().refusals[0].path) == "external.sources");
+	CHECK_FALSE(rig.service.loaded());
+	CHECK(rig.service.swap_kept());
+	// The last valid image again.
+	rig.load(old_text);
 	CHECK(rig.service.loaded());
 	CHECK(rig.service.info().revision == 1);
-	CHECK(rig.service.source() == Source::restore);
-	CHECK(stored.fake.begins == 1);
-	CHECK(rig.sink.sink.count("loading the stored image again") == 1);
 	rig.service.set_external(nullptr);
 }
 
-TEST_CASE("Swap memory: a provider reload parses the stored image again, keeps nothing and takes no large block "
-	"(#45 item 9)") {
-	// With the Zigbee adapter registered the service kept the applied plan for the providers' reloads
-	// (4 KB on the C6 for the test system, growing with the image). Now a reload (a device joins)
-	// reads the stored image into the stored staging and parses it again, as the boot load does.
+TEST_CASE("Swap memory: a provider reload rebuilds the model from the plan of the slot's image, keeps nothing and "
+	"takes no large block (#45 item 9)") {
+	// A reload (a device joins) loads the model again from the plan of the image in the slot (which
+	// points into the slot) and binds the components again; nothing of it stays.
 	std::string base = fixture_text("example.json");
-	std::vector<std::string> outputs = {"living.light", "hall.light", "hall.blind.move", "away"};
-	std::string image = with_blocks(base, 1, 2, "living.temperature", outputs);
-
-	// The steady state with the plan kept (an image loaded without storing still keeps it) and without.
-	long kept = 0;
-	long kept_peak = 0;
-	{
-		SwapRig rig;
-		rig.load(image, false);
-		REQUIRE(rig.service.keeps_plan());
-		rig.clock.now_ms += ImageService::kReloadSpacingMs;
-		rig.settle();
-		kept = rig.held();
-		hc_test::heap_mark();
-		size_t at = hc_test::heap_live();
-		rig.zigbee.changed();
-		rig.settle();
-		kept_peak = static_cast<long>(hc_test::heap_peak()) - static_cast<long>(at);
-	}
 	SwapRig rig;
-	FlashStaging received;
-	FlashStaging stored;
-	rig.service.set_staging(&received);
-	rig.service.set_stored_staging(&stored);
-	REQUIRE(rig.service.load(image.data(), image.size(), Source::api, true));
-	REQUIRE(rig.service.stored_ok());
-	CHECK_FALSE(rig.service.keeps_plan());
+	rig.load(example_blocks(base, 1, 2));
 	rig.clock.now_ms += ImageService::kReloadSpacingMs;
 	rig.settle();
 	long held = rig.held();
-	CHECK(held < kept);
 	size_t datapoints = rig.model.size();
 	size_t mappings = rig.adapter.size();
 	uint32_t reloads = rig.service.dynamic_reloads();
@@ -994,17 +954,13 @@ TEST_CASE("Swap memory: a provider reload parses the stored image again, keeps n
 	CHECK(rig.service.dynamic_reloads() == reloads + 1);
 	CHECK(rig.service.dynamic_refusal() == nullptr);
 	CHECK(refused == 0);
-	CHECK(static_cast<long>(largest) <= kStoredLoadLargest);
-	CHECK(stored.fake.begins == 1);
-	CHECK(stored.fake.ends == 1);
-	CHECK_FALSE(rig.service.keeps_plan());
+	CHECK(static_cast<long>(largest) <= kSlotLoadLargest);
 	CHECK(rig.model.size() == datapoints);
 	CHECK(rig.adapter.size() == mappings);
 	CHECK(rig.service.engine().loaded());
 	CHECK(rig.service.blocks().size() == 2);
 	// Nothing of the reload stays.
 	CHECK(rig.held() <= held);
-	MESSAGE("the kept plan: " << kept - held << " B of the steady state; a reload's peak "
-		<< static_cast<long>(peak) - static_cast<long>(start) << " B above it (" << kept_peak
-		<< " B with the plan kept), largest allocation " << largest << " B");
+	MESSAGE("a reload's peak " << static_cast<long>(peak) - static_cast<long>(start) << " B above the steady state ("
+		<< held << " B), largest allocation " << largest << " B");
 }

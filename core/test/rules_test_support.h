@@ -18,6 +18,7 @@
 #include "hc/rules/value.h"
 #include "hc/technology.h"
 #include "hc/tz.h"
+#include "image_support.h"
 #include "json_reader.h"
 
 #ifndef HC_SPEC_DIR
@@ -314,6 +315,52 @@ public:
 
 	bool refuse = false;
 	bool refuse_reads = false;
+};
+
+// ---- Rules in a compiled image (issue #87) ---------------------------------------------------------
+
+/// A source image (spec/runtime-image.md 2) of `datapoints` (the items of the member, without the
+/// brackets), `rules` (likewise) and further members `extra` (", \"schedules\": [...]"), schema 1.7.
+inline std::string rules_source(const std::string& datapoints, const std::string& rules, const std::string& extra = "",
+	const char* schema = "1.7") {
+	return std::string(R"({"image": {"schemaVersion": ")") + schema + R"(", "projectId": "rules-test", "revision": 1})" +
+		R"(, "datapoints": [)" + datapoints + "]" + R"(, "rules": [)" + rules + "]" + extra + "}";
+}
+
+/// A declared datapoint of a source image: readable, writable (as `writable`) and transmitting, without
+/// a technology member (a value of the application, spec/runtime-image.md 3.3).
+inline std::string datapoint_source(const std::string& id, const char* type, bool writable = true) {
+	return R"({"id": ")" + id + R"(", "type": ")" + type + R"(", "readable": true, "writable": )" +
+		(writable ? "true, \"transmit\": true}" : "false}");
+}
+
+/// Rules compiled into a binary image with the test compiler and bound from it as the device does:
+/// a model built from the image's datapoints holds them at the image's indices (the rules reference
+/// datapoints by index), the implied parameter and state datapoints included.
+struct RuleImage {
+	CompiledImage compiled;
+
+	/// Compiles the source `json` and checks it as the device does (header, CRC, structure).
+	bool compile(const std::string& json, const hc::test::CompileOptions& options = {}) {
+		return compiled.compile(json, options);
+	}
+	/// Loads the image's datapoints into `model`.
+	void load_model(hc::DatapointModel& model) const {
+		std::vector<hc::DatapointSpec> specs = compiled.specs();
+		REQUIRE(model.load(specs.data(), specs.size()) == hc::DatapointStatus::ok);
+	}
+	/// Whether datapoint `index` is declared (no component owns it: not a rule's parameter or state).
+	bool declared(size_t index) const {
+		return compiled.view.at<hc::image::bin::DatapointRec>(hc::image::bin::kDatapoints, index).owner == 0;
+	}
+	size_t datapoint_count() const { return compiled.view.count(hc::image::bin::kDatapoints); }
+	/// The image's rules bound into a set; a refusal fails the test.
+	hc::rules::RuleSet bind(const char* language = "en") const {
+		hc::rules::RuleSet set;
+		hc::rules::LoadResult result = compiled.bind(set, language);
+		REQUIRE_MESSAGE(result.ok(), hc::rules::load_error_name(result.error) << " " << result.path << ": " << result.text);
+		return set;
+	}
 };
 
 } // namespace hc_test

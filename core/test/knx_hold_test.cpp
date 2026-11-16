@@ -13,8 +13,10 @@
 #include "doctest.h"
 #include "fake_blob_store.h"
 #include "hc/image/image_service.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "web_test_support.h"
 
@@ -58,7 +60,8 @@ struct HoldFixture : hc_test::WebFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel};
 	hc_test::FakeBlobStore blobs;
-	hc::image::ImageService service{controller, model, blobs, adapter, &tunnel};
+	hc::image::MemoryImageSlot slot;
+	hc::image::ImageService service{controller, model, blobs, slot, adapter, &tunnel};
 	std::string cookie;
 	size_t handled = 0;
 	uint8_t gateway_sequence = 0;
@@ -73,12 +76,7 @@ struct HoldFixture : hc_test::WebFixture {
 	}
 
 	void load(const std::string& text) {
-		bool loaded = service.load(text.data(), text.size(), hc::image::Source::api, true);
-		std::string why;
-		for (size_t i = 0; i < service.report().count; ++i) {
-			why += std::string(service.report().refusals[i].path) + ": " + service.report().refusals[i].reason + "\n";
-		}
-		REQUIRE_MESSAGE(loaded, why);
+		REQUIRE_MESSAGE(hc_test::deploy(service, text), hc_test::describe(service.report()));
 		run();
 	}
 

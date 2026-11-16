@@ -9,7 +9,7 @@
 #   scripts/release-assets.py sign --key <secret-file> --out <dir> [--public <file>] [--site <dir>]
 #
 # assemble checks the builds (the release key the application carries, no HC_EXTRA_CA, no updater
-# test option, the application's version) and writes into <dir>: the six flash parts, install.json
+# test option, the application's version) and writes into <dir>: the seven flash parts, install.json
 # (the ESP Web Tools manifest, from web/flasher/manifest.json, its offsets checked against the
 # build's flasher_args.json), the update manifest manifest.json, the language packs
 # (i18n-manifest.json, lang-<code>.json.gz) and the ELF files. sign writes manifest.sig with the
@@ -108,6 +108,7 @@ def cmd_assemble(args):
 		'bootloader.bin': os.path.join(app, 'bootloader', 'bootloader.bin'),
 		'partition-table.bin': os.path.join(app, 'partition_table', 'partition-table.bin'),
 		'homecontrol.bin': os.path.join(app, 'homecontrol.bin'),
+		'image-empty.bin': os.path.join(app, 'image-empty.bin'),
 		'ota_data_ota0.bin': os.path.join(app, 'ota_data_ota0.bin'),
 		'storage.bin': os.path.join(app, 'storage.bin'),
 		'homecontrol.elf': os.path.join(app, 'homecontrol.elf'),

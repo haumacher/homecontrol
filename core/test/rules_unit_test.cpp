@@ -1,9 +1,11 @@
 /*
  * Copyright (c) 2026 Bernhard Haumacher
  */
-// Unit tests of the rule interpreter beyond the conformance corpus: the canonical printer (round
-// trip through a text parser for every corpus expression), the load checks and limits of spec
-// section 10, the parameter key mapping, the memory accounting and the loop guard.
+// Unit tests of the rule interpreter beyond the conformance corpus, on rules compiled into the binary
+// image (issue #87): the canonical printer (round trip through a text parser for every corpus
+// expression), the compiled form of spec/runtime-image.md 9.13 and 9.14, the device's checks and
+// limits of the rules (spec/runtime-image.md 10.6, 10.8), the parameter key mapping, the memory
+// accounting and the loop guard. The load checks of the JSON rules (spec/rules.md 10.1) are E-Home's.
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -12,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <new>
 #include <regex>
@@ -22,12 +25,19 @@
 #include "doctest.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
+#include "hc/history.h"
+#include "hc/image/binary.h"
+#include "hc/image/loader.h"
 #include "hc/image/rules_clock.h"
+#include "hc/image/validator.h"
+#include "hc/json.h"
 #include "hc/knx/adapter.h"
 #include "hc/rules/engine.h"
 #include "hc/rules/parameter_store.h"
 #include "hc/rules/printer.h"
 #include "hc/rules/rule_set.h"
+#include "image_compiler.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "test_support.h"
@@ -38,7 +48,6 @@ using hc::rules::RuleSet;
 using hc::rules::Type;
 using hc::rules::Val;
 using hc_test::Json;
-using hc_test::JsonTree;
 
 namespace {
 
@@ -47,74 +56,91 @@ constexpr uint16_t kNone = hc::rules::kNone;
 // ------------------------------------------------------------------------------------------
 // Helpers
 
-struct Datapoints {
-	std::vector<std::string> names;
-	std::vector<hc::DatapointSpec> specs;
+/// The datapoints the rules of the printer and limit tests use.
+const std::string kBenchDatapoints = hc_test::datapoint_source("b", "boolean") + "," +
+	hc_test::datapoint_source("u", "unsigned") + "," + hc_test::datapoint_source("r", "real") + "," +
+	hc_test::datapoint_source("s", "string") + "," + hc_test::datapoint_source("t", "timeOfDay") + "," +
+	hc_test::datapoint_source("ro", "boolean", false) + "," + hc_test::datapoint_source("e", "enumeration") + "," +
+	hc_test::datapoint_source("c", "controlled");
 
-	/// `application`: a value of the application (spec/runtime-image.md 3.3, 1.6), which rules write
-	/// also when it is not writable.
-	void add(const std::string& name, hc::ValueType type, bool writable = true, bool application = false) {
-		names.push_back(name);
-		specs.push_back(hc::DatapointSpec{nullptr, type,
-			static_cast<uint8_t>(hc::DatapointFlags::kReadable |
-				(writable ? hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit : 0) |
-				(application ? hc::DatapointFlags::kApplication : 0))});
-	}
+/// The source image of the bench datapoints and `rules` (the items of the member).
+std::string bench_image(const std::string& rules, const std::string& extra = "") {
+	return hc_test::rules_source(kBenchDatapoints, rules, extra);
+}
 
-	void load(hc::DatapointModel& model) {
-		for (size_t i = 0; i < specs.size(); ++i) {
-			specs[i].name = names[i].c_str();
-		}
-		REQUIRE(model.load(specs.data(), specs.size()) == hc::DatapointStatus::ok);
-	}
-};
-
-struct NoSchedules : hc::rules::ScheduleDirectory {
-	bool has_schedule(const char* id) const override { return std::strcmp(id, "morning") == 0; }
-};
-
-/// A model with the datapoints the refusal tests use.
+/// Rules compiled over the bench datapoints, the model of the image's datapoints and the bound set.
 struct Bench {
 	hc_test::FakeClock clock;
 	hc::DatapointModel model{clock};
-	JsonTree tree;
-	NoSchedules schedules;
+	hc_test::RuleImage image;
+	RuleSet set;
 
-	Bench() {
-		Datapoints d;
-		d.add("b", hc::ValueType::boolean);
-		d.add("u", hc::ValueType::unsigned_int);
-		d.add("r", hc::ValueType::real);
-		d.add("s", hc::ValueType::string);
-		d.add("t", hc::ValueType::time_of_day);
-		d.add("ro", hc::ValueType::boolean, false);
-		d.add("e", hc::ValueType::enumeration);
-		d.add("c", hc::ValueType::controlled);
-		d.load(model);
-	}
-
-	LoadResult load(const std::string& text, RuleSet& set) {
-		Json json;
-		std::string error;
-		REQUIRE_MESSAGE(hc_test::parse_json(text, json, error), error << "\n" << text);
-		hc_test::ScopedCapture capture(hc::LogLevel::error);
-		return set.load(tree.value(json), model, &schedules);
-	}
-
-	std::string refusal(const std::string& text) {
-		RuleSet set;
-		LoadResult result = load(text, set);
-		return result.ok() ? "ok" : hc::rules::load_error_name(result.error);
+	explicit Bench(const std::string& rules, const std::string& extra = "", const char* language = "en") {
+		REQUIRE(image.compile(bench_image(rules, extra)));
+		image.load_model(model);
+		set = image.bind(language);
 	}
 };
+
+/// The first refusal of a report as "<code> <path>: <reason>".
+std::string first_refusal(const hc::image::Report& report) {
+	if (report.count == 0) {
+		return std::string(hc::image::report_kind_code(report.kind));
+	}
+	return std::string(hc::image::report_kind_code(report.kind)) + " " + report.refusals[0].path + ": " +
+		report.refusals[0].reason;
+}
+
+/// What the device says of the binary image `bytes`: "ok", or its first refusal as "<code> <path>:
+/// <reason>". The checks of a receipt (spec/runtime-image.md 10.1 to 10.7, the counted limits of
+/// 10.8), then those of the loader that need this firmware (10.8: the persistence keys, ...).
+std::string device_verdict(const std::vector<uint8_t>& bytes) {
+	hc::image::Report report;
+	if (!hc::image::check_header(bytes.data(), bytes.size(), bytes.size(), report) ||
+		!hc::image::check_crc(bytes.data(), report) || !hc::image::check_structure(bytes.data(), report)) {
+		return first_refusal(report);
+	}
+	hc::image::bin::View view;
+	view.open(bytes.data());
+	hc_test::FakeClock clock;
+	hc::image::Loader loader(clock, hc::HistoryLimits().cap_bytes);
+	hc::image::Plan plan;
+	hc_test::ScopedCapture capture(hc::LogLevel::error);
+	if (!loader.build(view, plan, report)) {
+		return first_refusal(report);
+	}
+	return "ok";
+}
+
+/// The device's verdict on the bench datapoints with `rules`, compiled.
+std::string verdict(const std::string& rules, const std::string& extra = "") {
+	return device_verdict(hc_test::compiled(bench_image(rules, extra)));
+}
+
+/// Whether a verdict is the refusal of a limit (spec/runtime-image.md 10.6, 10.8).
+bool limit_refused(const std::string& v) { return v.find("image.invalid") == 0 && v.find("limitExceeded") != std::string::npos; }
+
+/// Rewrites the records of section `id` of the compiled `bytes` with `patch` (record index, its
+/// bytes) and writes the header's CRC anew (spec 9.2): an image E-Home's compiler would not write.
+void patch_records(std::vector<uint8_t>& bytes, uint16_t id, const std::function<void(size_t, uint8_t*)>& patch) {
+	hc::image::bin::View view;
+	view.open(bytes.data());
+	const hc::image::bin::Table& table = view.table(id);
+	size_t offset = static_cast<size_t>(table.base - bytes.data());
+	for (size_t i = 0; i < table.count; ++i) {
+		patch(i, bytes.data() + offset + i * table.stride);
+	}
+	const auto& header = *reinterpret_cast<const hc::image::bin::Header*>(bytes.data());
+	size_t end = (header.flags & hc::image::bin::kFlagSigned) != 0 ? header.length - 64 : header.length;
+	uint32_t crc = hc::image::bin::image_crc(bytes.data(), end);
+	std::memcpy(bytes.data() + 12, &crc, sizeof(crc));
+}
 
 /// One rule around `reaction` (and optional extra members of the rule).
 std::string rule_json(const std::string& reaction, const std::string& extra = "", const std::string& id = "x") {
 	return R"({"id": ")" + id + R"(", "name": "X", )" + (extra.empty() ? "" : extra + ", ") + R"("reactions": [)" +
 		reaction + "]}";
 }
-
-std::string image(const std::string& rules) { return "[" + rules + "]"; }
 
 std::string lit_int(long long v) { return R"({"kind": "literal", "type": "integer", "value": )" + std::to_string(v) + "}"; }
 std::string lit_bool(bool v) { return std::string(R"({"kind": "literal", "type": "boolean", "value": )") + (v ? "true" : "false") + "}"; }
@@ -131,6 +157,19 @@ std::string write_reaction(const std::string& target, const std::string& value, 
 	return R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], )" +
 		(condition.empty() ? "" : R"("condition": )" + condition + ", ") +
 		R"("actions": [{"kind": "write", "datapoint": ")" + target + R"(", "value": )" + value + "}]}";
+}
+
+/// The rule corpus files (spec/fixtures/rules/NN-*.json), sorted.
+std::vector<std::string> rule_cases() {
+	std::vector<std::string> files;
+	for (const auto& entry : std::filesystem::directory_iterator(HC_SPEC_DIR "/fixtures/rules")) {
+		std::string name = entry.path().filename().string();
+		if (entry.path().extension() == ".json" && name.size() > 3 && std::isdigit(static_cast<unsigned char>(name[0]))) {
+			files.push_back(entry.path().string());
+		}
+	}
+	std::sort(files.begin(), files.end());
+	return files;
 }
 
 // ------------------------------------------------------------------------------------------
@@ -442,6 +481,7 @@ private:
 	std::string error_;
 };
 
+
 /// The S-expression of a compiled expression.
 std::string tree_of(const RuleSet& set, const hc::DatapointModel& model, size_t rule, uint16_t index) {
 	const hc::rules::Node& n = set.node(index);
@@ -492,7 +532,7 @@ std::vector<std::pair<size_t, uint16_t>> expression_roots(const RuleSet& set) {
 		for (size_t i = 0; i < list.count; ++i) {
 			const hc::rules::Action& a = set.action(list.first + i);
 			if (a.kind == hc::rules::ActionKind::log) {
-				for (size_t k = 0; k < a.expr; ++k) {
+				for (size_t k = 0; k < a.count; ++k) {
 					if (set.log_part(a.target + k).expr != kNone) {
 						roots.emplace_back(rule, set.log_part(a.target + k).expr);
 					}
@@ -517,6 +557,8 @@ std::vector<std::pair<size_t, uint16_t>> expression_roots(const RuleSet& set) {
 				const hc::rules::Trigger& t = set.trigger(reaction.first_trigger + k);
 				if (t.kind == hc::rules::TriggerKind::match) {
 					roots.emplace_back(r, t.ref);
+				} else if (t.kind == hc::rules::TriggerKind::silence) {
+					roots.emplace_back(r, t.ref2);
 				}
 			}
 			if (reaction.condition != kNone) {
@@ -536,15 +578,15 @@ std::string print(const RuleSet& set, const hc::DatapointModel& model, size_t ru
 	return text;
 }
 
-/// Loads one rule with the given condition (against the Bench model) and prints the condition.
-std::string print_condition(Bench& bench, const std::string& condition, const std::string& extra = "") {
-	RuleSet set;
-	std::string rules = image(rule_json(
-		R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "condition": )" + condition + R"(, "actions": []})",
-		extra));
-	LoadResult result = bench.load(rules, set);
-	REQUIRE_MESSAGE(result.ok(), std::string(result.path) << ": " << std::string(result.text));
-	return print(set, bench.model, 0, set.reaction(0).condition);
+/// A reaction on `b` with `condition` and no actions.
+std::string condition_reaction(const std::string& condition) {
+	return R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "condition": )" + condition + R"(, "actions": []})";
+}
+
+/// Compiles one rule with the given condition (over the bench datapoints) and prints the condition.
+std::string print_condition(const std::string& condition, const std::string& extra = "") {
+	Bench bench(rule_json(condition_reaction(condition), extra));
+	return print(bench.set, bench.model, 0, bench.set.reaction(0).condition);
 }
 
 } // namespace
@@ -554,7 +596,7 @@ std::string print_condition(Bench& bench, const std::string& condition, const st
 
 TEST_CASE("RulesPrinter round trip of every corpus expression") {
 	size_t checked = 0;
-	for (const std::string& path : hc_test::rule_corpus_files()) {
+	for (const std::string& path : rule_cases()) {
 		std::string text, error;
 		REQUIRE(hc_test::read_text(path, text));
 		Json json;
@@ -562,57 +604,27 @@ TEST_CASE("RulesPrinter round trip of every corpus expression") {
 		if (json["expected"].has("loadRefused")) {
 			continue;
 		}
-		hc_test::FakeClock clock;
-		hc::DatapointModel model(clock);
-		Datapoints d;
-		for (const Json& p : json["datapoints"].items) {
-			d.add(p["name"].text, hc::rules::datapoint_type_from_name(p["type"].text.c_str()),
-				!p.has("writable") || p["writable"].boolean, p.has("application") && p["application"].boolean);
-		}
-		std::vector<const Json*> images{&json["rules"]};
-		for (const Json& step : json["timeline"].items) {
-			if (step.has("image")) {
-				images.push_back(&step["image"]["rules"]);
+		// The case's own image and the image of every `image` step (spec/runtime-image.md 13.1).
+		std::vector<int> steps{-1};
+		for (size_t k = 0; k < json["timeline"].items.size(); ++k) {
+			if (json["timeline"].items[k].has("image")) {
+				steps.push_back(static_cast<int>(k));
 			}
 		}
-		JsonTree tree;
-		// The parameter datapoints of every image of the case (spec/rules.md 8.6).
-		for (const Json* rules : images) {
-			hc::rules::ParameterDatapoint derived[128];
-			size_t count = hc::rules::parameter_datapoints(tree.value(*rules), derived, 128);
-			for (size_t i = 0; i < count && i < 128; ++i) {
-				if (std::find(d.names.begin(), d.names.end(), std::string(derived[i].name)) == d.names.end()) {
-					d.add(derived[i].name, derived[i].type, (derived[i].flags & hc::DatapointFlags::kWritable) != 0);
-				}
-			}
-		}
-		// The time datapoints of the full schedule entries (spec/schedules.md 2.2, README "schedules").
-		for (const Json& s : json["schedules"].items) {
-			bool time = false;
-			for (const Json& member : s["adjustable"].items) {
-				time = time || member.text == "time";
-			}
-			const std::string kind = s["kind"].text;
-			if (time && (kind == "weekly" || kind == "yearly" || kind == "dates")) {
-				d.add("schedule/" + s["id"].text + "/time", hc::ValueType::time_of_day, true);
-			}
-		}
-		d.load(model);
-		struct Schedules : hc::rules::ScheduleDirectory {
-			const Json* ids;
-			bool has_schedule(const char* id) const override {
-				for (const Json& s : ids->items) {
-					if ((s.kind == Json::Kind::object ? s["id"].text : s.text) == id) {
-						return true;
-					}
-				}
-				return false;
-			}
-		} schedules;
-		schedules.ids = &json["schedules"];
-		for (const Json* rules : images) {
+		for (int step : steps) {
+			CAPTURE(path);
+			CAPTURE(step);
+			hc_test::CompiledImage image;
+			std::string compile_error;
+			REQUIRE_MESSAGE(hc::test::compile_case(text.data(), text.size(), step, image.bytes, &compile_error),
+				compile_error);
+			REQUIRE(image.open());
+			hc_test::FakeClock clock;
+			hc::DatapointModel model(clock);
+			std::vector<hc::DatapointSpec> specs = image.specs();
+			REQUIRE(model.load(specs.data(), specs.size()) == hc::DatapointStatus::ok);
 			RuleSet set;
-			LoadResult result = set.load(tree.value(*rules), model, &schedules);
+			LoadResult result = image.bind(set);
 			REQUIRE_MESSAGE(result.ok(), path << ": " << std::string(result.text));
 			for (const auto& root : expression_roots(set)) {
 				std::string printed = print(set, model, root.first, root.second);
@@ -631,48 +643,43 @@ TEST_CASE("RulesPrinter round trip of every corpus expression") {
 }
 
 TEST_CASE("RulesPrinter spec examples and parentheses") {
-	Bench bench;
 	std::string lux_rule = R"("parameters": [{"id": "darkBelow", "label": "Dark", "type": "real", "default": 50.0}])";
-	CHECK(print_condition(bench,
+	CHECK(print_condition(
 			  bin("and", dp("b"), bin("or", dp("b"), bin("<", dp("r"), R"({"kind": "parameter", "id": "darkBelow"})"))),
 			  lux_rule) == "@b and (@b or @r < $darkBelow)");
-	CHECK(print_condition(bench,
+	CHECK(print_condition(
 			  bin(">", R"({"kind": "call", "function": "remaining", "args": [{"kind": "timer", "id": "off"}]})",
 				  R"({"kind": "literal", "type": "duration", "value": 90000})"),
 			  R"("timers": [{"id": "off", "duration": {"kind": "literal", "type": "duration", "value": 1000}}])") ==
 		"remaining(off) > 1min30s");
 	// a - (b - c), a - b - c, a or (b or c)
-	CHECK(print_condition(bench, bin("==", bin("-", lit_int(1), bin("-", lit_int(2), lit_int(3))), lit_int(0))) ==
+	CHECK(print_condition(bin("==", bin("-", lit_int(1), bin("-", lit_int(2), lit_int(3))), lit_int(0))) ==
 		"1 - (2 - 3) == 0");
-	CHECK(print_condition(bench, bin("==", bin("-", bin("-", lit_int(1), lit_int(2)), lit_int(3)), lit_int(0))) ==
+	CHECK(print_condition(bin("==", bin("-", bin("-", lit_int(1), lit_int(2)), lit_int(3)), lit_int(0))) ==
 		"1 - 2 - 3 == 0");
-	CHECK(print_condition(bench, bin("or", dp("b"), bin("or", dp("b"), dp("b")))) == "@b or (@b or @b)");
+	CHECK(print_condition(bin("or", dp("b"), bin("or", dp("b"), dp("b")))) == "@b or (@b or @b)");
 	// a comparison under a comparison; -(-5); -(a + b); not binds looser than comparisons
-	CHECK(print_condition(bench, bin("==", bin("<", lit_int(1), lit_int(2)), lit_bool(true))) == "(1 < 2) == true");
-	// A minus applied to a number literal is folded into it at load (4.8): -(-5) is the literal 5.
-	CHECK(print_condition(bench, bin("==", un("-", lit_int(-5)), lit_int(5))) == "5 == 5");
-	CHECK(print_condition(bench, bin("==", un("-", dp("r")), lit_int(5))) == "-@r == 5");
-	CHECK(print_condition(bench, bin("==", un("-", un("-", dp("r"))), lit_int(5))) == "-(-@r) == 5");
-	CHECK(print_condition(bench, bin("==", un("-", bin("+", lit_int(1), lit_int(2))), lit_int(-3))) == "-(1 + 2) == -3");
-	CHECK(print_condition(bench, un("not", bin("==", dp("u"), lit_int(1)))) == "not @u == 1");
-	CHECK(print_condition(bench, bin("==", un("not", dp("b")), lit_bool(false))) == "(not @b) == false");
-	CHECK(print_condition(bench, bin("==", bin("*", bin("+", lit_int(1), lit_int(2)), lit_int(3)), lit_int(9))) ==
+	CHECK(print_condition(bin("==", bin("<", lit_int(1), lit_int(2)), lit_bool(true))) == "(1 < 2) == true");
+	// A minus applied to a number literal is folded into it by the compiler (4.8): -(-5) is the literal 5.
+	CHECK(print_condition(bin("==", un("-", lit_int(-5)), lit_int(5))) == "5 == 5");
+	CHECK(print_condition(bin("==", un("-", dp("r")), lit_int(5))) == "-@r == 5");
+	CHECK(print_condition(bin("==", un("-", un("-", dp("r"))), lit_int(5))) == "-(-@r) == 5");
+	CHECK(print_condition(bin("==", un("-", bin("+", lit_int(1), lit_int(2))), lit_int(-3))) == "-(1 + 2) == -3");
+	CHECK(print_condition(un("not", bin("==", dp("u"), lit_int(1)))) == "not @u == 1");
+	CHECK(print_condition(bin("==", un("not", dp("b")), lit_bool(false))) == "(not @b) == false");
+	CHECK(print_condition(bin("==", bin("*", bin("+", lit_int(1), lit_int(2)), lit_int(3)), lit_int(9))) ==
 		"(1 + 2) * 3 == 9");
-	CHECK(print_condition(bench, bin("==", dp("s"), R"({"kind": "literal", "type": "string", "value": "say \"hi\"\n"})")) ==
+	CHECK(print_condition(bin("==", dp("s"), R"({"kind": "literal", "type": "string", "value": "say \"hi\"\n"})")) ==
 		R"(@s == "say \"hi\"\n")");
 }
 
 TEST_CASE("RulesPrinter normalized trees (spec 4.9)") {
-	Bench bench;
-	// Loads a condition; returns the printed text and the compiled right operand of its root.
+	// Compiles a condition; returns the printed text and the compiled right operand of its root.
 	auto load = [&](const std::string& condition, hc::rules::Node& right) {
-		RuleSet set;
-		LoadResult result = bench.load(image(rule_json(
-			R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "condition": )" + condition + R"(, "actions": []})")), set);
-		REQUIRE_MESSAGE(result.ok(), std::string(result.path) << ": " << std::string(result.text));
-		uint16_t root = set.reaction(0).condition;
-		right = set.node(static_cast<uint16_t>(set.node(root).a + 1));
-		return print(set, bench.model, 0, root);
+		Bench bench(rule_json(condition_reaction(condition)));
+		uint16_t root = bench.set.reaction(0).condition;
+		right = bench.set.node(static_cast<uint16_t>(bench.set.node(root).a + 1));
+		return print(bench.set, bench.model, 0, root);
 	};
 	hc::rules::Node right;
 	// 1. A unary minus on a number literal is a negative literal, an odd chain negated.
@@ -724,7 +731,6 @@ TEST_CASE("RulesPrinter parameter references: $id for an identifier, else $\"id\
 	CHECK_FALSE(hc::rules::bare_parameter_id("2nd"));
 	CHECK_FALSE(hc::rules::bare_parameter_id("a.b"));
 	CHECK_FALSE(hc::rules::bare_parameter_id("and"));
-	Bench bench;
 	std::string parameters = R"("parameters": [
 		{"id": "x", "label": "X", "type": "real", "default": 1.0},
 		{"id": "x-y", "label": "X-Y", "type": "real", "default": 2.0},
@@ -732,12 +738,12 @@ TEST_CASE("RulesPrinter parameter references: $id for an identifier, else $\"id\
 		{"id": "2nd", "label": "2nd", "type": "real", "default": 4.0},
 		{"id": "-", "label": "Minus", "type": "real", "default": 5.0}])";
 	auto param = [](const char* id) { return std::string(R"({"kind": "parameter", "id": ")") + id + R"("})"; };
-	CHECK(print_condition(bench, bin("<", dp("r"), param("x")), parameters) == "@r < $x");
-	CHECK(print_condition(bench, bin("<", dp("r"), param("x-y")), parameters) == R"(@r < $"x-y")");
-	CHECK(print_condition(bench, bin("<", param("x_y"), param("x-y")), parameters) == R"($x_y < $"x-y")");
-	CHECK(print_condition(bench, bin("==", un("-", param("2nd")), param("-")), parameters) == R"(-$"2nd" == $"-")");
+	CHECK(print_condition(bin("<", dp("r"), param("x")), parameters) == "@r < $x");
+	CHECK(print_condition(bin("<", dp("r"), param("x-y")), parameters) == R"(@r < $"x-y")");
+	CHECK(print_condition(bin("<", param("x_y"), param("x-y")), parameters) == R"($x_y < $"x-y")");
+	CHECK(print_condition(bin("==", un("-", param("2nd")), param("-")), parameters) == R"(-$"2nd" == $"-")");
 	// The printed text parses back to the same tree.
-	std::string printed = print_condition(bench, bin("<", bin("-", dp("r"), param("x-y")), param("-")), parameters);
+	std::string printed = print_condition(bin("<", bin("-", dp("r"), param("x-y")), param("-")), parameters);
 	CHECK(printed == R"(@r - $"x-y" < $"-")");
 	std::string parsed, error;
 	TextParser parser(printed);
@@ -745,156 +751,197 @@ TEST_CASE("RulesPrinter parameter references: $id for an identifier, else $\"id\
 	CHECK(parsed == R"((< (- @r $x-y) $-))");
 }
 
-TEST_CASE("RulesLoader parameter ids: the characters of a rule id, 1..24, not a keyword, not enabled (issue #81)") {
-	Bench bench;
-	auto load = [&](const std::string& id, LoadResult& result) {
-		RuleSet set;
-		std::string parameters = R"("parameters": [{"id": ")" + id + R"(", "label": "P", "type": "real", "default": 1.0}])";
-		result = bench.load(image(rule_json(
-			R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "actions": []})", parameters)), set);
-	};
-	LoadResult result;
-	for (const char* ok : {"max-helligkeit", "a", "2nd", "-", "_", "Max_Helligkeit-2", "abcdefghijklmnopqrstuvwx", "mon"}) {
-		CAPTURE(ok);
-		load(ok, result);
-		CHECK_MESSAGE(result.ok(), std::string(result.path) << ": " << std::string(result.text));
-	}
-	struct Refusal {
-		const char* id;
-		hc::rules::LoadError error;
-		const char* text;
-	};
-	const Refusal refusals[] = {
-		{"a/b", hc::rules::LoadError::malformed, "parameter id 'a/b' is not 1..24 characters of A-Z a-z 0-9 _ -"},
-		{"max helligkeit", hc::rules::LoadError::malformed,
-			"parameter id 'max helligkeit' is not 1..24 characters of A-Z a-z 0-9 _ -"},
-		{"gr\u00f6\u00dfe", hc::rules::LoadError::malformed,
-			"parameter id 'gr\xc3\xb6\xc3\x9f" "e' is not 1..24 characters of A-Z a-z 0-9 _ -"},
-		{"a.state", hc::rules::LoadError::malformed, "parameter id 'a.state' is not 1..24 characters of A-Z a-z 0-9 _ -"},
-		{"abcdefghijklmnopqrstuvwxy", hc::rules::LoadError::malformed, "'id' must have 1..24 bytes"},
-		{"and", hc::rules::LoadError::malformed, "parameter id 'and' is a keyword"},
-		{"true", hc::rules::LoadError::malformed, "parameter id 'true' is a keyword"},
-		{"enabled", hc::rules::LoadError::duplicate_id, "the parameter id 'enabled' is reserved for the enable switch"},
-	};
-	for (const Refusal& r : refusals) {
-		CAPTURE(r.id);
-		load(r.id, result);
-		CHECK_FALSE(result.ok());
-		CHECK(result.error == r.error);
-		CHECK(std::string(result.text) == r.text);
-		CHECK(std::string(result.path) == "rules[0].parameters[0].id");
-	}
+// ------------------------------------------------------------------------------------------
+// The compiled form (spec/runtime-image.md 9.13, 9.14)
+
+TEST_CASE("RulesImage the compiled form: records, node layout, constants (spec/runtime-image.md 9.13, 9.14)") {
+	std::string rule = R"({"id": "x", "name": "X", "enabledAdjustable": false,
+		"parameters": [{"id": "level", "label": "Level", "type": "real", "default": 50.0, "min": 0.0, "max": 100.0, "step": 0.5,
+			"choices": [{"value": 10.0, "label": "Low"}, {"value": 90.0, "label": "High"}]},
+			{"id": "timeout", "label": "Timeout", "type": "duration", "default": 180000, "adjustable": false}],
+		"timers": [{"id": "off", "duration": {"kind": "parameter", "id": "timeout"}}],
+		"states": [{"id": "idle"}, {"id": "on", "label": "On", "entry": [{"kind": "restartTimer", "timer": "off"}],
+			"exit": [{"kind": "log", "level": "warning", "message": ["left on ", {"kind": "datapoint", "name": "r"}, "!"]}]}],
+		"initialState": "idle",
+		"reactions": [
+			{"triggers": [{"kind": "start"}, {"kind": "start", "reasons": ["image"]}], "actions": [], "to": "idle"},
+			{"triggers": [{"kind": "silence", "datapoint": "r", "after": {"kind": "literal", "type": "duration", "value": 60000}}],
+				"condition": {"kind": "binary", "op": ">", "left": {"kind": "call", "function": "remaining", "args": [{"kind": "timer", "id": "off"}]},
+					"right": {"kind": "literal", "type": "duration", "value": 90000}},
+				"from": ["on"], "to": "idle", "actions": [{"kind": "write", "datapoint": "b", "value": {"kind": "literal", "type": "boolean", "value": true}, "onlyOnChange": true}]},
+			{"triggers": [{"kind": "datapoint", "datapoint": "b", "on": "update", "origin": "command"}, {"kind": "timer", "timer": "off"},
+				{"kind": "parameter", "parameter": "level"}],
+				"actions": [{"kind": "setParameter", "parameter": "level", "value": {"kind": "literal", "type": "real", "value": 1.0}},
+					{"kind": "read", "datapoint": "u"}, {"kind": "cancelTimer", "timer": "off"}]}]})";
+	Bench bench(rule);
+	const RuleSet& set = bench.set;
+	REQUIRE(set.rule_count() == 1);
+	const hc::rules::Rule& r = set.rule(0);
+	CHECK(std::string(set.str(r.id)) == "x");
+	CHECK(std::string(set.label(r.name)) == "X");
+	// Parameters: the enable switch first (boolean, its default the rule's `enabled`, adjustable as
+	// `enabledAdjustable`, no label), then the declared ones, each mirrored by rule/<id>/<parameter>.
+	REQUIRE(r.parameter_count == 3);
+	const hc::rules::Parameter& enabled = set.parameter(r.first_parameter);
+	CHECK(std::string(set.str(enabled.id)) == "enabled");
+	CHECK(enabled.type == Type::boolean);
+	CHECK_FALSE(enabled.adjustable);
+	CHECK(enabled.label == 0u);
+	CHECK(set.constant(enabled.default_value).type == Type::boolean);
+	CHECK(set.constant(enabled.default_value).u.b);
+	CHECK(enabled.min == kNone);
+	CHECK(enabled.step == kNone);
+	CHECK(std::string(bench.model.get(enabled.datapoint)->name()) == "rule/x/enabled");
+	const hc::rules::Parameter& level = set.parameter(r.first_parameter + 1);
+	CHECK(std::string(set.str(level.id)) == "level");
+	CHECK(std::string(set.label(level.label)) == "Level");
+	CHECK(level.type == Type::real);
+	CHECK(level.adjustable);
+	CHECK(set.constant(level.default_value).u.r == 50.0);
+	CHECK(set.constant(level.min).u.r == 0.0);
+	CHECK(set.constant(level.max).u.r == 100.0);
+	CHECK(set.constant(level.step).type == Type::real);
+	CHECK(set.constant(level.step).u.r == 0.5);
+	REQUIRE(level.choice_count == 2);
+	CHECK(set.constant(set.choice(level.first_choice + 1).value).u.r == 90.0);
+	CHECK(std::string(set.label(set.choice(level.first_choice + 1).label)) == "High");
+	CHECK(std::string(bench.model.get(level.datapoint)->name()) == "rule/x/level");
+	CHECK(bench.model.get(level.datapoint)->type() == hc::ValueType::real);
+	const hc::rules::Parameter& timeout = set.parameter(r.first_parameter + 2);
+	CHECK(timeout.type == Type::duration);
+	CHECK_FALSE(timeout.adjustable);
+	CHECK(bench.model.get(timeout.datapoint)->type() == hc::ValueType::unsigned_int);
+	// The constants in the order of 9.18: per parameter its default, min, max, step, then the choices'
+	// values (the old JSON loader's order was its own; the image fixes it).
+	CHECK(enabled.default_value < level.default_value);
+	CHECK(level.default_value < level.min);
+	CHECK(level.min < level.max);
+	CHECK(level.max < level.step);
+	CHECK(level.step < set.choice(level.first_choice).value);
+	CHECK(set.choice(level.first_choice).value < set.choice(level.first_choice + 1).value);
+	CHECK(set.choice(level.first_choice + 1).value < timeout.default_value);
+	// Timers: the duration is an expression root.
+	REQUIRE(r.timer_count == 1);
+	const hc::rules::Node& duration = set.node(set.timer(r.first_timer).duration);
+	CHECK(duration.kind == hc::rules::NodeKind::parameter);
+	CHECK(duration.a == 2);
+	// States, their action runs and the state datapoint.
+	REQUIRE(r.state_count == 2);
+	CHECK(r.initial_state == 0);
+	CHECK(std::string(set.str(set.state(r.first_state + 1).id)) == "on");
+	CHECK(std::string(set.label(set.state(r.first_state + 1).label)) == "On");
+	CHECK(set.state(r.first_state).label == 0u);
+	CHECK(set.state(r.first_state).entry.count == 0);
+	REQUIRE(set.state(r.first_state + 1).entry.count == 1);
+	CHECK(set.action(set.state(r.first_state + 1).entry.first).kind == hc::rules::ActionKind::restart_timer);
+	CHECK(set.action(set.state(r.first_state + 1).entry.first).expr == kNone);
+	REQUIRE(r.state_datapoint != kNone);
+	CHECK(std::string(bench.model.get(r.state_datapoint)->name()) == "rule/x/state");
+	CHECK(bench.model.get(r.state_datapoint)->type() == hc::ValueType::enumeration);
+	CHECK(r.timeline == kNone);
+	// A log action: `target` its first part, `count` its parts; a text part a NUL-terminated string.
+	const hc::rules::Action& log = set.action(set.state(r.first_state + 1).exit.first);
+	CHECK(log.kind == hc::rules::ActionKind::log);
+	CHECK(log.flags == static_cast<uint8_t>(hc::rules::LogActionLevel::warning));
+	CHECK(log.expr == kNone);
+	REQUIRE(log.count == 3);
+	CHECK(std::string(set.str(set.log_part(log.target).text)) == "left on ");
+	CHECK(set.log_part(log.target).expr == kNone);
+	CHECK(set.log_part(log.target + 1).text == 0u);
+	CHECK(set.node(set.log_part(log.target + 1).expr).kind == hc::rules::NodeKind::datapoint);
+	CHECK(std::string(set.str(set.log_part(log.target + 2).text)) == "!");
+	// Reactions and triggers.
+	REQUIRE(r.reaction_count == 3);
+	const hc::rules::Reaction& start = set.reaction(r.first_reaction);
+	REQUIRE(start.trigger_count == 2);
+	// The start trigger: the reasons as flags (all three by default), `ref` and `ref2` kNone (the old
+	// JSON loader left `ref` 0).
+	const hc::rules::Trigger& any_start = set.trigger(start.first_trigger);
+	CHECK(any_start.kind == hc::rules::TriggerKind::start);
+	CHECK(any_start.flags == (hc::rules::TriggerFlags::kBoot | hc::rules::TriggerFlags::kImage |
+		hc::rules::TriggerFlags::kEnable));
+	CHECK(any_start.ref == kNone);
+	CHECK(any_start.ref2 == kNone);
+	CHECK(set.trigger(start.first_trigger + 1).flags == hc::rules::TriggerFlags::kImage);
+	CHECK(start.to == 0);
+	CHECK(start.condition == kNone);
+	CHECK(start.from_mask == 0xFFFF);
+	CHECK(start.actions.count == 0);
+	CHECK(start.else_actions.count == 0);
+	const hc::rules::Reaction& silent = set.reaction(r.first_reaction + 1);
+	// The silence trigger: `ref` its datapoint, `ref2` the root of `after` (the old loader's `ref` was
+	// the index of its silence slot); the engine derives the slots (silence()).
+	const hc::rules::Trigger& silence = set.trigger(silent.first_trigger);
+	CHECK(silence.kind == hc::rules::TriggerKind::silence);
+	CHECK(std::string(bench.model.get(silence.ref)->name()) == "r");
+	CHECK(set.node(silence.ref2).kind == hc::rules::NodeKind::literal);
+	CHECK(set.node(silence.ref2).lit.i == 60000);
+	REQUIRE(set.silence_count() == 1);
+	CHECK(set.silence(0).datapoint == silence.ref);
+	CHECK(set.silence(0).after == silence.ref2);
+	CHECK(set.silence_of(silent.first_trigger) == 0);
+	CHECK(silent.from_mask == 0x0002);
+	CHECK(silent.to == 0);
+	const hc::rules::Action& write = set.action(silent.actions.first);
+	CHECK(write.kind == hc::rules::ActionKind::write);
+	CHECK(write.flags == 1);
+	CHECK(std::string(bench.model.get(write.target)->name()) == "b");
+	// remaining(off) > 1min30s exactly as 9.14 shows it: the root, its children as one block, then the
+	// children's subtrees.
+	uint16_t n0 = silent.condition;
+	const hc::rules::Node& root = set.node(n0);
+	CHECK(root.kind == hc::rules::NodeKind::binary);
+	CHECK(root.op == static_cast<uint8_t>(hc::rules::Op::gt));
+	CHECK(root.type == Type::boolean);
+	CHECK(root.argc == 2);
+	CHECK(root.a == n0 + 1);
+	CHECK(root.size == 4);
+	const hc::rules::Node& call = set.node(n0 + 1);
+	CHECK(call.kind == hc::rules::NodeKind::call);
+	CHECK(call.op == static_cast<uint8_t>(hc::rules::Fn::remaining));
+	CHECK(call.type == Type::duration);
+	CHECK(call.argc == 1);
+	CHECK(call.a == n0 + 3);
+	CHECK(call.size == 2);
+	const hc::rules::Node& literal = set.node(n0 + 2);
+	CHECK(literal.kind == hc::rules::NodeKind::literal);
+	CHECK(literal.type == Type::duration);
+	CHECK(literal.lit.i == 90000);
+	CHECK(literal.a == kNone);
+	CHECK(literal.size == 1);
+	const hc::rules::Node& timer = set.node(n0 + 3);
+	CHECK(timer.kind == hc::rules::NodeKind::timer);
+	CHECK(timer.a == 0);
+	CHECK(timer.size == 1);
+	// A timer node has no expression type: the compiler writes code 0 (the old JSON loader had
+	// Type::invalid, which is no code of 9.14).
+	CHECK(static_cast<uint8_t>(timer.type) == 0);
+	const hc::rules::Reaction& third = set.reaction(r.first_reaction + 2);
+	REQUIRE(third.trigger_count == 3);
+	const hc::rules::Trigger& command = set.trigger(third.first_trigger);
+	CHECK(command.kind == hc::rules::TriggerKind::datapoint);
+	CHECK(command.flags == (hc::rules::TriggerFlags::kOnUpdate | hc::rules::TriggerFlags::kOriginCommand));
+	CHECK(command.ref2 == kNone);
+	CHECK(set.trigger(third.first_trigger + 1).kind == hc::rules::TriggerKind::timer);
+	CHECK(set.trigger(third.first_trigger + 1).ref == 0);
+	CHECK(set.trigger(third.first_trigger + 2).kind == hc::rules::TriggerKind::parameter);
+	CHECK(set.trigger(third.first_trigger + 2).ref == 1);
+	REQUIRE(third.actions.count == 3);
+	CHECK(set.action(third.actions.first).kind == hc::rules::ActionKind::set_parameter);
+	CHECK(set.action(third.actions.first).target == 1);
+	CHECK(set.action(third.actions.first + 1).kind == hc::rules::ActionKind::read);
+	CHECK(std::string(bench.model.get(set.action(third.actions.first + 1).target)->name()) == "u");
+	CHECK(set.action(third.actions.first + 1).expr == kNone);
+	CHECK(set.action(third.actions.first + 2).kind == hc::rules::ActionKind::cancel_timer);
+	CHECK(set.action(third.actions.first + 2).expr == kNone);
+	CHECK(set.find_rule("x") == 0);
+	CHECK(set.find_parameter(0, "timeout") == 2);
+	CHECK(set.find_timer(0, "off") == 0);
+	CHECK(set.find_state(0, "on") == 1);
 }
 
 // ------------------------------------------------------------------------------------------
-// Load checks (spec 10.1)
-
-TEST_CASE("RulesLoad refusal reasons") {
-	Bench bench;
-	std::string ok_reaction = write_reaction("b", lit_bool(true));
-	CHECK(bench.refusal(image(rule_json(ok_reaction))) == "ok");
-
-	// malformed: not an array, unknown member, unknown kind, unknown function, missing reactions
-	CHECK(bench.refusal("{}") == "malformed");
-	CHECK(bench.refusal(image(rule_json(ok_reaction, R"("colour": 1)"))) == "malformed");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b", R"({"kind": "magic"})")))) == "malformed");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b", R"({"kind": "call", "function": "nope", "args": []})")))) ==
-		"malformed");
-	CHECK(bench.refusal(image(R"({"id": "x", "name": "X"})")) == "malformed");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b", bin("**", lit_int(1), lit_int(2)))))) == "malformed");
-
-	// duplicateId: two rules, two timers, the reserved parameter id
-	CHECK(bench.refusal(image(rule_json(ok_reaction) + "," + rule_json(ok_reaction))) == "duplicateId");
-	CHECK(bench.refusal(image(rule_json(ok_reaction,
-			  R"("timers": [{"id": "t", "duration": {"kind": "literal", "type": "duration", "value": 1000}}, )"
-			  R"({"id": "t", "duration": {"kind": "literal", "type": "duration", "value": 1000}}])"))) == "duplicateId");
-	CHECK(bench.refusal(image(rule_json(ok_reaction,
-			  R"("parameters": [{"id": "enabled", "label": "E", "type": "boolean", "default": true}])"))) == "duplicateId");
-
-	// unknownReference: datapoint, schedule, parameter, timer, state of another rule
-	CHECK(bench.refusal(image(rule_json(write_reaction("nope", lit_bool(true))))) == "unknownReference");
-	CHECK(bench.refusal(image(rule_json(R"({"triggers": [{"kind": "schedule", "schedule": "evening"}], "actions": []})"))) ==
-		"unknownReference");
-	CHECK(bench.refusal(image(rule_json(R"({"triggers": [{"kind": "schedule", "schedule": "morning"}], "actions": []})"))) ==
-		"ok");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b", R"({"kind": "parameter", "id": "p"})")))) == "unknownReference");
-	CHECK(bench.refusal(image(rule_json(R"({"triggers": [{"kind": "timer", "timer": "t"}], "actions": []})"))) ==
-		"unknownReference");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b",
-			  bin("==", R"({"kind": "call", "function": "state", "args": [{"kind": "literal", "type": "string", "value": "zz"}]})",
-				  R"({"kind": "literal", "type": "string", "value": "on"})"))))) == "unknownReference");
-
-	// typeError: arithmetic on a boolean, a non-boolean condition, a write that cannot convert, a
-	// timer duration that is not a duration
-	CHECK(bench.refusal(image(rule_json(write_reaction("u", bin("+", lit_bool(true), lit_int(1)))))) == "typeError");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b", lit_bool(true), lit_int(1))))) == "typeError");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b", lit_int(1))))) == "typeError");
-	CHECK(bench.refusal(image(rule_json(ok_reaction, R"("timers": [{"id": "t", "duration": )" + lit_int(5) + "}]"))) ==
-		"typeError");
-
-	// invalidLiteral: 25:00, a level of 256, a string of 29 bytes, an integer beyond 2^53-1
-	CHECK(bench.refusal(image(rule_json(write_reaction("t",
-			  R"({"kind": "literal", "type": "timeOfDay", "value": {"hour": 25, "minute": 0, "second": 0}})")))) ==
-		"invalidLiteral");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b",
-			  bin("==", R"({"kind": "call", "function": "red", "args": [{"kind": "literal", "type": "color", "value": {"red": 256, "green": 0, "blue": 0}}]})",
-				  lit_int(1)))))) == "invalidLiteral");
-	CHECK(bench.refusal(image(rule_json(write_reaction("s",
-			  R"({"kind": "literal", "type": "string", "value": "12345678901234567890123456789"})")))) == "invalidLiteral");
-	CHECK(bench.refusal(image(rule_json(write_reaction("u", lit_int(9007199254740992LL))))) == "invalidLiteral");
-
-	// invalidParameter: default outside min..max, min > max, choices on a boolean
-	CHECK(bench.refusal(image(rule_json(ok_reaction,
-			  R"("parameters": [{"id": "p", "label": "P", "type": "integer", "default": 11, "min": 0, "max": 10}])"))) ==
-		"invalidParameter");
-	CHECK(bench.refusal(image(rule_json(ok_reaction,
-			  R"("parameters": [{"id": "p", "label": "P", "type": "integer", "default": 5, "min": 10, "max": 0}])"))) ==
-		"invalidParameter");
-	CHECK(bench.refusal(image(rule_json(ok_reaction,
-			  R"("parameters": [{"id": "p", "label": "P", "type": "boolean", "default": true, "choices": [{"value": true, "label": "Y"}]}])"))) ==
-		"invalidParameter");
-
-	// notWritable
-	CHECK(bench.refusal(image(rule_json(write_reaction("ro", lit_bool(true))))) == "notWritable");
-
-	// forbidden: time function in a match, a reference to enabled, `to` without states,
-	// elseActions with `to`, a timer node outside running/remaining, state() with a non-literal
-	CHECK(bench.refusal(image(rule_json(
-			  R"({"triggers": [{"kind": "match", "condition": )" +
-			  bin(">", R"({"kind": "call", "function": "time", "args": []})",
-				  R"({"kind": "literal", "type": "timeOfDay", "value": {"hour": 6, "minute": 0, "second": 0}})") +
-			  R"(}], "actions": []})"))) == "forbidden");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b", R"({"kind": "parameter", "id": "enabled"})")))) == "forbidden");
-	CHECK(bench.refusal(image(rule_json(R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "to": "on", "actions": []})"))) ==
-		"forbidden");
-	std::string states = R"("states": [{"id": "on"}, {"id": "off"}], "initialState": "off")";
-	CHECK(bench.refusal(image(rule_json(
-			  R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "condition": )" + dp("b") +
-				  R"(, "to": "on", "actions": [], "elseActions": []})",
-			  states))) == "forbidden");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b", bin("==", R"({"kind": "timer", "id": "t"})", lit_int(1))),
-			  R"("timers": [{"id": "t", "duration": {"kind": "literal", "type": "duration", "value": 1000}}])"))) ==
-		"forbidden");
-	CHECK(bench.refusal(image(rule_json(write_reaction("b",
-			  bin("==", R"({"kind": "call", "function": "state", "args": [{"kind": "datapoint", "name": "s"}]})",
-				  R"({"kind": "literal", "type": "string", "value": "on"})")),
-			  states))) == "forbidden");
-}
-
-TEST_CASE("RulesLoad refusal names rule and path") {
-	Bench bench;
-	RuleSet set;
-	LoadResult result = bench.load(image(rule_json(write_reaction("b", lit_bool(true))) + "," +
-		rule_json(write_reaction("b", lit_int(1)), "", "second")), set);
-	CHECK(result.error == hc::rules::LoadError::type_error);
-	CHECK(std::string(result.rule) == "second");
-	CHECK(std::string(result.path) == "rules[1].reactions[0].actions[0].value");
-	CHECK(std::strlen(result.text) > 0);
-	CHECK(set.empty()); // a refusal changes nothing
-}
-
-// ------------------------------------------------------------------------------------------
-// Limits (spec 10.2)
+// The device's checks of the rules (spec/runtime-image.md 10.6, 10.8)
 
 namespace {
 
@@ -925,13 +972,12 @@ std::string rules_json(size_t count) {
 	for (size_t i = 0; i < count; ++i) {
 		s += (i ? "," : "") + rule_json(write_reaction("b", lit_bool(true)), "", "r" + std::to_string(i));
 	}
-	return image(s);
+	return s;
 }
 
 } // namespace
 
-TEST_CASE("RulesLoad limits") {
-	Bench bench;
+TEST_CASE("RulesImage limits of the rules: refused by the device (spec/runtime-image.md 10.6, 10.8)") {
 	std::string trig = R"({"kind": "datapoint", "datapoint": "b"})";
 	std::string act = R"({"kind": "write", "datapoint": "b", "value": )" + lit_bool(true) + "}";
 	std::string reaction = write_reaction("b", lit_bool(true));
@@ -960,48 +1006,10 @@ TEST_CASE("RulesLoad limits") {
 		}
 		return R"("states": [)" + s + R"(], "initialState": "s0")";
 	};
-
-	CHECK(bench.refusal(rules_json(128)) == "ok");
-	CHECK(bench.refusal(rules_json(129)) == "limitExceeded");
-	CHECK(bench.refusal(image(rule_json(many(16, reaction)))) == "ok");
-	CHECK(bench.refusal(image(rule_json(many(17, reaction)))) == "limitExceeded");
-	CHECK(bench.refusal(image(rule_json(R"({"triggers": [)" + many(8, trig) + R"(], "actions": []})"))) == "ok");
-	CHECK(bench.refusal(image(rule_json(R"({"triggers": [)" + many(9, trig) + R"(], "actions": []})"))) == "limitExceeded");
-	CHECK(bench.refusal(image(rule_json(R"({"triggers": [)" + trig + R"(], "actions": [)" + many(16, act) + "]}"))) == "ok");
-	CHECK(bench.refusal(image(rule_json(R"({"triggers": [)" + trig + R"(], "actions": [)" + many(17, act) + "]}"))) ==
-		"limitExceeded");
-	CHECK(bench.refusal(image(rule_json(reaction, params(7)))) == "ok"); // with enabled: 8
-	CHECK(bench.refusal(image(rule_json(reaction, params(8)))) == "limitExceeded");
-	CHECK(bench.refusal(image(rule_json(reaction, timers(8)))) == "ok");
-	CHECK(bench.refusal(image(rule_json(reaction, timers(9)))) == "limitExceeded");
-	CHECK(bench.refusal(image(rule_json(reaction, states(16)))) == "ok");
-	CHECK(bench.refusal(image(rule_json(reaction, states(17)))) == "limitExceeded");
-	// nodes per expression: a balanced tree of 63 nodes (depth 6) and one of 127
-	CHECK(bench.refusal(image(rule_json(write_reaction("u", balanced(5))))) == "ok");
-	CHECK(bench.refusal(image(rule_json(write_reaction("u", balanced(6))))) == "limitExceeded");
-	// depth: a chain of 12 literals has depth 12; 13 is refused
-	CHECK(bench.refusal(image(rule_json(write_reaction("u", sum_chain(12))))) == "ok");
-	CHECK(bench.refusal(image(rule_json(write_reaction("u", sum_chain(13))))) == "limitExceeded");
-	// arguments per call
-	CHECK(bench.refusal(image(rule_json(write_reaction("u",
-			  R"({"kind": "call", "function": "max", "args": [)" + many(8, lit_int(1)) + "]}")))) == "ok");
-	CHECK(bench.refusal(image(rule_json(write_reaction("u",
-			  R"({"kind": "call", "function": "max", "args": [)" + many(9, lit_int(1)) + "]}")))) == "limitExceeded");
-	// parts of a log message
 	auto log_action = [](size_t parts) {
 		return R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "actions": [{"kind": "log", "level": "info", "message": [)" +
 			many(parts, R"("x")") + "]}]}";
 	};
-	CHECK(bench.refusal(image(rule_json(log_action(8)))) == "ok");
-	CHECK(bench.refusal(image(rule_json(log_action(9)))) == "limitExceeded");
-	// bytes of a text part of a log message (issue #33)
-	auto log_text = [](size_t bytes) {
-		return R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "actions": [{"kind": "log", "level": "info", "message": [")" +
-			std::string(bytes, 'x') + R"("]}]})";
-	};
-	CHECK(bench.refusal(image(rule_json(log_text(200)))) == "ok");
-	CHECK(bench.refusal(image(rule_json(log_text(201)))) == "limitExceeded");
-	// choices of a parameter
 	auto choices = [](size_t n) {
 		std::string s;
 		for (size_t i = 0; i < n; ++i) {
@@ -1009,65 +1017,96 @@ TEST_CASE("RulesLoad limits") {
 		}
 		return R"("parameters": [{"id": "m", "label": "M", "type": "integer", "default": 0, "choices": [)" + s + "]}]";
 	};
-	CHECK(bench.refusal(image(rule_json(reaction, choices(16)))) == "ok");
-	CHECK(bench.refusal(image(rule_json(reaction, choices(17)))) == "limitExceeded");
+	struct Row {
+		std::string at_limit;
+		std::string beyond;
+		const char* path; ///< The refusal's path in the image (a prefix).
+	};
+	const Row rows[] = {
+		{rules_json(128), rules_json(129), "rules"},
+		{rule_json(many(16, reaction)), rule_json(many(17, reaction)), "rules[0]"},
+		{rule_json(R"({"triggers": [)" + many(8, trig) + R"(], "actions": []})"),
+			rule_json(R"({"triggers": [)" + many(9, trig) + R"(], "actions": []})"), "rules.reactions[0]"},
+		{rule_json(R"({"triggers": [)" + trig + R"(], "actions": [)" + many(16, act) + "]}"),
+			rule_json(R"({"triggers": [)" + trig + R"(], "actions": [)" + many(17, act) + "]}"), "rules.reactions[0]"},
+		{rule_json(reaction, params(7)), rule_json(reaction, params(8)), "rules[0]"}, // with enabled: 8
+		{rule_json(reaction, timers(8)), rule_json(reaction, timers(9)), "rules[0]"},
+		{rule_json(reaction, states(16)), rule_json(reaction, states(17)), "rules[0]"},
+		// nodes per expression: a balanced tree of 63 nodes (depth 6) and one of 127
+		{rule_json(write_reaction("u", balanced(5))), rule_json(write_reaction("u", balanced(6))), "nodes["},
+		// depth: a chain of 12 literals has depth 12; 13 is refused
+		{rule_json(write_reaction("u", sum_chain(12))), rule_json(write_reaction("u", sum_chain(13))), "nodes["},
+		// parts of a log message
+		{rule_json(log_action(8)), rule_json(log_action(9)), "rules.actions[0]"},
+		// choices of a parameter
+		{rule_json(reaction, choices(16)), rule_json(reaction, choices(17)), "rules.parameters[1]"},
+	};
+	for (const Row& row : rows) {
+		CHECK(verdict(row.at_limit) == "ok");
+		std::string v = verdict(row.beyond);
+		CHECK_MESSAGE(limit_refused(v), v);
+		CHECK_MESSAGE(v.find(std::string("image.invalid ") + row.path) == 0, v);
+	}
+	// The arguments of a call (at most 8) the compiler cannot write beyond: a call node's `argc` is
+	// checked against its function's count (10.6).
+	CHECK(verdict(rule_json(write_reaction("u",
+		R"({"kind": "call", "function": "max", "args": [)" + many(8, lit_int(1)) + "]}"))) == "ok");
+	// A log text of 200 bytes is fine; the bytes of a text part are E-Home's to check (strings of the
+	// image are up to 511 bytes).
+	CHECK(verdict(rule_json(R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "actions": [{"kind": "log", "level": "info", "message": [")" +
+		std::string(200, 'x') + R"("]}]})")) == "ok");
 }
 
-TEST_CASE("RulesLoad dates, state() references, schedule outputs (issue #33)") {
-	Bench bench;
-	auto date_literal = [](int year) {
-		return R"({"kind": "literal", "type": "date", "value": {"year": )" + std::to_string(year) + R"(, "month": 1, "day": 1}})";
-	};
-	auto condition = [](const std::string& c) {
-		return R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "condition": )" + c + R"(, "actions": []})";
-	};
-	std::string today = R"({"kind": "call", "function": "today", "args": []})";
-	CHECK(bench.refusal(image(rule_json(condition(bin("<", today, date_literal(1900)))))) == "ok");
-	CHECK(bench.refusal(image(rule_json(condition(bin("<", today, date_literal(2155)))))) == "ok");
-	CHECK(bench.refusal(image(rule_json(condition(bin("<", today, date_literal(1899)))))) == "invalidLiteral");
-	CHECK(bench.refusal(image(rule_json(condition(bin("<", today, date_literal(2156)))))) == "invalidLiteral");
-	// state("id"): a string literal whose value is no string or longer than a rule id names no rule
-	std::string states = R"("states": [{"id": "on"}], "initialState": "on")";
-	auto state_of = [](const std::string& value) {
-		return R"({"kind": "call", "function": "state", "args": [{"kind": "literal", "type": "string", "value": )" + value + "}]}";
-	};
-	auto eq = [&](const std::string& value) {
-		return condition(bin("==", state_of(value), R"({"kind": "literal", "type": "string", "value": "on"})"));
-	};
-	CHECK(bench.refusal(image(rule_json(eq(R"("x")"), states))) == "ok");
-	CHECK(bench.refusal(image(rule_json(eq("5"), states))) == "unknownReference");
-	CHECK(bench.refusal(image(rule_json(eq('"' + std::string(33, 'x') + '"'), states))) == "unknownReference");
-	CHECK(bench.refusal(image(rule_json(condition(bin("==", R"({"kind": "call", "function": "state", "args": [{"kind": "datapoint", "name": "s"}]})",
-		R"({"kind": "literal", "type": "string", "value": "on"})")), states))) == "forbidden");
-	// A write to a schedule entry's output datapoint
-	struct Outputs : hc::rules::ScheduleDirectory {
-		bool has_schedule(const char*) const override { return false; }
-		bool owns_output(const char* datapoint) const override { return std::strcmp(datapoint, "r") == 0; }
-	} outputs;
-	auto load = [&](const std::string& target) {
-		Json json;
-		std::string error;
-		REQUIRE(hc_test::parse_json(image(rule_json(write_reaction(target, R"({"kind": "literal", "type": "real", "value": 1.0})"))), json, error));
-		hc_test::ScopedCapture capture(hc::LogLevel::error);
-		RuleSet set;
-		LoadResult result = set.load(bench.tree.value(json), bench.model, &outputs);
-		return result.ok() ? std::string("ok") : std::string(hc::rules::load_error_name(result.error));
-	};
-	CHECK(load("r") == "notWritable");
-	CHECK(load("u") == "ok");
-}
-
-TEST_CASE("RulesLoad node budget of the image") {
-	Bench bench;
+TEST_CASE("RulesImage the node budget of the image (spec/runtime-image.md 10.6)") {
 	// 65 reactions' worth of 63-node values: 5 rules of 13 reactions = 65 * 63 = 4095 nodes plus
-	// the 65 write targets need no nodes; one more node is refused.
-	std::string ok_rules, over_rules;
+	// the 65 write targets need no nodes; one more expression is refused.
+	std::string ok_rules;
 	for (size_t i = 0; i < 5; ++i) {
 		ok_rules += (i ? "," : "") + rule_json(many(13, write_reaction("u", balanced(5))), "", "n" + std::to_string(i));
 	}
-	CHECK(bench.refusal(image(ok_rules)) == "ok");
-	over_rules = ok_rules + "," + rule_json(write_reaction("u", bin("+", lit_int(1), lit_int(1))), "", "last");
-	CHECK(bench.refusal(image(over_rules)) == "limitExceeded");
+	CHECK(verdict(ok_rules) == "ok");
+	std::string over = verdict(ok_rules + "," + rule_json(write_reaction("u", bin("+", lit_int(1), lit_int(1))), "", "last"));
+	CHECK_MESSAGE(limit_refused(over), over);
+	CHECK_MESSAGE(over.find("image.invalid nodes") == 0, over);
+}
+
+TEST_CASE("RulesImage literals the device checks: a date within 1900..2155, a timer node only in running() and remaining()") {
+	auto date_literal = [](int year) {
+		return R"({"kind": "literal", "type": "date", "value": {"year": )" + std::to_string(year) + R"(, "month": 1, "day": 1}})";
+	};
+	std::string today = R"({"kind": "call", "function": "today", "args": []})";
+	CHECK(verdict(rule_json(condition_reaction(bin("<", today, date_literal(1900))))) == "ok");
+	CHECK(verdict(rule_json(condition_reaction(bin("<", today, date_literal(2155))))) == "ok");
+	// The compiler writes only valid literals (E-Home refuses 1899 as invalidLiteral); an image
+	// written otherwise is refused by the device.
+	for (int year : {1899, 2156}) {
+		std::vector<uint8_t> bytes = hc_test::compiled(bench_image(rule_json(condition_reaction(bin("<", today, date_literal(1900))))));
+		patch_records(bytes, hc::image::bin::kNodes, [year](size_t, uint8_t* node) {
+			if (node[0] == static_cast<uint8_t>(hc::rules::NodeKind::literal) && node[2] == static_cast<uint8_t>(Type::date)) {
+				node[8] = static_cast<uint8_t>(year);
+				node[9] = static_cast<uint8_t>(year >> 8);
+			}
+		});
+		std::string v = device_verdict(bytes);
+		CAPTURE(year);
+		CHECK_MESSAGE(v.find("image.invalid nodes[") == 0, v);
+		CHECK_MESSAGE(v.find("malformed") != std::string::npos, v);
+	}
+	// A timer node is only the argument of running() or remaining(): `running(off)` patched into a
+	// `not` over the timer node.
+	std::string timers = R"("timers": [{"id": "off", "duration": {"kind": "literal", "type": "duration", "value": 1000}}])";
+	std::string running = R"({"kind": "call", "function": "running", "args": [{"kind": "timer", "id": "off"}]})";
+	CHECK(verdict(rule_json(condition_reaction(running), timers)) == "ok");
+	std::vector<uint8_t> bytes = hc_test::compiled(bench_image(rule_json(condition_reaction(running), timers)));
+	patch_records(bytes, hc::image::bin::kNodes, [](size_t, uint8_t* node) {
+		if (node[0] == static_cast<uint8_t>(hc::rules::NodeKind::call)) {
+			node[0] = static_cast<uint8_t>(hc::rules::NodeKind::unary);
+			node[1] = static_cast<uint8_t>(hc::rules::Op::not_);
+		}
+	});
+	std::string v = device_verdict(bytes);
+	CHECK_MESSAGE(v.find("image.invalid nodes[") == 0, v);
+	CHECK_MESSAGE(v.find("a timer node outside running() and remaining()") != std::string::npos, v);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1161,60 +1200,44 @@ TEST_CASE("RulesParameterStore write, read, collision slot and prune") {
 	CHECK(store.read("hall", "timeout", v));
 }
 
+
 TEST_CASE("RulesParameterStore an image whose parameter keys collide is refused") {
 	// r6432d85626ca/p and re7a81faa983a/p share the key rp.4728dda3ea0f (found by a cycle search).
 	CHECK(hc::rules::ParameterStore::hash("r6432d85626ca", "p") == hc::rules::ParameterStore::hash("re7a81faa983a", "p"));
-	hc_test::FakeClock clock;
-	hc::EventLoop loop;
-	hc::DatapointModel model(clock);
-	Datapoints d;
-	d.add("b", hc::ValueType::boolean);
-	d.load(model);
-	hc_test::FakeSettings settings;
-	struct NoTime : hc::rules::TimeSource {
-		bool local_now(hc::DateTime&) const override { return false; }
-		bool sun_time(hc::rules::SunEvent, hc::TimeOfDay&) const override { return false; }
-	} time;
-	Engine engine(loop, model, clock, settings, time);
 	std::string param = R"("parameters": [{"id": "p", "label": "P", "type": "integer", "default": 1}])";
 	std::string reaction = R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "actions": []})";
-	Json json;
-	std::string error;
-	REQUIRE(hc_test::parse_json(image(rule_json(reaction, param, "r6432d85626ca") + "," +
-		rule_json(reaction, param, "re7a81faa983a")), json, error));
-	JsonTree tree;
+	hc_test::RuleImage image;
+	REQUIRE(image.compile(bench_image(rule_json(reaction, param, "r6432d85626ca") + "," +
+		rule_json(reaction, param, "re7a81faa983a"))));
+	// The check belongs to the binding of the rules (spec/runtime-image.md 10.8): the loader and every
+	// other binder see it; a refused bind leaves the set empty.
+	RuleSet set;
 	hc_test::ScopedCapture capture(hc::LogLevel::error);
-	LoadResult result = engine.load(tree.value(json), nullptr);
+	LoadResult result = image.compiled.bind(set);
 	CHECK(result.error == hc::rules::LoadError::limit_exceeded);
 	CHECK(std::string(result.text).find("collide") != std::string::npos);
-	CHECK_FALSE(engine.loaded());
-	// The check belongs to the rule set's load (issue #33): E-Home's checker and every loader see it.
-	RuleSet set;
-	result = set.load(tree.value(json), model, nullptr);
-	CHECK(result.error == hc::rules::LoadError::limit_exceeded);
 	CHECK(std::string(result.path) == "rules[1]");
 	CHECK(set.rule_count() == 0);
+	// The device refuses the image with it.
+	std::string v = device_verdict(image.compiled.bytes);
+	CHECK_MESSAGE(v.find("image.invalid rules[1]") == 0, v);
+	CHECK_MESSAGE(v.find("collide") != std::string::npos, v);
 }
 
-TEST_CASE("RulesLoad labels: a string or a language map, resolved in the device's language (spec 2.2)") {
-	Bench bench;
+// ------------------------------------------------------------------------------------------
+// Labels (spec/rules.md 2.2, spec/runtime-image.md 9.5)
+
+TEST_CASE("RulesImage labels: a string or a language map, resolved in the device's language (spec 2.2)") {
 	std::string reaction = R"({"triggers": [{"kind": "datapoint", "datapoint": "b"}], "actions": []})";
 	auto name_in = [&](const std::string& name, const char* language, std::string* json = nullptr) {
-		RuleSet set;
-		Json parsed;
-		std::string error;
-		std::string text = image(R"({"id": "x", "name": )" + name + R"(, "reactions": [)" + reaction + "]}");
-		REQUIRE_MESSAGE(hc_test::parse_json(text, parsed, error), error);
-		hc_test::ScopedCapture capture(hc::LogLevel::error);
-		LoadResult result = set.load(bench.tree.value(parsed), bench.model, &bench.schedules, language);
-		if (!result.ok()) {
-			return std::string("refused: ") + hc::rules::load_error_name(result.error);
-		}
+		Bench bench(R"({"id": "x", "name": )" + name + R"(, "reactions": [)" + reaction + "]}", "", language);
 		if (json != nullptr) {
-			const char* raw = set.label_json(set.rule(0).name_json);
-			*json = raw == nullptr ? "" : raw;
+			char buffer[256];
+			hc::JsonWriter writer(buffer, sizeof(buffer));
+			hc::image::bin::write_label(writer, bench.set.view(), bench.set.rule(0).name);
+			*json = std::string(writer.data(), writer.length());
 		}
-		return std::string(set.str(set.rule(0).name));
+		return std::string(bench.set.label(bench.set.rule(0).name));
 	};
 	std::string map = R"({"fr": "Escalier", "en": "Stairs", "de": "Treppe", "de-AT": "Stiege"})";
 	CHECK(name_in(map, "de-AT") == "Stiege"); // the exact tag
@@ -1225,22 +1248,20 @@ TEST_CASE("RulesLoad labels: a string or a language map, resolved in the device'
 	CHECK(name_in(R"({"DE": "Treppe", "en": "Stairs"})", "de") == "Treppe"); // tags compare without case
 	std::string json;
 	CHECK(name_in(R"({"en": "A \"q\"", "de": "B"})", "en", &json) == "A \"q\"");
-	// Passed to the web API as compact JSON in the image's member order (the test's JSON tree
-	// orders members by name).
-	CHECK(json == R"({"de":"B","en":"A \"q\""})");
+	// Written back as the image gave it: a map in the source's order (the old JSON loader's test tree
+	// ordered the members by name), a plain label as a string.
+	CHECK(json == R"({"en":"A \"q\"","de":"B"})");
 	CHECK(name_in(R"("Plain")", "de", &json) == "Plain");
-	CHECK(json.empty());
-	CHECK(name_in("{}", "en") == "refused: malformed");
-	CHECK(name_in(R"({"e": "x"})", "en") == "refused: malformed");
-	CHECK(name_in(R"({"en": ""})", "en") == "refused: malformed");
-	CHECK(name_in(R"({"en": 5})", "en") == "refused: malformed");
-	CHECK(name_in(R"({"en": ")" + std::string(64, 'a') + R"("})", "en") == "refused: malformed");
+	CHECK(json == R"("Plain")");
+	// More than 16 languages: the device refuses the label reference (10.4).
 	std::string many = "{";
 	for (int i = 0; i < 17; ++i) {
 		many += std::string(i ? "," : "") + "\"l" + static_cast<char>('a' + i) + "\": \"x\"";
 	}
 	many += "}";
-	CHECK(name_in(many, "en") == "refused: limitExceeded");
+	std::string v = verdict(R"({"id": "x", "name": )" + many + R"(, "reactions": [)" + reaction + "]}");
+	CHECK_MESSAGE(v.find("image.invalid rules[0].name") == 0, v);
+	CHECK_MESSAGE(v.find("limitExceeded: a label of 17 languages, at most 16") != std::string::npos, v);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1258,9 +1279,8 @@ struct EngineBench : hc::rules::EngineObserver {
 		bool local_now(hc::DateTime&) const override { return false; }
 		bool sun_time(hc::rules::SunEvent, hc::TimeOfDay&) const override { return false; }
 	} time;
+	hc_test::RuleImage image;
 	std::unique_ptr<Engine> engine;
-	JsonTree tree;
-	Json json;
 	std::vector<std::string> logs;
 	size_t commands = 0;
 
@@ -1269,16 +1289,20 @@ struct EngineBench : hc::rules::EngineObserver {
 	}
 	void rule_commanded(const char*, const hc::Datapoint&, const hc::Value&) override { ++commands; }
 
-	void setup(Datapoints& d, const std::string& rules) {
-		d.load(model);
-		for (size_t i = 0; i < model.size(); ++i) {
-			REQUIRE(model.bind(static_cast<uint16_t>(i), technology) == hc::DatapointStatus::ok);
+	/// Compiles `datapoints` and `rules` (the items of the members), loads the image's datapoints (the
+	/// declared ones bound to the test technology, the parameter datapoints the engine's), adopts the
+	/// rules and starts them.
+	void setup(const std::string& datapoints, const std::string& rules) {
+		REQUIRE(image.compile(hc_test::rules_source(datapoints, rules)));
+		image.load_model(model);
+		for (size_t i = 0; i < image.datapoint_count(); ++i) {
+			if (image.declared(i)) {
+				REQUIRE(model.bind(static_cast<uint16_t>(i), technology) == hc::DatapointStatus::ok);
+			}
 		}
 		engine = std::make_unique<Engine>(loop, model, clock, settings, time);
 		engine->set_observer(this);
-		std::string error;
-		REQUIRE_MESSAGE(hc_test::parse_json(rules, json, error), error);
-		LoadResult result = engine->load(tree.value(json), nullptr);
+		LoadResult result = engine->adopt(image.bind());
 		REQUIRE_MESSAGE(result.ok(), std::string(result.path) << ": " << std::string(result.text));
 		engine->start(hc::rules::StartReason::boot);
 		settle();
@@ -1319,19 +1343,17 @@ struct EngineBench : hc::rules::EngineObserver {
 
 TEST_CASE("RulesEngine a self-triggering rule ends with loopGuard naming it") {
 	EngineBench bench;
-	Datapoints d;
-	d.add("go", hc::ValueType::boolean);
-	d.add("n", hc::ValueType::unsigned_int);
-	d.add("other", hc::ValueType::boolean);
+	std::string datapoints = hc_test::datapoint_source("go", "boolean") + "," + hc_test::datapoint_source("n", "unsigned") +
+		"," + hc_test::datapoint_source("other", "boolean");
 	// `count` writes n + 1 whenever n changes: each write is a derived event for itself.
-	std::string rules = image(
+	std::string rules =
 		rule_json(R"({"triggers": [{"kind": "datapoint", "datapoint": "go"}], "actions": [{"kind": "write", "datapoint": "n", "value": )" +
 			lit_int(0) + R"(}]}, {"triggers": [{"kind": "datapoint", "datapoint": "n"}], "actions": [{"kind": "write", "datapoint": "n", "value": )" +
 			bin("+", dp("n"), lit_int(1)) + "}]}",
 			"", "count") + "," +
-		rule_json(R"({"triggers": [{"kind": "datapoint", "datapoint": "other"}], "actions": []})", "", "quiet"));
+		rule_json(R"({"triggers": [{"kind": "datapoint", "datapoint": "other"}], "actions": []})", "", "quiet");
 	hc_test::ScopedCapture capture(hc::LogLevel::error);
-	bench.setup(d, rules);
+	bench.setup(datapoints, rules);
 	bench.report("go", hc::Value::of_bool(true));
 	REQUIRE(bench.logs.size() == 1);
 	CHECK(bench.logs[0].find("count loopGuard") == 0);
@@ -1355,13 +1377,11 @@ TEST_CASE("RulesEngine a self-triggering rule ends with loopGuard naming it") {
 
 TEST_CASE("RulesEngine readRefused is logged once per action until a read is accepted") {
 	EngineBench bench;
-	Datapoints d;
-	d.add("go", hc::ValueType::boolean);
-	d.add("t", hc::ValueType::real);
-	std::string rules = image(rule_json(
-		R"({"triggers": [{"kind": "datapoint", "datapoint": "go", "on": "update"}], "actions": [{"kind": "read", "datapoint": "t"}]})"));
+	std::string datapoints = hc_test::datapoint_source("go", "boolean") + "," + hc_test::datapoint_source("t", "real");
+	std::string rules = rule_json(
+		R"({"triggers": [{"kind": "datapoint", "datapoint": "go", "on": "update"}], "actions": [{"kind": "read", "datapoint": "t"}]})");
 	hc_test::ScopedCapture capture(hc::LogLevel::error);
-	bench.setup(d, rules);
+	bench.setup(datapoints, rules);
 	bench.technology.refuse_reads = true;
 	bench.report("go", hc::Value::of_bool(true));
 	bench.report("go", hc::Value::of_bool(true));
@@ -1380,12 +1400,10 @@ TEST_CASE("RulesEngine readRefused is logged once per action until a read is acc
 
 TEST_CASE("RulesEngine a silence period outside the timer limits is timerRefused once") {
 	EngineBench bench;
-	Datapoints d;
-	d.add("t", hc::ValueType::real);
-	std::string rules = image(rule_json(
-		R"({"triggers": [{"kind": "silence", "datapoint": "t", "after": {"kind": "literal", "type": "duration", "value": 50}}], "actions": []})"));
+	std::string rules = rule_json(
+		R"({"triggers": [{"kind": "silence", "datapoint": "t", "after": {"kind": "literal", "type": "duration", "value": 50}}], "actions": []})");
 	hc_test::ScopedCapture capture(hc::LogLevel::error);
-	bench.setup(d, rules);
+	bench.setup(hc_test::datapoint_source("t", "real"), rules);
 	REQUIRE(bench.logs.size() == 1);
 	CHECK(bench.logs[0].find("x timerRefused") == 0);
 	bench.report("t", hc::Value::of_real(1));
@@ -1398,11 +1416,9 @@ TEST_CASE("RulesEngine a silence period outside the timer limits is timerRefused
 
 TEST_CASE("RulesEngine the silence trigger in the diagnostics") {
 	EngineBench bench;
-	Datapoints d;
-	d.add("t", hc::ValueType::real);
-	std::string rules = image(rule_json(
-		R"({"triggers": [{"kind": "silence", "datapoint": "t", "after": {"kind": "literal", "type": "duration", "value": 1000}}], "actions": []})"));
-	bench.setup(d, rules);
+	std::string rules = rule_json(
+		R"({"triggers": [{"kind": "silence", "datapoint": "t", "after": {"kind": "literal", "type": "duration", "value": 1000}}], "actions": []})");
+	bench.setup(hc_test::datapoint_source("t", "real"), rules);
 	bench.advance(999);
 	hc::rules::RuleDiagnostics diagnostics;
 	REQUIRE(bench.engine->diagnostics(0, diagnostics));
@@ -1419,7 +1435,7 @@ TEST_CASE("RulesEngine the silence trigger in the diagnostics") {
 namespace {
 
 /// A typical image: `count` rules of a presence light (a parameter, a timer, two reactions).
-std::string typical_image(size_t count) {
+std::string typical_rules(size_t count) {
 	std::string s;
 	for (size_t i = 0; i < count; ++i) {
 		std::string n = std::to_string(i);
@@ -1436,34 +1452,36 @@ std::string typical_image(size_t count) {
 				R"("timers": [{"id": "off", "duration": {"kind": "parameter", "id": "timeout"}}])",
 				"light" + n);
 	}
-	return image(s);
+	return s;
 }
 
-Datapoints typical_datapoints(size_t count) {
-	Datapoints d;
+std::string typical_datapoints(size_t count) {
+	std::string s;
 	for (size_t i = 0; i < count; ++i) {
-		d.add("in" + std::to_string(i), hc::ValueType::boolean);
-		d.add("lux" + std::to_string(i), hc::ValueType::real);
-		d.add("out" + std::to_string(i), hc::ValueType::boolean);
+		std::string n = std::to_string(i);
+		s += (i ? "," : "") + hc_test::datapoint_source("in" + n, "boolean") + "," +
+			hc_test::datapoint_source("lux" + n, "real") + "," + hc_test::datapoint_source("out" + n, "boolean");
 	}
-	return d;
+	return s;
 }
 
 } // namespace
 
 TEST_CASE("RulesEngine memory accounting of a 50-rule image") {
 	EngineBench bench;
-	Datapoints d = typical_datapoints(50);
-	bench.setup(d, typical_image(50));
+	bench.setup(typical_datapoints(50), typical_rules(50));
 	const RuleSet& set = bench.engine->rules();
 	hc::rules::RuleSetMemory m = set.memory();
 	hc::rules::EngineMemory e = bench.engine->memory();
 	CHECK(sizeof(hc::rules::Node) == 16);
 	CHECK(m.nodes == set.node_count() * sizeof(hc::rules::Node));
-	size_t sections = m.rules + m.reactions + m.triggers + m.actions + m.log_parts + m.parameters + m.choices + m.timers +
-		m.states + m.nodes + m.constants + m.schedules + m.tracked + m.matches + m.silences + m.strings;
-	CHECK(m.block >= sections);
-	CHECK(m.block <= sections + 16 * 8); // alignment padding only
+	// The records are the image's, read in place from the slot; RAM holds only the derived tables
+	// (tracked datapoints, match and silence triggers) and the timelines.
+	size_t slot = m.rules + m.reactions + m.triggers + m.actions + m.log_parts + m.parameters + m.choices + m.timers +
+		m.states + m.nodes + m.constants;
+	size_t derived = m.tracked + m.matches + m.silences;
+	CHECK(m.block >= derived + m.timelines);
+	CHECK(m.block <= derived + m.timelines + 16 * 8); // alignment padding only
 	size_t runtime = e.per_rule * set.rule_count() + e.per_parameter * set.parameter_count() +
 		e.per_timer * set.timer_count() + e.per_node * set.node_count() + e.per_tracked * set.tracked_count() +
 		e.per_silence * set.silence_count() + e.per_action * set.action_count();
@@ -1473,18 +1491,17 @@ TEST_CASE("RulesEngine memory accounting of a 50-rule image") {
 	size_t chunk_lists = sizeof(void*) * ((set.rule_count() + 15) / 16 + (set.parameter_count() + 15) / 16);
 	CHECK(e.runtime <= runtime + 256 + chunk_lists + bench.model.size() / 8 + 8 * 8 + 2 * set.match_count() + 64);
 	MESSAGE("50 rules, " << set.node_count() << " nodes, " << set.parameter_count() << " parameters, "
-		<< set.timer_count() << " timers: rule set block " << m.block << " bytes (nodes " << m.nodes << ", strings "
-		<< m.strings << ", constants " << m.constants << "), runtime block " << e.runtime << " bytes, engine object "
-		<< e.object << " bytes; per rule " << e.per_rule << ", per parameter " << e.per_parameter << ", per timer "
-		<< e.per_timer << ", per node " << sizeof(hc::rules::Node) << "+" << e.per_node << ", per tracked datapoint "
-		<< e.per_tracked);
+		<< set.timer_count() << " timers: rule records " << slot << " bytes in the slot (nodes " << m.nodes
+		<< ", constants " << m.constants << "), derived tables " << m.block << " bytes, runtime block " << e.runtime
+		<< " bytes, engine object " << e.object << " bytes; per rule " << e.per_rule << ", per parameter "
+		<< e.per_parameter << ", per timer " << e.per_timer << ", per node " << sizeof(hc::rules::Node) << "+"
+		<< e.per_node << ", per tracked datapoint " << e.per_tracked);
 	CHECK(m.block + e.runtime < 64 * 1024);
 }
 
 TEST_CASE("RulesEngine allocates nothing while processing events") {
 	EngineBench bench;
-	Datapoints d = typical_datapoints(10);
-	bench.setup(d, typical_image(10));
+	bench.setup(typical_datapoints(10), typical_rules(10));
 	bench.report("lux3", hc::Value::of_real(10.0));
 	size_t allocations = 0;
 	{
@@ -1502,9 +1519,7 @@ TEST_CASE("RulesEngine allocates nothing while processing events") {
 
 TEST_CASE("RulesEngine state changes allocate nothing; their write is delayed and coalesced (spec 8.5)") {
 	EngineBench bench;
-	Datapoints d;
-	d.add("button", hc::ValueType::boolean);
-	d.add("light", hc::ValueType::boolean);
+	std::string datapoints = hc_test::datapoint_source("button", "boolean") + "," + hc_test::datapoint_source("light", "boolean");
 	std::string stairs = R"({"id": "stairs", "name": "Stairs", )"
 		R"("timers": [{"id": "t", "duration": {"kind": "literal", "type": "duration", "value": 2000}}], )"
 		R"("states": [{"id": "off", "entry": [{"kind": "write", "datapoint": "light", "value": )" + lit_bool(false) + R"(}]}, )"
@@ -1512,7 +1527,7 @@ TEST_CASE("RulesEngine state changes allocate nothing; their write is delayed an
 		R"(}, {"kind": "restartTimer", "timer": "t"}]}], "initialState": "off", )"
 		R"("reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "button", "on": "update"}], "actions": [], "to": "on"}, )"
 		R"({"triggers": [{"kind": "timer", "timer": "t"}], "actions": [], "from": ["on"], "to": "off"}]})";
-	bench.setup(d, image(stairs));
+	bench.setup(datapoints, stairs);
 	char key[16];
 	hc::rules::ParameterStore::key_for("stairs", hc::rules::ParameterStore::kStateKey, key);
 	CHECK(bench.settings.entries.count(key) == 0); // the initial state is written 10 s later
@@ -1652,8 +1667,7 @@ TEST_CASE("RulesSwap facts of spec 7.6: values kept by name and type, read-on-st
 
 TEST_CASE("RulesEngine diagnostics texts") {
 	EngineBench bench;
-	Datapoints d = typical_datapoints(1);
-	bench.setup(d, typical_image(1));
+	bench.setup(typical_datapoints(1), typical_rules(1));
 	bench.report("lux0", hc::Value::of_real(10.0));
 	bench.report("in0", hc::Value::of_bool(true));
 	hc::rules::RuleDiagnostics diagnostics;

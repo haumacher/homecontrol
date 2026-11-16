@@ -3,18 +3,20 @@
  */
 // The storage figures off the loop (homecontrol #74): measured once at start and again after a
 // change of the blob store, on a worker of their own; the polled endpoints read the last
-// measurement and walk nothing; the image's storable is computed again only when its inputs moved.
+// measurement and walk nothing. (The runtime image lives in its slot, not in the blob store, since
+// issue #87: it has no storable to compute any more.)
 
 #include <string>
 
 #include "doctest.h"
 #include "fake_blob_store.h"
-#include "fake_image_staging.h"
 #include "fake_worker.h"
 #include "hc/image/image_service.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
 #include "hc/storage_stats.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "test_support.h"
@@ -217,21 +219,17 @@ struct PolledFixture : hc_test::WebFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel};
 	hc_test::FakeBlobStore blobs;
-	ImageService service{controller, model, blobs, adapter, &tunnel};
+	hc::image::MemoryImageSlot slot;
+	ImageService service{controller, model, blobs, slot, adapter, &tunnel};
 	StorageStats stats{blobs};
 	hc_test::ManualWorker stats_worker;
-	hc_test::FakeImageStaging stored;
 	std::string cookie;
 
 	PolledFixture() {
 		board(blobs);
 		blobs.free_bytes = 208896 - 53248;
-		stored.capacity_bytes = 126976;
-		stored.shared_bytes = 61440;
-		service.set_stored_staging(&stored);
 		stats.set_worker(&stats_worker);
 		stats.measure_now();
-		service.set_storage_stats(&stats);
 		service.start();
 		api.set_image(&service);
 		api.set_storage_stats(&stats);
@@ -249,10 +247,8 @@ const char* const kPolled[] = {"/api/status", "/api/system/diagnostics", "/api/b
 
 TEST_CASE("StorageStats: the polled endpoints walk the file system on no request") {
 	PolledFixture f;
-	std::string text = fixture("example.json");
-	REQUIRE(f.service.load(text.data(), text.size(), Source::api, true));
-	REQUIRE(f.service.stored_ok());
-	f.stats_worker.deliver(); // the store's change measured once
+	REQUIRE_MESSAGE(hc_test::deploy(f.service, fixture("example.json")), hc_test::describe(f.service.report()));
+	f.stats_worker.deliver(); // a change of the blob store by the load (values, history) measured once
 	uint32_t measured = f.stats.measurements();
 	int walks = f.blobs.walks();
 	for (int round = 0; round < 10; ++round) {
@@ -262,15 +258,20 @@ TEST_CASE("StorageStats: the polled endpoints walk the file system on no request
 		}
 	}
 	CHECK(f.blobs.walks() == walks);
-	CHECK(f.stats_worker.runs == 1);
 	CHECK(f.stats.measurements() == measured);
+	int runs = f.stats_worker.runs;
+	for (const char* path : kPolled) {
+		f.get(path, f.cookie);
+	}
+	CHECK(f.stats_worker.runs == runs);
 
-	// What they report is the measurement: the status, the System page, the image's storable.
+	// What they report is the measurement: the status, the System page.
 	auto status = f.get("/api/status", f.cookie);
 	CHECK(status.json["storage"]["total"].number == 208896);
 	CHECK(status.json["storage"]["used"].number == 53248);
 	CHECK(status.json["storage"]["files"].number == static_cast<double>(f.blobs.blobs.size()));
-	CHECK(status.json["image"]["storable"].number == static_cast<double>(f.service.storable().bytes));
+	CHECK(status.json["image"]["slot"].number == hc::image::MemoryImageSlot::kDefaultSize);
+	CHECK_FALSE(status.json["image"].has("storable")); // the image is in its slot, not in the blob store
 	auto diagnostics = f.get("/api/system/diagnostics", f.cookie);
 	CHECK(diagnostics.json["storage"]["available"].boolean);
 	CHECK(diagnostics.json["storage"]["free"].number == 208896 - 53248);
@@ -283,52 +284,4 @@ TEST_CASE("StorageStats: the polled endpoints walk the file system on no request
 	f.stats_worker.deliver();
 	CHECK(f.get("/api/status", f.cookie).json["storage"]["used"].number == 53248 + 4096);
 	CHECK(f.blobs.walks() > walks); // on the worker's thread
-}
-
-TEST_CASE("StorageStats: storable is cached and computed again after a store, a file-system change, an archive or the staging") {
-	PolledFixture f;
-	uint32_t computed = f.service.storable_computations();
-	ImageService::Storable first = f.service.storable();
-	CHECK(f.service.storable_computations() == computed + 1);
-	for (int i = 0; i < 10; ++i) {
-		CHECK(f.service.storable().bytes == first.bytes);
-		f.get("/api/status", f.cookie);
-	}
-	CHECK(f.service.storable_computations() == computed + 1);
-
-	// A file-system change: the measurement after it moves the free space, storable follows.
-	f.blobs.used_bytes += 16 * 4096;
-	f.blobs.touch();
-	f.service.storable(); // the old measurement: the cache holds
-	CHECK(f.service.storable_computations() == computed + 1);
-	f.stats_worker.deliver();
-	ImageService::Storable smaller = f.service.storable();
-	CHECK(f.service.storable_computations() == computed + 2);
-	CHECK(smaller.storage < first.storage);
-
-	// A store (on the loop here) asks for a measurement at once; its end moves storable.
-	std::string text = fixture("cases/accept-history-archives.json");
-	REQUIRE(f.service.load(text.data(), text.size(), Source::api, true));
-	REQUIRE(f.service.stored_ok());
-	CHECK(f.stats.measuring()); // started by the store, before any request
-	// The archives' flash to come is an input of its own: storable moved before the measurement
-	// (the free space is still the one before the store).
-	CHECK(f.service.history().flash_to_come() > 0);
-	ImageService::Storable reserved = f.service.storable();
-	CHECK(reserved.storage < smaller.storage);
-	uint32_t before = f.service.storable_computations();
-	f.service.storable();
-	CHECK(f.service.storable_computations() == before);
-	f.blobs.used_bytes += 8 * 4096; // the blocks the image's chunks took (the fake does not count them)
-	f.stats_worker.deliver();         // the measurement the store asked for
-	ImageService::Storable stored = f.service.storable();
-	CHECK(f.service.storable_computations() == before + 1);
-	CHECK(stored.storage < reserved.storage);
-	f.service.storable();
-	CHECK(f.service.storable_computations() == before + 1);
-
-	// The staging's room.
-	f.stored.shared_bytes = 32768;
-	CHECK(f.service.storable().staging == 32767);
-	CHECK(f.service.storable_computations() == before + 2);
 }

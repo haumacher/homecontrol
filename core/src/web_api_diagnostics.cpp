@@ -15,6 +15,7 @@
 #include "hc/knx/tunnel.h"
 #include "hc/version.h"
 #include "hc/web_api.h"
+#include "hc/image/binary.h"
 
 namespace hc {
 
@@ -139,7 +140,7 @@ void WebApi::diagnostics(const WebRequest& request, WebResponse& response) {
 		.member("version", kVersion)
 		.member("build", build_id())
 		.member("ui", host_.ui_version())
-		.member("schema", image::schema_version_text())
+		.member("format", image::bin::format_text())
 		.end_object();
 	write_boot_status(json, ctl.diagnostics());
 	json.key("update").begin_object();

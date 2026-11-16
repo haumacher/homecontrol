@@ -13,6 +13,7 @@
 #include "fake_blob_store.h"
 #include "hc/external_values.h"
 #include "hc/image/image_service.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/knx_settings.h"
 #include "hc/knx/tunnel.h"
@@ -20,6 +21,7 @@
 #include "hc/live_feed.h"
 #include "hc/mqtt.h"
 #include "hc/network_settings.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "mqtt_test_support.h"
 #include "web_test_support.h"
@@ -257,7 +259,8 @@ TEST_CASE("WebSystem: a token created through the API deploys an image, a revoke
 	hc::knx::KnxTunnel tunnel{f.controller.loop(), f.fake.clock, f.controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{f.controller.loop(), f.fake.clock, f.model, tunnel};
 	hc_test::FakeBlobStore blobs;
-	hc::image::ImageService service{f.controller, f.model, blobs, adapter, &tunnel};
+	hc::image::MemoryImageSlot slot;
+	hc::image::ImageService service{f.controller, f.model, blobs, slot, adapter, &tunnel};
 	service.start();
 	f.api.set_image(&service);
 
@@ -278,8 +281,9 @@ TEST_CASE("WebSystem: a token created through the API deploys an image, a revoke
 	CHECK(r.json["tokens"].items[0]["name"].text == "ehome");
 	CHECK(r.body.find(token) == std::string::npos); // shown once
 
-	const std::string image = R"({"image": {"schemaVersion": "1.0", "projectId": "tok", "revision": 1},
-		"datapoints": [{"id": "lamp", "type": "boolean", "writable": true, "virtual": {}}]})";
+	const std::vector<uint8_t> compiled = hc_test::compiled(R"({"image": {"schemaVersion": "1.0", "projectId": "tok", "revision": 1},
+		"datapoints": [{"id": "lamp", "type": "boolean", "writable": true, "virtual": {}}]})");
+	const std::string image(compiled.begin(), compiled.end());
 	std::string bearer = "Bearer " + token;
 	r = f.request(HttpMethod::put, "/api/image", image, "", bearer, false);
 	REQUIRE_MESSAGE(r.status == 200, r.body);
@@ -360,8 +364,11 @@ TEST_CASE("WebSystem: the status carries storage, external, lang and mqtt as the
 	SystemFixture f;
 	auto r = f.call(HttpMethod::get, "/api/status");
 	CHECK_FALSE(r.json.has("storage")); // nothing known: left out
-	// The newest image schema this firmware reads (spec/api.md), for E-Home's check before a deploy.
-	CHECK(r.json["device"]["schema"].text == hc::image::schema_version_text());
+	// The newest format of the binary image this firmware reads (spec/api.md), for E-Home's check
+	// before a deploy; it replaces the JSON schema version.
+	CHECK(r.json["device"]["format"].text == hc::image::bin::format_text());
+	CHECK(r.json["device"]["format"].text == "1.0");
+	CHECK_FALSE(r.json["device"].has("schema"));
 	hc_test::FakeBlobStore blobs;
 	blobs.has_usage = true;
 	blobs.total_bytes = 1048576;

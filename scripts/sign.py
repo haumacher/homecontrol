@@ -8,7 +8,8 @@
 #
 #   scripts/sign.py keygen <secret-file>          # a new key pair: <secret-file> (mode 600) and <secret-file>.pub
 #   scripts/sign.py public <secret-file>          # prints the public key (64 hex digits) and its fingerprint
-#   scripts/sign.py image <secret-file> <image>   # writes <image>.sig: Ed25519 over "homecontrol-image-v1" || SHA-256(image)
+#   scripts/sign.py image <secret-file> <image.bin> [<out.bin>]   # signs a binary runtime image (spec/runtime-image.md 9.17):
+#                                                 # flag `signed`, the final length and CRC, the 64-byte signature appended
 #   scripts/sign.py manifest <secret-file> <manifest.json>   # writes manifest.sig beside it: Ed25519 over the exact bytes
 #
 # Key files hold hex and a line end: the secret file the 32-byte private seed (RFC 8032), the .pub
@@ -21,7 +22,7 @@ import hashlib
 import os
 import sys
 
-IMAGE_CONTEXT = b'homecontrol-image-v1'
+IMAGE_CONTEXT = b'homecontrol-image-v2'
 
 
 class _Signer:
@@ -85,13 +86,30 @@ def keygen(path):
 	return public
 
 
-def image_message(image):
-	"""The signed message of a runtime image: the context and the SHA-256 of its exact bytes."""
-	return IMAGE_CONTEXT + hashlib.sha256(image).digest()
+def image_message(signed_bytes):
+	"""The signed message of a binary runtime image: the context and the SHA-256 of its bytes before
+	the signature (spec/runtime-image.md 9.17)."""
+	return IMAGE_CONTEXT + hashlib.sha256(signed_bytes).digest()
 
 
 def sign_image(key, image):
-	return key.sign(image_message(image))
+	"""The binary image `image` (unsigned) signed: the header's flag `signed` and length (plus 64),
+	the CRC-32 anew (zlib's, with the field taken as 0), the signature appended."""
+	import struct
+	import zlib
+	if image[:4] != b'HCIM':
+		raise SystemExit('not a binary runtime image (the magic is not HCIM)')
+	length, _crc, flags = struct.unpack_from('<III', image, 8)
+	if flags & 1:
+		raise SystemExit('the image is signed already')
+	if length != len(image):
+		raise SystemExit('the header says %d bytes, the file has %d' % (length, len(image)))
+	body = bytearray(image)
+	struct.pack_into('<I', body, 8, length + 64)
+	struct.pack_into('<I', body, 16, flags | 1)
+	struct.pack_into('<I', body, 12, 0)
+	struct.pack_into('<I', body, 12, zlib.crc32(bytes(body)) & 0xffffffff)
+	return bytes(body) + key.sign(image_message(bytes(body)))
 
 
 def sign_manifest(key, manifest):
@@ -107,21 +125,27 @@ def main(argv):
 		public = signer(argv[2]).public
 		print('%s  %s' % (public.hex(), fingerprint(public)))
 		return 0
-	if len(argv) == 4 and argv[1] in ('image', 'manifest'):
+	if len(argv) in (4, 5) and argv[1] == 'image':
+		key = signer(argv[2])
+		with open(argv[3], 'rb') as f:
+			signed = sign_image(key, f.read())
+		root, _ext = os.path.splitext(argv[3])
+		out = argv[4] if len(argv) == 5 else root + '.signed.bin'
+		with open(out, 'wb') as f:
+			f.write(signed)
+		print('%s signed with %s: %s (%d bytes)' % (argv[3], fingerprint(key.public), out, len(signed)))
+		return 0
+	if len(argv) == 4 and argv[1] == 'manifest':
 		key = signer(argv[2])
 		with open(argv[3], 'rb') as f:
 			data = f.read()
-		if argv[1] == 'image':
-			signature = sign_image(key, data)
-			out = argv[3] + '.sig'
-		else:
-			signature = sign_manifest(key, data)
-			out = os.path.join(os.path.dirname(os.path.abspath(argv[3])), 'manifest.sig')
+		signature = sign_manifest(key, data)
+		out = os.path.join(os.path.dirname(os.path.abspath(argv[3])), 'manifest.sig')
 		with open(out, 'w') as f:
 			f.write(signature.hex() + '\n')
 		print('%s signed with %s: %s' % (argv[3], fingerprint(key.public), out))
 		return 0
-	print('usage: sign.py keygen <secret-file> | public <secret-file> | image <secret-file> <image> | '
+	print('usage: sign.py keygen <secret-file> | public <secret-file> | image <secret-file> <image.bin> [<out.bin>] | '
 		  'manifest <secret-file> <manifest.json>', file=sys.stderr)
 	return 2
 

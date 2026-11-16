@@ -21,7 +21,7 @@ TARGET="${REPO}/web/flasher/firmware/esp32c6"
 MANIFEST="${REPO}/web/flasher/manifest.json"
 
 for file in "${BUILD}/bootloader/bootloader.bin" "${BUILD}/partition_table/partition-table.bin" \
-	"${BUILD}/homecontrol.bin" "${BUILD}/ota_data_ota0.bin" "${BUILD}/storage.bin" "${BUILD}/flasher_args.json"; do
+	"${BUILD}/homecontrol.bin" "${BUILD}/image-empty.bin" "${BUILD}/ota_data_ota0.bin" "${BUILD}/storage.bin" "${BUILD}/flasher_args.json"; do
 	if [[ ! -f "${file}" ]]; then
 		echo "missing ${file}: build the esp32c6 application first" >&2
 		exit 1
@@ -54,6 +54,6 @@ PY
 
 mkdir -p "${TARGET}"
 cp "${BUILD}/bootloader/bootloader.bin" "${BUILD}/partition_table/partition-table.bin" \
-	"${BUILD}/homecontrol.bin" "${BUILD}/ota_data_ota0.bin" "${BUILD}/storage.bin" "${UPDATER}" "${TARGET}/"
+	"${BUILD}/homecontrol.bin" "${BUILD}/image-empty.bin" "${BUILD}/ota_data_ota0.bin" "${BUILD}/storage.bin" "${UPDATER}" "${TARGET}/"
 echo "copied the esp32c6 build (application, updater and web UI image) to ${TARGET}"
 ls -l "${TARGET}"

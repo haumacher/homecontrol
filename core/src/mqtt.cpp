@@ -462,24 +462,134 @@ bool Mqtt::configure_json(const char* text, size_t length, const char** error) {
 	return configure(image, error);
 }
 
-bool Mqtt::configure_image(const char* text, size_t length, const char** error) {
-	JsonSpan root;
-	const char* reason = nullptr;
-	if (!json_parse(text, length, root, &reason, kJsonMaxDepth) || root.kind != JsonSpan::Kind::object) {
-		return refuse(error, "the image is not a JSON object: %s", reason != nullptr ? reason : "not an object");
-	}
-	MqttImage image;
-	if (!json_member(root, "mqtt", image.mqtt)) {
+bool Mqtt::configure_image(const image::bin::View& view, const char** error) {
+	if (view.count(image::bin::kMqtt) == 0) {
 		clear();
 		return true;
 	}
-	json_member(root, "datapoints", image.datapoints);
-	json_member(root, "functions", image.functions);
-	JsonSpan info;
-	if (json_member(root, "image", info)) {
-		json_member(info, "name", image.name);
+	if (!ensure_buffers(error)) {
+		return false;
 	}
-	return configure(image, error);
+	Table* table = new (std::nothrow) Table();
+	if (table == nullptr) {
+		release_buffers_if_idle();
+		return refuse(error, "no memory for the configuration");
+	}
+	if (!build_view(*table, view, error)) {
+		delete table;
+		release_buffers_if_idle();
+		return false;
+	}
+	bool ok = commit(table, error);
+	release_buffers_if_idle();
+	return ok;
+}
+
+bool Mqtt::build_view(Table& table, const image::bin::View& view, const char** error) {
+	namespace bin = image::bin;
+	const bin::MqttRec& r = view.at<bin::MqttRec>(bin::kMqtt, 0);
+	MemberConfig& config = table.config;
+	config.enabled = (r.flags & 0x01) != 0;
+	config.retain = (r.flags & 0x02) != 0;
+	config.discovery = (r.flags & 0x04) != 0;
+	config.history = (r.flags & 0x08) != 0;
+	config.interval_min = r.history_interval;
+	std::snprintf(config.broker, sizeof(config.broker), "%s", view.str(r.broker));
+	mqtt::Broker broker;
+	const char* reason = nullptr;
+	if (!mqtt::parse_broker(config.broker, broker, &reason)) {
+		return refuse(error, "mqtt.broker: %s", reason);
+	}
+	std::snprintf(config.username, sizeof(config.username), "%s", view.str(r.username));
+	if (r.base_topic != 0) {
+		std::snprintf(config.base, sizeof(config.base), "%s", view.str(r.base_topic));
+		if (!topic_root_valid(config.base, kMaxBaseTopic)) {
+			return refuse(error, "mqtt.baseTopic: not a valid topic root");
+		}
+		config.has_base = true;
+	}
+	std::snprintf(config.prefix, sizeof(config.prefix), "%s", r.discovery_prefix != 0 ? view.str(r.discovery_prefix) : kDefaultPrefix);
+	if (!topic_root_valid(config.prefix, kMaxPrefix)) {
+		return refuse(error, "mqtt.discoveryPrefix: not a valid topic root");
+	}
+	if (!config.has_base) {
+		const char* suffix = node_id_;
+		size_t prefix_length = std::strlen(kNodePrefix);
+		if (std::strncmp(node_id_, kNodePrefix, prefix_length) == 0 && node_id_[prefix_length] != '\0') {
+			suffix = node_id_ + prefix_length;
+		}
+		std::snprintf(config.base, sizeof(config.base), "homecontrol/%s", suffix);
+	}
+	const char* name = view.str(view.image().name);
+	if (name[0] != '\0') {
+		table.device_name = table.arena.copy(name, std::strlen(name));
+	}
+	// The per-datapoint table, indexed by the model's ids (the image's datapoints come first).
+	table.point_count = model_.size();
+	table.points = table.arena.array<Point>(table.point_count);
+	if (table.point_count > 0 && table.points == nullptr) {
+		return refuse(error, "no memory for the datapoint table (%u datapoints)", static_cast<unsigned>(table.point_count));
+	}
+	size_t datapoints = view.count(bin::kDatapoints);
+	for (size_t i = 0; i < datapoints && i < table.point_count; ++i) {
+		const bin::DatapointRec& d = view.at<bin::DatapointRec>(bin::kDatapoints, i);
+		Point& point = table.points[i];
+		if (d.unit != 0) {
+			// Copies: a retiring configuration outlives the image's mapping.
+			point.unit = table.arena.copy(view.str(d.unit), std::strlen(view.str(d.unit)));
+		}
+		if (d.history != bin::kNone) {
+			const bin::HistoryRec& h = view.at<bin::HistoryRec>(bin::kHistory, d.history);
+			point.retention_s = h.retention;
+			point.spacing_s = h.spacing;
+			point.name = table.arena.copy(view.str(d.name), std::strlen(view.str(d.name)));
+			if (point.name == nullptr) {
+				return refuse(error, "no memory for the history table");
+			}
+		}
+	}
+	size_t count = view.count(bin::kFunctions);
+	table.functions = table.arena.array<Function>(count);
+	if (count > 0 && table.functions == nullptr) {
+		return refuse(error, "no memory for %u functions", static_cast<unsigned>(count));
+	}
+	for (size_t at = 0; at < count; ++at) {
+		const bin::FunctionRec& f = view.at<bin::FunctionRec>(bin::kFunctions, at);
+		if (f.kind >= kKindCount) {
+			Log::warn(kTag, "function '%s': kind unknown to this firmware, not announced", view.str(f.id));
+			continue;
+		}
+		Function& function = table.functions[table.function_count];
+		function.kind = f.kind;
+		function.id = table.arena.copy(view.str(f.id), std::strlen(view.str(f.id)));
+		const char* label = view.label_text(f.label, "en");
+		if (label[0] == '\0') {
+			label = view.str(f.id);
+		}
+		function.label = table.arena.copy(label, std::strlen(label));
+		function.unit = f.unit != 0 ? table.arena.copy(view.str(f.unit), std::strlen(view.str(f.unit))) : nullptr;
+		if (function.id == nullptr || function.label == nullptr) {
+			return refuse(error, "no memory for the functions");
+		}
+		function.scene = f.scene;
+		for (size_t k = 0; k < kMaxRoles; ++k) {
+			function.roles[k] = kNone;
+		}
+		for (size_t q = 0; q < f.role_count; ++q) {
+			const bin::RoleRec& role = view.at<bin::RoleRec>(bin::kRoles, f.first_role + q);
+			for (size_t k = 0; k < kMaxRoles; ++k) {
+				const char* known = kKinds[f.kind].roles[k];
+				if (known != nullptr && std::strcmp(known, view.str(role.name)) == 0) {
+					function.roles[k] = role.datapoint;
+				}
+			}
+		}
+		if (function.unit == nullptr && f.kind == kSensor && function.roles[kSensorValue] < table.point_count) {
+			function.unit = table.points[function.roles[kSensorValue]].unit;
+		}
+		++table.function_count;
+	}
+	return true;
 }
 
 bool Mqtt::build(Table& table, const MqttImage& image, const char** error) {

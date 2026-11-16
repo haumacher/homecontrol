@@ -8,7 +8,7 @@
 #include <cstdint>
 
 #include "hc/datapoint.h"
-#include "hc/json_value.h"
+#include "hc/image/binary.h"
 #include "hc/rules/value.h"
 
 namespace hc::rules {
@@ -103,17 +103,25 @@ struct TriggerFlags {
 	static constexpr uint8_t kEnable = 0x04;
 };
 
+// The records below are the binary image's (spec/runtime-image.md 9.13, 9.14), read in place from
+// the slot: exactly that layout, no implicit padding.
+
+/// `rules.triggers` (8 bytes).
 struct Trigger {
 	TriggerKind kind;
 	uint8_t flags;
-	/// Datapoint id, schedule index, timer index, parameter index, the match condition root, or the
-	/// index of a silence trigger in RuleSet::silence().
+	/// Datapoint index (datapoint, silence), the match condition's root, the `schedules` index of the
+	/// image, the local timer or parameter index.
 	uint16_t ref;
+	uint16_t ref2; ///< silence: the root of `after`.
+	uint16_t reserved;
 };
+static_assert(sizeof(Trigger) == 8, "trigger");
 
-/// A silence trigger (spec/rules.md 2.3, 7.11): its datapoint and the root of its `after` duration.
+/// A silence trigger (spec/rules.md 2.3, 7.11), derived at load: its datapoint and the root of its
+/// `after` duration.
 struct SilenceRef {
-	uint16_t trigger;   ///< Index in the trigger array.
+	uint16_t trigger;   ///< Index in the trigger table.
 	uint16_t datapoint; ///< Datapoint id.
 	uint16_t after;     ///< Root node of the duration (constant within the rule: literals, parameters).
 	uint8_t rule;
@@ -124,25 +132,32 @@ enum class ActionKind : uint8_t { write, start_timer, restart_timer, cancel_time
 /// Log levels of a log action.
 enum class LogActionLevel : uint8_t { info, warning, error };
 
+/// `rules.actions` (8 bytes).
 struct Action {
 	ActionKind kind;
 	uint8_t flags;   ///< write: 1 = onlyOnChange; log: LogActionLevel.
 	uint16_t target; ///< Datapoint id (write, read), timer index, parameter index, first log part.
-	uint16_t expr;   ///< Value or duration root (kNone: none); log: the part count.
+	uint16_t expr;   ///< Value or duration root (kNone: none).
+	uint16_t count;  ///< log: the parts.
 };
+static_assert(sizeof(Action) == 8, "action");
 
-/// A part of a log message: verbatim text (expr kNone) or an expression.
+/// `rules.logParts` (8 bytes): verbatim text (expr kNone) or an expression.
 struct LogPart {
-	uint32_t text; ///< String offset.
-	uint16_t length;
+	uint32_t text; ///< String offset (0 for an expression part).
 	uint16_t expr;
+	uint16_t reserved;
 };
+static_assert(sizeof(LogPart) == 8, "log part");
 
+/// A run of actions.
 struct ActionList {
-	uint16_t first = 0;
-	uint8_t count = 0;
+	uint16_t first;
+	uint8_t count;
+	uint8_t reserved;
 };
 
+/// `rules.reactions` (16 bytes).
 struct Reaction {
 	uint16_t first_trigger;
 	uint8_t trigger_count;
@@ -152,48 +167,59 @@ struct Reaction {
 	ActionList actions;
 	ActionList else_actions;
 };
+static_assert(sizeof(Reaction) == 16, "reaction");
 
-/// A label (spec/rules.md 2.2, spec/runtime-image.md): `label` and `name` members are string
-/// offsets of the text resolved in the device's language at load; the `..._json` members are the
-/// string offset of the label's language map as compact JSON (`{"de":"...","en":"..."}`), 0 when
-/// the image gave a plain string.
+/// Labels (spec/rules.md 2.2): `label` and `name` members are label references into the image's
+/// `labels` (spec/runtime-image.md 9.5): RuleSet::label() resolves one in the device's language,
+/// image::write_label() writes it as the image gave it.
+
+/// `rules.choices` (8 bytes).
 struct Choice {
 	uint16_t value; ///< Constant index.
-	uint32_t label; ///< String offset.
-	uint32_t label_json;
+	uint16_t reserved;
+	uint32_t label; ///< Label reference.
 };
+static_assert(sizeof(Choice) == 8, "choice");
 
+/// `rules.parameters` (28 bytes).
 struct Parameter {
 	uint32_t id;
 	uint32_t label;
-	uint32_t label_json;
-	uint32_t unit; ///< String offset ("" without unit).
+	uint32_t unit; ///< String offset (0: without unit).
 	Type type;
 	bool adjustable;
 	uint8_t choice_count;
+	uint8_t reserved;
 	uint16_t first_choice;
 	uint16_t default_value; ///< Constant index.
 	uint16_t min;           ///< Constant index or kNone.
 	uint16_t max;
+	uint16_t step;          ///< Constant index or kNone.
+	uint16_t datapoint;     ///< Datapoint index of `rule/<ruleId>/<id>`.
 };
+static_assert(sizeof(Parameter) == 28, "parameter");
 
+/// `rules.timers` (8 bytes).
 struct Timer {
 	uint32_t id;
 	uint16_t duration; ///< Root node.
+	uint16_t reserved;
 };
+static_assert(sizeof(Timer) == 8, "timer");
 
+/// `rules.states` (16 bytes).
 struct State {
 	uint32_t id;
-	uint32_t label;      ///< String offset of the resolved label; 0 (the empty string) without one.
-	uint32_t label_json; ///< See Choice: 0 for a plain string or no label.
+	uint32_t label; ///< Label reference (0: none).
 	ActionList entry;
 	ActionList exit;
 };
+static_assert(sizeof(State) == 16, "state");
 
+/// `rules` (28 bytes).
 struct Rule {
 	uint32_t id;
-	uint32_t name;
-	uint32_t name_json; ///< See Choice: 0 for a plain string.
+	uint32_t name; ///< Label reference.
 	uint16_t first_parameter; ///< The rule's parameter 0 is `enabled`.
 	uint16_t first_timer;
 	uint16_t first_state;
@@ -203,7 +229,14 @@ struct Rule {
 	uint8_t state_count;
 	uint8_t reaction_count;
 	uint8_t initial_state; ///< kNoState without states.
+	uint8_t reserved;
+	uint16_t timeline;        ///< Index in `rules.timelines`, kNone without.
+	uint16_t state_datapoint; ///< Datapoint index of `rule/<id>/state`, kNone without.
+	uint16_t reserved2;
 };
+static_assert(sizeof(Rule) == 28, "rule");
+static_assert(sizeof(Node) == 16, "node");
+static_assert(sizeof(Val) == 40, "constant");
 
 /// A match trigger, for the match-memory pass of spec 7.2 step 1.
 struct MatchRef {
@@ -240,35 +273,12 @@ struct LoadResult {
 	bool ok() const { return error == LoadError::ok; }
 };
 
-/// Where the schedules of the image are (issue #10): the loader resolves `schedule` triggers
-/// against it.
-class ScheduleDirectory {
-public:
-	virtual bool has_schedule(const char* id) const = 0;
-	/// Whether `datapoint` is the `output` of a schedule entry (spec/schedules.md): the scheduler
-	/// owns it, a rule's `write` to it is refused at load (notWritable, spec/rules.md 10.1).
-	virtual bool owns_output(const char* datapoint) const {
-		(void)datapoint;
-		return false;
-	}
-	/// Whether a technology owns `datapoint` that can be asked for its value (a KNX group object, a
-	/// Zigbee attribute, an external source): a rule's `read` of a datapoint the image binds to no
-	/// such technology is refused at load (notReadable, spec/rules.md 10.1). True when the directory
-	/// cannot tell; the technology's refusal at run time (readRefused) speaks then.
-	virtual bool technology_reads(const char* datapoint) const {
-		(void)datapoint;
-		return true;
-	}
-
-protected:
-	~ScheduleDirectory() = default;
-};
-
-/// What a loaded rule set costs.
+/// What a loaded rule set costs: in the slot (the image's records, read in place) and in RAM (the
+/// derived tables and the timelines).
 struct RuleSetMemory {
-	size_t block;     ///< The one allocation, all of the below.
+	size_t block;     ///< The RAM: the derived tables and the timelines' blocks.
 	size_t rules, reactions, triggers, actions, log_parts, parameters, choices, timers, states, nodes, constants,
-		schedules, tracked, matches, silences, strings;
+		tracked, matches, silences, timelines;
 };
 
 /// The prefix of the datapoints that mirror rule parameters (spec/rules.md 8.6):
@@ -283,25 +293,11 @@ bool parameter_datapoint_name(const char* rule, const char* parameter, char* out
 /// real, string, unsigned (duration in ms), time of day, enumeration, color; none for another type.
 ValueType parameter_datapoint_type(Type type);
 
-/// A datapoint mirroring a rule parameter, as the image loader and the tests derive it from the
-/// `rules` member: the name, the value type, and the flags kWritable | kTransmit when the parameter
-/// is adjustable (a command is a setParameter from the API), none otherwise. Never kPersist: the
-/// parameter store keeps the overrides (spec 8.4).
-struct ParameterDatapoint {
-	char name[Datapoint::kMaxName + 1];
-	ValueType type;
-	uint8_t flags;
-};
-
-/// The parameter datapoints of `rules` (spec 8.6), in rule order, `enabled` first in each rule;
-/// writes up to `capacity` of them from the `first` on to `out` (which may be nullptr; a caller fills
-/// its tables in batches) and returns how many there are. Lenient:
-/// a rule or parameter that is not well-formed (an invalid or repeated id, an unknown type) is
-/// skipped, since RuleSet::load() refuses it with the precise reason.
-size_t parameter_datapoints(const JsonValue& rules, ParameterDatapoint* out, size_t capacity, size_t first = 0);
-
-/// The `rules` member of an image, compiled: flat arrays in one allocation, indices instead of
-/// pointers. Built by load(); read-only afterwards. Movable, not copyable.
+/// The rules of the loaded image (spec/runtime-image.md 9.13, 9.14), read in place from the slot:
+/// the records, the expression nodes and the constants are the image's; RAM holds only what the
+/// image does not carry and the engine needs (the tracked datapoints of sinceChange/changedWithin,
+/// the match and silence triggers in trigger order, the timelines as Timeline objects). Built by
+/// bind(); read-only afterwards. Movable, not copyable.
 class RuleSet {
 public:
 	RuleSet() = default;
@@ -311,53 +307,48 @@ public:
 	RuleSet(const RuleSet&) = delete;
 	RuleSet& operator=(const RuleSet&) = delete;
 
-	/// Validates `rules` (spec 10) against the datapoints of `model` and the schedules of
-	/// `schedules` (nullptr: no schedules) and replaces this set on success. A refusal leaves this
-	/// set unchanged and is logged (tag hc.rule) with the rule, the path and the reason. The trees
-	/// are normalized (spec 4.8); labels are resolved in `language` (a language tag, the device's
-	/// `ui.lang`; spec 2.2). Two parameters (or rule states, spec 8.5) whose storage keys
-	/// (ParameterStore) collide refuse the set (limitExceeded).
-	/// `reserve_state_parameter`: a parameter `state` of a rule with states is refused (an image of
-	/// schema 1.7 or newer, spec 8.8); an older image may declare one, which then has no state
-	/// datapoint.
-	LoadResult load(const JsonValue& rules, const DatapointModel& model, const ScheduleDirectory* schedules,
-		const char* language = "en", bool reserve_state_parameter = true);
-	/// The same against a directory of the datapoints (the image loader's tables: no scratch model).
-	LoadResult load(const JsonValue& rules, const DatapointDirectory& datapoints, const ScheduleDirectory* schedules,
-		const char* language = "en", bool reserve_state_parameter = true);
+	/// Binds the set to the rules of the validated image `view` (which must outlive the set) and
+	/// derives its tables; labels resolve in `language` (a language tag, the device's `ui.lang`; a
+	/// copy is kept). Two parameters (or rule states, spec 8.5) whose storage keys (ParameterStore)
+	/// collide refuse the set (limitExceeded, spec/runtime-image.md 10.8). A refusal leaves this set
+	/// unchanged (out_of_memory when a table could not be allocated).
+	LoadResult bind(const image::bin::View& view, const char* language = "en");
 
 	void clear();
 	bool empty() const { return rule_count_ == 0; }
 
 	size_t rule_count() const { return rule_count_; }
-	const Rule& rule(size_t i) const { return rules_[i]; }
-	const Reaction& reaction(size_t i) const { return reactions_[i]; }
-	const Trigger& trigger(size_t i) const { return triggers_[i]; }
-	const Action& action(size_t i) const { return actions_[i]; }
-	const LogPart& log_part(size_t i) const { return log_parts_[i]; }
-	const Parameter& parameter(size_t i) const { return parameters_[i]; }
-	const Choice& choice(size_t i) const { return choices_[i]; }
-	const Timer& timer(size_t i) const { return timers_[i]; }
-	const State& state(size_t i) const { return states_[i]; }
+	const Rule& rule(size_t i) const { return rec<Rule>(rules_, i); }
+	const Reaction& reaction(size_t i) const { return rec<Reaction>(reactions_, i); }
+	const Trigger& trigger(size_t i) const { return rec<Trigger>(triggers_, i); }
+	const Action& action(size_t i) const { return rec<Action>(actions_, i); }
+	const LogPart& log_part(size_t i) const { return rec<LogPart>(log_parts_, i); }
+	const Parameter& parameter(size_t i) const { return rec<Parameter>(parameters_, i); }
+	const Choice& choice(size_t i) const { return rec<Choice>(choices_, i); }
+	const Timer& timer(size_t i) const { return rec<Timer>(timers_, i); }
+	const State& state(size_t i) const { return rec<State>(states_, i); }
 	/// The image's timeline of `rule` (spec 2.8); nullptr without one.
 	const Timeline* timeline(size_t rule) const;
-	const Node& node(size_t i) const { return nodes_[i]; }
-	const Val& constant(size_t i) const { return constants_[i]; }
-	const char* str(uint32_t offset) const { return strings_ + offset; }
-	/// The language map of a label as JSON (`..._json` member), nullptr for a plain string.
-	const char* label_json(uint32_t offset) const { return offset != 0 ? strings_ + offset : nullptr; }
+	const Node& node(size_t i) const { return rec<Node>(nodes_, i); }
+	const Val& constant(size_t i) const { return rec<Val>(constants_, i); }
+	const char* str(uint32_t offset) const { return view_.str(offset); }
+	/// A label reference resolved in the device's language ("" for none).
+	const char* label(uint32_t ref) const { return view_.label_text(ref, language_); }
+	/// The image the set reads.
+	const image::bin::View& view() const { return view_; }
 
-	size_t reaction_count() const { return reaction_count_; }
-	size_t trigger_count() const { return trigger_count_; }
-	size_t action_count() const { return action_count_; }
-	size_t parameter_count() const { return parameter_count_; }
-	size_t timer_count() const { return timer_count_; }
-	size_t state_count() const { return state_count_; }
-	size_t node_count() const { return node_count_; }
+	size_t reaction_count() const { return reactions_.count; }
+	size_t trigger_count() const { return triggers_.count; }
+	size_t action_count() const { return actions_.count; }
+	size_t parameter_count() const { return parameters_.count; }
+	size_t timer_count() const { return timers_.count; }
+	size_t state_count() const { return states_.count; }
+	size_t node_count() const { return nodes_.count; }
 
-	size_t schedule_count() const { return schedule_count_; }
-	const char* schedule(size_t i) const { return strings_ + schedules_[i]; }
-	/// Index of schedule `id` in this set; kNone if no trigger names it.
+	/// The image's schedules (the `schedule` triggers name them by index).
+	size_t schedule_count() const;
+	const char* schedule(size_t i) const;
+	/// Index of schedule `id` in the image; kNone if there is none.
 	uint16_t find_schedule(const char* id) const;
 
 	/// The datapoints referenced by sinceChange/changedWithin (change tracking, spec 7.7).
@@ -372,6 +363,8 @@ public:
 	/// The silence triggers (spec 2.3), in trigger order.
 	size_t silence_count() const { return silence_count_; }
 	const SilenceRef& silence(size_t i) const { return silences_[i]; }
+	/// The silence index of trigger `trigger` (a silence trigger); kNone if it is none.
+	uint16_t silence_of(size_t trigger) const;
 
 	/// Index of the rule with `id`; -1 if there is none.
 	int find_rule(const char* id) const;
@@ -383,34 +376,24 @@ public:
 	RuleSetMemory memory() const;
 
 private:
-	friend class Builder;
+	template <class T>
+	static const T& rec(const image::bin::Table& table, size_t i) {
+		return *reinterpret_cast<const T*>(table.base + static_cast<size_t>(table.stride) * i);
+	}
 
-	/// One allocation per table (homecontrol #70: not one block of every table, which a fragmented heap
-	/// refused with enough free bytes); block_size_ is their sum.
-	static constexpr size_t kParts = 16;
-	void* parts_[kParts] = {};
+	image::bin::View view_;
+	char language_[16] = {};
+	image::bin::Table rules_, reactions_, triggers_, actions_, log_parts_, parameters_, choices_, timers_, states_,
+		nodes_, constants_;
+	size_t rule_count_ = 0;
+	/// The derived tables, in one allocation.
+	void* block_ = nullptr;
 	size_t block_size_ = 0;
-	Rule* rules_ = nullptr;
-	Reaction* reactions_ = nullptr;
-	Trigger* triggers_ = nullptr;
-	Action* actions_ = nullptr;
-	LogPart* log_parts_ = nullptr;
-	Parameter* parameters_ = nullptr;
-	Choice* choices_ = nullptr;
-	Timer* timers_ = nullptr;
-	State* states_ = nullptr;
-	Node* nodes_ = nullptr;
-	Val* constants_ = nullptr;
-	uint32_t* schedules_ = nullptr;
 	uint16_t* tracked_ = nullptr;
 	MatchRef* matches_ = nullptr;
 	SilenceRef* silences_ = nullptr;
-	char* strings_ = nullptr;
 	Timeline* timelines_ = nullptr; ///< One per rule (empty without a timeline), or none at all.
-	size_t rule_count_ = 0, reaction_count_ = 0, trigger_count_ = 0, action_count_ = 0, log_part_count_ = 0,
-		   parameter_count_ = 0, choice_count_ = 0, timer_count_ = 0, state_count_ = 0, node_count_ = 0,
-		   constant_count_ = 0, schedule_count_ = 0, tracked_count_ = 0, match_count_ = 0, silence_count_ = 0,
-		   string_bytes_ = 0;
+	size_t tracked_count_ = 0, match_count_ = 0, silence_count_ = 0;
 };
 
 } // namespace hc::rules

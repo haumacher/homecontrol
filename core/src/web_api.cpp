@@ -265,31 +265,7 @@ uint8_t WebApi::ehome_signature() const {
 }
 
 bool WebApi::poll_deferred(WebResponse& response) {
-	if (response.deferred_kind == kDeferredImageStore) {
-		if (image_ == nullptr) {
-			refuse(response, 500, "api.not_deferred", "no answer is pending");
-			response.deferred = false;
-			return true;
-		}
-		JsonWriter json(response.body, response.capacity);
-		json.begin_object();
-		switch (image_->store_answer(response.deferred_token, json)) {
-			case image::ImageService::StoreAnswer::pending:
-				return false;
-			case image::ImageService::StoreAnswer::superseded:
-				refuse(response, 409, "image.superseded",
-					"a later image was deployed before this answer was fetched: GET /api/status and GET /api/image "
-					"tell what runs and what is stored");
-				break;
-			case image::ImageService::StoreAnswer::ready:
-				json.end_object();
-				response.status = 200;
-				finish(response, json);
-				break;
-		}
-		response.deferred = false;
-		return true;
-	}
+
 	if (ehome_ == nullptr) {
 		refuse(response, 500, "api.not_deferred", "no answer is pending");
 		return true;
@@ -849,7 +825,7 @@ void WebApi::write_status(JsonWriter& json, bool full) {
 		.member("version", kVersion)
 		.member("build", build_id())
 		.member("ui", host_.ui_version())
-		.member("schema", image::schema_version_text())
+		.member("format", image::bin::format_text())
 		.end_object();
 	json.member("uptime_s", ctl.uptime_ms() / 1000);
 	write_boot_status(json, ctl.diagnostics());
@@ -1421,28 +1397,15 @@ void WebApi::image_changed() {
 
 const char* WebApi::body_refusal(HttpMethod method, const char* path) const {
 	if (image_ != nullptr && method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0 &&
-		image_->store_pending()) {
-		return "the previous image is still being stored; deploy again in a moment";
-	}
-	return nullptr;
-}
-
-void WebApi::image_stored() {
-	if (ehome_ != nullptr) {
-		ehome_->deferred_ready(); // an answer over the E-Home connection goes out at once
-	}
-}
-
-ImageStaging* WebApi::body_staging(HttpMethod method, const char* path) const {
-	if (image_ != nullptr && method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
-		return image_->staging();
+		image_->receiving()) {
+		return "another image is being received; deploy again in a moment";
 	}
 	return nullptr;
 }
 
 size_t WebApi::body_limit(HttpMethod method, const char* path) const {
 	if (method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
-		return image_ != nullptr ? image_->receivable() : image::kMaxImageBytes;
+		return image_ != nullptr ? image_->slot_size() : 0;
 	}
 	if (method == HttpMethod::put && path != nullptr && starts_with(path, "/api/rules/")) {
 		size_t n = std::strlen(path);
@@ -1453,25 +1416,23 @@ size_t WebApi::body_limit(HttpMethod method, const char* path) const {
 	return kMaxBody;
 }
 
-void WebApi::body_too_long(HttpMethod method, const char* path, size_t bytes, char* text, size_t size) const {
+const char* WebApi::body_too_long(HttpMethod method, const char* path, size_t bytes, char* text, size_t size) const {
 	size_t limit = body_limit(method, path);
 	if (method == HttpMethod::put && path != nullptr && std::strcmp(path, "/api/image") == 0) {
-		if (limit < image::kMaxImageBytes) {
-			std::snprintf(text, size, "the image has %u bytes; the device receives at most %u (its staging area)",
-				static_cast<unsigned>(bytes), static_cast<unsigned>(limit));
-		} else {
-			std::snprintf(text, size, "the image has %u bytes; the device receives at most %u",
-				static_cast<unsigned>(bytes), static_cast<unsigned>(limit));
-		}
-		return;
+		std::snprintf(text, size, "the image has %u bytes; the device holds at most %u (its image slot)",
+			static_cast<unsigned>(bytes), static_cast<unsigned>(limit));
+		return "image.too_large";
 	}
 	std::snprintf(text, size, "the request body is longer than %u bytes", static_cast<unsigned>(limit));
+	return "api.body_too_large";
 }
 
 namespace {
 
-/// Streamed documents: the stored image's token with this bit cleared, the core dump with it set.
+/// Streamed documents: the core dump with this bit set; else the loaded image (GET /api/image) or its
+/// pages (GET /api/pages, kPagesStream), the image's token shifted left by one.
 constexpr uint32_t kCoreDumpStream = 0x80000000u;
+constexpr uint32_t kPagesStream = 0x1u;
 
 } // namespace
 
@@ -1489,11 +1450,23 @@ bool WebApi::read_stream(uint32_t token, size_t offset, char* buffer, size_t siz
 		length = piece;
 		return true;
 	}
-	if (image_ == nullptr) {
+	if (image_ == nullptr || !image_->loaded() || (token >> 1) != (image_->token() & 0x3FFFFFFFu)) {
+		return false; // the image changed since the response began
+	}
+	const char* bytes = nullptr;
+	size_t total = 0;
+	if ((token & kPagesStream) != 0) {
+		bytes = image_->image().ui(total);
+	} else {
+		bytes = reinterpret_cast<const char*>(image_->image().bytes());
+		total = image_->info().bytes;
+	}
+	if (bytes == nullptr || offset >= total) {
 		return false;
 	}
-	uint32_t current = image_->store_token();
-	return (current & ~kCoreDumpStream) == token && image_->read_stored(current, offset, buffer, size, length);
+	length = size < total - offset ? size : total - offset;
+	std::memcpy(buffer, bytes + offset, length);
+	return true;
 }
 
 void WebApi::coredump(WebResponse& response) {
@@ -1516,22 +1489,22 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 		return;
 	}
 	if (request.method == HttpMethod::get) {
-		size_t bytes = 0;
-		if (!image_->stored(bytes)) {
-			refuse(response, 404, "image.none", "no runtime image is stored");
+		if (!image_->loaded()) {
+			refuse(response, 404, "image.none", "no runtime image is loaded");
 			return;
 		}
+		response.content_type = "application/octet-stream";
 		response.stream = true;
-		response.stream_length = bytes;
-		response.stream_token = image_->store_token() & ~kCoreDumpStream;
+		response.stream_length = image_->info().bytes;
+		response.stream_token = (image_->token() & 0x3FFFFFFFu) << 1;
 		response.length = 0;
 		return;
 	}
 	if (request.method == HttpMethod::del) {
 		const char* error = nullptr;
-		if (image_->store_pending()) {
-			Log::warn(kTag, "DELETE /api/image from %s refused: the image is still being stored", request.source);
-			refuse(response, 503, "image.busy", "the image is still being stored; remove it in a moment");
+		if (image_->receiving()) {
+			Log::warn(kTag, "DELETE /api/image from %s refused: an image is being received", request.source);
+			refuse(response, 503, "image.busy", "an image is being received; remove it in a moment");
 			response.retry_after_s = kBusyRetryS;
 			return;
 		}
@@ -1548,55 +1521,117 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 		refuse(response, 405, "api.method_not_allowed", "use GET, PUT or DELETE");
 		return;
 	}
-	if (request.body == nullptr || request.body_length == 0) {
-		refuse(response, 400, "image.missing", "the body must be the runtime image (JSON)");
-		return;
-	}
-	uint8_t signature[kEd25519SignatureSize];
-	bool signed_image = request.image_signature != nullptr;
-	if (signed_image && (std::strlen(request.image_signature) != 2 * kEd25519SignatureSize ||
-		!parse_signature(request.image_signature, 2 * kEd25519SignatureSize, signature))) {
-		Log::warn(kTag, "PUT /api/image from %s refused: the signature is not 128 hex digits", request.source);
-		refuse(response, 400, "image.bad_signature",
-			request.ehome ? "\"signature\" is the image's Ed25519 signature in 128 hex digits"
-						  : "X-Image-Signature is the image's Ed25519 signature in 128 hex digits");
-		return;
-	}
-	Log::info(kTag, "PUT /api/image from %s: %u bytes%s", request.source, static_cast<unsigned>(request.body_length),
-		signed_image ? ", signed" : "");
-	bool ok = image_->load(request.body, request.body_length, image::Source::api, true,
-		signed_image ? signature : nullptr, request.body_holder, Callback::member<WebApi, &WebApi::image_stored>(this));
-	if (ok && image_->store_pending()) {
-		// The image runs; its store runs off the loop (homecontrol #68): the answer waits for it.
-		response.deferred = true;
-		response.deferred_kind = kDeferredImageStore;
-		response.deferred_token = image_->store_ticket();
-		response.length = 0;
-		return;
+	bool ok = false;
+	if (request.image_streamed) {
+		ok = image_->receive_end();
+	} else {
+		if (request.image_signature != nullptr) {
+			Log::warn(kTag, "PUT /api/image from %s refused: a detached signature", request.source);
+			refuse(response, 400, "image.bad_request", "the signature is part of the binary image");
+			return;
+		}
+		if (request.body == nullptr || request.body_length == 0) {
+			refuse(response, 400, "image.missing", "the body must be the binary runtime image");
+			return;
+		}
+		if (request.body_length > image_->slot_size()) {
+			char text[128];
+			body_too_long(HttpMethod::put, "/api/image", request.body_length, text, sizeof(text));
+			refuse(response, 413, "image.too_large", text);
+			return;
+		}
+		Log::info(kTag, "PUT /api/image from %s: %u bytes", request.source, static_cast<unsigned>(request.body_length));
+		ok = image_->load(reinterpret_cast<const uint8_t*>(request.body), request.body_length, image::Source::api);
 	}
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object();
 	if (ok) {
 		image_->write_info(json);
 	} else {
-		switch (image_->report().kind) {
-			case image::Report::Kind::syntax: response.status = 400; break;
-			case image::Report::Kind::too_large: response.status = 413; break;
-			case image::Report::Kind::no_memory: response.status = 507; break;
-			case image::Report::Kind::apply: response.status = 500; break;
-			// 403, not 401: the UI takes a 401 for an expired login.
-			case image::Report::Kind::unsigned_image: response.status = 403; break;
-			case image::Report::Kind::bad_signature: response.status = 403; break;
-			case image::Report::Kind::busy:
-				response.status = 503;
-				response.retry_after_s = kBusyRetryS;
-				break;
-			default: response.status = 422; break;
+		image::Report::Kind kind = image_->report().kind;
+		response.status = image::report_kind_status(kind);
+		if (kind == image::Report::Kind::busy) {
+			response.retry_after_s = kBusyRetryS;
 		}
 		image_->write_report(json);
 	}
 	json.end_object();
 	finish(response, json);
+}
+
+bool WebApi::authorized(const WebRequest& request, WebResponse& response) {
+	const char* path = request.path != nullptr ? request.path : "";
+	bool csrf_ok = request.requested_with != nullptr && std::strcmp(request.requested_with, kCsrfHeaderValue) == 0;
+	if (request.ehome) {
+		const char* reason = nullptr;
+		if (ehome_forbidden(request, &reason)) {
+			Log::warn(kTag, "%s %s over the E-Home connection refused: %s", method_name(request.method), path, reason);
+			refuse(response, 403, "ehome.forbidden", reason);
+			return false;
+		}
+	}
+	if (!auth_.has_password()) {
+		refuse(response, 403, auth_status_code(AuthStatus::no_password), auth_status_text(AuthStatus::no_password));
+		return false;
+	}
+	bool by_token = false;
+	if (request.ehome) {
+		by_token = true;
+	} else if (request.authorization != nullptr) {
+		if (auth_.token_from_authorization(request.authorization) < 0) {
+			Log::warn(kTag, "%s %s from %s: unknown or revoked token", method_name(request.method), path, request.source);
+			refuse(response, 401, "auth.token_invalid", "the bearer token is unknown or revoked");
+			return false;
+		}
+		by_token = true;
+	} else if (!auth_.session_from_cookie(request.cookie).valid()) {
+		refuse(response, 401, "auth.required", "log in first (session expired or missing)");
+		return false;
+	}
+	if (!by_token && !csrf_ok) {
+		refuse(response, 403, "auth.csrf", "state-changing requests need the header X-Requested-With: HomeControl");
+		return false;
+	}
+	return true;
+}
+
+bool WebApi::image_begin(const WebRequest& request, size_t length, WebResponse& response) {
+	if (image_ == nullptr) {
+		refuse(response, 404, "image.unavailable", "this build has no runtime image service");
+		return false;
+	}
+	// Authenticated as handle() would: refused here, nothing is erased.
+	WebRequest probe = request;
+	probe.method = HttpMethod::put;
+	if (!authorized(probe, response)) {
+		return false;
+	}
+	if (request.image_signature != nullptr) {
+		Log::warn(kTag, "PUT /api/image from %s refused: a detached signature", request.source);
+		refuse(response, 400, "image.bad_request", "the signature is part of the binary image");
+		return false;
+	}
+	if (length == 0) {
+		refuse(response, 400, "image.missing", "the body must be the binary runtime image");
+		return false;
+	}
+	Log::info(kTag, "PUT /api/image from %s: %u bytes, written into the slot as they arrive", request.source,
+		static_cast<unsigned>(length));
+	if (image_->receive_begin(reinterpret_cast<const uint8_t*>(request.body), request.body_length, length,
+			image::Source::api)) {
+		return true;
+	}
+	JsonWriter json(response.body, response.capacity);
+	json.begin_object();
+	image::Report::Kind kind = image_->report().kind;
+	response.status = image::report_kind_status(kind);
+	if (kind == image::Report::Kind::busy) {
+		response.retry_after_s = kBusyRetryS;
+	}
+	image_->write_report(json);
+	json.end_object();
+	finish(response, json);
+	return false;
 }
 
 // ---- The dashboard's view of the image ---------------------------------------------------------
@@ -1720,7 +1755,9 @@ bool parse_ids(const char* query, uint16_t* ids, size_t max, size_t& count) {
 
 namespace {
 
-void write_label(JsonWriter& json, const rules::RuleSet& set, const char* key, uint32_t text, uint32_t map);
+void write_label(JsonWriter& json, const rules::RuleSet& set, const char* key, uint32_t ref);
+/// The declared step of a parameter (its constant), 0 without one.
+double step_of(const rules::RuleSet& set, const rules::Parameter& decl);
 
 } // namespace
 
@@ -1732,16 +1769,12 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		finish(response, json);
 		return;
 	}
-	if (view.no_memory()) {
-		refuse(response, 507, "model.no_memory", "the device had not enough memory for the UI model of this image");
-		return;
-	}
 	uint32_t from = 0;
 	query_uint(request.query, "from", from);
 	const image::ImageInfo& info = image_->info();
 	size_t locations = view.location_count();
 	size_t functions = view.function_count();
-	size_t datapoints = view.datapoint_count() < model_.size() ? view.datapoint_count() : model_.size();
+	size_t datapoints = model_.size();
 	size_t total = locations + functions + datapoints;
 	json.reserve(kClosingReserve);
 	json.begin_object()
@@ -1752,7 +1785,6 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		.member("generatedAt", info.generated_at)
 		.member("generator", info.generator)
 		.member("source", image::source_name(image_->source()))
-		.member("stored", image_->stored_ok())
 		.member("loaded_ms", image_->loaded_ms())
 		.member("now_ms", controller_.clock().monotonic_ms())
 		.member("generation", view.generation())
@@ -1765,15 +1797,7 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 	json.key("locations").begin_array();
 	for (; !full && index < locations; ++index) {
 		JsonWriter::Mark mark = json.mark();
-		const image::ModelView::Location& l = view.location(index);
-		json.begin_object().member("id", l.id).key("label").raw(l.label, std::strlen(l.label));
-		if (l.kind[0] != '\0') {
-			json.member("kind", l.kind);
-		}
-		if (l.parent >= 0) {
-			json.member("parent", view.location(static_cast<size_t>(l.parent)).id);
-		}
-		json.end_object();
+		view.write_location(json, index);
 		if (json.overflowed()) {
 			json.reset(mark);
 			full = true;
@@ -1785,25 +1809,7 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 	json.key("functions").begin_array();
 	for (; !full && index >= locations && index < locations + functions; ++index) {
 		JsonWriter::Mark mark = json.mark();
-		const image::ModelView::Function& f = view.function(index - locations);
-		json.begin_object().member("id", f.id).key("label").raw(f.label, std::strlen(f.label)).member("kind", f.kind);
-		if (f.room >= 0) {
-			json.member("room", view.location(static_cast<size_t>(f.room)).id);
-		}
-		if (f.unit[0] != '\0') {
-			json.member("unit", f.unit);
-		}
-		if (f.scene > 0) {
-			json.member("scene", static_cast<uint32_t>(f.scene));
-		}
-		if (f.presses != nullptr) {
-			json.key("presses").raw(f.presses, std::strlen(f.presses));
-		}
-		json.key("datapoints").begin_object();
-		for (size_t r = 0; r < f.role_count; ++r) {
-			json.member(f.roles[r].name, static_cast<uint32_t>(f.roles[r].datapoint));
-		}
-		json.end_object().end_object();
+		view.write_function(json, index - locations);
 		if (json.overflowed()) {
 			json.reset(mark);
 			full = true;
@@ -1816,7 +1822,8 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 	for (; !full && index >= locations + functions && index < total; ++index) {
 		JsonWriter::Mark mark = json.mark();
 		size_t id = index - locations - functions;
-		const image::ModelView::DatapointInfo& d = view.datapoint(id);
+		uint32_t label = view.datapoint_label(id);
+		const char* unit = view.datapoint_unit(id);
 		const Datapoint* dp = model_.get(static_cast<uint16_t>(id));
 		json.begin_object().member("id", static_cast<uint32_t>(id)).member("name", dp != nullptr ? dp->name() : "");
 		if (dp != nullptr) {
@@ -1830,22 +1837,23 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		const rules::RuleSet& set = engine.rules();
 		size_t state_rule = 0;
 		bool state = dp != nullptr && !parameter && engine.state_of_datapoint(dp->id(), state_rule);
-		if (d.label != nullptr) {
-			json.key("label").raw(d.label, std::strlen(d.label));
+		if (label != 0) {
+			json.key("label");
+			view.write_label(json, label);
 		} else if (state) {
 			const rules::Rule& rule = set.rule(state_rule);
-			write_label(json, set, "label", rule.name, rule.name_json);
+			write_label(json, set, "label", rule.name);
 		} else if (parameter) {
 			const rules::Rule& rule = set.rule(param_rule);
 			const rules::Parameter& decl = set.parameter(rule.first_parameter + param_index);
 			if (param_index == 0) {
-				write_label(json, set, "label", rule.name, rule.name_json);
+				write_label(json, set, "label", rule.name);
 			} else {
-				write_label(json, set, "label", decl.label, decl.label_json);
+				write_label(json, set, "label", decl.label);
 			}
 		}
-		if (d.unit != nullptr) {
-			json.member("unit", d.unit);
+		if (unit != nullptr) {
+			json.member("unit", unit);
 		} else if (parameter) {
 			const rules::Parameter& decl = set.parameter(set.rule(param_rule).first_parameter + param_index);
 			if (decl.type == rules::Type::duration) {
@@ -1860,9 +1868,7 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		} else {
 			json.null();
 		}
-		if (d.binding != nullptr) {
-			json.key("binding").raw(d.binding, std::strlen(d.binding));
-		}
+		view.write_binding(json, id);
 		if (state) {
 			// A rule's state datapoint (spec/rules.md 8.8): the states as its choices, by position.
 			const rules::Rule& rule = set.rule(state_rule);
@@ -1872,7 +1878,7 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 				const rules::State& st = set.state(rule.first_state + s);
 				json.begin_object().member("value", static_cast<uint32_t>(s));
 				if (st.label != 0) {
-					write_label(json, set, "label", st.label, st.label_json);
+					write_label(json, set, "label", st.label);
 				} else {
 					json.member("label", set.str(st.id));
 				}
@@ -1896,7 +1902,7 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 				json.key("max");
 				write_val(json, set.constant(decl.max));
 			}
-			double step = view.parameter_step(set.str(rule.id), set.str(decl.id));
+			double step = step_of(set, decl);
 			if (step > 0) {
 				json.member("step", step);
 			}
@@ -1906,23 +1912,16 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 					const rules::Choice& choice = set.choice(decl.first_choice + c);
 					json.begin_object().key("value");
 					write_val(json, set.constant(choice.value));
-					write_label(json, set, "label", choice.label, choice.label_json);
+					write_label(json, set, "label", choice.label);
 					json.end_object();
 				}
 				json.end_array();
 			}
-		} else if (d.binding != nullptr) {
+		} else {
 			// The fixed range of a scaled KNX type (5.001 percent, 5.003 angle).
-			JsonSpan binding;
-			JsonSpan knx;
-			JsonSpan dpt;
-			if (json_parse(d.binding, std::strlen(d.binding), binding) && json_member(binding, "knx", knx) &&
-				json_member(knx, "dpt", dpt)) {
-				char text[16];
-				std::optional<Dpt> type = json_string(dpt, text, sizeof(text)) ? Dpt::parse(text) : std::nullopt;
-				if (type && type->main == 5 && (type->sub == 1 || type->sub == 3)) {
-					json.member("min", static_cast<uint32_t>(0)).member("max", static_cast<uint32_t>(type->sub == 1 ? 100 : 360));
-				}
+			Dpt type;
+			if (view.knx_dpt(id, type) && type.main == 5 && (type.sub == 1 || type.sub == 3)) {
+				json.member("min", static_cast<uint32_t>(0)).member("max", static_cast<uint32_t>(type.sub == 1 ? 100 : 360));
 			}
 		}
 		json.member("history", dp != nullptr && dp->has_history());
@@ -1951,149 +1950,32 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 }
 
 void WebApi::ui_pages(const WebRequest& request, WebResponse& response) {
-	const image::ModelView& view = image_->view();
-	if (image_->loaded() && view.no_memory()) {
-		refuse(response, 507, "model.no_memory", "the device had not enough memory for the UI model of this image");
-		return;
-	}
-	uint32_t from = 0;
-	query_uint(request.query, "from", from);
-	bool loaded = image_->loaded();
-	// Five lists in one index space: pages, sections, elements, series, reference lines.
-	const size_t counts[5] = {loaded ? view.page_count() : 0, loaded ? view.section_count() : 0,
-		loaded ? view.element_count() : 0, loaded ? view.series_count() : 0, loaded ? view.reference_count() : 0};
-	static const char* const kLists[5] = {"pages", "sections", "elements", "series", "references"};
-	size_t total = 0;
-	for (size_t count : counts) {
-		total += count;
-	}
+	(void)request;
 	JsonWriter json(response.body, response.capacity);
-	// The closing: the lists after a full one (empty) and `next`.
-	json.reserve(kClosingReserve + 64);
-	json.begin_object()
-		.member("loaded", loaded)
-		.member("generation", view.generation())
-		.member("total", static_cast<uint32_t>(total))
-		.member("from", from);
-	auto label = [&json](const char* text) {
-		if (text != nullptr) {
-			json.key("label").raw(text, std::strlen(text));
-		}
-	};
-	auto axis = [](uint8_t a) { return a == 0 ? "left" : "right"; };
-	size_t index = from;
-	size_t written = 0;
-	bool full = false;
-	size_t base = 0;
-	for (size_t list = 0; list < 5; ++list) {
-		json.key(kLists[list]).begin_array();
-		for (; !full && index >= base && index < base + counts[list]; ++index) {
-			JsonWriter::Mark mark = json.mark();
-			size_t i = index - base;
-			json.begin_object();
-			if (list == 0) {
-				const image::ModelView::Page& p = view.page(i);
-				json.member("id", p.id != nullptr ? p.id : "");
-				label(p.label);
-				if (p.icon != nullptr) {
-					json.member("icon", p.icon);
-				}
-				json.member("sections", static_cast<uint32_t>(p.sections));
-			} else if (list == 1) {
-				const image::ModelView::Section& s = view.section(i);
-				json.member("page", static_cast<uint32_t>(s.page));
-				label(s.label);
-				json.member("elements", static_cast<uint32_t>(s.elements));
-			} else if (list == 2) {
-				const image::ModelView::Element& e = view.element(i);
-				json.member("section", static_cast<uint32_t>(e.section));
-				label(e.label);
-				if (e.kind == image::ModelView::ElementKind::function) {
-					json.member("function", view.function(e.target).id);
-				} else if (e.kind == image::ModelView::ElementKind::datapoint) {
-					json.member("datapoint", static_cast<uint32_t>(e.target));
-					if (e.read_only) {
-						json.member("readOnly", true);
-					}
-				} else {
-					const image::ModelView::Chart& c = view.chart(e.target);
-					json.key("chart").begin_object();
-					label(c.label);
-					json.key("width");
-					if (c.width == 0) {
-						json.string("full");
-					} else {
-						json.number(static_cast<uint32_t>(c.width));
-					}
-					json.member("height", static_cast<uint32_t>(c.height))
-						.member("range", image::chart_range_name(c.range));
-					json.key("presets").begin_array();
-					for (size_t r = 0; r < image::kChartRanges; ++r) {
-						if ((c.presets & (1u << r)) != 0) {
-							json.string(image::chart_range_name(r));
-						}
-					}
-					json.end_array();
-					json.key("axes").begin_object();
-					for (int a = 0; a < 2; ++a) {
-						json.key(axis(static_cast<uint8_t>(a))).begin_object().key("min");
-						if ((c.fixed & (1u << (2 * a))) != 0) {
-							json.number(c.min[a]);
-						} else {
-							json.null();
-						}
-						json.key("max");
-						if ((c.fixed & (2u << (2 * a))) != 0) {
-							json.number(c.max[a]);
-						} else {
-							json.null();
-						}
-						json.end_object();
-					}
-					json.end_object().end_object();
-				}
-			} else if (list == 3) {
-				const image::ModelView::Series& r = view.series(i);
-				json.member("element", static_cast<uint32_t>(r.element))
-					.member("datapoint", static_cast<uint32_t>(r.datapoint));
-				label(r.label);
-				json.member("axis", axis(r.axis)).member("consolidation", image::consolidation_name(r.consolidation));
-			} else {
-				const image::ModelView::Reference& r = view.reference(i);
-				json.member("element", static_cast<uint32_t>(r.element));
-				if (r.constant) {
-					json.member("value", r.value);
-				} else {
-					json.member("datapoint", static_cast<uint32_t>(r.datapoint));
-				}
-				label(r.label);
-				json.member("axis", axis(r.axis));
-			}
-			json.end_object();
-			if (json.overflowed()) {
-				json.reset(mark);
-				json.release(); // the closing: this list's end, the empty lists after it, `next`
-				full = true;
-				break;
-			}
-			++written;
-		}
-		json.end_array();
-		base += counts[list];
-	}
-	if (written == 0 && index < total) {
-		refuse(response, 500, "api.response_too_large", "an entry of the pages does not fit the server's buffer");
+	if (!image_->loaded()) {
+		json.begin_object().member("loaded", false).end_object();
+		finish(response, json);
 		return;
 	}
-	json.release();
-	json.key("next");
-	if (index < total) {
-		json.number(static_cast<uint32_t>(index));
-	} else {
-		json.null();
+	size_t length = 0;
+	const char* pages = image_->image().ui(length);
+	if (pages == nullptr) {
+		// No control pages: the generated overview (spec/api.md "GET /api/pages").
+		static const char kNone[] = "{\"pages\":[],\"sections\":[],\"elements\":[],\"series\":[],\"references\":[]}";
+		json.raw(kNone, sizeof(kNone) - 1);
+		finish(response, json);
+		return;
 	}
-	json.end_object();
-	finish(response, json);
+	if (length < response.capacity) {
+		std::memcpy(response.body, pages, length);
+		response.length = length;
+		return;
+	}
+	// The section as it is (spec/runtime-image.md 9.16), in pieces of the platform's buffer.
+	response.stream = true;
+	response.stream_length = length;
+	response.stream_token = ((image_->token() & 0x3FFFFFFFu) << 1) | kPagesStream;
+	response.length = 0;
 }
 
 void WebApi::history(const WebRequest& request, WebResponse& response) {
@@ -2211,14 +2093,27 @@ void WebApi::history(const WebRequest& request, WebResponse& response) {
 
 namespace {
 
-/// A label of the rule set (spec/rules.md 2.2): the image's language map as it came, or the text.
-void write_label(JsonWriter& json, const rules::RuleSet& set, const char* key, uint32_t text, uint32_t map) {
+/// A label of the rule set (spec/rules.md 2.2): the image's language map or string as it came, ""
+/// without one.
+void write_label(JsonWriter& json, const rules::RuleSet& set, const char* key, uint32_t ref) {
 	json.key(key);
-	const char* raw = set.label_json(map);
-	if (raw != nullptr) {
-		json.raw(raw, std::strlen(raw));
+	if (ref == 0) {
+		json.string("");
 	} else {
-		json.string(set.str(text));
+		image::bin::write_label(json, set.view(), ref);
+	}
+}
+
+double step_of(const rules::RuleSet& set, const rules::Parameter& decl) {
+	if (decl.step == rules::kNone) {
+		return 0;
+	}
+	const rules::Val& v = set.constant(decl.step);
+	switch (v.type) {
+		case rules::Type::real: return v.u.r;
+		case rules::Type::integer:
+		case rules::Type::duration: return static_cast<double>(v.u.i);
+		default: return 0;
 	}
 }
 
@@ -2232,7 +2127,7 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 	engine.diagnostics(index, d);
 	const rules::Parameter& enabled = set.parameter(rule.first_parameter);
 	json.begin_object().member("id", d.id);
-	write_label(json, set, "name", rule.name, rule.name_json);
+	write_label(json, set, "name", rule.name);
 	json.member("enabled", engine.enabled(index))
 		.member("enabledAdjustable", enabled.adjustable)
 		.member("enabledOverridden", engine.parameter_overridden(index, 0))
@@ -2250,7 +2145,7 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 			const rules::State& state = set.state(rule.first_state + s);
 			json.begin_object().member("id", set.str(state.id));
 			if (state.label != 0) {
-				write_label(json, set, "label", state.label, state.label_json);
+				write_label(json, set, "label", state.label);
 			}
 			json.end_object();
 		}
@@ -2302,12 +2197,11 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 	}
 	json.end_array();
 	json.key("parameters").begin_array();
-	const image::ModelView& view = image_->view();
 	for (size_t p = 1; p < rule.parameter_count; ++p) {
 		const rules::Parameter& decl = set.parameter(rule.first_parameter + p);
 		const char* id = set.str(decl.id);
 		json.begin_object().member("id", id);
-		write_label(json, set, "label", decl.label, decl.label_json);
+		write_label(json, set, "label", decl.label);
 		json.member("type", rules::type_name(decl.type))
 			.member("unit", set.str(decl.unit))
 			.member("adjustable", decl.adjustable)
@@ -2324,7 +2218,7 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 			json.key("max");
 			write_val(json, set.constant(decl.max));
 		}
-		double step = view.parameter_step(d.id, id);
+		double step = step_of(set, decl);
 		if (step > 0) {
 			json.member("step", step);
 		}
@@ -2334,7 +2228,7 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 				const rules::Choice& choice = set.choice(decl.first_choice + c);
 				json.begin_object().key("value");
 				write_val(json, set.constant(choice.value));
-				write_label(json, set, "label", choice.label, choice.label_json);
+				write_label(json, set, "label", choice.label);
 				json.end_object();
 			}
 			json.end_array();

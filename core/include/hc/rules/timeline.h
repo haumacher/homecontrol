@@ -112,6 +112,10 @@ public:
 	/// inhabitant's (`adjustable` is an unknown member). False with `refusal` filled.
 	static bool parse(const JsonValue& json, const TimelineStates& states, bool image, Timeline* out,
 		TimelineRefusal& refusal);
+	/// The image's timeline `index` of the binary image (spec/runtime-image.md 9.13: `rules.timelines`
+	/// with its plans, points and assignments), compiled like parse() with `image` true.
+	static bool from_image(const image::bin::View& view, size_t index, const TimelineStates& states, Timeline& out,
+		TimelineRefusal& refusal);
 	/// The same over a JSON text (an override from the store, a request body).
 	static bool parse_text(const char* text, size_t length, const TimelineStates& states, bool image, Timeline* out,
 		TimelineRefusal& refusal);

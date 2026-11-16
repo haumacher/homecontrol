@@ -485,6 +485,11 @@ public:
 	/// lastKnown()). Refused with wrong_type if it does not convert, and with busy unless the
 	/// quality is still unknown (a value reported or commanded since the load always wins).
 	DatapointStatus restore(uint16_t id, const Value& value);
+	/// Sets value, quality and update time of a datapoint as an image swap carries them from the
+	/// previous model (spec/runtime-image.md 12, right after load()): no listener is told. Refused
+	/// with wrong_type when the value is of another type.
+	/// `pending`: the held-command mark, which bind() keeps only for an owner that holds commands.
+	DatapointStatus carry(uint16_t id, const Value& value, Quality quality, uint64_t updated_ms, bool pending = false);
 
 	/// The application wants `value`. Refused if the datapoint is not writable or the value does not
 	/// convert; passed to the owning technology if the datapoint transmits (refused if the technology

@@ -12,30 +12,8 @@
 namespace hc {
 namespace image {
 
-/// The runtime image (spec/runtime-image.md): what E-Home deploys, as one JSON document.
-
-/// The schema version this firmware reads, the only place it is set: major 1, minor 7 (1.1 adds the
-/// control pages `ui.pages`, issue #54; 1.2 the adjustable schedule members, issue #58, and the
-/// history archives, issue #56; 1.3 the blocks, issue #60; 1.4 the enumeration press of a button with
-/// its `presses`, the Zigbee remotes, haumacher/ehome #70; 1.5 the parameter ids of the rule-id
-/// characters, `$"max-helligkeit"`, issue #81; 1.6 the roles atTop, atBottom and heatingLevel, a heating of a
-/// number, a dimmer with its command alone, a rule's write to an application datapoint that is not
-/// writable, haumacher/ehome #134, #136, #138; 1.7 a rule's timeline and a state's label, issue #84). An image with a higher major version is refused (named in the
-/// report); a higher minor version loads (its additions are ignorable), except where a strict
-/// object (rules, schedules, blocks) meets a member this firmware does not know: that refusal says the
-/// image is newer than the firmware reads (spec/runtime-image.md I4).
-constexpr uint32_t kSchemaMajor = 1;
-constexpr uint32_t kSchemaMinor = 7;
-
-/// "1.6": kSchemaMajor.kSchemaMinor as text (the API's `schema`, spec/api.md).
-const char* schema_version_text();
-
-/// Largest image in bytes. The device reads the whole text into RAM once at load (the parse works
-/// in place on it), so a load needs this much free heap in one block on top of the tables.
-constexpr size_t kMaxImageBytes = 262144;
-
-/// Nesting the image may use: rule expressions are 12 deep, a call adds an array level each.
-constexpr size_t kMaxNesting = 48;
+/// The runtime image (spec/runtime-image.md): what E-Home deploys, compiled into the binary image
+/// the device keeps in its slot and works from (sections 9 to 13, issue #87; hc/image/binary.h).
 
 /// Limits of one image beyond those of the components (rules: spec/rules.md 10.2; schedules:
 /// spec/schedules.md 6; history: doc/persistence.md).
@@ -83,17 +61,16 @@ constexpr size_t kMaxVersionText = 15;
 
 /// Where a load came from (logged; the status shows it).
 enum class Source : uint8_t {
-	boot,    ///< The stored image, at start.
-	api,     ///< PUT /api/image.
+	boot,    ///< The slot's image, at start.
+	api,     ///< PUT /api/image (HTTP or the E-Home connection).
 	console, ///< The console's `image load <url>`.
 	file,    ///< The POSIX build's --image <file>.
-	restore, ///< The stored image again, after a new one failed while it was applied.
 };
 
-/// "boot", "api", "console", "file", "restore".
+/// "boot", "api", "console", "file".
 const char* source_name(Source source);
 
-/// The metadata of an image (its `image` member) and what it holds.
+/// The metadata of an image (its `image` record, copied out of the slot) and what it holds.
 struct ImageInfo {
 	char schema_version[kMaxVersionText + 1] = {};
 	char project_id[kMaxProjectId + 1] = {};
@@ -101,8 +78,12 @@ struct ImageInfo {
 	char generated_at[kMaxGeneratedAt + 1] = {};
 	char generator[kMaxGenerator + 1] = {};
 	char name[kMaxName + 1] = {};
-	size_t bytes = 0;      ///< Size of the JSON text.
-	size_t datapoints = 0; ///< In the model, with those the image implies (the time master's).
+	uint16_t format_major = 0; ///< The image's format version (header).
+	uint16_t format_minor = 0;
+	size_t bytes = 0;      ///< The image's length (header), the signature included.
+	uint32_t crc = 0;      ///< The header's CRC-32.
+	bool is_signed = false;
+	size_t datapoints = 0; ///< In the image (the implied ones included).
 	size_t knx_datapoints = 0;
 	size_t zigbee_datapoints = 0; ///< With a `zigbee` binding.
 	size_t rules = 0;
@@ -114,7 +95,8 @@ struct ImageInfo {
 	bool time_master = false;
 };
 
-/// The outcome of a validation or load: every refusal with its JSON path and reason, up to
+/// The outcome of a validation or load: every refusal with its path into the binary image
+/// (spec/runtime-image.md 4, 10) and reason, up to
 /// kMaxRefusals (`total` counts all; the validation stops at kMaxTotal). The first refusal is held
 /// inline; the room for the others (kMaxRefusals, about 3 KB) is allocated with the second and freed
 /// by clear(), so a report without refusals (every successful load) costs one refusal. Without the
@@ -130,13 +112,12 @@ struct Report {
 		char reason[kMaxReason + 1];
 	};
 
-	/// What kind of failure: none, the JSON does not parse, the schema version is newer, the
-	/// content is invalid, the device cannot hold it (memory), applying it failed, or the device
-	/// holds the installation key and the image comes without a signature or with one that does
-	/// not verify (issue #35, spec/api.md "Signed runtime images"), or the previous image is still
-	/// being stored (homecontrol #68: nothing was looked at; deploy again when the store is done).
+	/// What kind of failure (spec/runtime-image.md 4): none; refused from the header before the slot
+	/// was touched (format, version, too_large, unsigned_image); refused after it was written (damaged,
+	/// bad_signature, invalid, no_memory, apply: the device has no image afterwards); busy (another
+	/// image is being received: nothing was looked at).
 	enum class Kind : uint8_t {
-		none, syntax, version, invalid, too_large, no_memory, apply, unsigned_image, bad_signature, busy
+		none, format, version, too_large, unsigned_image, damaged, bad_signature, invalid, no_memory, apply, busy
 	};
 
 	Report() = default;
@@ -169,9 +150,17 @@ private:
 	Refusal* more_ = nullptr;
 };
 
-/// "none", "syntax", "version", "invalid", "too large", "no memory", "apply", "unsigned", "bad signature",
-/// "busy".
+/// "none", "format", "version", "too large", "unsigned", "damaged", "bad signature", "invalid",
+/// "no memory", "apply", "busy".
 const char* report_kind_name(Report::Kind kind);
+/// The API's code of a kind: "image.format", "image.version", "image.too_large", "image.unsigned",
+/// "image.damaged", "image.bad_signature", "image.invalid", "image.no_memory", "image.apply_failed",
+/// "image.busy"; "" for none.
+const char* report_kind_code(Report::Kind kind);
+/// The HTTP status of a kind (spec/runtime-image.md 4): 400, 422, 413, 403, 422, 403, 422, 507, 500, 503.
+int report_kind_status(Report::Kind kind);
+/// Whether a refusal of this kind leaves the running image untouched (refused from the header).
+bool report_kind_untouched(Report::Kind kind);
 
 } // namespace image
 } // namespace hc

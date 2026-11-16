@@ -12,6 +12,7 @@
 #include <new>
 #include <utility>
 
+#include "hc/image/binary.h"
 #include "hc/network_settings.h"
 #include "hc/rules/printer.h"
 
@@ -421,24 +422,183 @@ bool Engine::parameter_valid(const Parameter& d, const Val& v) const {
 	return true;
 }
 
-LoadResult Engine::load(const JsonValue& rules, const ScheduleDirectory* schedules, const uint16_t* previous_ids) {
-	flush();
-	RuleSet next;
-	char language[setting::kMaxUiLangLength + 1];
-	read_ui_lang(settings_, language, kTag); // labels in the device's language (spec 2.2)
-	LoadResult result = next.load(rules, model_, schedules, language);
-	if (!result.ok()) {
-		return result;
-	}
-	install(std::move(next), result, previous_ids);
+LoadResult Engine::adopt(RuleSet&& set) {
+	Carry* carry = detach();
+	LoadResult result = adopt(std::move(set), carry);
+	free_carry(carry);
 	return result;
 }
 
-LoadResult Engine::adopt(RuleSet&& set, const uint16_t* previous_ids) {
+LoadResult Engine::adopt(RuleSet&& set, const Carry* carry) {
 	flush();
 	LoadResult result;
-	install(std::move(set), result, previous_ids);
+	install(std::move(set), result, carry);
 	return result;
+}
+
+// ------------------------------------------------------------------------------------------
+// The carry of a swap (spec/runtime-image.md 12): the old rules' runtime by id hashes.
+
+struct Engine::Carry {
+	struct RuleEntry {
+		uint64_t id = 0;         ///< FNV-1a of the rule id.
+		uint64_t state = 0;      ///< Of the current state's id (with has_state).
+		uint64_t trigger_dp = 0; ///< Of the name of the last trigger's datapoint (datapoint, silence).
+		uint64_t action_dp = 0;  ///< Of the name of the last write's or read's datapoint.
+		char state_id[33] = {};
+		uint16_t first_timer = 0;
+		uint16_t first_parameter = 0;
+		uint8_t timer_count = 0;
+		uint8_t parameter_count = 0;
+		bool dropped = false;    ///< Its hash collides with another's: nothing is carried.
+		char* override_text = nullptr; ///< The inhabitant's timeline, canonical (spec 8.7).
+		size_t override_length = 0;
+	};
+	struct Tracked {
+		uint64_t hash; ///< Of the datapoint's name.
+		ChangeRecord record;
+	};
+	// In chunks (Chunks<T>, homecontrol #70): no block of the rules' size beside the new image.
+	Runtime* runtime = nullptr;
+	Chunks<RuleEntry> rules;
+	size_t rule_count = 0;
+	Chunks<uint64_t> timers; ///< Per old timer (global index): the hash of its id.
+	Chunks<uint64_t> params; ///< Per old parameter: the hash of its id.
+	Chunks<Tracked> tracked;
+	size_t tracked_count = 0;
+	size_t bytes = 0;
+
+	~Carry() {
+		for (size_t i = 0; rules && i < rule_count; ++i) {
+			delete[] rules[i].override_text;
+		}
+		rules.release();
+		timers.release();
+		params.release();
+		tracked.release();
+		delete runtime;
+	}
+	int find_rule(uint64_t hash) const {
+		for (size_t i = 0; i < rule_count; ++i) {
+			if (rules[i].id == hash && !rules[i].dropped) {
+				return static_cast<int>(i);
+			}
+		}
+		return -1;
+	}
+	int find_timer(size_t rule, uint64_t hash) const {
+		const RuleEntry& e = rules[rule];
+		for (size_t i = 0; i < e.timer_count; ++i) {
+			if (timers[e.first_timer + i] == hash) {
+				return static_cast<int>(i);
+			}
+		}
+		return -1;
+	}
+	int find_parameter(size_t rule, uint64_t hash) const {
+		const RuleEntry& e = rules[rule];
+		for (size_t i = 0; i < e.parameter_count; ++i) {
+			if (params[e.first_parameter + i] == hash) {
+				return static_cast<int>(i);
+			}
+		}
+		return -1;
+	}
+};
+
+void Engine::free_carry(Carry* carry) {
+	delete carry;
+}
+
+Engine::Carry* Engine::detach() {
+	flush();
+	persist_now();
+	if (runtime_ == nullptr) {
+		set_.clear();
+		return nullptr;
+	}
+	Carry* carry = new (std::nothrow) Carry();
+	if (carry != nullptr) {
+		size_t rules = set_.rule_count();
+		bool ok = carry->rules.allocate(rules, carry->bytes) && carry->timers.allocate(set_.timer_count(), carry->bytes) &&
+			carry->params.allocate(set_.parameter_count(), carry->bytes) &&
+			carry->tracked.allocate(set_.tracked_count(), carry->bytes);
+		if (!ok) {
+			delete carry;
+			carry = nullptr;
+		} else {
+			for (size_t r = 0; r < rules; ++r) {
+				new (&carry->rules[r]) Carry::RuleEntry();
+			}
+		}
+	}
+	if (carry == nullptr) {
+		Log::error(kTag, "no memory to keep the rules' runtime across the swap: timers, states and diagnostics start anew");
+	} else {
+		carry->rule_count = set_.rule_count();
+		auto name_hash = [this](uint16_t id) -> uint64_t {
+			const Datapoint* dp = model_.get(id);
+			return dp != nullptr ? image::bin::fnv1a(dp->name()) : 0;
+		};
+		for (size_t r = 0; r < carry->rule_count; ++r) {
+			const Rule& rule = set_.rule(r);
+			const RuleRuntime& rr = runtime_->rules[r];
+			Carry::RuleEntry& e = carry->rules[r];
+			e.id = image::bin::fnv1a(set_.str(rule.id));
+			for (size_t q = 0; q < r; ++q) {
+				if (carry->rules[q].id == e.id) {
+					Log::warn(kTag, "swap: rules '%s' and '%s' share the hash 0x%016" PRIx64 "; their runtime is not carried",
+						set_.str(set_.rule(q).id), set_.str(rule.id), e.id);
+					carry->rules[q].dropped = true;
+					e.dropped = true;
+				}
+			}
+			if (rr.has_state) {
+				const char* state_id = set_.str(set_.state(rule.first_state + rr.state).id);
+				e.state = image::bin::fnv1a(state_id);
+				std::snprintf(e.state_id, sizeof(e.state_id), "%s", state_id);
+			}
+			if (rr.last_trigger_kind == static_cast<uint8_t>(TriggerKind::datapoint) ||
+				rr.last_trigger_kind == static_cast<uint8_t>(TriggerKind::silence)) {
+				e.trigger_dp = name_hash(rr.last_trigger_ref);
+			}
+			if (rr.last_action_kind == static_cast<uint8_t>(ActionKind::write) ||
+				rr.last_action_kind == static_cast<uint8_t>(ActionKind::read)) {
+				e.action_dp = name_hash(rr.last_action_target);
+			}
+			e.first_timer = rule.first_timer;
+			e.first_parameter = rule.first_parameter;
+			e.timer_count = rule.timer_count;
+			e.parameter_count = rule.parameter_count;
+			for (size_t t = 0; t < rule.timer_count; ++t) {
+				carry->timers[rule.first_timer + t] = image::bin::fnv1a(set_.str(set_.timer(rule.first_timer + t).id));
+			}
+			for (size_t q = 0; q < rule.parameter_count; ++q) {
+				carry->params[rule.first_parameter + q] =
+					image::bin::fnv1a(set_.str(set_.parameter(rule.first_parameter + q).id));
+			}
+			if (runtime_->overrides != nullptr && !runtime_->overrides[r].empty()) {
+				RuleSetStates states(set_, r);
+				e.override_text = runtime_->overrides[r].canonical_text(states, e.override_length);
+			}
+		}
+		carry->tracked_count = set_.tracked_count();
+		for (size_t i = 0; i < carry->tracked_count; ++i) {
+			carry->tracked[i].hash = name_hash(set_.tracked(i));
+			carry->tracked[i].record = runtime_->changes[i];
+		}
+		carry->runtime = runtime_;
+		runtime_ = nullptr;
+	}
+	delete runtime_;
+	runtime_ = nullptr;
+	set_.clear();
+	if (loop_timer_.valid()) {
+		loop_.cancel(loop_timer_);
+		loop_timer_ = TimerHandle();
+	}
+	loop_deadline_ = 0;
+	return carry;
 }
 
 namespace {
@@ -456,7 +616,7 @@ private:
 
 } // namespace
 
-bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* previous_ids) {
+bool Engine::install(RuleSet&& next_set, LoadResult& result, const Carry* carry) {
 	RuleSet next = std::move(next_set);
 	persist_now(); // the delayed writes of the old rules (states, timelines) before anything moves
 	size_t rules = next.rule_count();
@@ -543,9 +703,25 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 		new (&rt->silences[i]) SilenceRuntime();
 	}
 
-	Runtime* old = runtime_;
-	const RuleSet& old_set = set_;
+	if (runtime_ != nullptr) {
+		// Not detached (the image service always is): the current runtime does not follow.
+		delete runtime_;
+		runtime_ = nullptr;
+	}
+	const Runtime* old = carry != nullptr ? carry->runtime : nullptr;
 	bool boot = !booted_;
+	// The new model's datapoint of a name hash (the diagnostics' last trigger and write follow it).
+	auto follow = [this](uint64_t hash, bool& found) -> uint16_t {
+		for (size_t id = 0; hash != 0 && id < model_.size(); ++id) {
+			const Datapoint* dp = model_.get(static_cast<uint16_t>(id));
+			if (dp != nullptr && image::bin::fnv1a(dp->name()) == hash) {
+				found = true;
+				return static_cast<uint16_t>(id);
+			}
+		}
+		found = false;
+		return 0;
+	};
 	size_t timeline_points = 0; // the effective timelines so far, in rule order (spec 10.2)
 	size_t timeline_plans = 0;
 	bool timelines_dirty = false;
@@ -555,12 +731,12 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 		const Rule& rule = next.rule(r);
 		const char* rule_id = next.str(rule.id);
 		RuleRuntime& nr = rt->rules[r];
-		int o = old ? old_set.find_rule(rule_id) : -1;
+		int o = old ? carry->find_rule(image::bin::fnv1a(rule_id)) : -1;
 		for (size_t t = 0; t < rule.timer_count; ++t) {
 			rt->timers[rule.first_timer + t].rule = static_cast<uint8_t>(r);
 		}
 		if (o >= 0) {
-			const Rule& old_rule = old_set.rule(static_cast<size_t>(o));
+			const Carry::RuleEntry& old_rule = carry->rules[o];
 			const RuleRuntime& orr = old->rules[o];
 			nr = orr;
 			nr.state = kNoState;
@@ -570,39 +746,28 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 			nr.next_valid = false;
 			nr.state_datapoint = kNone;
 			nr.timeline_dirty = false;
-			if (previous_ids != nullptr) {
-				// The model was replaced: follow the datapoint of the last trigger and the last write
-				// to its new id; forget it when the datapoint is gone.
-				auto follow = [&](uint16_t old_id, bool& found) {
-					for (size_t id = 0; id < model_.size(); ++id) {
-						if (previous_ids[id] == old_id) {
-							found = true;
-							return static_cast<uint16_t>(id);
-						}
-					}
-					found = false;
-					return old_id;
-				};
-				bool found = false;
-				if (orr.last_trigger_kind == static_cast<uint8_t>(TriggerKind::datapoint)) {
-					nr.last_trigger_ref = follow(orr.last_trigger_ref, found);
-					if (!found) {
-						nr.last_trigger_kind = kNoKind;
-					}
-				}
-				if (orr.last_action_kind == static_cast<uint8_t>(ActionKind::write) ||
-					orr.last_action_kind == static_cast<uint8_t>(ActionKind::read)) {
-					nr.last_action_target = follow(orr.last_action_target, found);
-					if (!found) {
-						nr.last_action_kind = kNoKind;
-					}
+			// The model was replaced: follow the datapoint of the last trigger and the last write to its
+			// new id; forget it when the datapoint is gone.
+			bool found = false;
+			if (orr.last_trigger_kind == static_cast<uint8_t>(TriggerKind::datapoint) ||
+				orr.last_trigger_kind == static_cast<uint8_t>(TriggerKind::silence)) {
+				nr.last_trigger_ref = follow(old_rule.trigger_dp, found);
+				if (!found) {
+					nr.last_trigger_kind = kNoKind;
 				}
 			}
-			// Without previous_ids the model stayed: datapoint ids are valid. Other references are by
-			// index of the old set.
+			if (orr.last_action_kind == static_cast<uint8_t>(ActionKind::write) ||
+				orr.last_action_kind == static_cast<uint8_t>(ActionKind::read)) {
+				nr.last_action_target = follow(old_rule.action_dp, found);
+				if (!found) {
+					nr.last_action_kind = kNoKind;
+				}
+			}
+			// Other references are by index of the old set.
 			if (orr.last_trigger_kind == kTimelineKind) {
 				nr.last_trigger_kind = kNoKind; // a state index of the old set
 			} else if (orr.last_trigger_kind != kNoKind && orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::datapoint) &&
+				orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::silence) &&
 				orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::start) &&
 				orr.last_trigger_kind != static_cast<uint8_t>(TriggerKind::match)) {
 				nr.last_trigger_kind = kNoKind; // timer/parameter/schedule indices of the old set
@@ -613,20 +778,25 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 				nr.last_action_kind = kNoKind;
 			}
 			if (orr.has_state) {
-				const char* state_id = old_set.str(old_set.state(old_rule.first_state + orr.state).id);
-				int s = next.find_state(r, state_id);
+				int s = -1;
+				for (size_t k = 0; k < rule.state_count && s < 0; ++k) {
+					if (image::bin::fnv1a(next.str(next.state(rule.first_state + k).id)) == old_rule.state) {
+						s = static_cast<int>(k);
+					}
+				}
 				if (s >= 0) {
 					nr.state = static_cast<uint8_t>(s);
 					nr.has_state = true;
 				} else {
-					char text[96];
+					char text[160];
 					std::snprintf(text, sizeof(text), "state '%s' is not in the new image; the rule enters its initial state",
-						state_id);
+						old_rule.state_id);
 					log_code(rule_id, &nr, LogCode::state_reset, LogLevel::warn, "state not in the new image", text);
 				}
 			}
 			for (size_t t = 0; t < rule.timer_count; ++t) {
-				int ot = old_set.find_timer(static_cast<size_t>(o), next.str(next.timer(rule.first_timer + t).id));
+				int ot = carry->find_timer(static_cast<size_t>(o),
+					image::bin::fnv1a(next.str(next.timer(rule.first_timer + t).id)));
 				if (ot >= 0 && old->timers[old_rule.first_timer + ot].running) {
 					TimerRuntime& nt = rt->timers[rule.first_timer + t];
 					const TimerRuntime& otr = old->timers[old_rule.first_timer + ot];
@@ -668,8 +838,8 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 			Val override_value;
 			bool has_override = false;
 			if (o >= 0) {
-				const Rule& old_rule = old_set.rule(static_cast<size_t>(o));
-				int op = old_set.find_parameter(static_cast<size_t>(o), param_id);
+				const Carry::RuleEntry& old_rule = carry->rules[o];
+				int op = carry->find_parameter(static_cast<size_t>(o), image::bin::fnv1a(param_id));
 				if (op >= 0 && old->params[old_rule.first_parameter + op].overridden) {
 					override_value = old->params[old_rule.first_parameter + op].value;
 					has_override = true;
@@ -713,10 +883,13 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 		char* text = nullptr;
 		size_t length = 0;
 		bool had = false;
-		if (o >= 0 && old->overrides != nullptr && !old->overrides[o].empty()) {
-			RuleSetStates old_states(old_set, static_cast<size_t>(o));
-			text = old->overrides[o].canonical_text(old_states, length);
-			had = true;
+		if (o >= 0 && carry->rules[o].override_text != nullptr) {
+			length = carry->rules[o].override_length;
+			text = new (std::nothrow) char[length + 1];
+			if (text != nullptr) {
+				std::memcpy(text, carry->rules[o].override_text, length + 1);
+				had = true;
+			}
 		} else if (o < 0 && boot) {
 			text = read_timeline_blob(rule_id, length);
 			had = text != nullptr;
@@ -741,10 +914,16 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	// Change tracking continues for datapoints still tracked; new ones start from the model.
 	for (size_t i = 0; i < tracked; ++i) {
 		uint16_t id = next.tracked(i);
-		uint16_t previous = previous_ids != nullptr ? previous_ids[id] : id;
-		uint16_t old_index = (old && previous != kNone) ? old_set.find_tracked(previous) : kNone;
-		if (old_index != kNone) {
-			rt->changes[i] = old->changes[old_index];
+		const Datapoint* tracked_dp = model_.get(id);
+		uint64_t hash = tracked_dp != nullptr ? image::bin::fnv1a(tracked_dp->name()) : 0;
+		size_t old_index = SIZE_MAX;
+		for (size_t k = 0; carry != nullptr && k < carry->tracked_count && old_index == SIZE_MAX; ++k) {
+			if (carry->tracked[k].hash == hash) {
+				old_index = k;
+			}
+		}
+		if (old_index != SIZE_MAX) {
+			rt->changes[i] = carry->tracked[old_index].record;
 		} else {
 			const Datapoint* dp = model_.get(id);
 			if (dp && dp->quality() != Quality::unknown) {
@@ -775,7 +954,6 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const uint16_t* pre
 	}
 
 	// Swap.
-	delete old;
 	set_ = std::move(next);
 	runtime_ = rt;
 	booted_ = true;
@@ -1750,7 +1928,8 @@ bool Engine::trigger_matches(const Trigger& t, size_t rule, const Event& e) cons
 		case TriggerKind::timer: return e.kind == kTimer && e.a == rule && e.b == t.ref;
 		case TriggerKind::start: return e.kind == kStart && e.a == rule && (t.flags & e.flags) != 0;
 		case TriggerKind::parameter: return e.kind == kParameter && e.a == rule && e.b == t.ref;
-		case TriggerKind::silence: return e.kind == kSilence && e.a == t.ref;
+		case TriggerKind::silence:
+			return e.kind == kSilence && e.a < set_.silence_count() && &set_.trigger(set_.silence(e.a).trigger) == &t;
 	}
 	return false;
 }
@@ -2135,10 +2314,11 @@ void Engine::action_log(size_t rule, const Action& action) {
 			++total;
 		}
 	};
-	for (size_t i = 0; i < action.expr; ++i) {
+	for (size_t i = 0; i < action.count; ++i) {
 		const LogPart& part = set_.log_part(action.target + i);
 		if (part.expr == kNone) {
-			append(set_.str(part.text), part.length);
+			const char* text = set_.str(part.text);
+			append(text, std::strlen(text));
 		} else {
 			bool error = false;
 			Val v = evaluate(part.expr, rule, error);
@@ -2848,7 +3028,7 @@ bool Engine::diagnostics(size_t rule, RuleDiagnostics& out) const {
 	const RuleRuntime& rr = runtime_->rules[rule];
 	out = RuleDiagnostics{};
 	out.id = set_.str(r.id);
-	out.name = set_.str(r.name);
+	out.name = set_.label(r.name);
 	out.enabled = enabled(rule);
 	out.firings = rr.firings;
 	out.errors = rr.errors;
@@ -2891,9 +3071,7 @@ bool Engine::diagnostics(size_t rule, RuleDiagnostics& out) const {
 					set_.str(set_.parameter(r.first_parameter + rr.last_trigger_ref).id));
 				break;
 			case TriggerKind::silence: {
-				const Datapoint* dp = rr.last_trigger_ref < set_.silence_count()
-					? model_.get(set_.silence(rr.last_trigger_ref).datapoint)
-					: nullptr;
+				const Datapoint* dp = model_.get(rr.last_trigger_ref);
 				std::snprintf(out.last_trigger, sizeof(out.last_trigger), "silence %s", dp ? dp->name() : "?");
 				break;
 			}

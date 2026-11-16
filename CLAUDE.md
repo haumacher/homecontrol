@@ -28,7 +28,8 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   "Monitor"), the rule interpreter (`hc::rules`, `doc/rules.md`), the blocks (`hc::blocks`: the
   block type interface and registry, the loader of the image's `blocks`, the runtime the rule engine
   calls inside its cascades, the room controller; `spec/blocks.md`, `doc/blocks.md`), the runtime image (`hc::image`:
-  `Loader`, `ImageService`, `ImageStore`, the RAM stand-in `MemoryBlobStore`, dynamic datapoints of
+  the binary image read in place `bin::View`, its `validator`, the `Loader` of its plan, `ImageService` over
+  the platform's `ImageSlot` (RAM `MemoryImageSlot`), the RAM stand-in `MemoryBlobStore`, dynamic datapoints of
   providers such as the Zigbee adapter through `DynamicSpecProvider`; `doc/image.md`), the Zigbee
   adapter (`hc::zigbee`: `ZigbeeAdapter`, `DeviceDatabase`, the cluster mapping, over the platform's
   `ZigbeeDriver`; `doc/zigbee.md`), external values from HTTP JSON sources (`ExternalValues`,
@@ -128,8 +129,9 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   directory (the reset sequence of `idf.py flash` fails on this board; put it into download mode
   with BOOT held during RESET): `cd platform/esp/build-esp32c6 && esptool.py --chip esp32c6 --port
   $(readlink -f /dev/serial/by-id/*E8:F6:0A:F8:83:EC*) --before no_reset --after hard_reset write_flash @flash_args` (bootloader, table,
-  updater, application at 0x100000, otadata, `storage.bin`, an empty LittleFS image of the storage
-  partition, which wipes the saved state; `@app-flash_args` writes only the application). Watch with
+  updater, application at 0xf0000, `image-empty.bin` (one erased sector at the `image` partition: no
+  runtime image), otadata, `storage.bin`, an empty LittleFS image of the storage partition, which wipes
+  the saved state; `@app-flash_args` writes only the application). Watch with
   `idf.py -B build-esp32c6 -p <the C6's node> monitor` (exit with Ctrl-]). OTA updates during
   development: `scripts/update-server.py` and the console's `update now` (`doc/ota.md`).
 - **Run on the host**: `build/homecontrol [--settings <file>] [--http <port>] [--demo]` (default

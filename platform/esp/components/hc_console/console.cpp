@@ -541,7 +541,7 @@ void erase_partition(const char* label) {
 
 int cmd_factory(ConsoleContext& c, int argc, char** argv) {
 	if (argc != 3 || std::strcmp(argv[1], "reset") != 0 || std::strcmp(argv[2], "yes") != 0) {
-		return usage("factory reset yes   (erases the settings with the WiFi credentials, the stored runtime image and "
+		return usage("factory reset yes   (erases the settings with the WiFi credentials, the runtime image and "
 			"its state, the Zigbee network; then restarts)");
 	}
 	factory_reset_and_restart(c.blobs, "on the console");
@@ -567,7 +567,7 @@ const Command kCommands[] = {
 	{"system", "settings", "list", "All stored settings (wifi.psk masked)", &cmd_settings},
 	{"system", "restart", nullptr, "Restart the controller", &cmd_restart},
 	{"system", "factory", "reset yes",
-		"Erase the settings (WiFi credentials included), the stored runtime image and its state, and the Zigbee "
+		"Erase the settings (WiFi credentials included), the runtime image and its state, and the Zigbee "
 		"network, then restart",
 		&cmd_factory},
 	{"network", "wifi", "wps | set <ssid> [<psk>] | clear | status | ps [none|min|max]",
@@ -868,6 +868,15 @@ void factory_reset_and_restart(BlobStore* blobs, const char* origin) {
 		std::printf("state      %u blob(s) removed%s\n", removed, failed != 0 ? ", some could not be removed" : "");
 	} else {
 		std::printf("state      kept: no blob store in this build\n");
+	}
+	// The runtime image (issue #87): its first sector erased, the slot holds no image (the magic reads
+	// FF FF FF FF, spec/runtime-image.md 7). One sector, not the whole slot, so the loop is not held
+	// for the erase of 512 KB; nothing reads past a missing header.
+	const esp_partition_t* slot = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+		static_cast<esp_partition_subtype_t>(0x40), "image");
+	if (slot != nullptr) {
+		esp_err_t erased = esp_partition_erase_range(slot, 0, 4096);
+		std::printf("image      %s\n", erased == ESP_OK ? "erased" : esp_err_to_name(erased));
 	}
 	erase_partition("zb_storage"); // the Zigbee stack's NVRAM: raw
 	if (esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, "zb_db") != nullptr) {

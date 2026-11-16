@@ -97,7 +97,6 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/scheduler_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/scheduler_adjust_test.cpp"
 	"${HC_REPO_DIR}/core/test/scheduler_astro_test.cpp"
-	"${HC_REPO_DIR}/core/test/image_body_test.cpp"
 	"${HC_REPO_DIR}/core/test/scheduler_adjust_probe_test.cpp"
 	test/file_settings_test.cpp
 	test/posix_platform_test.cpp
@@ -168,6 +167,11 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/history_archive_test.cpp" # consolidated archives (#56)
 	"${HC_REPO_DIR}/core/test/restore_probe_test.cpp"
 )
+# The test-only image compiler (issue #87): the JSON source form into the binary runtime image.
+target_sources(hc_tests PRIVATE
+	"${HC_REPO_DIR}/core/test/image_compiler.cpp"
+	"${HC_REPO_DIR}/core/test/image_compiler_test.cpp"
+)
 # The rule interpreter's tests (the corpus spec/fixtures/rules is read at run time).
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/rules_corpus_test.cpp"
@@ -183,15 +187,15 @@ target_sources(hc_tests PRIVATE
 )
 # The runtime image (issue #8, spec/runtime-image.md; the fixtures spec/fixtures/images are read at run time).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_test.cpp")
-# The image's store off the loop (issue #68).
-target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_store_async_test.cpp")
-# The largest image the device stores and loads again (issue #52).
-target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_storable_test.cpp")
+# Probe: every accepted image is safe to use in place (issue #87, spec/runtime-image.md I7).
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_probe_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/storage_stats_test.cpp")
 # The control pages of the image (issue #54, schema 1.1).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/pages_test.cpp")
 # The BlobStore on files (issue #21, doc/persistence.md).
 target_sources(hc_posix PRIVATE src/file_blob_store.cpp)
+# The image slot in a file (issue #87, spec/runtime-image.md 7).
+target_sources(hc_posix PRIVATE src/file_image_slot.cpp)
 target_sources(hc_tests PRIVATE test/file_blob_store_test.cpp)
 target_sources(hc_tests PRIVATE test/blob_store_probe_test.cpp)
 # External values (issue #17, doc/external.md): the core's tests, and the HTTP fetcher on cpp-httplib in
@@ -276,3 +280,4 @@ target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/streaming_probe_test.c
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/memory_probe_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/swap_memory_test.cpp")
 target_sources(hc_tests PRIVATE test/posix_system_info_test.cpp)
+

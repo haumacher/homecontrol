@@ -3,26 +3,29 @@
  */
 // The E-Home connection (issue #41, spec/api.md "E-Home connection", doc/ehome.md): the enrollment
 // through a fake HTTP fetcher, the socket against a fake E-Home server behind a fake WebSocket
-// client, the E-Home principal, the status.
+// client, the E-Home principal, the status; the binary runtime image over the socket (issue #87:
+// `length` and binary frames written into the image slot as they arrive, its signature inside).
 
 #include <functional>
 #include <string>
 #include <vector>
 
 #include "doctest.h"
-#include "fake_image_staging.h"
 #include "fake_worker.h"
+#include "hc/image/binary.h"
 #include "hc/image/image.h"
 #include "fake_blob_store.h"
 #include "fake_fetch.h"
 #include "hc/ehome_link.h"
 #include "hc/image/image_service.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
 #include "hc/live_feed.h"
 #include "hc/sha.h"
 #include "hc/signature.h"
 #include "hc/websocket.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "web_test_support.h"
@@ -218,6 +221,24 @@ std::string image_fixture(const std::string& name) {
 	return text;
 }
 
+/// The source `json` compiled into the binary image, signed with the seed `seed_hex` (nullptr:
+/// unsigned), as the bytes E-Home sends.
+std::string compiled_text(const std::string& json, const char* seed_hex = nullptr) {
+	hc::test::CompileOptions options;
+	uint8_t seed[32];
+	if (seed_hex != nullptr) {
+		REQUIRE(hc::from_hex(seed_hex, seed, sizeof(seed)));
+		options.sign_seed = seed;
+	}
+	std::vector<uint8_t> bytes = hc_test::compiled(json, options);
+	return std::string(bytes.begin(), bytes.end());
+}
+
+/// The fixture `name` (spec/fixtures/images) compiled, signed with `seed_hex` (nullptr: unsigned).
+std::string compiled_fixture(const std::string& name, const char* seed_hex = nullptr) {
+	return compiled_text(image_fixture(name), seed_hex);
+}
+
 struct EhomeFixture : WebFixture {
 	hc_test::ScopedCapture capture{hc::LogLevel::debug};
 	hc_test::FakeTransport transport;
@@ -226,7 +247,8 @@ struct EhomeFixture : WebFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel};
 	hc_test::FakeBlobStore blobs;
-	hc::image::ImageService service{controller, model, blobs, adapter, &tunnel};
+	hc::image::MemoryImageSlot slot;
+	hc::image::ImageService service{controller, model, blobs, slot, adapter, &tunnel};
 	FakeWsClient client;
 	FakeFetcher fetcher;
 	EhomeLink link{api, feed, client, fetcher};
@@ -279,7 +301,11 @@ struct EhomeFixture : WebFixture {
 		REQUIRE(auth.size() >= 1);
 		CHECK(auth.back()["controller"].text == "c-17");
 		CHECK(auth.back()["mac"].text == kMac);
-		CHECK(auth.back()["schema"].text == hc::image::schema_version_text()); // the newest schema it reads
+		// The newest image format it reads and its slot (issue #87), what runs.
+		CHECK(auth.back()["format"].text == hc::image::bin::format_text());
+		CHECK(auth.back()["slot"].number == hc::image::MemoryImageSlot::kDefaultSize);
+		CHECK_FALSE(auth.back().has("schema"));
+		CHECK(auth.back()["image"]["loaded"].boolean == service.loaded());
 		client.deliver("{\"type\":\"ready\",\"installation\":\"Example House\"}");
 		REQUIRE(link.state() == EhomeState::connected);
 	}
@@ -394,8 +420,8 @@ TEST_CASE("E-Home: the full exchange — challenge, auth, ready, the feed, a req
 	CHECK(q["status"].number == 200);
 	CHECK(q["body"]["from"].number == 0);
 
-	// PUT /api/image with `length` and binary frames.
-	std::string image = image_fixture("example.json");
+	// PUT /api/image with `length` and binary frames, written into the slot as they arrive.
+	std::string image = compiled_fixture("example.json");
 	REQUIRE(image.size() > hc::WebSocketClient::kMaxText);
 	f.client.deliver("{\"type\":\"request\",\"id\":8,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
 		std::to_string(image.size()) + "}");
@@ -405,8 +431,11 @@ TEST_CASE("E-Home: the full exchange — challenge, auth, ready, the feed, a req
 	f.client.deliver_binary(image, 1024);
 	Json loaded = f.response(8);
 	CHECK(loaded["status"].number == 200);
+	CHECK(loaded["body"]["image"]["revision"].number == 7);
 	CHECK(f.service.loaded());
 	CHECK(f.capture.sink.contains("PUT /api/image from E-Home"));
+	CHECK(f.capture.sink.contains("receiving " + std::to_string(image.size()) + " bytes into the image slot"));
+	CHECK(std::memcmp(f.slot.bytes(), image.data(), image.size()) == 0);
 
 	// GET /api/image comes back as a header and binary frames, a piece per loop turn.
 	f.client.deliver("{\"type\":\"request\",\"id\":9,\"method\":\"GET\",\"path\":\"/api/image\"}");
@@ -495,7 +524,7 @@ TEST_CASE("E-Home: ehome.enabled false closes at once and never reconnects") {
 TEST_CASE("E-Home: a second request before the response is refused 429 ehome.busy") {
 	EhomeFixture f;
 	f.handshake();
-	std::string image = image_fixture("example.json");
+	std::string image = compiled_fixture("example.json");
 	f.client.deliver("{\"type\":\"request\",\"id\":1,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
 		std::to_string(image.size()) + "}");
 	f.client.deliver("{\"type\":\"request\",\"id\":2,\"method\":\"GET\",\"path\":\"/api/status\"}");
@@ -745,47 +774,208 @@ TEST_CASE("E-Home: a body longer than the route takes is refused 413 and its fra
 	CHECK(f.link.state() == EhomeState::failed);
 }
 
-TEST_CASE("E-Home: an image larger than the staging area is refused 413 naming the limit, its frames dropped (#52)") {
+TEST_CASE("E-Home: an image larger than the slot is refused 413 image.too_large naming the slot, its frames dropped") {
 	EhomeFixture f;
-	hc_test::FakeImageStaging staging;
-	staging.capacity_bytes = 126976;
-	f.service.set_staging(&staging);
 	f.handshake();
 	f.client.deliver("{\"type\":\"request\",\"id\":1,\"method\":\"PUT\",\"path\":\"/api/image\","
-		"\"length\":130000}");
+		"\"length\":600000}");
 	CHECK(f.response(1)["status"].number == 413);
-	CHECK(f.response(1)["body"]["code"].text == "api.body_too_large");
-	CHECK(f.response(1)["body"]["error"].text ==
-		"the image has 130000 bytes; the device receives at most 126975 (its staging area)");
-	CHECK(f.capture.sink.contains("the image has 130000 bytes; the device receives at most 126975 (its staging area)"));
-	CHECK(staging.begins == 0); // nothing was staged
-	f.client.deliver_binary(std::string(130000, 'x'), 4096);
+	CHECK(f.response(1)["body"]["code"].text == "image.too_large");
+	CHECK(f.response(1)["body"]["error"].text == "the image has 600000 bytes; the device holds at most 524288 (its image slot)");
+	CHECK(f.capture.sink.contains("the image has 600000 bytes; the device holds at most 524288 (its image slot)"));
+	CHECK(f.slot.erased_sectors() == 0); // nothing was written
+	f.client.deliver_binary(std::string(600000, 'x'), 4096);
 	CHECK(f.link.state() == EhomeState::connected);
 	f.client.deliver("{\"type\":\"request\",\"id\":2,\"method\":\"GET\",\"path\":\"/api/status\"}");
 	CHECK(f.response(2)["status"].number == 200);
-	CHECK(f.response(2)["body"]["image"]["storable"].number > 0);
-	f.service.set_staging(nullptr);
+	CHECK(f.response(2)["body"]["image"]["slot"].number == 524288);
+	CHECK_FALSE(f.response(2)["body"]["image"].has("storable"));
+}
+
+TEST_CASE("E-Home: a refusal from the image's header is answered at once, the rest of the body dropped, the running image stays") {
+	EhomeFixture f;
+	f.handshake();
+	std::string minimal = compiled_fixture("minimal.json");
+	f.client.deliver("{\"type\":\"request\",\"id\":1,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(minimal.size()) + "}");
+	f.client.deliver_binary(minimal, 1024);
+	REQUIRE(f.response(1)["status"].number == 200);
+	// A JSON text (the source form) instead of the binary image: refused when its first 32 bytes are
+	// in, before the slot is touched; the frames after it are dropped.
+	std::string json = image_fixture("example.json");
+	REQUIRE(json.size() > 3000);
+	f.client.deliver("{\"type\":\"request\",\"id\":2,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(json.size()) + "}");
+	f.client.deliver_binary(json.substr(0, 1000), 1000);
+	Json r = f.response(2);
+	CHECK(r["status"].number == 400); // answered before the last byte
+	CHECK(r["body"]["code"].text == "image.format");
+	CHECK(r["body"]["refusals"].items[0]["path"].text == "header.magic");
+	CHECK(r["body"]["refusals"].items[0]["reason"].text.find("a JSON text (E-Home compiles the image; send the binary form)") !=
+		std::string::npos);
+	CHECK(r["body"]["loaded"].boolean);
+	f.client.deliver_binary(json.substr(1000), 1024); // dropped
+	CHECK(f.link.state() == EhomeState::connected);
+	CHECK(f.service.loaded());
+	CHECK(std::string(f.service.info().project_id) == "minimal");
+	CHECK(std::memcmp(f.slot.bytes(), minimal.data(), minimal.size()) == 0);
+	// A header in two frames (the first shorter than the header): the refusal waits for all 32 bytes.
+	std::vector<uint8_t> major(minimal.begin(), minimal.end());
+	major[4] = 2;
+	std::string newer(major.begin(), major.end());
+	f.client.deliver("{\"type\":\"request\",\"id\":3,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(newer.size()) + "}");
+	f.client.deliver_binary(newer.substr(0, 10), 10);
+	CHECK_FALSE(f.response(3).has("status"));
+	f.client.deliver_binary(newer.substr(10), 1024);
+	CHECK(f.response(3)["status"].number == 422);
+	CHECK(f.response(3)["body"]["code"].text == "image.version");
+	CHECK(f.service.loaded());
+	f.client.deliver("{\"type\":\"request\",\"id\":4,\"method\":\"GET\",\"path\":\"/api/status\"}");
+	CHECK(f.response(4)["status"].number == 200);
+}
+
+TEST_CASE("E-Home: PUT /api/image with an inline body or the former signature member is refused 400 image.bad_request") {
+	EhomeFixture f;
+	f.handshake();
+	const char* text = "the image is binary: it is sent with length and binary frames, its signature inside";
+	// Inline: the body would be parsed JSON, not the image's bytes.
+	f.client.deliver("{\"type\":\"request\",\"id\":1,\"method\":\"PUT\",\"path\":\"/api/image\",\"body\":" +
+		image_fixture("minimal.json") + "}");
+	CHECK(f.response(1)["status"].number == 400);
+	CHECK(f.response(1)["body"]["code"].text == "image.bad_request");
+	CHECK(f.response(1)["body"]["error"].text == text);
+	CHECK_FALSE(f.service.loaded());
+	// `signature` beside `length`: refused, the announced frames dropped, the link stays.
+	std::string minimal = compiled_fixture("minimal.json");
+	f.client.deliver("{\"type\":\"request\",\"id\":2,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(minimal.size()) + ",\"signature\":\"" + std::string(128, 'a') + "\"}");
+	CHECK(f.response(2)["status"].number == 400);
+	CHECK(f.response(2)["body"]["code"].text == "image.bad_request");
+	CHECK(f.response(2)["body"]["error"].text == text);
+	f.client.deliver_binary(minimal, 1024);
+	CHECK(f.link.state() == EhomeState::connected);
+	CHECK_FALSE(f.service.loaded());
+	CHECK(f.slot.erased_sectors() == 0);
+	// The same image with `length` alone goes in.
+	f.client.deliver("{\"type\":\"request\",\"id\":3,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(minimal.size()) + "}");
+	f.client.deliver_binary(minimal, 1024);
+	CHECK(f.response(3)["status"].number == 200);
+	CHECK(f.service.loaded());
+}
+
+TEST_CASE("E-Home: a body other than the image above 4 KB arrives whole (a timeline PUT)") {
+	EhomeFixture f;
+	REQUIRE_MESSAGE(hc_test::deploy(f.service, image_fixture("heating-timeline.json")), hc_test::describe(f.service.report()));
+	f.handshake();
+	std::string body = R"({"timeline": {"plans": [{"id": "every", "label": "Every day", "points": [)"
+		R"({"time": {"hour": 6, "minute": 0, "second": 0}, "state": "comfort"},)" + std::string(5000, ' ') +
+		R"({"time": {"hour": 21, "minute": 30, "second": 0}, "state": "night"}]}], "assignments": [{"plan": "every"}]}})";
+	REQUIRE(body.size() > hc::WebSocketClient::kMaxText);
+	f.client.deliver("{\"type\":\"request\",\"id\":1,\"method\":\"PUT\",\"path\":\"/api/rules/heating/timeline\","
+		"\"length\":" + std::to_string(body.size()) + "}");
+	CHECK(f.capture.sink.contains("receiving " + std::to_string(body.size()) + " bytes"));
+	CHECK_FALSE(f.capture.sink.contains("bytes into the image slot"));
+	f.client.deliver_binary(body, 1024);
+	Json r = f.response(1);
+	REQUIRE_MESSAGE(r["status"].number == 200, r["body"]["error"].text);
+	auto timeline = f.get("/api/rules/heating/timeline", f.cookie);
+	REQUIRE(timeline.status == 200);
+	CHECK(timeline.json["overridden"].boolean);
+	REQUIRE(timeline.json["plans"].items.size() == 1);
+	REQUIRE(timeline.json["plans"].items[0]["points"].items.size() == 2);
+	CHECK(timeline.json["plans"].items[0]["points"].items[1]["time"]["hour"].number == 21);
+	CHECK(timeline.json["plans"].items[0]["points"].items[1]["state"].text == "night");
+	CHECK(f.service.loaded()); // the image was not touched
 }
 
 TEST_CASE("E-Home: a body whose frames stop is reported once with the bytes received") {
 	EhomeFixture f;
 	f.handshake();
+	std::string image = compiled_fixture("example.json");
+	std::string length = std::to_string(image.size());
 	f.client.deliver("{\"type\":\"request\",\"id\":1,\"method\":\"PUT\",\"path\":\"/api/image\","
-		"\"length\":3000}");
-	REQUIRE(f.capture.sink.contains("receiving 3000 bytes"));
-	f.client.deliver_binary(std::string(1000, ' '), 1000);
+		"\"length\":" + length + "}");
+	REQUIRE(f.capture.sink.contains("receiving " + length + " bytes"));
+	f.client.deliver_binary(image.substr(0, 1000), 1000);
 	f.advance(EhomeLink::kBodyStallMs - 1000);
 	CHECK_FALSE(f.capture.sink.contains("the body stalls"));
 	f.advance(2000);
-	CHECK(f.capture.sink.contains("request 1 /api/image: the body stalls at 1000 of 3000 bytes"));
+	CHECK(f.capture.sink.contains("request 1 /api/image: the body stalls at 1000 of " + length + " bytes"));
 	f.advance(2000);
 	CHECK(f.capture.sink.count("the body stalls") == 1);
 }
 
+TEST_CASE("E-Home: a connection lost mid-body leaves no image; the next session deploys again") {
+	EhomeFixture f;
+	f.handshake();
+	std::string minimal = compiled_fixture("minimal.json");
+	f.client.deliver("{\"type\":\"request\",\"id\":1,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(minimal.size()) + "}");
+	f.client.deliver_binary(minimal, 1024);
+	REQUIRE(f.response(1)["status"].number == 200);
+	// The next image breaks off after 4096 bytes: the slot was erased for it, so no image afterwards
+	// (spec/runtime-image.md I9), reported as image.format with the bytes received.
+	std::string image = compiled_fixture("example.json");
+	REQUIRE(image.size() > 4096);
+	f.client.deliver("{\"type\":\"request\",\"id\":2,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(image.size()) + "}");
+	f.client.deliver_binary(image.substr(0, 4096), 1024);
+	CHECK(f.service.receiving());
+	f.client.drop("connection reset");
+	CHECK_FALSE(f.service.receiving());
+	CHECK_FALSE(f.service.loaded());
+	CHECK(f.service.report().kind == hc::image::Report::Kind::format);
+	REQUIRE(f.service.report().count == 1);
+	CHECK(std::string(f.service.report().refusals[0].reason) ==
+		"the header says " + std::to_string(image.size()) + " bytes, the body has 4096");
+	CHECK(f.service.swap_kept()); // the values wait for the deployment E-Home sends again
+	auto status = f.get("/api/status", f.cookie);
+	CHECK_FALSE(status.json["image"]["loaded"].boolean);
+	CHECK(status.json["image"]["refused"].text == "image.format");
+	CHECK(status.json["image"]["reason"].text == "header.length: the header says " + std::to_string(image.size()) +
+		" bytes, the body has 4096");
+	// The next session: `auth` tells E-Home that nothing runs and why; it deploys again.
+	f.advance(1100);
+	REQUIRE(f.client.session);
+	f.client.open();
+	f.client.deliver(std::string("{\"type\":\"challenge\",\"nonce\":\"") + kNonce + "\"}");
+	Json auth = f.client.sent("auth").back();
+	CHECK_FALSE(auth["image"]["loaded"].boolean);
+	CHECK(auth["image"]["refused"].text == "image.format");
+	CHECK(auth["image"]["reason"].text.find("header.length: the header says") == 0);
+	f.client.deliver("{\"type\":\"ready\",\"installation\":\"Example House\"}");
+	REQUIRE(f.link.state() == EhomeState::connected);
+	f.client.deliver("{\"type\":\"request\",\"id\":3,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(image.size()) + "}");
+	f.client.deliver_binary(image, 1024);
+	CHECK(f.response(3)["status"].number == 200);
+	CHECK(f.service.loaded());
+	CHECK_FALSE(f.service.swap_kept());
+}
+
+TEST_CASE("E-Home: the auth message names what runs: project, revision and CRC") {
+	EhomeFixture f;
+	std::vector<uint8_t> bytes = hc_test::compiled(image_fixture("example.json"));
+	REQUIRE(hc_test::deploy_bytes(f.service, bytes));
+	f.handshake();
+	Json auth = f.client.sent("auth").back();
+	CHECK(auth["format"].text == "1.0");
+	CHECK(auth["slot"].number == 524288);
+	CHECK(auth["image"]["loaded"].boolean);
+	CHECK(auth["image"]["project"].text == "example-house");
+	CHECK(auth["image"]["revision"].number == 7);
+	char crc[12];
+	std::snprintf(crc, sizeof(crc), "%08x", static_cast<unsigned>(hc::image::bin::image_crc(bytes.data(), bytes.size())));
+	CHECK(auth["image"]["crc"].text == crc);
+	CHECK(auth["image"]["crc"].text == f.get("/api/status", f.cookie).json["image"]["crc"].text);
+	CHECK_FALSE(auth["image"].has("refused"));
+}
+
 TEST_CASE("E-Home: a command over the feed is recorded in the monitor as via ehome") {
 	EhomeFixture f;
-	f.service.load(image_fixture("example.json").data(), image_fixture("example.json").size(),
-		hc::image::Source::api, false);
+	REQUIRE(hc_test::deploy(f.service, image_fixture("example.json")));
 	f.handshake();
 	f.client.deliver("{\"type\":\"monitor\",\"subscribe\":true}");
 	uint16_t writable = 0xFFFF;
@@ -871,15 +1061,6 @@ constexpr const char* kNewSeed = "2bb9dbea0c0c160975dc5e23749d1891e42869b0b87f30
 constexpr const char* kNewKey = "ed592207e3c3f843383c53d6d0b402b2b047323ca0eca31673655d6a940d96cd";
 constexpr const char* kNewFingerprint = "90ae 3702 f3a9 63ab";
 
-std::string signature_of(const char* seed_hex, const std::string& image) {
-	uint8_t seed[32];
-	REQUIRE(hc::from_hex(seed_hex, seed, sizeof(seed)));
-	uint8_t sig[64];
-	hc::sign_image(seed, image.data(), image.size(), sig);
-	char hex[129];
-	hc::to_hex(sig, sizeof(sig), hex);
-	return hex;
-}
 
 std::string enroll_answer_with_key(const std::string& key) {
 	std::string answer = kEnrollAnswer;
@@ -887,14 +1068,10 @@ std::string enroll_answer_with_key(const std::string& key) {
 	return answer;
 }
 
-/// PUT /api/image over the socket: `length`, optionally `signature`, then the binary frames.
-Json socket_put_image(EhomeFixture& f, int id, const std::string& image, const std::string& signature) {
-	std::string request = "{\"type\":\"request\",\"id\":" + std::to_string(id) +
-		",\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" + std::to_string(image.size());
-	if (!signature.empty()) {
-		request += ",\"signature\":\"" + signature + "\"";
-	}
-	f.client.deliver(request + "}");
+/// PUT /api/image over the socket: `length`, then the binary frames (the signature is in the image).
+Json socket_put_image(EhomeFixture& f, int id, const std::string& image) {
+	f.client.deliver("{\"type\":\"request\",\"id\":" + std::to_string(id) +
+		",\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" + std::to_string(image.size()) + "}");
 	f.client.deliver_binary(image, 1024);
 	return f.response(id);
 }
@@ -940,7 +1117,7 @@ TEST_CASE("E-Home key: the enrollment answer's public_key is stored, its fingerp
 		// An unsigned image goes in over the socket, as before.
 		f.handshake();
 		CHECK(f.client.sent("auth")[0].has("key") == false);
-		CHECK(socket_put_image(f, 3, image_fixture("minimal.json"), "")["status"].number == 200);
+		CHECK(socket_put_image(f, 3, compiled_fixture("minimal.json"))["status"].number == 200);
 	}
 	{
 		EhomeFixture f(false);
@@ -959,25 +1136,35 @@ TEST_CASE("E-Home key: over the socket a signed image is accepted, an unsigned o
 	EhomeFixture f;
 	REQUIRE(f.fake.settings.set_string("ehome.key", kKey) == hc::SettingsStatus::ok);
 	f.handshake();
-	std::string example = image_fixture("example.json");
-	Json r = socket_put_image(f, 4, example, "");
+	std::string example = compiled_fixture("example.json");
+	Json r = socket_put_image(f, 4, example);
 	CHECK(r["status"].number == 403);
 	CHECK(r["body"]["code"].text == "image.unsigned");
 	CHECK(r["body"]["refusals"].items[0]["reason"].text.find(kKeyFingerprint) != std::string::npos);
 	CHECK_FALSE(f.service.loaded());
-	r = socket_put_image(f, 5, example, signature_of(kNewSeed, example));
+	CHECK(f.slot.erased_sectors() == 0); // refused from the header: nothing written
+	r = socket_put_image(f, 5, compiled_fixture("example.json", kNewSeed));
 	CHECK(r["status"].number == 403);
 	CHECK(r["body"]["code"].text == "image.bad_signature");
+	CHECK(r["body"]["refusals"].items[0]["reason"].text.find(kKeyFingerprint) != std::string::npos);
 	CHECK_FALSE(f.service.loaded());
-	r = socket_put_image(f, 6, example, "abc");
+	// The former detached signature beside the frames: refused, whatever it holds.
+	f.client.deliver("{\"type\":\"request\",\"id\":6,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(example.size()) + ",\"signature\":\"abc\"}");
+	f.client.deliver_binary(example, 1024);
+	r = f.response(6);
 	CHECK(r["status"].number == 400);
-	CHECK(r["body"]["error"].text == "\"signature\" is the image's Ed25519 signature in 128 hex digits");
-	r = socket_put_image(f, 7, example, signature_of(kKeySeed, example));
+	CHECK(r["body"]["code"].text == "image.bad_request");
+	std::string good = compiled_fixture("example.json", kKeySeed);
+	r = socket_put_image(f, 7, good);
 	CHECK(r["status"].number == 200);
+	CHECK(r["body"]["image"]["signed"].boolean);
 	CHECK(f.service.info().revision == 7);
-	// The signature belongs to its request: the next one without it is unsigned again.
-	r = socket_put_image(f, 8, example, "");
+	// The unsigned one again: refused from its header, the signed image keeps running.
+	r = socket_put_image(f, 8, example);
 	CHECK(r["body"]["code"].text == "image.unsigned");
+	CHECK(r["body"]["loaded"].boolean);
+	CHECK(f.service.loaded());
 	CHECK(f.link.state() == EhomeState::connected);
 }
 
@@ -987,6 +1174,7 @@ TEST_CASE("E-Home key: a rotation stays pending until the owner accepts it; then
 	f.handshake();
 	std::string minimal = image_fixture("minimal.json");
 	std::string example = image_fixture("example.json");
+	auto signed_by = [](const std::string& json, const char* seed) { return compiled_text(json, seed); };
 	f.client.deliver(std::string("{\"type\":\"key\",\"public_key\":\"") + kNewKey + "\",\"fingerprint\":\"" +
 		kNewFingerprint + "\"}");
 	auto pending = f.client.sent("key_pending");
@@ -998,8 +1186,8 @@ TEST_CASE("E-Home key: a rotation stays pending until the owner accepts it; then
 		"effect when the owner accepts it"));
 	CHECK(stored_key(f) == kKey);
 	// Until accepted: signed with the new key refused, the old key in force.
-	CHECK(socket_put_image(f, 10, minimal, signature_of(kNewSeed, minimal))["body"]["code"].text == "image.bad_signature");
-	CHECK(socket_put_image(f, 11, minimal, signature_of(kKeySeed, minimal))["status"].number == 200);
+	CHECK(socket_put_image(f, 10, signed_by(minimal, kNewSeed))["body"]["code"].text == "image.bad_signature");
+	CHECK(socket_put_image(f, 11, signed_by(minimal, kKeySeed))["status"].number == 200);
 	// E-Home cannot accept its own key.
 	f.client.deliver("{\"type\":\"request\",\"id\":12,\"method\":\"POST\",\"path\":\"/api/ehome/key/accept\","
 		"\"body\":{\"fingerprint\":\"90ae 3702 f3a9 63ab\"}}");
@@ -1024,8 +1212,8 @@ TEST_CASE("E-Home key: a rotation stays pending until the owner accepts it; then
 	CHECK_FALSE(f.status().has("pending_key"));
 	CHECK(f.capture.sink.contains("W hc.ehome: installation key 90ae 3702 f3a9 63ab accepted by the owner"));
 	// Now the old key is refused and the new one accepted.
-	CHECK(socket_put_image(f, 13, example, signature_of(kKeySeed, example))["body"]["code"].text == "image.bad_signature");
-	CHECK(socket_put_image(f, 14, example, signature_of(kNewSeed, example))["status"].number == 200);
+	CHECK(socket_put_image(f, 13, signed_by(example, kKeySeed))["body"]["code"].text == "image.bad_signature");
+	CHECK(socket_put_image(f, 14, signed_by(example, kNewSeed))["status"].number == 200);
 	// Nothing is pending any more.
 	r = f.request(HttpMethod::post, "/api/ehome/key/accept",
 		std::string("{\"fingerprint\":\"") + kNewFingerprint + "\"}", f.cookie);
@@ -1044,7 +1232,7 @@ TEST_CASE("E-Home key: a disconnect drops the pending key; a device without a ke
 	CHECK(f.status()["pending_key"].text == kKeyFingerprint);
 	CHECK_FALSE(f.status().has("key"));
 	// Unsigned images still go in: the pending key is not in force.
-	CHECK(socket_put_image(f, 20, image_fixture("minimal.json"), "")["status"].number == 200);
+	CHECK(socket_put_image(f, 20, compiled_fixture("minimal.json"))["status"].number == 200);
 	f.client.drop("connection reset");
 	CHECK_FALSE(f.status().has("pending_key"));
 	CHECK(f.capture.sink.contains("I hc.ehome: the offered installation key ce7d 4a41 a476 9ee3 was not accepted and "
@@ -1060,7 +1248,7 @@ TEST_CASE("E-Home key: a disconnect drops the pending key; a device without a ke
 	f.client.deliver(std::string("{\"type\":\"key\",\"public_key\":\"") + kKey + "\"}");
 	CHECK(f.link.accept_key(nullptr, &code, &error));
 	CHECK(stored_key(f) == kKey);
-	CHECK(socket_put_image(f, 21, image_fixture("minimal.json"), "")["body"]["code"].text == "image.unsigned");
+	CHECK(socket_put_image(f, 21, compiled_fixture("minimal.json"))["body"]["code"].text == "image.unsigned");
 }
 
 TEST_CASE("E-Home key: an unusable key message is answered ehome.bad_key and changes nothing") {
@@ -1099,14 +1287,12 @@ TEST_CASE("E-Home key: forgetting E-Home keeps the key in force; only a new enro
 	CHECK(f.status()["key"].text == kKeyFingerprint);
 	CHECK(f.capture.sink.contains("I hc.ehome: the installation key ce7d 4a41 a476 9ee3 stays in force"));
 	// With a token alone, forgetting E-Home does not open the door to unsigned images.
-	std::string minimal = image_fixture("minimal.json");
+	std::string minimal = compiled_fixture("minimal.json");
 	auto r = f.put("/api/image", minimal);
 	CHECK(r.status == 403);
 	CHECK(r.json["code"].text == "image.unsigned");
 	CHECK(r.json["refusals"].items[0]["reason"].text.find(kKeyFingerprint) != std::string::npos);
-	f.image_signature = signature_of(kNewSeed, minimal); // the never-accepted rotation's key
-	r = f.put("/api/image", minimal);
-	f.image_signature.clear();
+	r = f.put("/api/image", compiled_fixture("minimal.json", kNewSeed)); // the never-accepted rotation's key
 	CHECK(r.json["code"].text == "image.bad_signature");
 	CHECK_FALSE(f.service.loaded());
 	// A failed enrollment keeps the key.
@@ -1118,11 +1304,8 @@ TEST_CASE("E-Home key: forgetting E-Home keeps the key in force; only a new enro
 		[&] { f.fetcher.answer(200, enroll_answer_with_key(kNewKey)); }).status == 200);
 	CHECK(stored_key(f) == kNewKey);
 	CHECK(f.status()["key"].text == kNewFingerprint);
-	f.image_signature = signature_of(kKeySeed, minimal);
-	CHECK(f.put("/api/image", minimal).json["code"].text == "image.bad_signature");
-	f.image_signature = signature_of(kNewSeed, minimal);
-	CHECK(f.put("/api/image", minimal).status == 200);
-	f.image_signature.clear();
+	CHECK(f.put("/api/image", compiled_fixture("minimal.json", kKeySeed)).json["code"].text == "image.bad_signature");
+	CHECK(f.put("/api/image", compiled_fixture("minimal.json", kNewSeed)).status == 200);
 	// A new enrollment without a key leaves the device without one (the authenticated answer decides).
 	REQUIRE(f.del("/api/ehome").status == 200);
 	REQUIRE(f.enroll("{\"url\":\"https://ehome.example\",\"code\":\"ABCD-EFGH\"}",
@@ -1131,16 +1314,16 @@ TEST_CASE("E-Home key: forgetting E-Home keeps the key in force; only a new enro
 	CHECK(f.put("/api/image", minimal).status == 200);
 }
 
-// ---- Probe: the signature on the socket's text-body form, and a key offer that changes nothing ------
+// ---- Probe: the socket's inline form of an image, and a key offer that changes nothing ------------
 
-TEST_CASE("E-Home key probe: a small image sent as the request's text body honours the signature too") {
+TEST_CASE("E-Home key probe: an image sent as the request's inline body is refused whatever its signature") {
 	EhomeFixture f;
 	REQUIRE(f.fake.settings.set_string("ehome.key", kKey) == hc::SettingsStatus::ok);
 	f.handshake();
 	std::string minimal = image_fixture("minimal.json");
 	REQUIRE(minimal.size() < 4096);
-	// Below the text limit E-Home may send the body inline (no length, no binary frames): the
-	// signature must count there exactly as with the frames.
+	// Below the text limit E-Home could put a body inline (no length, no binary frames): the image is
+	// binary and carries its signature, so neither form is taken, with or without `signature`.
 	auto text_put = [&](int id, const std::string& signature) {
 		std::string request = "{\"type\":\"request\",\"id\":" + std::to_string(id) +
 			",\"method\":\"PUT\",\"path\":\"/api/image\",\"body\":" + minimal;
@@ -1150,23 +1333,16 @@ TEST_CASE("E-Home key probe: a small image sent as the request's text body honou
 		f.client.deliver(request + "}");
 		return f.response(id);
 	};
-	Json r = text_put(20, "");
-	CHECK(r["status"].number == 403);
-	CHECK(r["body"]["code"].text == "image.unsigned");
-	CHECK_FALSE(f.service.loaded());
-	// Any signature on the inline form is refused up front, whichever key made it (the device cannot
-	// tell a wrong key from bytes it does not have).
-	r = text_put(21, signature_of(kNewSeed, minimal));
-	CHECK(r["status"].number == 400);
-	CHECK(r["body"]["code"].text == "image.bad_request");
-	// The inline form cannot carry the exact bytes a signature covers (the body is parsed JSON):
-	// a signed image goes as binary frames, and the device says so instead of failing the check.
-	r = text_put(22, signature_of(kKeySeed, minimal));
-	CHECK(r["status"].number == 400);
-	CHECK(r["body"]["code"].text == "image.bad_request");
-	CHECK(r["body"]["error"].text == "a signed image is sent with length and binary frames: the signature covers its exact bytes");
-	CHECK_FALSE(f.service.loaded());
-	CHECK(socket_put_image(f, 22, minimal, signature_of(kKeySeed, minimal))["status"].number == 200);
+	for (const std::string& signature : {std::string(), std::string(128, 'a'), std::string("abc")}) {
+		CAPTURE(signature);
+		Json r = text_put(20, signature);
+		CHECK(r["status"].number == 400);
+		CHECK(r["body"]["code"].text == "image.bad_request");
+		CHECK(r["body"]["error"].text ==
+			"the image is binary: it is sent with length and binary frames, its signature inside");
+		CHECK_FALSE(f.service.loaded());
+	}
+	CHECK(socket_put_image(f, 22, compiled_text(minimal, kKeySeed))["status"].number == 200);
 	CHECK(f.service.loaded());
 
 	// E-Home offers the key the device already holds: nothing becomes pending, the answer says so,
@@ -1177,7 +1353,7 @@ TEST_CASE("E-Home key probe: a small image sent as the request's text body honou
 	CHECK(f.status()["key"].text == kKeyFingerprint);
 	CHECK(f.client.sent("key_pending").empty());
 	CHECK(f.client.sent("key_accepted").size() + f.client.sent("error").size() >= 1);
-	CHECK(socket_put_image(f, 23, image_fixture("example.json"), signature_of(kKeySeed, image_fixture("example.json")))["status"].number == 200);
+	CHECK(socket_put_image(f, 23, compiled_fixture("example.json", kKeySeed))["status"].number == 200);
 	CHECK(f.link.state() == EhomeState::connected);
 }
 
@@ -1188,7 +1364,7 @@ namespace {
 /// Loads the example image over the socket (with an unbounded queue): 15 datapoints, a snapshot of
 /// several chunks.
 void load_example(EhomeFixture& f) {
-	std::string image = image_fixture("example.json");
+	std::string image = compiled_fixture("example.json");
 	f.client.deliver("{\"type\":\"request\",\"id\":100,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
 		std::to_string(image.size()) + "}");
 	f.client.deliver_binary(image, 1024);
@@ -1290,7 +1466,7 @@ TEST_CASE("E-Home queue: a streamed answer waits for room piece by piece; a full
 	EhomeFixture f;
 	f.handshake();
 	load_example(f);
-	std::string image = image_fixture("example.json");
+	std::string image = compiled_fixture("example.json");
 	f.client.binary.clear();
 	f.client.room = EhomeLink::kStreamPiece + 100;
 	f.client.deliver("{\"type\":\"request\",\"id\":9,\"method\":\"GET\",\"path\":\"/api/image\"}");
@@ -1361,128 +1537,69 @@ TEST_CASE("E-Home queue probe: a drop mid-snapshot with an answer held; the new 
 	CHECK(f.response(9)["status"].number == 200); // the slot is free
 }
 
-TEST_CASE("E-Home image staging: a signed image is received into the staging area, verified and loaded from it") {
-	// homecontrol #66: a deploy needs no heap block of the image's size.
+TEST_CASE("E-Home image slot: a signed image is written into the slot as its frames arrive, verified and run in place") {
+	// Issue #87: a deploy needs no buffer of the image's size; the slot is erased sector by sector.
 	EhomeFixture f;
-	hc_test::FakeImageStaging staging;
-	f.service.set_staging(&staging);
 	REQUIRE(f.fake.settings.set_string("ehome.key", kKey) == hc::SettingsStatus::ok);
 	f.handshake();
-	std::string example = image_fixture("example.json");
-	size_t compiled = f.capture.sink.count("I hc.rule: rules loaded:");
-	Json r = socket_put_image(f, 4, example, signature_of(kKeySeed, example));
+	std::string example = compiled_fixture("example.json", kKeySeed);
+	f.client.deliver("{\"type\":\"request\",\"id\":4,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
+		std::to_string(example.size()) + "}");
+	f.client.deliver_binary(example.substr(0, 2048), 1024);
+	// The frames are in the slot as they came (the old image is gone at the first byte, I3).
+	CHECK(f.service.receiving());
+	CHECK(std::memcmp(f.slot.bytes(), example.data(), 2048) == 0);
+	CHECK_FALSE(f.response(4).has("status"));
+	f.client.deliver_binary(example.substr(2048), 1024);
+	Json r = f.response(4);
 	CHECK(r["status"].number == 200);
+	CHECK(r["body"]["image"]["signed"].boolean);
+	CHECK(r["body"]["image"]["bytes"].number == static_cast<double>(example.size()));
 	CHECK(f.service.loaded());
-	// The rules were compiled once: the loader's check hands its set to the engine.
-	CHECK(f.capture.sink.count("I hc.rule: rules loaded:") == compiled + 1);
-	CHECK(staging.begins == 1);
-	CHECK(staging.appends >= 3); // a piece per frame, and the NUL
-	CHECK(staging.ends == 1);    // released when the request is answered
-	CHECK_FALSE(staging.busy);
-	CHECK(staging.content.size() == example.size() + 1);
-	CHECK(f.capture.sink.contains("receiving " + std::to_string(example.size()) + " bytes into the staging area"));
-	CHECK(f.capture.sink.contains("I hc.image:   steps: signature "));
-	// The loaded image does not point into the staging area: overwritten after end(), it still serves.
-	for (const char* path : {"/api/image", "/api/rules", "/api/datapoints", "/api/schedules", "/api/pages"}) {
+	CHECK_FALSE(f.service.receiving());
+	CHECK(f.slot.erased_sectors() == (example.size() + 4095) / 4096);
+	CHECK(std::memcmp(f.slot.bytes(), example.data(), example.size()) == 0);
+	CHECK(f.service.image().bytes() == f.slot.bytes());
+	for (const char* path : {"/api/image", "/api/rules", "/api/datapoints", "/api/schedules", "/api/pages", "/api/model"}) {
 		auto answer = f.get(path, f.cookie);
 		INFO(path);
 		CHECK(answer.status == 200);
-		CHECK(answer.body.find("XXXX") == std::string::npos);
 	}
-	// A mis-signed image is refused from the staging area as from the heap.
-	r = socket_put_image(f, 5, example, signature_of(kNewSeed, example));
+	// A mis-signed image is refused after the slot was written: no image.
+	r = socket_put_image(f, 5, compiled_fixture("example.json", kNewSeed));
 	CHECK(r["status"].number == 403);
-	CHECK(staging.ends == 2);
-
+	CHECK(r["body"]["code"].text == "image.bad_signature");
+	CHECK_FALSE(r["body"]["loaded"].boolean);
+	CHECK_FALSE(f.service.loaded());
 	// Another request's body never goes there.
-	int begins = staging.begins;
+	size_t sectors = f.slot.erased_sectors();
 	f.client.deliver("{\"type\":\"request\",\"id\":6,\"method\":\"PUT\",\"path\":\"/api/ehome\",\"length\":2}");
 	f.client.deliver_binary("{}", 1024);
-	CHECK(staging.begins == begins);
+	CHECK(f.response(6).has("status"));
+	CHECK(f.slot.erased_sectors() == sectors);
 }
 
-TEST_CASE("E-Home image staging: when the area declines, the image is received into the heap with the reason logged") {
+TEST_CASE("E-Home image slot: the flash refusing a write mid-body leaves no image; the connection stays") {
 	EhomeFixture f;
-	hc_test::FakeImageStaging staging;
-	staging.off = "the updater's image does not verify";
-	f.service.set_staging(&staging);
 	f.handshake();
-	std::string image = image_fixture("minimal.json");
-	CHECK(socket_put_image(f, 3, image, "")["status"].number == 200);
-	CHECK(f.capture.sink.contains("the body goes to the heap: the updater's image does not verify"));
-
-	// An area that fails while the body arrives: the request is refused, the connection stays.
-	staging.off = nullptr;
-	staging.fail_after = 1;
-	std::string example = image_fixture("example.json");
-	Json r = socket_put_image(f, 4, example, "");
-	CHECK(r["status"].number == 507);
-	CHECK(f.capture.sink.contains("the staging area failed while the body arrived"));
-	CHECK_FALSE(staging.busy);
-	staging.fail_after = 0;
-	r = socket_put_image(f, 5, example, "");
+	std::string example = compiled_fixture("example.json");
+	f.slot.fail_write_after(2);
+	Json r = socket_put_image(f, 4, example);
+	CHECK(r["status"].number >= 500);
+	CHECK_FALSE(r["body"]["loaded"].boolean);
+	CHECK(r["body"]["refusals"].items[0]["reason"].text.find("the flash refused a write (test)") != std::string::npos);
+	CHECK_FALSE(f.service.loaded());
+	CHECK(f.link.state() == EhomeState::connected);
+	r = socket_put_image(f, 5, example);
 	CHECK(r["status"].number == 200);
+	CHECK(f.service.loaded());
 }
 
-TEST_CASE("E-Home image store: the answer to PUT /api/image goes out when the image is stored, a failure with its reason") {
-	// homecontrol #68: the store runs off the loop; E-Home hears "stored" only when it is.
+TEST_CASE("E-Home image slot: a deploy while an HTTP deploy is being received is refused 503 image.busy, its frames dropped") {
 	EhomeFixture f;
-	hc_test::FakeImageStaging staging;
-	hc_test::ManualWorker worker;
-	f.service.set_staging(&staging);
-	f.service.set_worker(&worker);
 	f.handshake();
-	std::string example = image_fixture("example.json");
-	f.client.deliver("{\"type\":\"request\",\"id\":4,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
-		std::to_string(example.size()) + "}");
-	f.client.deliver_binary(example, 1024);
-	CHECK(f.service.loaded()); // runs
-	CHECK(f.service.store_pending());
-	CHECK_FALSE(f.response(4).has("status")); // not answered before it is stored
-	CHECK(f.capture.sink.contains("request 4: /api/image runs, its answer follows when it is stored"));
-	// The link stays responsive; a further request waits for the running one as always.
-	f.client.deliver("{\"type\":\"ping\"}");
-	CHECK(f.client.sent("pong").size() == 1);
-	f.client.deliver("{\"type\":\"request\",\"id\":5,\"method\":\"GET\",\"path\":\"/api/status\"}");
-	CHECK(f.response(5)["status"].number == 429);
-	CHECK(staging.busy); // the service reads the body from the staging area
-
-	worker.step();
-	Json r = f.response(4);
-	CHECK(r["status"].number == 200);
-	CHECK(r["body"]["stored"].boolean);
-	CHECK(r["body"]["image"]["revision"].number == 7);
-	CHECK_FALSE(staging.busy);
-	f.client.deliver("{\"type\":\"request\",\"id\":6,\"method\":\"GET\",\"path\":\"/api/status\"}");
-	CHECK(f.response(6)["status"].number == 200); // the slot is free again
-
-	// A store the flash refuses: the answer says so, with the reason.
-	std::string next = example;
-	next.replace(next.find("\"revision\": 7"), 13, "\"revision\": 8");
-	f.client.deliver("{\"type\":\"request\",\"id\":7,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
-		std::to_string(next.size()) + "}");
-	f.client.deliver_binary(next, 1024);
-	CHECK_FALSE(f.response(7).has("status"));
-	f.blobs.fail_writes = true;
-	worker.step();
-	f.blobs.fail_writes = false;
-	r = f.response(7);
-	CHECK(r["status"].number == 200);
-	CHECK_FALSE(r["body"]["stored"].boolean);
-	CHECK(r["body"]["storeError"].text == "the storage refused a write");
-	CHECK(r["body"]["image"]["revision"].number == 8);
-}
-
-TEST_CASE("E-Home image store: a deploy while an HTTP deploy is being stored is refused 503 image.busy, its frames dropped") {
-	EhomeFixture f;
-	hc_test::ManualWorker worker;
-	f.service.set_worker(&worker);
-	f.handshake();
-	// An HTTP deploy whose store is pending (the receiver hands its body over).
-	std::string example = image_fixture("example.json");
-	hc::image::ImageBody body;
-	REQUIRE(body.begin(example.size(), nullptr));
-	REQUIRE(body.append(example.data(), example.size()));
+	// An HTTP receiver that writes into the slot as the body arrives (the ESP's server) has begun.
+	std::string example = compiled_fixture("example.json");
 	hc::WebRequest req;
 	req.method = HttpMethod::put;
 	req.path = "/api/image";
@@ -1490,14 +1607,13 @@ TEST_CASE("E-Home image store: a deploy while an HTTP deploy is being stored is 
 	req.cookie = f.cookie.c_str();
 	req.requested_with = "HomeControl";
 	req.source = "192.0.2.7";
-	req.body = body.finish();
-	req.body_length = example.size();
-	req.body_holder = &body;
+	req.body = example.data();
+	req.body_length = 32;
 	char out[4096];
 	hc::WebResponse http(out, sizeof(out));
-	f.api.handle(req, http);
-	REQUIRE(http.deferred);
-	CHECK_FALSE(body.active()); // taken over
+	REQUIRE(f.api.image_begin(req, example.size(), http));
+	REQUIRE(f.service.receive_write(example.data(), 3000));
+	CHECK(f.api.body_refusal(HttpMethod::put, "/api/image") != nullptr);
 
 	f.client.deliver("{\"type\":\"request\",\"id\":3,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":" +
 		std::to_string(example.size()) + "}");
@@ -1509,33 +1625,16 @@ TEST_CASE("E-Home image store: a deploy while an HTTP deploy is being stored is 
 	f.client.deliver("{\"type\":\"request\",\"id\":4,\"method\":\"GET\",\"path\":\"/api/status\"}");
 	CHECK(f.response(4)["status"].number == 200);
 
-	worker.step();
-	REQUIRE(f.api.poll_deferred(http));
-	CHECK(http.status == 200);
-	CHECK_FALSE(socket_put_image(f, 5, example, "").has("status")); // now E-Home's turn: deferred
-	worker.step();
-	CHECK(f.response(5)["body"]["stored"].boolean);
-}
-
-TEST_CASE("E-Home image store: the session ends while the image is stored; the store completes, the next session deploys") {
-	EhomeFixture f;
-	hc_test::ManualWorker worker;
-	f.service.set_worker(&worker);
-	f.handshake();
-	std::string example = image_fixture("example.json");
-	socket_put_image(f, 4, example, "");
-	CHECK(f.service.store_pending());
-	f.client.drop("connection reset");
-	CHECK(f.capture.sink.contains("the deferred answer to request 4 is dropped with the session"));
-	worker.step(); // the store goes on and ends
-	CHECK(f.service.stored_ok());
-	CHECK_FALSE(f.response(4).has("status"));
-	f.advance(1100);
-	f.handshake();
-	CHECK_FALSE(socket_put_image(f, 5, example, "").has("status")); // deferred: no answer yet
-	worker.step();
-	CHECK(f.response(5)["status"].number == 200);
-	CHECK(f.response(5)["body"]["stored"].boolean);
+	// The HTTP deploy ends; then E-Home's goes in.
+	REQUIRE(f.service.receive_write(example.data() + 3000, example.size() - 3000));
+	req.image_streamed = true;
+	req.body = nullptr;
+	req.body_length = 0;
+	hc::WebResponse done(out, sizeof(out));
+	f.api.handle(req, done);
+	CHECK(done.status == 200);
+	CHECK(f.service.loaded());
+	CHECK(socket_put_image(f, 5, example)["status"].number == 200);
 }
 
 // ---- The bus session (homecontrol #85, spec/api.md "Bus session") ------------------------------

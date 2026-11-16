@@ -21,9 +21,9 @@ namespace esp {
 /// streaming write (open_writer(), issue #43: the language packs) appends to the same temporary file and
 /// commit() finishes it as write() does; the file is never visible under the blob's name before.
 ///
-/// The core calls it on the event loop, the `storage` console command runs there too; the image
-/// store's write of a deployed image runs in the worker task beside it (homecontrol #68): calls on
-/// different blobs may overlap. Every call keeps its paths on the stack and esp_littlefs serializes
+/// The core calls it on the event loop, the `storage` console command runs there too; the storage
+/// figures (StorageStats) are measured in a worker task beside it (homecontrol #74): calls may
+/// overlap. Every call keeps its paths on the stack and esp_littlefs serializes
 /// the file system's calls under its lock; the streaming writer is used by the loop alone.
 class LittleFsBlobStore : public BlobStore {
 public:

@@ -224,14 +224,14 @@
 	</details>
 	<details>
 		<summary>Ohne diese Seite installieren (esptool)</summary>
-		<p>Lade die sechs Dateien eines <a href="https://github.com/haumacher/homecontrol/releases"
+		<p>Lade die sieben Dateien eines <a href="https://github.com/haumacher/homecontrol/releases"
 			rel="noopener">Releases</a> herunter und schreib sie an diese Adressen (4-MB-Aufteilung):</p>
 		<pre>esptool.py --chip esp32c6 write_flash \
   0x0 bootloader.bin 0x8000 partition-table.bin \
-  0x10000 hc_updater.bin 0x100000 homecontrol.bin \
-  0x3b0000 ota_data_ota0.bin 0x3b2000 storage.bin</pre>
-		<p>Lass <code>storage.bin</code> weg, um Image und Werte eines eingerichteten Controllers zu
-			behalten.</p>
+  0x10000 hc_updater.bin 0xf0000 homecontrol.bin \
+  0x390000 image-empty.bin 0x3b0000 ota_data_ota0.bin 0x3b2000 storage.bin</pre>
+		<p>Lass <code>image-empty.bin</code> und <code>storage.bin</code> weg, um Image und Werte
+			eines Controllers zu behalten, der den Image-Bereich schon hat (Firmware nach 1.2).</p>
 	</details>
 
 	<p>Fragen und Probleme: <a href="https://github.com/haumacher/homecontrol/issues"

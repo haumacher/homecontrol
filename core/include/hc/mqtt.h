@@ -12,6 +12,7 @@
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
 #include "hc/history.h"
+#include "hc/image/binary.h"
 #include "hc/json.h"
 #include "hc/log.h"
 #include "hc/platform/clock.h"
@@ -160,10 +161,11 @@ public:
 	/// validation pass. False with `error` (the member path and the reason).
 	static bool check_json(const char* text, size_t length, const char** error);
 
-	/// Configures from a whole runtime image text: finds `mqtt`, `datapoints`, `functions` and
-	/// `image.name`. Without an `mqtt` member it is clear(). Call after every model load (the
-	/// datapoints are resolved by name here).
-	bool configure_image(const char* text, size_t length, const char** error = nullptr);
+	/// Configures from the loaded binary image (spec/mqtt.md, spec/runtime-image.md 9.11): its `mqtt`
+	/// record, the datapoints' units and history rings, the functions (the Home Assistant entities),
+	/// the image's name. Without the record it is clear(). Call after every model load. The strings
+	/// stay in the image, which is mapped while the configuration lives.
+	bool configure_image(const image::bin::View& view, const char** error = nullptr);
 
 	/// The same from the members (all spans into one text). Checks everything before anything
 	/// changes: a refusal (false, the reason in `error` and in the log) keeps the previous
@@ -220,6 +222,7 @@ private:
 	struct Buffers;
 
 	bool build(Table& table, const MqttImage& image, const char** error);
+	bool build_view(Table& table, const image::bin::View& view, const char** error);
 	bool ensure_buffers(const char** error);
 	/// Frees the buffers when neither a configuration nor a retiring one is left.
 	void release_buffers_if_idle();

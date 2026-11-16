@@ -2,18 +2,20 @@
  * Copyright (c) 2026 Bernhard Haumacher
  */
 // Probe of the MQTT client's place in the controller (issue #18): the image service configures it
-// from the image's `mqtt` member, refuses an image that carries the password, clears it on unload;
-// the model-reload hook follows datapoints that join after the configuration.
+// from the image's `mqtt` record (Mqtt::configure_image), clears it on unload; the model-reload hook
+// follows datapoints that join after the configuration.
 
 #include <string>
 
 #include "doctest.h"
 #include "fake_blob_store.h"
 #include "hc/image/image_service.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/telegram_log.h"
 #include "hc/knx/tunnel.h"
 #include "hc/mqtt.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "mqtt_test_support.h"
 #include "web_test_support.h"
@@ -37,7 +39,8 @@ struct ServiceFixture : hc_test::WebFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel, &telegrams};
 	hc_test::FakeBlobStore blobs;
-	hc::image::ImageService image{controller, model, blobs, adapter, &tunnel};
+	hc::image::MemoryImageSlot slot;
+	hc::image::ImageService image{controller, model, blobs, slot, adapter, &tunnel};
 	hc_test::FakeMqttClient client;
 	hc::MqttIdentity identity;
 	hc::Mqtt mqtt;
@@ -67,13 +70,7 @@ struct ServiceFixture : hc_test::WebFixture {
 		}
 	}
 
-	std::string refusals() const {
-		std::string why;
-		for (size_t i = 0; i < image.report().count; ++i) {
-			why += std::string(image.report().refusals[i].path) + ": " + image.report().refusals[i].reason + "\n";
-		}
-		return why;
-	}
+	std::string refusals() const { return hc_test::describe(image.report()); }
 };
 
 } // namespace
@@ -81,7 +78,7 @@ struct ServiceFixture : hc_test::WebFixture {
 TEST_CASE("MQTT probe: the image's mqtt member configures the client, unload takes it offline") {
 	ServiceFixture f;
 	std::string text = kImage;
-	REQUIRE_MESSAGE(f.image.load(text.data(), text.size(), hc::image::Source::api, true), f.refusals());
+	REQUIRE_MESSAGE(hc_test::deploy(f.image, text), f.refusals());
 	f.run();
 	REQUIRE(f.client.connects == 1);
 	CHECK(f.client.client_id == "homecontrol-probe1");
@@ -115,25 +112,10 @@ TEST_CASE("MQTT probe: the image's mqtt member configures the client, unload tak
 	CHECK(f.client.disconnects >= 1);
 }
 
-TEST_CASE("MQTT probe: an image that carries the broker password is refused under the mqtt path") {
-	ServiceFixture f;
-	std::string text = kImage;
-	size_t at = text.find("\"baseTopic\"");
-	REQUIRE(at != std::string::npos);
-	text.insert(at, "\"password\": \"secret\", ");
-	CHECK_FALSE(f.image.load(text.data(), text.size(), hc::image::Source::api, true));
-	REQUIRE(f.image.report().count >= 1);
-	CHECK(std::string(f.image.report().refusals[0].path).rfind("mqtt", 0) == 0);
-	CHECK(std::string(f.image.report().refusals[0].reason).find("password") != std::string::npos);
-	f.run();
-	CHECK(f.client.connects == 0);
-	CHECK(f.mqtt.state() == hc::MqttState::disabled);
-}
-
 TEST_CASE("MQTT probe: a datapoint that joins the model after the configuration is published after model_reloaded") {
 	ServiceFixture f;
 	std::string text = kImage;
-	REQUIRE_MESSAGE(f.image.load(text.data(), text.size(), hc::image::Source::api, true), f.refusals());
+	REQUIRE_MESSAGE(hc_test::deploy(f.image, text), f.refusals());
 	f.run();
 	f.client.accept();
 	f.run();
@@ -217,7 +199,7 @@ TEST_CASE("MQTT probe: a rule parameter's datapoint has a state and takes /set a
  "rules": [{"id": "hall", "name": "Hall", "parameters": [{"id": "level", "label": "Level", "type": "integer", "default": 2,
    "min": 0, "max": 5}], "reactions": [{"triggers": [{"kind": "parameter", "parameter": "level"}],
    "actions": [{"kind": "write", "datapoint": "hall.light", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}])");
-	REQUIRE_MESSAGE(f.image.load(text.data(), text.size(), hc::image::Source::api, true), f.refusals());
+	REQUIRE_MESSAGE(hc_test::deploy(f.image, text), f.refusals());
 	f.run();
 	f.client.accept();
 	f.run();

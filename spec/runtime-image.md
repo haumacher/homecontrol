@@ -679,9 +679,9 @@ the reservation behind the updater's binary go). The partition tables
 
 | Flash | `app` | `image` | `storage` | Reason |
 |---|---|---|---|---|
-| 4 MB | 2 624 KB at 0x100000 (was 2 752 KB) | 128 KB at 0x390000 (0x020000), between `app` and `otadata` | 204 KB, unchanged | The firmware is 2 521 136 bytes: about 160 KB of `app` stay free. The storage keeps the history rings and archives (up to 64 + 64 KB), the language pack, the values and the overrides. |
-| 8 MB | 4 096 KB, unchanged | 512 KB at 0x500000 (0x080000), directly behind `app`; `otadata` moves to 0x580000 | 2 444 KB at 0x582000 (was 2 956 KB) | The storage is large on these boards; the application partition keeps its room. |
-| 16 MB | 6 144 KB, unchanged | 512 KB at 0x700000 (0x080000), directly behind `app`; `otadata` moves to 0x780000 | 8 588 KB at 0x782000 (was 9 100 KB) | As on 8 MB. |
+| 4 MB | 2 688 KB at 0xF0000 (was 2 752 KB at 0x100000; the updater gives 64 KB, 960 KB -> 896 KB, since its staging area is gone) | 128 KB at 0x390000 (0x020000), between `app` and `otadata` | 204 KB, unchanged | The firmware is 2 475 392 bytes: 10 % of `app` stay free. The storage keeps the history rings and archives (up to 64 + 64 KB), the language pack, the values and the overrides. |
+| 8 MB | 4 160 KB at 0xF0000 (the updater's 64 KB) | 512 KB at 0x500000 (0x080000), directly behind `app`; `otadata` moves to 0x580000 | 2 444 KB at 0x582000 (was 2 956 KB) | The storage is large on these boards; the application partition keeps its room and takes the updater's 64 KB. |
+| 16 MB | 6 208 KB at 0xF0000 (the updater's 64 KB) | 512 KB at 0x700000 (0x080000), directly behind `app`; `otadata` moves to 0x780000 | 8 588 KB at 0x782000 (was 9 100 KB) | As on 8 MB. |
 
 Every partition start is a multiple of 64 KB (the MMU's page), so the slot maps from its first byte.
 A new partition table is flashed once over USB on every controller; nothing is migrated (the owner:

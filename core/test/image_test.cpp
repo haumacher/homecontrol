@@ -1,9 +1,9 @@
 /*
  * Copyright (c) 2026 Bernhard Haumacher
  */
-// The runtime image (issue #8, spec/runtime-image.md): the loader against the fixtures in
-// spec/fixtures/images, the chunked store, the service's atomic apply and swap, the LED inputs and
-// the /api/image endpoints.
+// The binary runtime image (issues #8 and #87, spec/runtime-image.md 6 to 13): the worked example
+// and its mutations, the compiled corpora, the slot (receive, boot, erase), the swap table, the
+// signature on receipt, the LED inputs and the /api/image endpoints.
 
 #include <algorithm>
 #include <cstring>
@@ -12,27 +12,22 @@
 #include <string>
 #include <vector>
 
-#if defined(__GLIBC__)
-#include <malloc.h>
-#endif
-
-#include "allocation_counter.h"
 #include "doctest.h"
 #include "fake_blob_store.h"
-#include "fake_image_staging.h"
 #include "hc/controller.h"
 #include "hc/datapoint.h"
-#include "hc/image/image_body.h"
+#include "hc/image/binary.h"
 #include "hc/image/image_service.h"
-#include "hc/image/image_store.h"
-#include "hc/image/loader.h"
-#include "hc/image/memory_blob_store.h"
+#include "hc/image/memory_image_slot.h"
+#include "hc/image/validator.h"
 #include "hc/json.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
 #include "hc/live_feed.h"
+#include "hc/signature.h"
 #include "hc/value_store.h"
 #include "hc/web_api.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "test_support.h"
@@ -41,13 +36,11 @@
 using hc::DatapointFlags;
 using hc::ValueType;
 using hc::image::ImageService;
-using hc::image::ImageStore;
-using hc::image::Loader;
-using hc::image::Plan;
+using hc::image::MemoryImageSlot;
 using hc::image::Report;
 using hc::image::Source;
 using hc_test::Bytes;
-using hc_test::Json;
+using hc_test::describe;
 
 namespace {
 
@@ -57,18 +50,91 @@ std::string fixture(const std::string& name) {
 	return text;
 }
 
-std::string describe(const Report& report) {
-	std::string out = std::string(hc::image::report_kind_name(report.kind)) + ":";
-	for (size_t i = 0; i < report.count; ++i) {
-		out += std::string("\n  ") + report.refusals[i].path + ": " + report.refusals[i].reason;
+std::vector<uint8_t> from_hex(const char* text) {
+	std::vector<uint8_t> out;
+	int high = -1;
+	for (const char* p = text; *p != '\0'; ++p) {
+		int v = *p >= '0' && *p <= '9' ? *p - '0' : *p >= 'a' && *p <= 'f' ? *p - 'a' + 10 : *p >= 'A' && *p <= 'F' ? *p - 'A' + 10 : -1;
+		if (v < 0) {
+			continue;
+		}
+		if (high < 0) {
+			high = v;
+		} else {
+			out.push_back(static_cast<uint8_t>(high << 4 | v));
+			high = -1;
+		}
 	}
 	return out;
 }
 
-bool parse(const std::string& text, Plan& plan, Report& report) {
-	hc_test::FakeClock clock;
-	Loader loader(clock, hc::HistoryLimits().cap_bytes);
-	return loader.parse(text.data(), text.size(), plan, report);
+/// spec/runtime-image.md 13: minimal.json compiled, 112 bytes.
+const std::vector<uint8_t>& minimal() {
+	static const std::vector<uint8_t> bytes = from_hex(
+		"48 43 49 4d 01 00 00 00 70 00 00 00 42 2c 77 59"
+		"00 00 00 00 20 00 02 00 00 00 00 00 00 00 00 00"
+		"01 00 00 00 40 00 00 00 20 00 00 00 20 00 00 00"
+		"02 00 00 00 60 00 00 00 0d 00 00 00 00 00 00 00"
+		"05 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00"
+		"00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+		"00 31 2e 30 00 6d 69 6e 69 6d 61 6c 00 00 00 00");
+	return bytes;
+}
+
+/// The same, signed with the test key "installation" (176 bytes).
+const std::vector<uint8_t>& minimal_signed() {
+	static const std::vector<uint8_t> bytes = from_hex(
+		"48 43 49 4d 01 00 00 00 b0 00 00 00 87 ff f6 f6"
+		"01 00 00 00 20 00 02 00 00 00 00 00 00 00 00 00"
+		"01 00 00 00 40 00 00 00 20 00 00 00 20 00 00 00"
+		"02 00 00 00 60 00 00 00 0d 00 00 00 00 00 00 00"
+		"05 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00"
+		"00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+		"00 31 2e 30 00 6d 69 6e 69 6d 61 6c 00 00 00 00"
+		"d8 39 e1 4f 50 d3 4b d3 97 ef 9d 57 2d d7 af 3e"
+		"a8 3f d8 ce 24 a8 4e bb 28 ee ed 99 b4 1e 22 2d"
+		"90 35 04 e9 07 2e 01 ac 4f 86 5c 39 3c b3 42 83"
+		"fd 39 a2 ef 6e 21 aa 0f d6 7b e4 bf 92 0f 28 06");
+	return bytes;
+}
+
+constexpr const char* kInstallationKey = "13833fbfa81080cdb4c1210131a5bb3e98f17675236e66124aed84cc490bccb1";
+constexpr const char* kRotatedKey = "ed592207e3c3f843383c53d6d0b402b2b047323ca0eca31673655d6a940d96cd";
+
+void put_u16(std::vector<uint8_t>& b, size_t at, uint16_t v) {
+	b[at] = static_cast<uint8_t>(v);
+	b[at + 1] = static_cast<uint8_t>(v >> 8);
+}
+
+void put_u32(std::vector<uint8_t>& b, size_t at, uint32_t v) {
+	for (int i = 0; i < 4; ++i) {
+		b[at + i] = static_cast<uint8_t>(v >> (8 * i));
+	}
+}
+
+/// The header's CRC written anew (spec 9.2).
+void fix_crc(std::vector<uint8_t>& b) {
+	const auto& h = *reinterpret_cast<const hc::image::bin::Header*>(b.data());
+	size_t end = (h.flags & 1) != 0 ? h.length - 64 : h.length;
+	put_u32(b, 12, hc::image::bin::image_crc(b.data(), end));
+}
+
+/// All checks of a receipt on `bytes` (spec 10.1 to 10.7); the report.
+bool check(const std::vector<uint8_t>& bytes, Report& report) {
+	return hc::image::check_header(bytes.data(), bytes.size(), bytes.size(), report) &&
+		hc::image::check_crc(bytes.data(), report) && hc::image::check_structure(bytes.data(), report);
+}
+
+bool refused_with(const Report& report, const char* code, const char* path, const char* reason) {
+	if (std::string(hc::image::report_kind_code(report.kind)) != code) {
+		return false;
+	}
+	for (size_t i = 0; i < report.count; ++i) {
+		if (std::string(report.refusals[i].path) == path && std::strstr(report.refusals[i].reason, reason) != nullptr) {
+			return true;
+		}
+	}
+	return false;
 }
 
 /// The test-system template with its "GA:<name>" placeholders replaced by 31/7/n, in order of first
@@ -118,8 +184,8 @@ std::string hex2(uint16_t raw) {
 	return buffer;
 }
 
-/// A controller with the image service, a KNX tunnel and adapter on the controller's loop, and an
-/// in-memory blob store.
+/// A controller with the image service, a KNX tunnel and adapter on the controller's loop, a blob
+/// store and an image slot in RAM (a restart: a second fixture on the same blobs and slot).
 struct ServiceFixture {
 	hc_test::FakePlatform p;
 	hc::Controller controller{p.platform()};
@@ -127,15 +193,23 @@ struct ServiceFixture {
 	hc_test::FakeUdpSocket socket{p.clock};
 	hc::knx::KnxTunnel tunnel{controller.loop(), p.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), p.clock, model, tunnel};
-	hc_test::FakeBlobStore blobs;
-	ImageService service{controller, model, blobs, adapter, &tunnel};
+	hc_test::FakeBlobStore own_blobs;
+	MemoryImageSlot own_slot;
+	hc_test::FakeBlobStore& blobs;
+	MemoryImageSlot& slot;
+	ImageService service;
 	size_t handled = 0;
 	uint8_t gateway_sequence = 0;
 	std::vector<std::string> telegrams; ///< "dest len tpdu" of each group telegram the device sent.
 
-	explicit ServiceFixture(const std::map<std::string, std::vector<uint8_t>>* stored = nullptr) {
-		if (stored != nullptr) {
-			blobs.blobs = *stored;
+	explicit ServiceFixture(hc_test::FakeBlobStore* shared_blobs = nullptr, MemoryImageSlot* shared_slot = nullptr,
+		const char* key = nullptr)
+		: own_slot(shared_slot != nullptr ? 4096 : MemoryImageSlot::kDefaultSize),
+		  blobs(shared_blobs != nullptr ? *shared_blobs : own_blobs),
+		  slot(shared_slot != nullptr ? *shared_slot : own_slot),
+		  service(controller, model, blobs, slot, adapter, &tunnel) {
+		if (key != nullptr) {
+			REQUIRE(p.settings.set_string("ehome.key", key) == hc::SettingsStatus::ok);
 		}
 		controller.start();
 		controller.connectivity().link_up("192.0.2.10");
@@ -143,8 +217,9 @@ struct ServiceFixture {
 		service.start();
 	}
 
-	bool load(const std::string& text, Source source = Source::api) {
-		return service.load(text.data(), text.size(), source, true);
+	bool load(const std::string& json, Source source = Source::api) { return hc_test::deploy(service, json, source); }
+	bool load_bytes(const std::vector<uint8_t>& bytes, Source source = Source::api) {
+		return hc_test::deploy_bytes(service, bytes, source);
 	}
 
 	/// The tunnel to the test gateway is up on channel 7.
@@ -226,524 +301,311 @@ struct ServiceFixture {
 
 } // namespace
 
-// ---- Loader -------------------------------------------------------------------------------------
+// ---- The worked example and its mutations (spec 13) --------------------------------------------
 
-TEST_CASE("Image.Corpus") {
-	std::vector<std::string> files;
-	std::error_code error;
-	for (const auto& entry : std::filesystem::directory_iterator(HC_SPEC_DIR "/fixtures/images/cases", error)) {
-		if (entry.path().extension() == ".json") {
-			files.push_back(entry.path().filename().string());
-		}
-	}
-	std::sort(files.begin(), files.end());
-	REQUIRE(files.size() >= 10);
-	for (const std::string& file : files) {
-		CAPTURE(file);
-		std::string text = fixture("cases/" + file);
-		Json doc;
-		std::string parse_error;
-		REQUIRE(hc_test::parse_json(text, doc, parse_error));
-		const Json& expect = doc["expect"];
-		REQUIRE(expect.kind == Json::Kind::object);
-		Plan plan;
-		Report report;
-		bool ok = parse(text, plan, report);
-		std::string got = describe(report);
-		CAPTURE(got);
-		CHECK(ok == expect["valid"].boolean);
-		if (ok) {
-			continue;
-		}
-		CHECK(std::string(hc::image::report_kind_name(report.kind)) == expect["kind"].text);
-		const Json& refusals = expect["refusals"];
-		CHECK(report.total == refusals.items.size());
-		for (const Json& refusal : refusals.items) {
-			bool found = false;
-			for (size_t i = 0; i < report.count && !found; ++i) {
-				found = refusal["path"].text == report.refusals[i].path &&
-					std::strstr(report.refusals[i].reason, refusal["reason"].text.c_str()) != nullptr;
-			}
-			CHECK_MESSAGE(found, "expected " << refusal["path"].text << ": ..." << refusal["reason"].text << "...");
-		}
-	}
-}
-
-TEST_CASE("Image.NewerMinorNamedInStrictRefusals") {
-	// From 1.2 on a strict refusal of an image of a newer minor version says the firmware is older
-	// (spec/runtime-image.md I4); an image of the version this firmware reads, or an older one, does not.
-	const char* schedule = R"(, "schedules": [{"id": "s", "label": "S", "kind": "weekly",
-		"time": {"hour": 6, "minute": 0, "second": 0}, "jitter": 1}]})";
-	char newer[16];
-	std::snprintf(newer, sizeof(newer), "%u.%u", static_cast<unsigned>(hc::image::kSchemaMajor),
-		static_cast<unsigned>(hc::image::kSchemaMinor + 1));
-	for (const char* version : {hc::image::schema_version_text(), "1.0", static_cast<const char*>(newer)}) {
-		CAPTURE(version);
-		std::string text = std::string(R"({"image": {"schemaVersion": ")") + version +
-			R"(", "projectId": "p", "revision": 1}, "datapoints": [])" + schedule;
-		Plan plan;
-		Report report;
-		REQUIRE_FALSE(parse(text, plan, report));
-		REQUIRE(report.count == 1);
-		std::string reason = report.refusals[0].reason;
-		if (version == newer) {
-			CHECK(reason == std::string("malformed: unknown member 'jitter' (the image's schema ") + newer +
-				" is newer than this firmware reads, up to " + hc::image::schema_version_text() + ": update the firmware)");
-		} else {
-			CHECK(reason == "malformed: unknown member 'jitter'");
-		}
-	}
-	// A button's presses are strict too (1.4, haumacher/ehome #70): a kind of a newer minor names it.
-	for (const char* version : {hc::image::schema_version_text(), static_cast<const char*>(newer)}) {
-		CAPTURE(version);
-		std::string text = std::string(R"({"image": {"schemaVersion": ")") + version +
-			R"(", "projectId": "p", "revision": 1}, "datapoints": [{"id": "r", "type": "enumeration",
-			"zigbee": {"ieee": "000b57fffe112233", "endpoint": 1, "cluster": 6, "client": true}}],
-			"functions": [{"id": "f", "label": "F", "kind": "button", "presses": {"on": [1], "doubleClick": [2]},
-			"datapoints": {"press": "r"}}]})";
-		Plan plan;
-		Report report;
-		REQUIRE_FALSE(parse(text, plan, report));
-		REQUIRE(report.count == 1);
-		CHECK(std::string(report.refusals[0].path) == "functions[0].presses");
-		std::string reason = report.refusals[0].reason;
-		if (version == newer) {
-			CHECK(reason == std::string("malformed: unknown member 'doubleClick' (the image's schema ") + newer +
-				" is newer than this firmware reads, up to " + hc::image::schema_version_text() + ": update the firmware)");
-		} else {
-			CHECK(reason == "malformed: unknown member 'doubleClick'");
-		}
-	}
-	// A long rule id and member: the reason is cut, never the hint.
-	std::string id(32, 'r'); // the longest rule id
-	std::string member(39, 'm');
-	std::string text = std::string(R"({"image": {"schemaVersion": ")") + newer +
-		R"(", "projectId": "p", "revision": 1}, "datapoints": [], "rules": [{"id": ")" + id + R"(", "name": "R", ")" + member +
-		R"(": 1, "reactions": [{"triggers": [{"kind": "start"}], "actions": []}]}]})";
-	Plan plan;
+TEST_CASE("Image.WorkedExampleValidatesAndLoads") {
 	Report report;
-	REQUIRE_FALSE(parse(text, plan, report));
-	REQUIRE(report.count == 1);
-	std::string reason = report.refusals[0].reason;
-	CAPTURE(reason);
-	CHECK(reason.rfind("rule '" + id, 0) == 0);
-	CHECK(reason.size() <= Report::kMaxReason);
-	CHECK(reason.find(std::string("up to ") + hc::image::schema_version_text() + ": update the firmware)") != std::string::npos);
-}
+	CHECK_MESSAGE(check(minimal(), report), describe(report));
+	CHECK(minimal().size() == 112);
+	CHECK(hc::image::bin::image_crc(minimal().data(), 112) == 0x59772c42u);
+	// E-Home's form of minimal.json, byte for byte.
+	CHECK(hc_test::compiled(fixture("minimal.json")) == minimal());
 
-TEST_CASE("Image.ExampleAndMinimalLoad") {
-	Plan plan;
-	Report report;
-	REQUIRE_MESSAGE(parse(fixture("example.json"), plan, report), describe(report));
-	CHECK(std::string(plan.info.project_id) == "example-house");
-	CHECK(plan.info.revision == 7);
-	CHECK(plan.datapoint_count == 21); // 15, the time master's knx.time, knx.date, four rule parameters (spec/rules.md 8.6)
-	CHECK(plan.info.knx_datapoints == 13);
-	CHECK(plan.info.rules == 2);
-	CHECK(plan.info.schedules == 2);
-	CHECK(plan.info.functions == 9);
-	CHECK(plan.info.locations == 4);
-	CHECK(plan.info.history_rings == 1);
-	CHECK(plan.info.time_master);
-	CHECK(plan.has_tz);
-	CHECK(plan.history_budget == 4096);
-	MESSAGE("example.json: " << fixture("example.json").size() << " bytes, Plan " << sizeof(Plan) << ", Report " << sizeof(Report) << ", load tables " << plan.arena.bytes()
-		<< " bytes");
-
-	// Issue #44: the arena's blocks follow the content (1 KB blocks, a block of its own for a large
-	// table), not 4 KB per arena whatever it holds.
-	CHECK(plan.arena.used() <= plan.arena.bytes());
-	CHECK(plan.arena.bytes() - plan.arena.used() < 2 * hc::image::Arena::kBlockSize);
-
-	Plan minimal;
-	REQUIRE_MESSAGE(parse(fixture("minimal.json"), minimal, report), describe(report));
-	CHECK(minimal.datapoint_count == 0);
-	CHECK(minimal.arena.bytes() < 2048);
-	CHECK_FALSE(minimal.has_rules);
-	CHECK_FALSE(minimal.has_time_master);
-}
-
-TEST_CASE("Image.ArenaSmallPlanAndLargeTables") {
-	// A small plan allocates under 2 KB.
-	Plan plan;
-	Report report;
-	std::string small = R"({"image": {"schemaVersion": "1.0", "projectId": "p", "revision": 1}, )"
-		R"("datapoints": [{"id": "a", "type": "boolean"}, {"id": "b", "type": "real"}]})";
-	REQUIRE_MESSAGE(parse(small, plan, report), describe(report));
-	CHECK(plan.datapoint_count == 2);
-	CHECK(plan.arena.bytes() < 2048);
-	MESSAGE("small plan: " << plan.arena.used() << " of " << plan.arena.bytes() << " bytes used");
-
-	// A large table gets a block of its own; the small ones keep filling the shared block.
-	hc::image::Arena arena;
-	CHECK(arena.allocate(100) != nullptr);
-	size_t one = arena.bytes();
-	CHECK(arena.allocate(5000) != nullptr);
-	CHECK(arena.allocate(100) != nullptr); // still in the first shared block
-	CHECK(arena.bytes() - one < 5000 + 64);
-	CHECK(arena.used() == 104 + 5000 + 104);
-	arena.release();
-	CHECK(arena.bytes() == 0);
-	CHECK(arena.used() == 0);
-}
-
-TEST_CASE("Image.ReportHoldsOneRefusalInlineAndAllocatesTheRestOnDemand") {
-	// Issue #44: the service keeps its report for GET /api/image; without refusals it costs one.
-	static_assert(sizeof(Report) < 2 * sizeof(Report::Refusal), "the room for twelve refusals is not inline");
-	hc_test::AllocationScope counting;
-	{
-		Report report;
-		report.add(Report::Kind::invalid, "a", "first %d", 1);
-		CHECK(counting.count() == 0); // the first is inline
-		for (int i = 2; i <= 14; ++i) {
-			report.add(Report::Kind::apply, "b", "refusal %d", i);
-		}
-		CHECK(report.kind == Report::Kind::invalid);
-		CHECK(report.count == Report::kMaxRefusals);
-		CHECK(report.total == 14);
-		CHECK(std::string(report.refusals[0].reason) == "first 1");
-		CHECK(std::string(report.refusals[11].reason) == "refusal 12");
-		CHECK(counting.live() == Report::kMaxRefusals * sizeof(Report::Refusal));
-		report.clear(); // the next load: the room goes
-		CHECK(counting.live() == 0);
-		CHECK(report.count == 0);
-		report.add(Report::Kind::syntax, "", "again");
-		CHECK(std::string(report.refusals[0].reason) == "again");
-		CHECK(counting.live() == 0);
-	}
-	CHECK(counting.live() == 0);
-}
-
-TEST_CASE("Image.TestSystemTemplate") {
-	// Unfilled, every placeholder is refused with its path.
-	Plan raw;
-	Report report;
-	CHECK_FALSE(parse(fixture("test-system.template.json"), raw, report));
-	CHECK(report.kind == Report::Kind::invalid);
-	CHECK(std::string(report.refusals[0].path) == "knx.timeMaster.time");
-	CHECK(std::string(report.refusals[1].path) == "datapoints[0].knx.listen[0]");
-
-	std::map<std::string, uint16_t> addresses;
-	std::string filled = fill_template(&addresses);
-	CHECK(addresses.size() == 16); // six keys, four channels with state, the temperature, the time
-	Plan plan;
-	REQUIRE_MESSAGE(parse(filled, plan, report), describe(report));
-	CHECK(plan.datapoint_count == 19); // 15, knx.time and three rules' enable switches
-	CHECK(plan.info.functions == 11);
-	CHECK(plan.info.rules == 3);
-	CHECK(plan.info.schedules == 1);
-	CHECK(plan.info.history_rings == 1);
-	MESSAGE("test-system template: " << filled.size() << " bytes, load tables " << plan.arena.bytes() << " bytes");
-}
-
-TEST_CASE("Image.SyntaxAndSizeRefusals") {
-	Plan plan;
-	Report report;
-	CHECK_FALSE(parse("{\"image\": {\"schemaVersion\": \"1.0\",}", plan, report));
-	CHECK(report.kind == Report::Kind::syntax);
-	REQUIRE(report.count == 1);
-	CHECK(std::strstr(report.refusals[0].reason, "at byte") != nullptr);
-
-	Plan array;
-	CHECK_FALSE(parse("[1, 2]", array, report));
-	CHECK(report.kind == Report::Kind::invalid);
-
-	std::string large(hc::image::kMaxImageBytes + 1, ' ');
-	large[0] = '{';
-	large[large.size() - 1] = '}';
-	Plan big;
-	CHECK_FALSE(parse(large, big, report));
-	CHECK(report.kind == Report::Kind::too_large);
-
-	// Deep but within kMaxNesting: refused for its content, not its depth.
-	std::string deep = "{\"image\": {\"schemaVersion\": \"1.0\", \"projectId\": \"d\", \"revision\": 1}, \"ui\": ";
-	for (int i = 0; i < 40; ++i) {
-		deep += "[";
-	}
-	for (int i = 0; i < 40; ++i) {
-		deep += "]";
-	}
-	deep += "}";
-	Plan nested;
-	CHECK_FALSE(parse(deep, nested, report));
-	CHECK(report.kind == Report::Kind::invalid);
-	CHECK(std::string(report.refusals[0].path) == "ui");
-}
-
-TEST_CASE("Image.JsonDepthLimits") {
-	std::string text;
-	for (int i = 0; i < 48; ++i) {
-		text += "[";
-	}
-	for (int i = 0; i < 48; ++i) {
-		text += "]";
-	}
-	hc::JsonSpan span;
-	const char* error = nullptr;
-	CHECK_FALSE(hc::json_parse(text.data(), text.size(), span, &error));
-	CHECK(hc::json_parse(text.data(), text.size(), span, &error, hc::image::kMaxNesting));
-	std::string deeper = "[" + text + "]";
-	size_t offset = 0;
-	CHECK_FALSE(hc::json_parse(deeper.data(), deeper.size(), span, &error, hc::image::kMaxNesting, &offset));
-	CHECK(offset == 48);
-	// The cap holds whatever the caller asks.
-	std::string very(70, '[');
-	very += std::string(70, ']');
-	CHECK_FALSE(hc::json_parse(very.data(), very.size(), span, &error, 1000));
-}
-
-// ---- Store --------------------------------------------------------------------------------------
-
-TEST_CASE("Image.StoreReadsIntoABodyInPieces") {
-	// homecontrol #71: the stored image is read into an ImageBody (the stored staging, or the heap) in
-	// pieces of kReadPiece, the CRC over the pieces; the stored format is the one every firmware wrote.
-	hc_test::FakeBlobStore blobs;
-	ImageStore store(blobs);
-	std::string text(40001, 'x');
-	for (size_t i = 0; i < text.size(); ++i) {
-		text[i] = static_cast<char>('a' + i % 26);
-	}
-	const char* error = nullptr;
-	REQUIRE(store.write(text.data(), text.size(), &error));
-	size_t bytes = 0;
-	REQUIRE(store.stored(bytes));
-
-	hc_test::FakeImageStaging staging;
-	staging.content.reserve(bytes + 1); // the fake's buffer is flash on the device: no growth in the scope
-	hc::image::ImageBody body;
-	REQUIRE(body.begin(bytes, &staging));
-	REQUIRE(body.staged());
-	bool missing = false;
-	{
-		hc_test::AllocationScope scope;
-		REQUIRE(store.read(body, missing, &error));
-		CHECK(scope.largest() == ImageStore::kReadPiece); // the piece, no block of the image's size
-	}
-	CHECK(std::string(body.text(), body.size()) == text);
-	CHECK(body.text()[body.size()] == '\0');
-	// Two chunks of 16384 in 8 pieces each, the last 7233 bytes in 4, and the NUL of finish().
-	CHECK(staging.appends == 8 + 8 + 4 + 1);
-	body.release();
-
-	// Into the heap (no staging, the POSIX build).
-	REQUIRE(body.begin(bytes, nullptr));
-	REQUIRE(store.read(body, missing, &error));
-	CHECK(std::string(body.text(), body.size()) == text);
-	body.release();
-
-	// A body of another size (the image changed after stored()) is refused.
-	REQUIRE(body.begin(bytes - 1, nullptr));
-	CHECK_FALSE(store.read(body, missing, &error));
-	CHECK(std::string(error).find("changed") != std::string::npos);
-	body.release();
-
-	// A staging that fails on the way is refused with the reason.
-	staging.fail_after = 3;
-	REQUIRE(body.begin(bytes, &staging));
-	CHECK_FALSE(store.read(body, missing, &error));
-	CHECK(std::string(error).find("staging") != std::string::npos);
-	body.release();
-	staging.fail_after = 0;
-
-	// A damaged chunk fails the CRC; nothing is finished.
-	blobs.blobs["image.a.1"][100] ^= 1;
-	REQUIRE(body.begin(bytes, &staging));
-	CHECK_FALSE(store.read(body, missing, &error));
-	CHECK(std::string(error).find("checksum") != std::string::npos);
-	CHECK_FALSE(staging.finished);
-	body.release();
-
-	// The format as an earlier firmware stored it, written by hand: manifest "HCIMG 1 <gen> <bytes>
-	// <chunks> <crc32>" and chunks of 16384 bytes.
-	hc_test::FakeBlobStore old;
-	std::string image = "{\"image\": {\"schemaVersion\": \"1.0\"}}" + std::string(20000, ' ');
-	old.blobs["image.b.0"] = std::vector<uint8_t>(image.begin(), image.begin() + 16384);
-	old.blobs["image.b.1"] = std::vector<uint8_t>(image.begin() + 16384, image.end());
-	char manifest[80];
-	std::snprintf(manifest, sizeof(manifest), "HCIMG 1 b %u 2 %08x\n", static_cast<unsigned>(image.size()),
-		static_cast<unsigned>(hc::persist::crc32(0, image.data(), image.size())));
-	old.blobs["image.idx"] = std::vector<uint8_t>(manifest, manifest + std::strlen(manifest));
-	ImageStore earlier(old);
-	REQUIRE(earlier.stored(bytes));
-	REQUIRE(body.begin(bytes, &staging));
-	REQUIRE(earlier.read(body, missing, &error));
-	CHECK(std::string(body.text(), body.size()) == image);
-	body.release();
-
-	// None stored.
-	hc_test::FakeBlobStore empty;
-	ImageStore none(empty);
-	REQUIRE(body.begin(10, nullptr));
-	CHECK_FALSE(none.read(body, missing, &error));
-	CHECK(missing);
-}
-
-
-TEST_CASE("Image.StoreChunksGenerationsAndCrc") {
-	hc_test::FakeBlobStore blobs;
-	ImageStore store(blobs);
-	size_t bytes = 0;
-	CHECK_FALSE(store.stored(bytes));
-
-	std::string text(40000, 'x');
-	for (size_t i = 0; i < text.size(); ++i) {
-		text[i] = static_cast<char>('a' + i % 26);
-	}
-	const char* error = nullptr;
-	REQUIRE(store.write(text.data(), text.size(), &error));
-	REQUIRE(store.stored(bytes));
-	CHECK(bytes == 40000);
-	CHECK(blobs.blobs.count("image.idx") == 1);
-	CHECK(blobs.blobs.count("image.a.0") == 1);
-	CHECK(blobs.blobs.count("image.a.2") == 1);
-	CHECK(blobs.blobs.count("image.a.3") == 0);
-
-	std::string back(bytes, '\0');
-	size_t length = 0;
-	bool missing = false;
-	REQUIRE(store.read(&back[0], back.size(), length, missing, &error));
-	CHECK(length == bytes);
-	CHECK(back == text);
-
-	// Pieces across chunk borders.
-	char part[100];
-	REQUIRE(store.read_part(store.token(), 16350, part, sizeof(part), length));
-	CHECK(length == 100);
-	CHECK(std::string(part, 100) == text.substr(16350, 100));
-	CHECK_FALSE(store.read_part(store.token() + 1, 0, part, sizeof(part), length));
-
-	// A second write goes to the other generation and removes the first.
-	std::string second(20000, 'y');
-	uint32_t first_token = store.token();
-	REQUIRE(store.write(second.data(), second.size(), &error));
-	CHECK(store.token() != first_token);
-	CHECK(blobs.blobs.count("image.a.0") == 0);
-	CHECK(blobs.blobs.count("image.b.0") == 1);
-	CHECK(blobs.blobs.count("image.b.1") == 1);
-
-	// A failing write keeps the stored image.
-	blobs.fail_writes = true;
-	CHECK_FALSE(store.write(text.data(), text.size(), &error));
-	blobs.fail_writes = false;
-	REQUIRE(store.stored(bytes));
-	CHECK(bytes == 20000);
-	std::string kept(bytes, '\0');
-	REQUIRE(store.read(&kept[0], kept.size(), length, missing, &error));
-	CHECK(kept == second);
-
-	// Orphans of an interrupted write are collected.
-	blobs.blobs["image.a.0"] = std::vector<uint8_t>(10, 0);
-	blobs.blobs["image.a.7"] = std::vector<uint8_t>(10, 0);
-	store.collect_garbage();
-	CHECK(blobs.blobs.count("image.a.0") == 0);
-	CHECK(blobs.blobs.count("image.a.7") == 0);
-	CHECK(blobs.blobs.count("image.b.1") == 1);
-	// More orphans than one pass collects (issue #44: a few names per pass, not a static table of all).
-	for (int i = 0; i < 25; ++i) {
-		blobs.blobs["image.a." + std::to_string(i)] = std::vector<uint8_t>(10, 0);
-	}
-	blobs.blobs["image.b.9"] = std::vector<uint8_t>(10, 0); // beyond the stored image's chunk count
-	blobs.blobs["values.x"] = std::vector<uint8_t>(10, 0);  // not the image's
-	store.collect_garbage();
-	CHECK(blobs.blobs.count("image.a.24") == 0);
-	CHECK(blobs.blobs.count("image.b.9") == 0);
-	CHECK(blobs.blobs.count("image.b.0") == 1);
-	CHECK(blobs.blobs.count("image.b.1") == 1);
-	CHECK(blobs.blobs.count("values.x") == 1);
-	blobs.blobs.erase("values.x");
-	size_t image_blobs = 0;
-	for (const auto& blob : blobs.blobs) {
-		image_blobs += blob.first.rfind("image.", 0) == 0 ? 1 : 0;
-	}
-	CHECK(image_blobs == 3); // the manifest and the two chunks
-
-	// A corrupted chunk fails the CRC.
-	blobs.blobs["image.b.1"][5] ^= 1;
-	CHECK_FALSE(store.read(&kept[0], kept.size(), length, missing, &error));
-	CHECK(std::string(error).find("checksum") != std::string::npos);
-
-	REQUIRE(store.remove(&error));
-	CHECK_FALSE(store.stored(bytes));
-	CHECK(blobs.blobs.empty());
-}
-
-TEST_CASE("Image.MemoryBlobStoreKeepsTheContract") {
-	hc::image::MemoryBlobStore store(30000);
-	std::string a(20000, 'a');
-	std::string b(20481, 'b');
-	hc::BlobChunk chunk{a.data(), a.size()};
-	CHECK(store.write("one", &chunk, 1) == hc::BlobStatus::ok);
-	CHECK(store.write(".hidden", &chunk, 1) == hc::BlobStatus::invalid_name);
-	hc::BlobChunk large{b.data(), b.size()};
-	CHECK(store.write("big", &large, 1) == hc::BlobStatus::too_large);
-	CHECK(store.write("two", &chunk, 1) == hc::BlobStatus::no_space); // 40000 > 30000
-	size_t size = 0;
-	REQUIRE(store.size("one", size) == hc::BlobStatus::ok);
-	CHECK(size == 20000);
-	// Replacing counts the old content out.
-	hc::BlobChunk pieces[2] = {{"he", 2}, {"llo", 3}};
-	CHECK(store.write("one", pieces, 2) == hc::BlobStatus::ok);
-	CHECK(store.used() == 5);
-	char buffer[8];
-	size_t length = 0;
-	CHECK(store.read("one", 1, buffer, sizeof(buffer), length) == hc::BlobStatus::ok);
-	CHECK(std::string(buffer, length) == "ello");
-	CHECK(store.read("one", 9, buffer, sizeof(buffer), length) == hc::BlobStatus::ok);
-	CHECK(length == 0);
-	CHECK(store.read("none", 0, buffer, sizeof(buffer), length) == hc::BlobStatus::not_found);
-	CHECK(store.write("two", &chunk, 1) == hc::BlobStatus::ok);
-	CHECK(store.remove("one") == hc::BlobStatus::ok);
-	CHECK(store.remove("one") == hc::BlobStatus::not_found);
-	CHECK(store.used() == 20000);
-	CHECK(store.size("two", size) == hc::BlobStatus::ok);
-
-	// The image store on it: the image as chunks, read back whole.
-	hc::image::MemoryBlobStore ram(96 * 1024);
-	ImageStore images(ram);
-	std::string text = fixture("example.json");
-	const char* error = nullptr;
-	REQUIRE(images.write(text.data(), text.size(), &error));
-	std::string back(text.size(), '\0');
-	bool missing = false;
-	REQUIRE(images.read(&back[0], back.size(), length, missing, &error));
-	CHECK(back == text);
-}
-
-// ---- Service ------------------------------------------------------------------------------------
-
-TEST_CASE("Image.ServiceAppliesStoresAndReloads") {
 	ServiceFixture f;
-	CHECK_FALSE(f.service.loaded());
+	REQUIRE_MESSAGE(f.load_bytes(minimal()), describe(f.service.report()));
+	CHECK(f.service.loaded());
+	CHECK(std::string(f.service.info().project_id) == "minimal");
+	CHECK(std::string(f.service.info().schema_version) == "1.0");
+	CHECK(f.service.info().revision == 0);
+	CHECK(f.service.info().bytes == 112);
+	CHECK(f.service.info().crc == 0x59772c42u);
+	CHECK(f.model.size() == 0);
+	// The slot holds the image as it was received; the view reads it in place.
+	CHECK(std::memcmp(f.slot.bytes(), minimal().data(), 112) == 0);
+	CHECK(f.service.image().bytes() == f.slot.bytes());
+}
+
+TEST_CASE("Image.SignedExampleAndTheInstallationKey") {
+	Report report;
+	CHECK_MESSAGE(check(minimal_signed(), report), describe(report));
+	uint8_t key[hc::kEd25519KeySize];
+	REQUIRE(hc::parse_public_key(kInstallationKey, key));
+	CHECK(hc::image_signature_valid(reinterpret_cast<const char*>(minimal_signed().data()), 112,
+		minimal_signed().data() + 112, key));
+
+	// A device that holds the installation key takes the signed image.
+	{
+		ServiceFixture f(nullptr, nullptr, kInstallationKey);
+		CHECK_MESSAGE(f.load_bytes(minimal_signed()), describe(f.service.report()));
+		CHECK(f.service.info().is_signed);
+		// The unsigned image is refused from its header: the running image stays.
+		CHECK_FALSE(f.load_bytes(minimal()));
+		CHECK(refused_with(f.service.report(), "image.unsigned", "header.flags",
+			"the image is not signed; the device accepts only images signed with the installation key ce7d 4a41 a476 9ee3"));
+		CHECK(f.service.loaded());
+	}
+	// Under the rotated key the signature does not verify: found after the slot was written, no image.
+	{
+		ServiceFixture f(nullptr, nullptr, kRotatedKey);
+		REQUIRE(f.load(fixture("minimal.json")) == false); // unsigned, refused before the erase
+		CHECK_FALSE(f.load_bytes(minimal_signed()));
+		CHECK(refused_with(f.service.report(), "image.bad_signature", "signature",
+			"the signature does not verify under the installation key 90ae 3702 f3a9 63ab"));
+		CHECK_FALSE(f.service.loaded());
+	}
+	// Without a key a signed image loads, its signature unchecked.
+	{
+		ServiceFixture f;
+		CHECK(f.load_bytes(minimal_signed()));
+	}
+}
+
+TEST_CASE("Image.WorkedExampleMutations") {
+	struct Mutation {
+		const char* what;
+		std::vector<uint8_t> bytes;
+		const char* code;
+		const char* path;
+		const char* reason;
+	};
+	std::vector<Mutation> mutations;
+	auto mutate = [](auto change, bool crc = true) {
+		std::vector<uint8_t> b = minimal();
+		change(b);
+		if (crc) {
+			fix_crc(b);
+		}
+		return b;
+	};
+	std::vector<uint8_t> cut(minimal().begin(), minimal().begin() + 100);
+	mutations.push_back({"cut to 100 bytes", cut, "image.format", "header.length", "the header says 112 bytes, the body has 100"});
+	std::string json = fixture("minimal.json");
+	mutations.push_back({"the source text", std::vector<uint8_t>(json.begin(), json.end()), "image.format", "header.magic",
+		"not a runtime image: the magic is 7B 22 69 6D, not 48 43 49 4D (\"HCIM\"): a JSON text (E-Home compiles the image; send the binary form)"});
+	mutations.push_back({"major 2", mutate([](auto& b) { put_u16(b, 4, 2); }), "image.version", "header.major",
+		"format 2.0: this firmware reads format 1 (up to 1.0)"});
+	mutations.push_back({"a byte changed, CRC kept", mutate([](auto& b) { b[0x66] ^= 0x01; }, false), "image.damaged",
+		"header.crc", "the CRC-32 is 59772c42, the bytes give"});
+	mutations.push_back({"strings at 0x61", mutate([](auto& b) { put_u32(b, 0x34, 0x61); }), "image.invalid",
+		"sections[1].offset", "malformed: offset 0x61 is not a multiple of 8"});
+	mutations.push_back({"strings of 12 bytes", mutate([](auto& b) { put_u32(b, 0x38, 12); }), "image.invalid", "strings",
+		"malformed: the last byte is not a NUL"});
+	mutations.push_back({"image entry size 28", mutate([](auto& b) { put_u16(b, 0x2C, 28); }), "image.invalid",
+		"sections[0].entrySize", "malformed: entry size 28 for image, which needs at least 32"});
+	mutations.push_back({"strings id 0x01", mutate([](auto& b) { put_u16(b, 0x30, 0x01); }), "image.invalid", "sections[1].id",
+		"malformed: section 0x01 twice"});
+	mutations.push_back({"strings id 0x61 required", mutate([](auto& b) { put_u16(b, 0x30, 0x61); put_u16(b, 0x32, 1); }),
+		"image.invalid", "sections[1].id", "malformed: section 0x61 is required, but this firmware does not know it"});
+	mutations.push_back({"strings id 0x61 optional", mutate([](auto& b) { put_u16(b, 0x30, 0x61); }), "image.invalid",
+		"sections", "malformed: the section strings (0x02) is missing"});
+	mutations.push_back({"projectId 6", mutate([](auto& b) { put_u32(b, 0x40, 6); }), "image.invalid", "image[0].projectId",
+		"malformed: 6 is no string (not the start of one of the 13 bytes of strings)"});
+	mutations.push_back({"projectId 0", mutate([](auto& b) { put_u32(b, 0x40, 0); }), "image.invalid", "image[0].projectId",
+		"malformed: empty, it is required"});
+	// The image section of two records: the strings move behind it.
+	std::vector<uint8_t> two = minimal();
+	two.insert(two.begin() + 0x60, 32, 0);
+	put_u32(two, 8, static_cast<uint32_t>(two.size()));
+	put_u32(two, 0x28, 64);
+	put_u32(two, 0x34, 0x80);
+	fix_crc(two);
+	mutations.push_back({"two image records", two, "image.invalid", "sections[0].length",
+		"malformed: the section image holds 2 records, it has one"});
+	for (const Mutation& m : mutations) {
+		CAPTURE(m.what);
+		Report report;
+		CHECK_FALSE(check(m.bytes, report));
+		CHECK_MESSAGE(refused_with(report, m.code, m.path, m.reason), describe(report));
+		// The same through the device: never a crash, the reason as the API reports it.
+		ServiceFixture f;
+		CHECK_FALSE(f.load_bytes(m.bytes));
+		CHECK_MESSAGE(refused_with(f.service.report(), m.code, m.path, m.reason), describe(f.service.report()));
+		CHECK_FALSE(f.service.loaded());
+	}
+
+	// A newer minor with an unknown optional section: skipped, the image loads.
+	std::vector<uint8_t> newer = minimal();
+	put_u16(newer, 6, 1);
+	put_u16(newer, 22, 3);
+	newer.insert(newer.begin() + 0x40, 16, 0); // a third table entry: the sections move by 16
+	put_u32(newer, 0x24, 0x50);
+	put_u32(newer, 0x34, 0x70);
+	size_t at = newer.size(); // the new section behind the strings (at 0x80)
+	newer.resize(at + 8, 0xAB);
+	put_u16(newer, 0x40, 0x61);
+	put_u32(newer, 0x44, static_cast<uint32_t>(at));
+	put_u32(newer, 0x48, 8);
+	put_u32(newer, 8, static_cast<uint32_t>(newer.size()));
+	fix_crc(newer);
+	Report report;
+	CHECK_MESSAGE(check(newer, report), describe(report));
+	ServiceFixture f;
+	CHECK_MESSAGE(f.load_bytes(newer), describe(f.service.report()));
+}
+
+// ---- The corpora (spec 13.1) ----------------------------------------------------------------------
+
+TEST_CASE("Image.CompiledCorpus") {
+	// Every image of the corpus loads: its compiled `.bin` when E-Home's compiler made one, else the
+	// source compiled by the test compiler (until the corpus is committed).
+	namespace fs = std::filesystem;
+	size_t bins = 0;
+	size_t sources = 0;
+	for (const char* dir : {"", "cases/"}) {
+		for (const auto& entry : fs::directory_iterator(fs::path(HC_SPEC_DIR "/fixtures/images/") / dir)) {
+			std::string name = entry.path().filename().string();
+			bool json = entry.path().extension() == ".json";
+			if (!json || name.rfind("refuse-", 0) == 0 || name.find("template") != std::string::npos) {
+				continue;
+			}
+			CAPTURE(name);
+			fs::path bin = entry.path();
+			bin.replace_extension(".bin");
+			std::vector<uint8_t> bytes;
+			std::string text;
+			if (fs::exists(bin) && hc_test::read_text(bin.string(), text)) {
+				bytes.assign(text.begin(), text.end());
+				++bins;
+				// E-Home's bytes equal the test compiler's (spec 9.18).
+				CHECK(hc_test::compiled(fixture(std::string(dir) + name)) == bytes);
+			} else {
+				bytes = hc_test::compiled(fixture(std::string(dir) + name));
+				++sources;
+			}
+			ServiceFixture f;
+			CHECK_MESSAGE(f.load_bytes(bytes), describe(f.service.report()));
+		}
+	}
+	MESSAGE("images: " << bins << " compiled by E-Home, " << sources << " by the test compiler");
+	CHECK(bins + sources >= 10);
+
+	// The mutation corpus (spec/fixtures/images/binary/): refused with the expected code, never a crash.
+	fs::path mutations = HC_SPEC_DIR "/fixtures/images/binary";
+	if (fs::exists(mutations)) {
+		for (const auto& entry : fs::directory_iterator(mutations)) {
+			if (entry.path().extension() != ".bin") {
+				continue;
+			}
+			CAPTURE(entry.path().filename().string());
+			std::string text;
+			REQUIRE(hc_test::read_text(entry.path().string(), text));
+			std::vector<uint8_t> bytes(text.begin(), text.end());
+			fs::path expectation = entry.path();
+			expectation.replace_extension(".json");
+			std::string expected;
+			REQUIRE(hc_test::read_text(expectation.string(), expected));
+			hc_test::Json json;
+			std::string parse_error;
+			REQUIRE_MESSAGE(hc_test::parse_json(expected, json, parse_error), parse_error);
+			// The device's key, where the outcome depends on it (spec 13.1 "deviceKey").
+			const char* key = nullptr;
+			if (json.has("deviceKey")) {
+				key = json["deviceKey"].text == "installation" ? kInstallationKey : kRotatedKey;
+			}
+			ServiceFixture f(nullptr, nullptr, key);
+			bool loaded = f.load_bytes(bytes);
+			if (json["code"].kind == hc_test::Json::Kind::null) {
+				CHECK_MESSAGE(loaded, describe(f.service.report()));
+			} else {
+				CHECK_FALSE(loaded);
+				CHECK_MESSAGE(refused_with(f.service.report(), json["code"].text.c_str(), json["path"].text.c_str(),
+								  json["reason"].text.c_str()),
+					describe(f.service.report()));
+			}
+		}
+	}
+}
+
+// ---- The slot ------------------------------------------------------------------------------------
+
+TEST_CASE("Image.BootFromTheSlot") {
+	hc_test::FakeBlobStore blobs;
+	MemoryImageSlot slot;
 	std::string example = fixture("example.json");
-	REQUIRE_MESSAGE(f.load(example), describe(f.service.report()));
-	CHECK(f.service.loaded());
-	CHECK(f.service.stored_ok());
-	CHECK(f.model.size() == 21);
-	CHECK(f.model.find("knx.time") != nullptr);
-	CHECK(f.service.engine().rules().rule_count() == 2);
-	CHECK(f.service.scheduler().size() == 2);
-	CHECK(std::string(f.controller.time_zone()) == "CET-1CEST,M3.5.0,M10.5.0/3");
-	CHECK(f.p.sink.contains("image 'example-house' revision 7 (Example house, schema 1.0) loaded from api"));
-	size_t bytes = 0;
-	REQUIRE(f.service.stored(bytes));
-	CHECK(bytes == example.size());
+	{
+		ServiceFixture f(&blobs, &slot);
+		CHECK_FALSE(f.service.loaded());
+		CHECK(f.service.report().ok()); // an erased slot is no image, not a refusal
+		CHECK(f.p.sink.contains("no runtime image in the slot"));
+		REQUIRE_MESSAGE(f.load(example), describe(f.service.report()));
+		CHECK(f.model.size() == 21);
+	}
+	{
+		ServiceFixture f(&blobs, &slot);
+		CHECK(f.service.loaded());
+		CHECK(f.service.source() == Source::boot);
+		CHECK(f.service.info().revision == 7);
+		CHECK(f.model.size() == 21);
+		CHECK(f.service.engine().rules().rule_count() == 2);
+		CHECK(f.p.sink.contains("loaded from boot"));
+	}
+	// A byte damaged in the slot: refused at boot, no image, the refusal reported.
+	slot.bytes()[200] ^= 0x40;
+	{
+		ServiceFixture f(&blobs, &slot);
+		CHECK_FALSE(f.service.loaded());
+		CHECK(f.service.report().kind == Report::Kind::damaged);
+		CHECK(f.model.size() == 0);
+	}
+	// A slot that holds something else (an old application's bytes): refused, reported.
+	std::memset(slot.bytes(), 0x5A, 64);
+	{
+		ServiceFixture f(&blobs, &slot);
+		CHECK_FALSE(f.service.loaded());
+		CHECK(f.service.report().kind == Report::Kind::format);
+	}
+}
 
-	// A refused image leaves the loaded one running.
-	CHECK_FALSE(f.load(replace(example, "\"revision\": 7", "\"revision\": \"8\"")));
-	CHECK(f.service.loaded());
-	CHECK(f.service.info().revision == 7);
-	CHECK(f.service.report().kind == Report::Kind::invalid);
-	CHECK(f.model.size() == 21);
+TEST_CASE("Image.JsonImagesOfOldFirmwareAreRemoved") {
+	hc_test::FakeBlobStore blobs;
+	blobs.blobs["image.idx"] = {'H', 'C', 'I', 'M', 'G'};
+	blobs.blobs["image.a.0"] = {'{', '}'};
+	blobs.blobs["image.b.1"] = {'{', '}'};
+	blobs.blobs["values"] = {1, 2, 3};
+	ServiceFixture f(&blobs);
+	CHECK(blobs.blobs.count("image.idx") == 0);
+	CHECK(blobs.blobs.count("image.a.0") == 0);
+	CHECK(blobs.blobs.count("image.b.1") == 0);
+	CHECK(blobs.blobs.count("values") == 1);
+}
 
-	// After a restart, the stored image loads at boot and equals the pushed one.
-	ServiceFixture h(&f.blobs.blobs);
-	CHECK(h.service.loaded());
-	CHECK(h.service.info().revision == 7);
-	CHECK(h.service.info().bytes == example.size());
-	CHECK(h.service.source() == Source::boot);
-	CHECK(h.model.size() == 21);
-	CHECK(h.service.stored_ok());
-	CHECK(h.p.sink.contains("loaded from boot"));
+TEST_CASE("Image.ReceiveInPiecesAndBreakOff") {
+	ServiceFixture f;
+	std::vector<uint8_t> bytes = hc_test::compiled(fixture("example.json"));
+	REQUIRE(bytes.size() > 4096);
+	// The body in pieces of 1000 bytes, the first 32 for the header.
+	REQUIRE(f.service.receive_begin(bytes.data(), 32, bytes.size(), Source::api));
+	CHECK(f.service.receiving());
+	CHECK_FALSE(f.service.loaded());
+	for (size_t at = 0; at < bytes.size(); at += 1000) {
+		REQUIRE(f.service.receive_write(bytes.data() + at, std::min<size_t>(1000, bytes.size() - at)));
+	}
+	REQUIRE_MESSAGE(f.service.receive_end(), describe(f.service.report()));
+	CHECK(f.service.loaded());
+	CHECK(f.slot.erased_sectors() == (bytes.size() + 4095) / 4096);
+
+	// A second receive is busy while one is open.
+	REQUIRE(f.service.receive_begin(bytes.data(), 32, bytes.size(), Source::api));
+	CHECK_FALSE(f.service.receive_begin(bytes.data(), 32, bytes.size(), Source::api));
+	CHECK(f.service.report().kind == Report::Kind::busy);
+	// The body breaks off: no image, reported as image.format with the bytes received.
+	REQUIRE(f.service.receive_write(bytes.data(), 4096));
+	f.service.receive_abort();
+	CHECK_FALSE(f.service.loaded());
+	CHECK(refused_with(f.service.report(), "image.format", "header.length", "the body has 4096"));
+	// The flash refuses a write: no image.
+	f.slot.fail_write_after(1);
+	CHECK_FALSE(f.load_bytes(bytes));
+	CHECK_FALSE(f.service.loaded());
+	// Larger than the slot: refused before anything changes.
+	ServiceFixture small(nullptr, nullptr);
+	REQUIRE(small.load_bytes(minimal()));
+	std::vector<uint8_t> huge(MemoryImageSlot::kDefaultSize + 8, 0);
+	std::memcpy(huge.data(), minimal().data(), 32);
+	CHECK_FALSE(small.load_bytes(huge));
+	CHECK(refused_with(small.service.report(), "image.too_large", "header.length",
+		"the device holds at most 524288 (its image slot)"));
+	CHECK(small.service.loaded());
 }
 
 TEST_CASE("Image.SwapKeepsValuesAndFollowsIds") {
@@ -757,7 +619,7 @@ TEST_CASE("Image.SwapKeepsValuesAndFollowsIds") {
 	CHECK(f.dp("living.light.state").value() == hc::Value::of_bool(true));
 	uint64_t updated = f.dp("living.light.state").updated_ms();
 
-	// Revision 8 drops the first datapoint (every id shifts) and changes hall.lux's type.
+	// Revision 8 drops the first datapoint (every id shifts).
 	std::string next = replace(example, "\"revision\": 7", "\"revision\": 8");
 	next = replace(next,
 		"{\"id\": \"living.light\", \"label\": \"Living room light\", \"type\": \"boolean\", \"writable\": true, "
@@ -778,12 +640,35 @@ TEST_CASE("Image.SwapKeepsValuesAndFollowsIds") {
 	CHECK(f.dp("living.light.state").updated_ms() == updated);
 	CHECK(f.dp("hall.lux").value().as_real() == doctest::Approx(10.0));
 	CHECK(f.p.sink.contains("rules started (image)"));
+	CHECK_FALSE(f.service.swap_kept()); // freed once the image applied
 
 	// The presence rule runs on the new ids: presence in the dark switches the hall light (1/1/10).
 	f.telegrams.clear();
 	f.receive(0x0C01, "00 81"); // 1/4/1 hall.presence
 	CHECK(f.sent("09 0A 01 00 81"));
 	CHECK(f.dp("hall.light").value() == hc::Value::of_bool(true));
+}
+
+TEST_CASE("Image.FailedImageLeavesNoImageButKeepsTheValues") {
+	ServiceFixture f;
+	f.connect();
+	std::string example = fixture("example.json");
+	REQUIRE_MESSAGE(f.load(example), describe(f.service.report()));
+	f.pump();
+	f.receive(0x0902, "00 81"); // living.light.state on
+	// A structurally broken image: the slot is gone, the device has no image (I9) ...
+	std::vector<uint8_t> broken = hc_test::compiled(example);
+	put_u32(broken, 0x40 - 0x20 + 0x24, 0x41); // the first section at an odd offset
+	fix_crc(broken);
+	CHECK_FALSE(f.load_bytes(broken));
+	CHECK_FALSE(f.service.loaded());
+	CHECK(f.service.report().kind == Report::Kind::invalid);
+	CHECK(f.model.size() == 0);
+	CHECK(f.service.swap_kept());
+	// ... and E-Home's next deployment of the last valid image finds the values (section 12).
+	REQUIRE_MESSAGE(f.load(example), describe(f.service.report()));
+	CHECK(f.dp("living.light.state").value() == hc::Value::of_bool(true));
+	CHECK_FALSE(f.service.swap_kept());
 }
 
 TEST_CASE("Image.TestSystemBehaviour") {
@@ -793,25 +678,21 @@ TEST_CASE("Image.TestSystemBehaviour") {
 	std::string image = fill_template(&ga);
 	REQUIRE_MESSAGE(f.load(image), describe(f.service.report()));
 	f.run_for(10000);
-	// The states are read on start.
 	CHECK(f.sent(hex2(ga["chA.state"]) + " 01 00 00"));
 	CHECK(f.sent(hex2(ga["temperature"]) + " 01 00 00"));
 
-	// Key 3 toggles channel C from its reported state.
 	f.telegrams.clear();
 	f.receive(ga["key3"], "00 81");
 	CHECK(f.sent(hex2(ga["chC"]) + " 01 00 81"));
 	f.receive(ga["chC.state"], "00 81");
 	f.telegrams.clear();
-	f.receive(ga["key3"], "00 80"); // whatever the key sends
+	f.receive(ga["key3"], "00 80");
 	CHECK(f.sent(hex2(ga["chC"]) + " 01 00 80"));
-	// The other keys are buttons only.
 	f.telegrams.clear();
 	f.receive(ga["key1"], "00 81");
 	CHECK(f.telegrams.empty());
 	CHECK(f.dp("key1").value() == hc::Value::of_bool(true));
 
-	// Channel D switches off two minutes after it reports on.
 	f.telegrams.clear();
 	f.receive(ga["chD.state"], "00 81");
 	f.run_for(119000);
@@ -819,14 +700,13 @@ TEST_CASE("Image.TestSystemBehaviour") {
 	f.run_for(1000);
 	CHECK(f.sent(hex2(ga["chD"]) + " 01 00 80"));
 
-	// The temperature persists and keeps a history.
 	f.receive(ga["temperature"], "00 80 0C 1A"); // 21.0 °C
 	CHECK(f.dp("temperature").value().as_real() == doctest::Approx(21.0));
 	CHECK(f.dp("temperature").has_history());
 	CHECK(f.dp("temperature").persists());
 }
 
-TEST_CASE("Image.UnloadWipes") {
+TEST_CASE("Image.UnloadErasesTheSlot") {
 	ServiceFixture f;
 	REQUIRE(f.load(fixture("example.json")));
 	const char* error = nullptr;
@@ -835,13 +715,12 @@ TEST_CASE("Image.UnloadWipes") {
 	CHECK(f.model.size() == 0);
 	CHECK(f.service.engine().rules().rule_count() == 0);
 	CHECK(f.service.scheduler().size() == 0);
-	size_t bytes = 0;
-	CHECK_FALSE(f.service.stored(bytes));
-	CHECK(f.blobs.blobs.count("image.idx") == 0);
-	// Loads again after the wipe.
+	CHECK(f.slot.bytes()[0] == 0xFF); // erased: no image at the next start
+	ServiceFixture g(&f.blobs, &f.slot);
+	CHECK_FALSE(g.service.loaded());
+	CHECK(g.service.report().ok());
 	REQUIRE(f.load(fixture("minimal.json")));
 	CHECK(f.service.loaded());
-	CHECK(f.model.size() == 0);
 }
 
 TEST_CASE("Image.LedInputs") {
@@ -856,10 +735,35 @@ TEST_CASE("Image.LedInputs") {
 	const char* error = nullptr;
 	REQUIRE(f.service.unload(&error));
 	CHECK(f.controller.led_status() == hc::LedStatus::setup);
+}
 
-	ServiceFixture g;
-	REQUIRE(g.load(fixture("minimal.json")));
-	CHECK(g.controller.led_status() == hc::LedStatus::ready); // no KNX needed
+TEST_CASE("Image.ParameterDatapoints") {
+	// Each rule parameter, the enable switch first, is a datapoint after the time master's
+	// (spec/rules.md 8.6, spec/runtime-image.md 3.3), owned by the rule engine.
+	ServiceFixture f;
+	REQUIRE_MESSAGE(f.load(fixture("example.json")), describe(f.service.report()));
+	REQUIRE(f.model.size() == 21);
+	struct Expected {
+		const char* name;
+		ValueType type;
+	};
+	const Expected expected[] = {
+		{"rule/hall-presence-light/enabled", ValueType::boolean},
+		{"rule/hall-presence-light/timeout", ValueType::unsigned_int},
+		{"rule/hall-presence-light/darkBelow", ValueType::real},
+		{"rule/morning-light/enabled", ValueType::boolean},
+	};
+	for (size_t i = 0; i < 4; ++i) {
+		const hc::Datapoint* dp = f.model.get(static_cast<uint16_t>(17 + i));
+		CAPTURE(expected[i].name);
+		REQUIRE(dp != nullptr);
+		CHECK(std::string(dp->name()) == expected[i].name);
+		CHECK(dp->type() == expected[i].type);
+		CHECK(dp->writable());
+		CHECK_FALSE(dp->persists());
+		REQUIRE(dp->technology() != nullptr);
+		CHECK(std::string(dp->technology()->name()) == "rules");
+	}
 }
 
 // ---- API ----------------------------------------------------------------------------------------
@@ -871,18 +775,19 @@ struct ApiFixture : hc_test::WebFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel};
 	hc_test::FakeBlobStore blobs;
-	ImageService service{controller, model, blobs, adapter, &tunnel};
+	MemoryImageSlot slot;
+	ImageService service{controller, model, blobs, slot, adapter, &tunnel};
 
 	ApiFixture() {
 		service.start();
 		api.set_image(&service);
 	}
 
-	/// GET /api/image, reading the streamed body in pieces as a platform does.
-	std::string get_image(const std::string& cookie, int& status) {
+	/// GET `path`, reading a streamed body in pieces as a platform does.
+	std::string get_stream(const std::string& path, const std::string& cookie, int& status) {
 		hc::WebRequest req;
 		req.method = hc::HttpMethod::get;
-		req.path = "/api/image";
+		req.path = path.c_str();
 		req.query = "";
 		req.cookie = cookie.c_str();
 		req.requested_with = "HomeControl";
@@ -905,23 +810,31 @@ struct ApiFixture : hc_test::WebFixture {
 	}
 };
 
+std::string as_text(const std::vector<uint8_t>& bytes) {
+	return std::string(bytes.begin(), bytes.end());
+}
+
 } // namespace
 
 TEST_CASE("Image.ApiPutGetDeleteStatus") {
 	ApiFixture f;
 	std::string cookie = f.onboard();
-	CHECK(f.api.body_limit(hc::HttpMethod::put, "/api/image") == hc::image::kMaxImageBytes);
-	CHECK(f.api.body_limit(hc::HttpMethod::put, "/api/settings/tz") < hc::image::kMaxImageBytes);
+	CHECK(f.api.body_limit(hc::HttpMethod::put, "/api/image") == MemoryImageSlot::kDefaultSize);
+	char text[128];
+	CHECK(std::string(f.api.body_too_long(hc::HttpMethod::put, "/api/image", 600000, text, sizeof(text))) ==
+		"image.too_large");
+	CHECK(std::string(text) == "the image has 600000 bytes; the device holds at most 524288 (its image slot)");
 
 	int status = 0;
-	f.get_image(cookie, status);
+	f.get_stream("/api/image", cookie, status);
 	CHECK(status == 404);
 	auto r = f.get("/api/status", cookie);
 	REQUIRE(r.status == 200);
 	CHECK_FALSE(r.json["image"]["loaded"].boolean);
+	CHECK(r.json["image"]["slot"].number == 524288);
+	CHECK(r.json["device"]["format"].text == "1.0");
 
-	// Without a session or the CSRF header: refused.
-	std::string example = fixture("example.json");
+	std::string example = as_text(hc_test::compiled(fixture("example.json")));
 	CHECK(f.request(hc::HttpMethod::put, "/api/image", example).status == 401);
 	CHECK(f.request(hc::HttpMethod::put, "/api/image", example, cookie, "", false).status == 403);
 
@@ -930,45 +843,88 @@ TEST_CASE("Image.ApiPutGetDeleteStatus") {
 	CHECK(r.json["ok"].boolean);
 	CHECK(r.json["image"]["projectId"].text == "example-house");
 	CHECK(r.json["image"]["revision"].number == 7);
+	CHECK(r.json["image"]["format"].text == "1.0");
+	CHECK(r.json["image"]["bytes"].number == example.size());
 	CHECK(r.json["counts"]["datapoints"].number == 21);
 	CHECK(r.json["counts"]["rules"].number == 2);
-	CHECK(r.json["stored"].boolean);
 	CHECK(r.json["source"].text == "api");
 
 	r = f.get("/api/status", cookie);
 	CHECK(r.json["image"]["loaded"].boolean);
 	CHECK(r.json["image"]["project"].text == "example-house");
 	CHECK(r.json["image"]["revision"].number == 7);
+	CHECK(r.json["image"]["format"].text == "1.0");
+	CHECK(r.json["image"]["crc"].text.size() == 8);
 
-	CHECK(f.get_image(cookie, status) == example);
+	CHECK(f.get_stream("/api/image", cookie, status) == example);
 	CHECK(status == 200);
 
-	// Refusals: 422 with the report, 400 for bad JSON; the loaded image stays.
-	r = f.request(hc::HttpMethod::put, "/api/image", fixture("cases/refuse-datapoints.json"), cookie);
-	CHECK(r.status == 422);
-	CHECK(r.json["code"].text == "image.invalid");
-	CHECK(r.json["refusals"].items.size() == 4);
-	CHECK(r.json["refusals"].items[0]["path"].text == "datapoints[0].type");
+	// Refused from the header: the running image stays (loaded true, its revision).
+	std::string json = fixture("minimal.json");
+	r = f.request(hc::HttpMethod::put, "/api/image", json, cookie);
+	CHECK(r.status == 400);
+	CHECK(r.json["code"].text == "image.format");
 	CHECK(r.json["loaded"].boolean);
 	CHECK(r.json["revision"].number == 7);
-	r = f.request(hc::HttpMethod::put, "/api/image", "{", cookie);
-	CHECK(r.status == 400);
-	CHECK(r.json["code"].text == "image.bad_json");
-	r = f.request(hc::HttpMethod::put, "/api/image", fixture("cases/refuse-newer-major.json"), cookie);
+	std::vector<uint8_t> major = minimal();
+	put_u16(major, 4, 2);
+	r = f.request(hc::HttpMethod::put, "/api/image", as_text(major), cookie);
 	CHECK(r.status == 422);
 	CHECK(r.json["code"].text == "image.version");
+	// A detached signature is refused.
+	f.image_signature = std::string(128, 'a');
+	r = f.request(hc::HttpMethod::put, "/api/image", example, cookie);
+	CHECK(r.status == 400);
+	CHECK(r.json["code"].text == "image.bad_request");
+	f.image_signature.clear();
+	// Refused after the slot was written: no image, the status says why.
+	std::vector<uint8_t> damaged = minimal();
+	damaged[0x66] ^= 1;
+	r = f.request(hc::HttpMethod::put, "/api/image", as_text(damaged), cookie);
+	CHECK(r.status == 422);
+	CHECK(r.json["code"].text == "image.damaged");
+	CHECK_FALSE(r.json["loaded"].boolean);
 	r = f.get("/api/status", cookie);
-	CHECK(r.json["image"]["revision"].number == 7);
+	CHECK_FALSE(r.json["image"]["loaded"].boolean);
+	CHECK(r.json["image"]["refused"].text == "image.damaged");
+	CHECK(r.json["image"]["reason"].text.find("header.crc: the CRC-32 is") == 0);
+	f.get_stream("/api/image", cookie, status);
+	CHECK(status == 404);
 
+	r = f.request(hc::HttpMethod::put, "/api/image", example, cookie);
+	REQUIRE(r.status == 200);
 	r = f.request(hc::HttpMethod::post, "/api/image", example, cookie);
 	CHECK(r.status == 405);
-
 	r = f.request(hc::HttpMethod::del, "/api/image", "", cookie);
 	CHECK(r.status == 200);
 	CHECK_FALSE(r.json["loaded"].boolean);
-	f.get_image(cookie, status);
+	f.get_stream("/api/image", cookie, status);
 	CHECK(status == 404);
 	CHECK(f.model.size() == 0);
+}
+
+TEST_CASE("Image.ApiPagesServesTheUiSection") {
+	ApiFixture f;
+	std::string cookie = f.onboard();
+	auto r = f.get("/api/pages", cookie);
+	CHECK_FALSE(r.json["loaded"].boolean);
+	REQUIRE(f.request(hc::HttpMethod::put, "/api/image", as_text(hc_test::compiled(fixture("minimal.json"))), cookie)
+				.status == 200);
+	r = f.get("/api/pages", cookie);
+	CHECK(r.body == "{\"pages\":[],\"sections\":[],\"elements\":[],\"series\":[],\"references\":[]}");
+	REQUIRE(f.request(hc::HttpMethod::put, "/api/image", as_text(hc_test::compiled(fixture("pages.json"))), cookie)
+				.status == 200);
+	int status = 0;
+	std::string body = f.get_stream("/api/pages", cookie, status);
+	CHECK(status == 200);
+	size_t length = 0;
+	const char* ui = f.service.image().ui(length);
+	REQUIRE(ui != nullptr);
+	CHECK(body == std::string(ui, length));
+	hc_test::Json pages;
+	std::string parse_error;
+	REQUIRE_MESSAGE(hc_test::parse_json(body, pages, parse_error), parse_error);
+	CHECK(pages["pages"].items.size() > 0);
 }
 
 TEST_CASE("Image.SwapResyncsTheLiveFeed") {
@@ -985,7 +941,7 @@ TEST_CASE("Image.SwapResyncsTheLiveFeed") {
 	f.controller.loop().run_once(f.fake.clock.now_ms);
 	transport.sent.clear();
 
-	auto r = f.request(hc::HttpMethod::put, "/api/image", fixture("example.json"), cookie);
+	auto r = f.request(hc::HttpMethod::put, "/api/image", as_text(hc_test::compiled(fixture("example.json"))), cookie);
 	REQUIRE(r.status == 200);
 	f.controller.loop().run_once(f.fake.clock.now_ms);
 	f.controller.loop().run_once(f.fake.clock.now_ms);
@@ -995,14 +951,12 @@ TEST_CASE("Image.SwapResyncsTheLiveFeed") {
 	CHECK(status.back()["datapoints"].number == 21);
 	auto snapshots = transport.messages(1, "datapoints");
 	REQUIRE(snapshots.size() >= 1);
-	CHECK(snapshots[0]["snapshot"].boolean);
-	CHECK(snapshots[0]["from"].number == 0);
-	CHECK(snapshots[0]["count"].number == 21);
+	CHECK(snapshots.back()["snapshot"].boolean);
+	CHECK(snapshots.back()["count"].number == 21);
 	// The status with the image's longest names still fits one WebSocket message.
-	std::string longest = fixture("minimal.json");
-	longest = replace(longest, "\"projectId\": \"minimal\"", "\"projectId\": \"" + std::string(63, 'p') +
-		"\", \"name\": \"" + std::string(63, 'n') + "\"");
-	REQUIRE(f.request(hc::HttpMethod::put, "/api/image", longest, cookie).status == 200);
+	std::string longest = replace(fixture("minimal.json"), "\"projectId\": \"minimal\"",
+		"\"projectId\": \"" + std::string(63, 'p') + "\", \"name\": \"" + std::string(63, 'n') + "\"");
+	REQUIRE(f.request(hc::HttpMethod::put, "/api/image", as_text(hc_test::compiled(longest)), cookie).status == 200);
 	r = f.get("/api/status", cookie);
 	MESSAGE("status with the longest image names: " << r.body.size() << " bytes");
 	CHECK(r.body.size() + 100 < hc::LiveFeed::kMessageSize);
@@ -1012,111 +966,27 @@ TEST_CASE("Image.SwapResyncsTheLiveFeed") {
 	f.controller.loop().run_once(f.fake.clock.now_ms);
 	snapshots = transport.messages(1, "datapoints");
 	REQUIRE(snapshots.size() >= 1);
-	CHECK(snapshots[0]["count"].number == 0);
-	CHECK(snapshots[0]["done"].boolean);
+	CHECK(snapshots.back()["count"].number == 0);
 }
 
 #if defined(__GLIBC__)
+#include <malloc.h>
 TEST_CASE("Image.MemoryFootprint") {
-	// What a loaded image keeps on the heap (model tables, rule set and runtime, schedules, history
-	// rings, KNX tables; the stored copy is in the blob store and counted apart), measured with
-	// glibc's allocator statistics. 64-bit host: the device's pointers are half as wide.
+	// What a loaded image keeps on the heap (the slot is the platform's, allocated before), measured
+	// with glibc's statistics on the 64-bit host; the compiled bytes are made before the measurement.
 	struct Case {
 		const char* name;
 		std::string text;
 	} cases[] = {{"example.json", fixture("example.json")}, {"test-system template", fill_template()}};
 	for (const Case& c : cases) {
+		std::vector<uint8_t> bytes = hc_test::compiled(c.text);
 		ServiceFixture f;
 		size_t before = mallinfo2().uordblks;
-		REQUIRE(f.load(c.text, Source::file));
+		REQUIRE(f.load_bytes(bytes, Source::file));
 		size_t after = mallinfo2().uordblks;
-		size_t stored = 0;
-		for (const auto& blob : f.blobs.blobs) {
-			stored += blob.second.size();
-		}
-		Plan plan;
-		Report report;
-		REQUIRE(parse(c.text, plan, report));
-		MESSAGE(std::string(c.name) << ": text " << c.text.size() << " B; kept after load " << (after - before)
-			<< " B (blob-store copy " << stored << " B included); while loading also the text, Plan "
-			<< sizeof(Plan) << " B and load tables " << plan.arena.bytes() << " B; history rings "
-			<< f.service.history().bytes() << " B");
-		CHECK(after > before);
+		MESSAGE(c.name << ": image " << bytes.size() << " B; kept after load " << (after - before) << " B (history rings "
+			<< f.service.history().bytes() << " B, swap table kept: " << f.service.swap_kept() << ")");
+		CHECK_FALSE(f.service.swap_kept());
 	}
 }
 #endif
-
-TEST_CASE("Image.ParameterDatapoints") {
-	// Each rule parameter, the enable switch first, is a datapoint after the time master's
-	// (spec/rules.md 8.6, spec/runtime-image.md 3.3).
-	Plan plan;
-	Report report;
-	REQUIRE_MESSAGE(parse(fixture("example.json"), plan, report), describe(report));
-	REQUIRE(plan.datapoint_count == 21);
-	struct Expected {
-		const char* name;
-		ValueType type;
-	};
-	const Expected expected[] = {
-		{"rule/hall-presence-light/enabled", ValueType::boolean},
-		{"rule/hall-presence-light/timeout", ValueType::unsigned_int},
-		{"rule/hall-presence-light/darkBelow", ValueType::real},
-		{"rule/morning-light/enabled", ValueType::boolean},
-	};
-	for (size_t i = 0; i < 4; ++i) {
-		const hc::DatapointSpec& spec = plan.datapoints[17 + i];
-		CAPTURE(expected[i].name);
-		CHECK(std::string(spec.name) == expected[i].name);
-		CHECK(spec.type == expected[i].type);
-		CHECK((spec.flags & DatapointFlags::kWritable) != 0);
-		CHECK((spec.flags & DatapointFlags::kPersist) == 0); // the parameter store keeps them
-		CHECK_FALSE(plan.technology_reads(spec.name));
-	}
-	CHECK(plan.technology_reads("living.temperature"));
-	CHECK_FALSE(plan.technology_reads("away"));
-	CHECK_FALSE(plan.technology_reads("knx.time"));
-	CHECK(plan.technology_reads("not.in.the.image"));
-	// A parameter that is not adjustable: its datapoint is read-only.
-	Plan fixed;
-	REQUIRE_MESSAGE(parse(replace(fixture("example.json"), "\"unit\": \"lx\"}", "\"unit\": \"lx\", \"adjustable\": false}"),
-						fixed, report),
-		describe(report));
-	CHECK(std::string(fixed.datapoints[19].name) == "rule/hall-presence-light/darkBelow");
-	CHECK((fixed.datapoints[19].flags & DatapointFlags::kWritable) == 0);
-}
-
-TEST_CASE("Image.ParameterDatapointRefusals") {
-	auto refused = [](const std::string& text, const char* path, const char* reason) {
-		Plan plan;
-		Report report;
-		CHECK_FALSE(parse(text, plan, report));
-		bool found = false;
-		for (size_t i = 0; i < report.count && !found; ++i) {
-			found = std::string(report.refusals[i].path) == path && std::strstr(report.refusals[i].reason, reason) != nullptr;
-		}
-		CHECK_MESSAGE(found, "expected " << path << ": ..." << reason << "...\n" << describe(report));
-	};
-	// The prefix is reserved.
-	refused(replace(fixture("example.json"), "\"id\": \"away\"", "\"id\": \"rule/away\""), "datapoints[14].id",
-		"the prefix 'rule/' is reserved for the datapoints of rule parameters");
-	// A read of a datapoint no technology can be asked for: the virtual one, a parameter's.
-	const std::string timer_action = "\"actions\": [{\"kind\": \"restartTimer\", \"timer\": \"off\"}]";
-	refused(replace(fixture("example.json"), timer_action,
-				"\"actions\": [{\"kind\": \"restartTimer\", \"timer\": \"off\"}, {\"kind\": \"read\", \"datapoint\": \"away\"}]"),
-		"rules[0].reactions[1].actions[1].datapoint", "notReadable");
-	refused(replace(fixture("example.json"), timer_action,
-				"\"actions\": [{\"kind\": \"read\", \"datapoint\": \"rule/morning-light/enabled\"}]"),
-		"rules[0].reactions[1].actions[0].datapoint", "notReadable");
-	// A rule's own parameter datapoint: it has the parameter.
-	refused(replace(fixture("example.json"), timer_action,
-				"\"actions\": [{\"kind\": \"write\", \"datapoint\": \"rule/hall-presence-light/darkBelow\", "
-				"\"value\": {\"kind\": \"literal\", \"type\": \"real\", \"value\": 10.0}}]"),
-		"rules[0].reactions[1].actions[0].datapoint", "forbidden");
-	// A read of a KNX datapoint loads.
-	Plan plan;
-	Report report;
-	CHECK_MESSAGE(parse(replace(fixture("example.json"), timer_action,
-						  "\"actions\": [{\"kind\": \"read\", \"datapoint\": \"living.temperature\"}]"),
-					  plan, report),
-		describe(report));
-}

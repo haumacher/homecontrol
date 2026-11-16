@@ -25,7 +25,7 @@
 # (assemble, sign) into build-release/<version>/:
 #
 #   assets/   the release assets: the flash parts (bootloader.bin, partition-table.bin,
-#             hc_updater.bin, homecontrol.bin, ota_data_ota0.bin, storage.bin), the ESP Web Tools
+#             hc_updater.bin, homecontrol.bin, image-empty.bin, ota_data_ota0.bin, storage.bin), the ESP Web Tools
 #             manifest install.json, the signed update manifest manifest.json + manifest.sig, the
 #             language packs (i18n-manifest.json, lang-<code>.json.gz), SHA256SUMS, and the ELF
 #             files for core dumps (homecontrol.elf, hc_updater.elf: not on the site)

@@ -250,6 +250,39 @@ struct WebFixture {
 		return request(hc::HttpMethod::get, target, "", cookie, authorization);
 	}
 
+	/// GET `target` whose body may be streamed (WebResponse::stream: the loaded image, the control
+	/// pages), read in pieces with WebApi::read_stream() as a platform does; `streamed` (if given)
+	/// tells whether it was. The JSON is parsed when the body is JSON.
+	Result get_streamed(const std::string& target, const std::string& cookie, bool* streamed = nullptr) {
+		hc::WebRequest req;
+		req.method = hc::HttpMethod::get;
+		req.path = target.c_str();
+		req.query = "";
+		req.cookie = cookie.empty() ? nullptr : cookie.c_str();
+		req.requested_with = "HomeControl";
+		req.source = "192.0.2.7";
+		hc::WebResponse resp(buffer, sizeof(buffer));
+		api_target->handle(req, resp);
+		if (streamed != nullptr) {
+			*streamed = resp.stream;
+		}
+		if (!resp.stream) {
+			return result(resp);
+		}
+		Result r;
+		r.status = resp.status;
+		char piece[1000];
+		while (r.body.size() < resp.stream_length) {
+			size_t length = 0;
+			REQUIRE(api_target->read_stream(resp.stream_token, r.body.size(), piece, sizeof(piece), length));
+			REQUIRE(length > 0);
+			r.body.append(piece, length);
+		}
+		std::string error;
+		JsonReader(r.body).parse(r.json, error);
+		return r;
+	}
+
 	Result post(const std::string& target, const std::string& body, const std::string& cookie = "",
 		const std::string& authorization = "", bool csrf = true) {
 		return request(hc::HttpMethod::post, target, body, cookie, authorization, csrf);

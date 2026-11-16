@@ -1,19 +1,25 @@
 /*
  * Copyright (c) 2026 Bernhard Haumacher
  */
-// Probe of the image loader against spec/rules.md 10.1 (#33, decided 2026-10-18): a rule that writes
-// the output datapoint of a schedule entry is refused when the image is loaded, not when the write
-// happens, and the refusal names the rule's write and the reason.
+// Probe of a schedule entry's output beside a rule (#33, decided 2026-10-18; spec/rules.md 10.1): a
+// rule that writes the output datapoint of a schedule entry is refused when the image is validated,
+// not when the write happens. Since the binary image (issue #87) that refusal is E-Home's
+// (notWritable); the device loads the image whose rule writes another datapoint, with the output
+// datapoint owned by the scheduler.
 
 #include <string>
 
 #include "doctest.h"
+#include "hc/history.h"
 #include "hc/image/loader.h"
+#include "hc/rules/rule_set.h"
+#include "image_support.h"
 #include "test_support.h"
 
 using hc::image::Loader;
 using hc::image::Plan;
 using hc::image::Report;
+namespace bin = hc::image::bin;
 
 namespace {
 
@@ -32,12 +38,6 @@ std::string image_with_rule_writing(const char* datapoint) {
 		"\", \"value\": {\"kind\": \"literal\", \"type\": \"boolean\", \"value\": true}}]}]}]}";
 }
 
-bool parse(const std::string& text, Plan& plan, Report& report) {
-	hc_test::FakeClock clock;
-	Loader loader(clock, hc::HistoryLimits().cap_bytes);
-	return loader.parse(text.data(), text.size(), plan, report);
-}
-
 std::string refusals(const Report& report) {
 	std::string out;
 	for (size_t i = 0; i < report.count; ++i) {
@@ -48,19 +48,29 @@ std::string refusals(const Report& report) {
 
 } // namespace
 
-TEST_CASE("ScheduleOutput.RuleWriteRefusedAtLoad") {
-	Plan plan;
-	Report report;
-	CHECK_FALSE(parse(image_with_rule_writing("schedule.morning"), plan, report));
-	std::string text = refusals(report);
-	CHECK_MESSAGE(text.find("notWritable") != std::string::npos, text);
-	CHECK_MESSAGE(text.find("schedule.morning") != std::string::npos, text);
-}
-
 TEST_CASE("ScheduleOutput.OtherWritesLoad") {
+	hc_test::CompiledImage image;
+	REQUIRE(image.compile(image_with_rule_writing("hall.light")));
+	hc_test::FakeClock clock;
+	Loader loader(clock, hc::HistoryLimits().cap_bytes);
 	Plan plan;
 	Report report;
-	REQUIRE_MESSAGE(parse(image_with_rule_writing("hall.light"), plan, report), refusals(report));
+	REQUIRE_MESSAGE(loader.build(image.view, plan, report), refusals(report));
 	CHECK(plan.info.rules == 1);
 	CHECK(plan.info.schedules == 1);
+	// The output datapoint is the scheduler's (owner 2, member 0: spec/runtime-image.md 10.7); the rule
+	// triggers on the schedule by its index and writes hall.light.
+	const bin::DatapointRec& output = image.view.at<bin::DatapointRec>(bin::kDatapoints, 0);
+	CHECK(std::string(image.view.str(output.name)) == "schedule.morning");
+	CHECK(output.owner == 2);
+	CHECK(output.owner_index == 0);
+	CHECK(output.owner_member == 0);
+	const hc::rules::RuleSet& rules = plan.rule_set;
+	REQUIRE(rules.rule_count() == 1);
+	const hc::rules::Trigger& trigger = rules.trigger(rules.reaction(rules.rule(0).first_reaction).first_trigger);
+	CHECK(trigger.kind == hc::rules::TriggerKind::schedule);
+	CHECK(std::string(rules.schedule(trigger.ref)) == "morning");
+	const hc::rules::Action& write = rules.action(rules.reaction(rules.rule(0).first_reaction).actions.first);
+	CHECK(std::string(image.view.str(image.view.at<bin::DatapointRec>(bin::kDatapoints, write.target).name)) ==
+		"hall.light");
 }

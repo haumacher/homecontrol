@@ -106,6 +106,25 @@ set(hc_storage_stage "${CMAKE_BINARY_DIR}/storage_image")
 file(MAKE_DIRECTORY "${hc_storage_stage}")
 littlefs_create_partition_image(storage "${hc_storage_stage}" FLASH_IN_PROJECT)
 
+# ---- The image slot (issue #87, spec/runtime-image.md 7) --------------------------------------
+#
+# The partition `image` must start erased: an erased slot is "no image", while old bytes there (on
+# 4 MB the slot was part of the application partition before) would be checked as an image at boot
+# and refused. A full flash writes one erased sector (4 KB of 0xFF, image-empty.bin) at its start:
+# the magic is then FF FF FF FF. The rest of the slot is never read without a valid header.
+
+partition_table_get_partition_info(hc_image_offset "--partition-name image" "offset")
+if(NOT hc_image_offset)
+	message(FATAL_ERROR "${HC_PARTITION_CSV} lacks the partition image (spec/runtime-image.md 7)")
+endif()
+set(hc_image_empty_bin "${CMAKE_BINARY_DIR}/image-empty.bin")
+add_custom_command(OUTPUT "${hc_image_empty_bin}"
+	COMMAND ${hc_python} -c "import sys; open(sys.argv[1], 'wb').write(bytes([255]) * 4096)" "${hc_image_empty_bin}"
+	VERBATIM)
+add_custom_target(hc_image_empty ALL DEPENDS "${hc_image_empty_bin}")
+add_dependencies(flash hc_image_empty)
+esptool_py_flash_target_image(flash image "${hc_image_offset}" "${hc_image_empty_bin}")
+
 hc_rewrite_flash_target(flash TRUE)
 hc_rewrite_flash_target(app-flash FALSE)
 

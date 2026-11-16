@@ -10,8 +10,8 @@
 // server (doc/web.md) serves the API and the UI files of web/ui/dist on port 8080 (--http 0: off),
 // the WebSocket on the port above; --demo loads simulated datapoints for UI development. With the
 // setting knx.gateway it keeps a KNXnet/IP tunnel to that gateway (doc/knx.md). --image loads a
-// runtime image (spec/runtime-image.md) at start, with the signature in `<file>.sig` beside it if
-// there is one (needed once the device holds the installation key); PUT /api/image replaces it.
+// binary runtime image (spec/runtime-image.md 9, compiled by E-Home, its signature inside) at
+// start; PUT /api/image replaces it. The image slot is the file `<settings stem>.image.bin`.
 // The blobs (the stored image, persisted values, history rings, the UI's language pack) live in a
 // directory beside the settings file (doc/persistence.md).
 
@@ -34,6 +34,7 @@
 #include "hc/external_values.h"
 #include "hc/fetch_queue.h"
 #include "hc/image/image_service.h"
+#include "hc/posix/file_image_slot.h"
 #include "hc/posix/thread_worker.h"
 #include "hc/language_packs.h"
 #include "hc/mqtt.h"
@@ -103,8 +104,8 @@ void on_signal(int signal) {
 	g_stop = signal;
 }
 
-/// Reads the file `path` into `out`; false (logged) if it cannot be read or exceeds the image limit.
-bool read_image_file(const char* path, std::string& out) {
+/// Reads the file `path` into `out`; false (logged) if it cannot be read. Stops after `limit` + 1 bytes.
+bool read_image_file(const char* path, std::string& out, size_t limit) {
 	std::FILE* file = std::fopen(path, "rb");
 	if (file == nullptr) {
 		hc::Log::error(kTag, "cannot open the image %s: %s", path, std::strerror(errno));
@@ -114,7 +115,7 @@ bool read_image_file(const char* path, std::string& out) {
 	size_t n = 0;
 	while ((n = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
 		out.append(buffer, n);
-		if (out.size() > hc::image::kMaxImageBytes) {
+		if (out.size() > limit) {
 			break;
 		}
 	}
@@ -305,16 +306,13 @@ int main(int argc, char** argv) {
 	hc::knx::GatewaySearch gateway_search(controller.loop(), clock, controller.connectivity(), search_sockets);
 	const UdpSockets udp{knx_socket, search_sockets};
 	hc::posix::FileBlobStore blobs(hc::posix::FileBlobStore::directory_for_settings(settings_path));
-	hc::image::ImageService image(controller, model, blobs, adapter, &tunnel);
-	// The image's store off the loop (#68); declared after the service, so it ends first.
-	hc::posix::ThreadWorker store_worker(executor);
-	image.set_worker(&store_worker);
-	// The storage figures of the status, measured off the loop after a change (#74), on a worker of
-	// their own (the image's store needs its own when a deploy arrives).
+	// The image slot (spec/runtime-image.md 7): a file beside the settings, 512 KB at most.
+	hc::posix::FileImageSlot slot(hc::posix::FileImageSlot::path_for_settings(settings_path));
+	hc::image::ImageService image(controller, model, blobs, slot, adapter, &tunnel);
+	// The storage figures of the status, measured off the loop after a change (#74).
 	hc::StorageStats storage(blobs);
 	hc::posix::ThreadWorker storage_worker(executor);
 	storage.set_worker(&storage_worker);
-	image.set_storage_stats(&storage);
 	// One HTTP client for every request, queued by priority (issue #45 item 13, as on the device).
 	hc::posix::HttplibFetcher fetcher(executor);
 	hc::FetchQueue fetches(controller.loop(), clock, fetcher);
@@ -361,26 +359,12 @@ int main(int argc, char** argv) {
 		image.start();
 		packs.start();
 		if (image_path != nullptr) {
-			std::string text;
-			if (!read_image_file(image_path, text)) {
+			// A binary image (spec/runtime-image.md 9), compiled by E-Home; the signature is inside.
+			std::string bytes;
+			if (!read_image_file(image_path, bytes, slot.size())) {
 				return 1;
 			}
-			// The image's detached signature, if a `<file>.sig` lies next to it (spec/api.md "Signed
-			// runtime images"): needed while the settings hold the installation key.
-			std::string sig_path = std::string(image_path) + ".sig";
-			uint8_t signature[hc::kEd25519SignatureSize];
-			bool has_signature = false;
-			if (std::FILE* sig_file = std::fopen(sig_path.c_str(), "rb")) {
-				char sig_text[hc::kMaxManifestSignature];
-				size_t n = std::fread(sig_text, 1, sizeof(sig_text), sig_file);
-				std::fclose(sig_file);
-				has_signature = hc::parse_signature(sig_text, n, signature);
-				if (!has_signature) {
-					hc::Log::error(kTag, "%s is not a signature (128 hex digits or 64 bytes)", sig_path.c_str());
-					return 1;
-				}
-			}
-			if (!image.load(text.data(), text.size(), hc::image::Source::file, true, has_signature ? signature : nullptr)) {
+			if (!image.load(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), hc::image::Source::file)) {
 				hc::Log::error(kTag, "the image %s was refused (the log above names each problem)", image_path);
 				return 1;
 			}
@@ -399,9 +383,11 @@ int main(int argc, char** argv) {
 		web->set_knx_search(&gateway_search);
 		// Restart and factory reset over the API: the process stops (a supervisor such as systemd with
 		// Restart=always starts it again); the reset first erases the settings and the blobs.
-		web->set_system_handler([&settings, &blobs](hc::SystemAction action) {
+		web->set_system_handler([&settings, &blobs, &slot](hc::SystemAction action) {
 			if (action == hc::SystemAction::factory_reset) {
 				erase_all(settings, blobs);
+				const char* error = nullptr;
+				slot.erase(hc::ImageSlot::kSector, &error); // the image's header: an erased slot
 				hc::Log::warn(kTag, "factory reset over the API: settings and blobs erased; stopping");
 			} else {
 				hc::Log::warn(kTag, "restart requested over the API: stopping (a supervisor starts the process again)");

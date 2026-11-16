@@ -12,11 +12,13 @@
 #include "doctest.h"
 #include "fake_blob_store.h"
 #include "hc/image/image_service.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/telegram_log.h"
 #include "hc/knx/tunnel.h"
 #include "hc/live_feed.h"
 #include "hc/monitor_feed.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "web_test_support.h"
 #include "zigbee_test_support.h"
@@ -85,7 +87,8 @@ struct MonitorFixture : hc_test::WebFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel, &telegrams};
 	hc_test::FakeBlobStore blobs;
-	hc::image::ImageService image{controller, model, blobs, adapter, &tunnel};
+	hc::image::MemoryImageSlot slot;
+	hc::image::ImageService image{controller, model, blobs, slot, adapter, &tunnel};
 	hc_test::FakeTransport transport;
 	LiveFeed feed{api, controller.loop(), transport};
 	std::string cookie;
@@ -100,13 +103,7 @@ struct MonitorFixture : hc_test::WebFixture {
 		api.set_image(&image);
 		REQUIRE(feed.start());
 		cookie = onboard();
-		std::string text = kImage;
-		bool loaded = image.load(text.data(), text.size(), hc::image::Source::api, true);
-		std::string why;
-		for (size_t i = 0; i < image.report().count; ++i) {
-			why += std::string(image.report().refusals[i].path) + ": " + image.report().refusals[i].reason + "\n";
-		}
-		REQUIRE_MESSAGE(loaded, why);
+		REQUIRE_MESSAGE(hc_test::deploy(image, kImage), hc_test::describe(image.report()));
 		run();
 	}
 

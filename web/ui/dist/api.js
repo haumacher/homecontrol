@@ -23,7 +23,7 @@ export async function api(method, path, body, extra = {}) {
 		options.headers["X-Requested-With"] = "HomeControl";
 	}
 	if (body !== undefined) {
-		options.headers["Content-Type"] = "application/json";
+		options.headers["Content-Type"] = (extra.headers && extra.headers["Content-Type"]) || "application/json";
 		options.body = extra.raw ? body : JSON.stringify(body);
 	}
 	let response;

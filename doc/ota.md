@@ -25,17 +25,18 @@ twice the space on a 4 MB module.
 
 Generated per flash size from one table of sizes (`tools/gen_partitions.py`; CI runs it with
 `--check` against the committed CSVs). NVS stays where the single-app table had it, so stored
-settings survive the switch; app partitions start on 64 KB boundaries.
+settings survive the switch; app partitions and the image slot start on 64 KB boundaries.
 
 | Partition | Type / subtype | 4 MB | 8 MB | 16 MB |
 |---|---|---|---|---|
 | (bootloader, partition table at 0x8000) | | 0x0–0x9000 | | |
 | `nvs` | data / nvs | 0x9000, 24 KB | same | same |
 | `phy_init` | data / phy | 0xF000, 4 KB | same | same |
-| `updater` | app / factory | 0x10000, 960 KB | same | same |
-| `app` | app / ota_0 | 0x100000, **2752 KB** | 0x100000, 4096 KB | 0x100000, 6144 KB |
-| `otadata` | data / ota | 0x3B0000, 8 KB | 0x500000 | 0x700000 |
-| `storage` | data / littlefs | 0x3B2000, 204 KB (268 KB before the core dump partition, 312 KB before the Zigbee partitions) | 0x502000, 2956 KB | 0x702000, 9100 KB |
+| `updater` | app / factory | 0x10000, 896 KB (960 KB until issue #87) | same | same |
+| `app` | app / ota_0 | 0xF0000, **2688 KB** (2752 KB at 0x100000 before the image slot) | 0xF0000, 4160 KB | 0xF0000, 6208 KB |
+| `image` | data / 0x40 | 0x390000, 128 KB (spec/runtime-image.md 7) | 0x500000, 512 KB | 0x700000, 512 KB |
+| `otadata` | data / ota | 0x3B0000, 8 KB | 0x580000 | 0x780000 |
+| `storage` | data / littlefs | 0x3B2000, 204 KB (268 KB before the core dump partition, 312 KB before the Zigbee partitions) | 0x582000, 2444 KB | 0x782000, 8588 KB |
 | `coredump` | data / coredump | 0x3E5000, 64 KB (doc/diagnostics.md) | 0x7E5000 | 0xFE5000 |
 | `zb_storage`, `zb_fct`, `zb_db` | data / fat, fat, nvs | 0x3F5000, 16 + 4 + 24 KB (doc/zigbee.md) | 0x7F5000 | 0xFF5000 |
 
@@ -51,42 +52,27 @@ Sizes measured on 2026-10-17 (esp32c6, ESP-IDF 5.3):
 | updater on ESP-IDF 5.5.6 (2026-11-03) | 845,872 B (0xCE430) | 960 KB | 14 % |
 | updater with CORS for the upload (#80, 2026-11-07) | 876,064 B (0xD5E20), +1,376 B over the 874,688 B before it | 960 KB | 11 % |
 | application on ESP-IDF 5.5.6 with Zigbee and E-Home (2026-11-03), 2,355,696 B on 5.3 before | 2,393,856 B (0x248700) | 2752 KB | 15 % |
+| updater in its partition of issue #87 (2026-11-17) | 876,064 B (0xD5E20) | 896 KB | 4.5 % (41 KB; CI keeps 16 KB) |
+| application with the binary runtime image (#87, 2026-11-17) | 2,475,392 B (0x25C580) | 2688 KB | 10 % |
 
-The updater partition is the measured updater plus about 20 %, rounded up to 64 KB; the 4 MB
-application has 2752 KB (originally everything that left the storage at least 256 KB; the storage
-gave the 64 KB of the core dump partition, so the application kept its size). TLS costs the updater only
+The updater partition was the measured updater plus about 20 %, rounded up to 64 KB (960 KB);
+with the staging area for received images gone from behind the updater's image (issue #87) it is
+896 KB, and CI fails when the updater exceeds its partition less a margin of 16 KB
+(`gen_partitions.py --check-updater`). The 4 MB application has 2688 KB at 0xF0000 (originally
+everything that left the storage at least 256 KB; the storage gave the 64 KB of the core dump
+partition, so the application kept its size; then the application gave 128 KB to the runtime
+image's slot and took the 64 KB the updater gave back, issue #87: the firmware of 2026-11-17 takes
+2,475,392 bytes, 10 % stay free). TLS costs the updater only
 about 21 KB because the WiFi stack links mbedTLS anyway, so the updater speaks HTTPS. The
 application grew by about 200 KB with the HTTP client, TLS and the certificate bundle. Both builds
 check their binary against their own partition (factory resp. ota_0) and fail when it does not fit;
 the IDF's generic check additionally prints a warning that the application does not fit the
 updater partition, which is expected.
 
-**The staging area behind the updater (homecontrol #66).** The flash of the `updater` partition
-behind the updater's image is the device's staging area for received runtime images
-(`hc::esp::EspImageStaging`, `platform/esp/components/hc_image`): with the 825,792 B updater of
-5.5.6 on the C6 148 KB (from the image's end rounded up to a 4 KB sector, plus one guard sector, to the
-partition's end). The application never writes the factory partition otherwise, so the space is
-free, and it is not the running partition, which the IDF's write protection
-(`CHECK_WRITE_ADDRESS`, `CONFIG_SPI_FLASH_DANGEROUS_WRITE_ABORTS`) guards as a whole. At boot the
-application verifies the updater's image (`esp_image_verify`, which also gives its length; logged
-as `image staging: N KB in partition 'updater' at 0x…, behind the updater's image (… B, verified in
-… ms) and a guard sector, mapped at 0x… for the received and the stored image; … KB of the address
-space free for mapping`); if it does not verify or cannot be mapped, the staging stays off for that
-boot (logged with the reason) and images are read into the heap. A
-staging erases only the 4 KB sectors the body reaches, as it arrives, never below the guard
-sector, and reads the body back through the area's mapping (`esp_partition_mmap` of the whole area
-once at boot, three of the MMU's 64 KB pages; the 2.5 MB application leaves most of the 16 MB address
-space free; the flash writes invalidate the cache of the pages they reach). Two slots share the area
-(homecontrol #71): the received images (`received()`) and the stored image the image service loads at
-boot and returns to after a failed apply (`stored()`, doc/image.md "Loading the stored image"); a
-slot reserves the sectors it needs at the area's start or, while the other holds that, behind the
-other's reservation, and is refused (the image goes to the heap) when the area has no room beside
-it. The area is mapped once rather than per staging because two mappings of one MMU page share one
-entry: unmapping the first would take the second's text along. The content is transient:
-nothing reads it after a restart, a new staging starts over, and a USB flash of a larger updater
-only shortens the area (it is measured again at the next boot). While the updater runs (an OTA
-update or upload) the application does not, so the two never use the partition at once. An image
-larger than the area goes to the heap as before.
+**The runtime image is not here.** Received runtime images once went to a staging area behind the
+updater's image in the `updater` partition (homecontrol #66, #71). Since issue #87 the image has a
+partition of its own (`image`, spec/runtime-image.md 7), written as it arrives and used in place;
+the updater partition holds the updater alone, and the application never writes it.
 
 **Choosing the flash size.** `HC_FLASH_SIZE` (4MB default, 8MB, 16MB) is a CMake cache variable of
 each build directory, read at its first configure: `idf.py -B build-n8 -D HC_FLASH_SIZE=8MB
@@ -300,8 +286,7 @@ closes, the LED returns to the emergency (or, for an upload with the token, to t
 an upload starts, it turns green.
 
 **The updater's own update is by USB only.** It is small and rarely changes; it cannot replace
-itself while it runs, and the application does not write the factory partition (except the
-staging area behind the updater's image, above). Flash it with the
+itself while it runs, and the application does not write the factory partition. Flash it with the
 full procedure below (`write_flash @flash_args` includes it) or alone:
 `esptool.py ... write_flash 0x10000 platform/esp/updater/build-esp32c6/hc_updater.bin`.
 
@@ -584,17 +569,20 @@ pre-releases) included, and never older than stable: while no pre-release is new
 stable release.
 
 **What the web flasher writes, and the erase decision.** The ESP Web Tools manifest has the parts
-bootloader (0x0), partition table (0x8000), updater (0x10000), application (0x100000), the otadata
-that selects ota_0 (0x3b0000) and the empty LittleFS `storage.bin` (0x3b2000), all of the 4 MB
-table, the only one the page offers (it runs on 8 and 16 MB modules, which then use 4 MB). NVS
-(0x9000), the core dump and the Zigbee partitions are never part of it. With
+bootloader (0x0), partition table (0x8000), updater (0x10000), application (0xF0000), one erased
+sector at the start of the image slot (`image-empty.bin`, 4 KB of 0xFF at 0x390000: the slot then
+holds no image, and the old firmware's bytes there, where the 4 MB application partition used to
+end, are not checked as one), the otadata that selects ota_0 (0x3b0000) and the empty LittleFS
+`storage.bin` (0x3b2000), all of the 4 MB table, the only one the page offers (it runs on 8 and
+16 MB modules, which then use 4 MB). NVS (0x9000), the rest of the image slot, the core dump and the
+Zigbee partitions are never part of it. With
 `new_install_prompt_erase: true` ESP Web Tools 10.4 decides like this (its `install-dialog.js`):
 
 - a board that answers Improv with the firmware name `HomeControl` (opening the port resets it, so
   an installed controller always offers Improv then) gets *Update HomeControl*, written **without
   erase**: WiFi, password, remembered sessions, the E-Home enrollment and installation key, the
-  settings and the Zigbee network survive; the storage (runtime image, values, history, language
-  pack) is replaced by the empty image, because the firmware never formats an unreadable
+  settings and the Zigbee network survive; the runtime image is gone (its slot's first sector is
+  erased) and the storage (values, history, language pack) is replaced by the empty image, because the firmware never formats an unreadable
   partition itself (`hc_storage`) and so the flasher cannot leave it out for a new board. E-Home
   deploys the image again;
 - any other board (new, erased, another firmware, or HomeControl crashing too early for Improv)
@@ -670,15 +658,15 @@ cd platform/esp && idf.py -B build-esp32c6 build
 cd updater && idf.py -B build-esp32c6 build
 ```
 
-Flash everything (bootloader, partition table, updater at 0x10000, application at 0x100000, otadata
-selecting ota_0) from the application's build directory - with the board in download mode as in
+Flash everything (bootloader, partition table, updater at 0x10000, application at 0xF0000, the
+erased first sector of the image slot, otadata selecting ota_0, the empty storage) from the application's build directory - with the board in download mode as in
 `doc/hardware.md`:
 
 ```bash
 cd platform/esp/build-esp32c6 && esptool.py --chip esp32c6 --port /dev/ttyACM1 --before no_reset --after hard_reset write_flash @flash_args
 ```
 
-`app-flash_args` writes only the application (at 0x100000). Then serve a build and update to it:
+`app-flash_args` writes only the application (at 0xF0000). Then serve a build and update to it:
 
 ```bash
 scripts/update-server.py              # serves platform/esp/build-esp32c6 on port 8070, prints the URLs
@@ -700,7 +688,7 @@ recovery took WPS, a new password, a new enrollment and a new Zigbee network. So
    the partitions that do not change while the board runs (updater and application). NVS and
    storage change by themselves between two reads (a few bytes of a running board), so a full
    `verify_flash` reports a mismatch there; that is expected.
-2. Write only the partition the change needs, by its offset (`0x10000` the updater, `0x100000` the
+2. Write only the partition the change needs, by its offset (`0x10000` the updater, `0xF0000` the
    application, `0x3b0000` otadata on the 4 MB layout); never `--erase-all`, never `erase_flash`.
 3. Read the command line in full before running it, wrappers and flags included.
 4. If something was lost after all: `write_flash 0x9000 nvs.bin` (and the other data partitions)

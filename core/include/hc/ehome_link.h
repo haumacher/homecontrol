@@ -11,7 +11,6 @@
 #include "hc/bus_session.h"
 #include "hc/event_loop.h"
 #include "hc/fetch_body.h"
-#include "hc/image/image_body.h"
 #include "hc/json.h"
 #include "hc/live_feed.h"
 #include "hc/platform/http_fetcher.h"
@@ -222,6 +221,10 @@ private:
 	void handshake_message(const JsonSpan& message, const JsonSpan& type);
 	void request(const JsonSpan& message);
 	void dispatch();
+	/// The request's fields as the API takes them (the E-Home principal).
+	WebRequest request_of() const;
+	/// Frees the body; `abort`: a runtime image being received breaks off (no image afterwards).
+	void release_body(bool abort);
 	void answer(const char* id, int status, const char* code, const char* text);
 	void send_response(WebResponse& response);
 	void stream_next();
@@ -278,8 +281,16 @@ private:
 	HttpMethod method_ = HttpMethod::get;
 	char path_[256] = {};           ///< The path; the query follows its NUL.
 	const char* query_ = "";
-	/// A body announced with `length`: the image staging area for PUT /api/image, else the heap.
-	image::ImageBody body_;
+	/// A body announced with `length`: a heap buffer, except the runtime image (PUT /api/image), which
+	/// goes into the image slot as it arrives (issue #87): its first bytes are collected in `head_`
+	/// for WebApi::image_begin(), then every frame is written through ImageService::receive_write().
+	char* body_ = nullptr;
+	size_t body_size_ = 0;
+	size_t body_have_ = 0;
+	bool body_active_ = false;
+	bool image_body_ = false;     ///< The body is the runtime image.
+	bool image_started_ = false;  ///< image_begin() accepted it: the slot is being written.
+	uint8_t head_[32] = {};
 	size_t discard_ = 0;            ///< Binary bytes of a refused request still to be dropped.
 	uint64_t body_progress_ms_ = 0; ///< When the body began or its last frame arrived.
 	bool body_stall_logged_ = false;

@@ -11,6 +11,8 @@
 #include <new>
 #include <utility>
 
+#include "hc/image/binary.h"
+#include "hc/json.h"
 #include "hc/rules/parameter_store.h"
 #include "hc/log.h"
 #include "hc/value_store.h"
@@ -65,90 +67,6 @@ bool mirror_name(const char* block, const char* member, char* out, size_t size) 
 
 namespace {
 
-bool block_id_valid(const char* id) {
-	size_t n = std::strlen(id);
-	if (n == 0 || n > BlockLimits::kIdLength) {
-		return false;
-	}
-	for (size_t i = 0; i < n; ++i) {
-		char c = id[i];
-		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) {
-			return false;
-		}
-	}
-	return true;
-}
-
-/// "1.0" -> 1, 0.
-bool parse_version(const char* text, uint32_t& major, uint32_t& minor) {
-	const char* p = text;
-	auto number = [&p](uint32_t& out) {
-		if (*p < '0' || *p > '9') {
-			return false;
-		}
-		uint32_t value = 0;
-		while (*p >= '0' && *p <= '9') {
-			value = value * 10 + static_cast<uint32_t>(*p - '0');
-			if (value > 9999) {
-				return false;
-			}
-			++p;
-		}
-		out = value;
-		return true;
-	};
-	if (!number(major) || *p != '.') {
-		return false;
-	}
-	++p;
-	return number(minor) && *p == '\0';
-}
-
-bool printable(const char* text, size_t length) {
-	for (size_t i = 0; i < length; ++i) {
-		if (static_cast<unsigned char>(text[i]) < 0x20 || text[i] == 0x7F) {
-			return false;
-		}
-	}
-	return true;
-}
-
-/// A label of spec/rules.md 2.2.
-bool label_valid(const JsonSpan& span) {
-	char buffer[80];
-	size_t length = 0;
-	if (span.kind == JsonSpan::Kind::string) {
-		return json_string(span, buffer, sizeof(buffer), &length) && length >= 1 && length <= 63 &&
-			printable(buffer, length);
-	}
-	if (span.kind != JsonSpan::Kind::object) {
-		return false;
-	}
-	size_t position = 0;
-	JsonSpan key;
-	JsonSpan value;
-	size_t entries = 0;
-	while (json_next_member(span, position, key, value)) {
-		char tag[16];
-		size_t tag_length = 0;
-		if (!json_string(key, tag, sizeof(tag), &tag_length) || tag_length < 2 || tag_length > 8) {
-			return false;
-		}
-		for (size_t i = 0; i < tag_length; ++i) {
-			char c = tag[i];
-			if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) {
-				return false;
-			}
-		}
-		if (value.kind != JsonSpan::Kind::string || !json_string(value, buffer, sizeof(buffer), &length) ||
-			length < 1 || length > 63 || !printable(buffer, length)) {
-			return false;
-		}
-		++entries;
-	}
-	return entries >= 1 && entries <= 16;
-}
-
 /// Whether an input port of `type` reads a datapoint of `dp` (spec/blocks.md 5.3).
 bool input_accepts(PortType type, ValueType dp) {
 	switch (type) {
@@ -169,458 +87,6 @@ bool output_accepts(PortType type, ValueType dp) {
 		case PortType::boolean: return dp == ValueType::boolean;
 	}
 	return false;
-}
-
-/// The members of an instance (spec/blocks.md 4).
-const char* const kMembers[] = {"id", "type", "version", "label", "enabled", "enabledAdjustable", "inputs",
-	"aggregation", "outputs", "parameters", "description", "comment", nullptr};
-
-struct Compiler {
-	const DatapointDirectory& model;
-	const BlockDirectory& directory;
-	const BlockRegistry& registry;
-	BlockLoadResult& result;
-	char path[sizeof(BlockLoadResult::path)] = {};
-	size_t next_bound = 0; ///< The next free slot of the compiled spec's pool of bound ids.
-
-	bool refuse(BlockError error, const char* format, ...) HC_PRINTF_FORMAT(3, 4) {
-		if (result.error != BlockError::none) {
-			return false;
-		}
-		result.error = error;
-		std::snprintf(result.path, sizeof(result.path), "%s", path);
-		va_list args;
-		va_start(args, format);
-		std::vsnprintf(result.text, sizeof(result.text), format, args);
-		va_end(args);
-		return false;
-	}
-
-	void at(const char* format, ...) HC_PRINTF_FORMAT(2, 3) {
-		va_list args;
-		va_start(args, format);
-		std::vsnprintf(path, sizeof(path), format, args);
-		va_end(args);
-	}
-
-	/// A datapoint name into its id.
-	bool datapoint(const JsonSpan& span, uint16_t& id) {
-		char name[Datapoint::kMaxName + 2];
-		if (span.kind != JsonSpan::Kind::string || !json_string(span, name, sizeof(name))) {
-			return refuse(BlockError::malformed, "a datapoint name must be a string of 1..63 bytes");
-		}
-		DatapointRef dp;
-		if (!model.lookup(name, dp)) {
-			return refuse(BlockError::unknown_reference, "no datapoint '%s'", name);
-		}
-		id = dp.id();
-		return true;
-	}
-
-	bool compile(const JsonSpan& item, size_t index, BlockSpec& spec, const BlockSpec* earlier, size_t earlier_count);
-	bool inputs(const JsonSpan& item, size_t index, BlockSpec& spec);
-	bool outputs(const JsonSpan& item, size_t index, BlockSpec& spec, const BlockSpec* earlier, size_t earlier_count);
-	bool parameters(const JsonSpan& item, size_t index, BlockSpec& spec);
-};
-
-bool Compiler::compile(const JsonSpan& item, size_t index, BlockSpec& spec, const BlockSpec* earlier,
-	size_t earlier_count) {
-	at("blocks[%u]", static_cast<unsigned>(index));
-	if (item.kind != JsonSpan::Kind::object) {
-		return refuse(BlockError::malformed, "a block must be an object");
-	}
-	size_t position = 0;
-	JsonSpan key;
-	JsonSpan value;
-	while (json_next_member(item, position, key, value)) {
-		bool known = false;
-		for (const char* const* m = kMembers; *m != nullptr && !known; ++m) {
-			known = json_string_equals(key, *m);
-		}
-		if (!known) {
-			char name[40];
-			if (!json_string(key, name, sizeof(name))) {
-				std::snprintf(name, sizeof(name), "?");
-			}
-			result.strict = true;
-			return refuse(BlockError::malformed, "unknown member '%s'", name);
-		}
-	}
-	JsonSpan member;
-	at("blocks[%u].id", static_cast<unsigned>(index));
-	if (!json_member(item, "id", member)) {
-		at("blocks[%u]", static_cast<unsigned>(index));
-		return refuse(BlockError::malformed, "the member 'id' is missing");
-	}
-	if (member.kind != JsonSpan::Kind::string || !json_string(member, spec.id, sizeof(spec.id)) ||
-		!block_id_valid(spec.id)) {
-		spec.id[0] = '\0';
-		return refuse(BlockError::malformed, "a block id has 1..32 characters of A-Z a-z 0-9 _ -");
-	}
-	std::snprintf(result.block, sizeof(result.block), "%s", spec.id);
-	for (size_t k = 0; k < earlier_count; ++k) {
-		if (std::strcmp(earlier[k].id, spec.id) == 0) {
-			return refuse(BlockError::duplicate_id, "blocks[%u] has the id '%s' too", static_cast<unsigned>(k), spec.id);
-		}
-	}
-	char type[72];
-	at("blocks[%u].type", static_cast<unsigned>(index));
-	if (!json_member(item, "type", member) || member.kind != JsonSpan::Kind::string ||
-		!json_string(member, type, sizeof(type))) {
-		return refuse(BlockError::malformed, "the member 'type' (a type id) is missing or not a string");
-	}
-	char version[16];
-	uint32_t major = 0, minor = 0;
-	at("blocks[%u].version", static_cast<unsigned>(index));
-	if (!json_member(item, "version", member) || member.kind != JsonSpan::Kind::string ||
-		!json_string(member, version, sizeof(version)) || !parse_version(version, major, minor)) {
-		return refuse(BlockError::malformed, "the member 'version' must be \"<major>.<minor>\"");
-	}
-	at("blocks[%u].type", static_cast<unsigned>(index));
-	spec.type = registry.find(type, static_cast<uint16_t>(major));
-	if (spec.type == nullptr || spec.type->manifest().minor < minor) {
-		const BlockType* any = spec.type != nullptr ? spec.type : registry.find_any(type);
-		if (any == nullptr) {
-			return refuse(BlockError::unknown_type, "%s %s (this firmware has no such block type)", type, version);
-		}
-		return refuse(BlockError::unknown_type, "%s %s (this firmware has %u.%u)", type, version,
-			static_cast<unsigned>(any->manifest().major), static_cast<unsigned>(any->manifest().minor));
-	}
-	spec.minor = static_cast<uint16_t>(minor);
-	at("blocks[%u].label", static_cast<unsigned>(index));
-	if (!json_member(item, "label", member)) {
-		at("blocks[%u]", static_cast<unsigned>(index));
-		return refuse(BlockError::malformed, "the member 'label' is missing");
-	}
-	if (!label_valid(member)) {
-		return refuse(BlockError::malformed,
-			"the label must be a string of 1..63 bytes or an object of language tags to such strings");
-	}
-	spec.label = new (std::nothrow) char[member.length + 1];
-	if (spec.label == nullptr) {
-		return refuse(BlockError::out_of_memory, "no memory for the label");
-	}
-	std::memcpy(spec.label, member.data, member.length);
-	spec.label[member.length] = '\0';
-	spec.enabled = true;
-	spec.enabled_adjustable = true;
-	for (const char* flag : {"enabled", "enabledAdjustable"}) {
-		if (json_member(item, flag, member)) {
-			at("blocks[%u].%s", static_cast<unsigned>(index), flag);
-			bool b = false;
-			if (member.kind != JsonSpan::Kind::boolean || !json_bool(member, b)) {
-				return refuse(BlockError::malformed, "'%s' must be true or false", flag);
-			}
-			(flag[7] == '\0' ? spec.enabled : spec.enabled_adjustable) = b;
-		}
-	}
-	const Manifest& m = spec.type->manifest();
-	// The pool of bound ids (spec/blocks.md B20): one slot per output, and as many per input as the
-	// image lists for it (a list longer than the port's multiple is refused below).
-	size_t output_count = m.port_count - m.inputs();
-	size_t listed = 0;
-	JsonSpan inputs_member;
-	if (json_member(item, "inputs", inputs_member) && inputs_member.kind == JsonSpan::Kind::object) {
-		size_t position = 0;
-		JsonSpan key;
-		JsonSpan value;
-		while (json_next_member(inputs_member, position, key, value)) {
-			if (value.kind != JsonSpan::Kind::array) {
-				++listed;
-				continue;
-			}
-			size_t at_item = 0;
-			JsonSpan dp;
-			while (json_next_item(value, at_item, dp)) {
-				++listed;
-			}
-		}
-	}
-	if (output_count + listed > 0xffff) {
-		at("blocks[%u].inputs", static_cast<unsigned>(index));
-		return refuse(BlockError::limit_exceeded, "too many bound datapoints");
-	}
-	spec.bound_size = static_cast<uint16_t>(output_count + listed);
-	spec.ports = new (std::nothrow) PortBinding[m.port_count > 0 ? m.port_count : 1];
-	spec.defaults = new (std::nothrow) double[m.param_count > 0 ? m.param_count : 1];
-	spec.bound = new (std::nothrow) uint16_t[spec.bound_size > 0 ? spec.bound_size : 1];
-	if (spec.ports == nullptr || spec.defaults == nullptr || spec.bound == nullptr) {
-		return refuse(BlockError::out_of_memory, "no memory for the block's tables");
-	}
-	size_t slot = listed;
-	for (size_t p = 0; p < m.port_count; ++p) {
-		uint16_t* own = nullptr;
-		if (m.ports[p].direction == Direction::out) {
-			own = spec.bound + slot++;
-			*own = 0;
-		}
-		spec.ports[p] = PortBinding{own, 0, m.ports[p].default_aggregation};
-	}
-	next_bound = 0;
-	for (size_t p = 0; p < m.param_count; ++p) {
-		spec.defaults[p] = m.params[p].default_value;
-	}
-	return inputs(item, index, spec) && outputs(item, index, spec, earlier, earlier_count) &&
-		parameters(item, index, spec);
-}
-
-bool Compiler::inputs(const JsonSpan& item, size_t index, BlockSpec& spec) {
-	const Manifest& m = spec.type->manifest();
-	JsonSpan list;
-	if (json_member(item, "inputs", list)) {
-		at("blocks[%u].inputs", static_cast<unsigned>(index));
-		if (list.kind != JsonSpan::Kind::object) {
-			return refuse(BlockError::malformed, "'inputs' must be an object of port ids to datapoint names");
-		}
-		size_t position = 0;
-		JsonSpan key;
-		JsonSpan value;
-		while (json_next_member(list, position, key, value)) {
-			char port_id[32];
-			if (!json_string(key, port_id, sizeof(port_id))) {
-				return refuse(BlockError::malformed, "a port id is too long");
-			}
-			at("blocks[%u].inputs.%s", static_cast<unsigned>(index), port_id);
-			int p = m.port(port_id);
-			if (p < 0) {
-				return refuse(BlockError::unknown_reference, "%s has no port '%s'", m.type, port_id);
-			}
-			const PortDecl& decl = m.ports[p];
-			if (decl.direction != Direction::in) {
-				return refuse(BlockError::forbidden, "'%s' is an output of %s: bind it under 'outputs'", port_id, m.type);
-			}
-			PortBinding& b = spec.ports[p];
-			const bool list = value.kind == JsonSpan::Kind::array;
-			size_t count = 1;
-			if (list) {
-				count = 0;
-				size_t at_item = 0;
-				JsonSpan dp;
-				while (json_next_item(value, at_item, dp)) {
-					if (count == decl.multiple) {
-						return refuse(BlockError::forbidden, "the port '%s' takes at most %u datapoint%s", port_id,
-							static_cast<unsigned>(decl.multiple), decl.multiple == 1 ? "" : "s");
-					}
-					++count;
-				}
-				if (count == 0) {
-					return refuse(BlockError::malformed, "an input binds 1..%u datapoints",
-						static_cast<unsigned>(decl.multiple));
-				}
-			}
-			if (next_bound + count > spec.bound_size) {
-				return refuse(BlockError::malformed, "the inputs bind more datapoints than they list");
-			}
-			b.datapoints = spec.bound + next_bound;
-			next_bound += count;
-			size_t at_item = 0;
-			for (size_t k = 0; k < count; ++k) {
-				JsonSpan name = value;
-				if (list) {
-					json_next_item(value, at_item, name);
-					at("blocks[%u].inputs.%s[%u]", static_cast<unsigned>(index), port_id, static_cast<unsigned>(k));
-				}
-				uint16_t id = 0;
-				if (!datapoint(name, id)) {
-					return false;
-				}
-				DatapointRef found;
-				model.lookup(id, found); // resolved by name just before
-				const DatapointRef* dp = &found;
-				char own[Datapoint::kMaxName + 2];
-				std::snprintf(own, sizeof(own), "block/%s/", spec.id);
-				if (std::strncmp(dp->name(), own, std::strlen(own)) == 0) {
-					return refuse(BlockError::forbidden, "'%s' is a datapoint of this block: it cannot be its input",
-						dp->name());
-				}
-				if (!input_accepts(decl.type, dp->type())) {
-					return refuse(BlockError::type_error, "the %s port '%s' cannot read the %s datapoint '%s'",
-						port_type_name(decl.type), port_id, value_type_name(dp->type()), dp->name());
-				}
-				for (size_t e = 0; e < k; ++e) {
-					if (b.datapoints[e] == id) {
-						return refuse(BlockError::malformed, "'%s' is listed twice", dp->name());
-					}
-				}
-				b.datapoints[k] = id;
-			}
-			b.count = static_cast<uint8_t>(count);
-		}
-	}
-	for (size_t p = 0; p < m.port_count; ++p) {
-		if (m.ports[p].direction == Direction::in && m.ports[p].required && spec.ports[p].count == 0) {
-			at("blocks[%u].inputs.%s", static_cast<unsigned>(index), m.ports[p].id);
-			return refuse(BlockError::missing_input, "the required input '%s' of %s is not bound", m.ports[p].id, m.type);
-		}
-	}
-	JsonSpan aggregation;
-	if (json_member(item, "aggregation", aggregation)) {
-		at("blocks[%u].aggregation", static_cast<unsigned>(index));
-		if (aggregation.kind != JsonSpan::Kind::object) {
-			return refuse(BlockError::malformed, "'aggregation' must be an object of port ids to aggregations");
-		}
-		size_t position = 0;
-		JsonSpan key;
-		JsonSpan value;
-		while (json_next_member(aggregation, position, key, value)) {
-			char port_id[32];
-			if (!json_string(key, port_id, sizeof(port_id))) {
-				return refuse(BlockError::malformed, "a port id is too long");
-			}
-			at("blocks[%u].aggregation.%s", static_cast<unsigned>(index), port_id);
-			int p = m.port(port_id);
-			if (p < 0 || m.ports[p].direction != Direction::in) {
-				return refuse(BlockError::unknown_reference, "%s has no input '%s'", m.type, port_id);
-			}
-			char name[16];
-			Aggregation a = Aggregation::none;
-			if (value.kind == JsonSpan::Kind::string && json_string(value, name, sizeof(name))) {
-				a = aggregation_of(name);
-			}
-			if (a == Aggregation::none) {
-				return refuse(BlockError::malformed, "an aggregation is one of mean, min, max, any, all");
-			}
-			if (spec.ports[p].count < 2) {
-				return refuse(BlockError::forbidden, "the input '%s' does not bind several datapoints: nothing to aggregate",
-					port_id);
-			}
-			if ((m.ports[p].aggregations & aggregation_bit(a)) == 0) {
-				return refuse(BlockError::forbidden, "the input '%s' does not allow the aggregation '%s'", port_id,
-					aggregation_name(a));
-			}
-			spec.ports[p].aggregation = a;
-		}
-	}
-	return true;
-}
-
-bool Compiler::outputs(const JsonSpan& item, size_t index, BlockSpec& spec, const BlockSpec* earlier,
-	size_t earlier_count) {
-	const Manifest& m = spec.type->manifest();
-	JsonSpan list;
-	if (!json_member(item, "outputs", list)) {
-		return true;
-	}
-	at("blocks[%u].outputs", static_cast<unsigned>(index));
-	if (list.kind != JsonSpan::Kind::object) {
-		return refuse(BlockError::malformed, "'outputs' must be an object of port ids to datapoint names");
-	}
-	size_t position = 0;
-	JsonSpan key;
-	JsonSpan value;
-	while (json_next_member(list, position, key, value)) {
-		char port_id[32];
-		if (!json_string(key, port_id, sizeof(port_id))) {
-			return refuse(BlockError::malformed, "a port id is too long");
-		}
-		at("blocks[%u].outputs.%s", static_cast<unsigned>(index), port_id);
-		int p = m.port(port_id);
-		if (p < 0) {
-			return refuse(BlockError::unknown_reference, "%s has no port '%s'", m.type, port_id);
-		}
-		const PortDecl& decl = m.ports[p];
-		if (decl.direction != Direction::out) {
-			return refuse(BlockError::forbidden, "'%s' is an input of %s: bind it under 'inputs'", port_id, m.type);
-		}
-		uint16_t id = 0;
-		if (!datapoint(value, id)) {
-			return false;
-		}
-		DatapointRef found;
-				model.lookup(id, found); // resolved by name just before
-				const DatapointRef* dp = &found;
-		const char* owner = directory.owner(dp->name());
-		if (owner != nullptr) {
-			return refuse(BlockError::output_conflict, "'%s' is owned by %s", dp->name(), owner);
-		}
-		if (!dp->writable()) {
-			return refuse(BlockError::not_writable, "'%s' is not writable", dp->name());
-		}
-		if (!output_accepts(decl.type, dp->type())) {
-			return refuse(BlockError::type_error, "the %s port '%s' cannot command the %s datapoint '%s'",
-				port_type_name(decl.type), port_id, value_type_name(dp->type()), dp->name());
-		}
-		auto taken = [id](const BlockSpec& s, size_t limit) {
-			for (size_t q = 0; q < limit; ++q) {
-				if (s.type->manifest().ports[q].direction == Direction::out && s.ports[q].count > 0 &&
-					s.ports[q].datapoints[0] == id) {
-					return static_cast<int>(q);
-				}
-			}
-			return -1;
-		};
-		for (size_t i = 0; i < m.port_count; ++i) { // spec/blocks.md B22: a block does not read its own output
-			if (m.ports[i].direction != Direction::in) {
-				continue;
-			}
-			for (size_t k = 0; k < spec.ports[i].count; ++k) {
-				if (spec.ports[i].datapoints[k] == id) {
-					return refuse(BlockError::forbidden, "'%s' is bound to the input '%s': a block does not read its own output",
-						dp->name(), m.ports[i].id);
-				}
-			}
-		}
-		int q = taken(spec, m.port_count);
-		if (q >= 0) {
-			return refuse(BlockError::output_conflict, "'%s' is bound to the output '%s' already", dp->name(),
-				m.ports[q].id);
-		}
-		for (size_t k = 0; k < earlier_count; ++k) {
-			q = taken(earlier[k], earlier[k].type->manifest().port_count);
-			if (q >= 0) {
-				return refuse(BlockError::output_conflict, "'%s' is the output '%s' of the block '%s'", dp->name(),
-					earlier[k].type->manifest().ports[q].id, earlier[k].id);
-			}
-		}
-		spec.ports[p].datapoints[0] = id;
-		spec.ports[p].count = 1;
-	}
-	return true;
-}
-
-bool Compiler::parameters(const JsonSpan& item, size_t index, BlockSpec& spec) {
-	const Manifest& m = spec.type->manifest();
-	JsonSpan list;
-	if (json_member(item, "parameters", list)) {
-		at("blocks[%u].parameters", static_cast<unsigned>(index));
-		if (list.kind != JsonSpan::Kind::object) {
-			return refuse(BlockError::malformed, "'parameters' must be an object of parameter ids to values");
-		}
-		size_t position = 0;
-		JsonSpan key;
-		JsonSpan value;
-		while (json_next_member(list, position, key, value)) {
-			char id[32];
-			if (!json_string(key, id, sizeof(id))) {
-				return refuse(BlockError::malformed, "a parameter id is too long");
-			}
-			at("blocks[%u].parameters.%s", static_cast<unsigned>(index), id);
-			int p = m.param(id);
-			if (p < 0) {
-				return refuse(BlockError::unknown_reference, "%s has no parameter '%s'", m.type, id);
-			}
-			const char* reason = nullptr;
-			double v = 0;
-			if (!param_from_json(m.params[p], value, v, &reason) || !param_type_ok(m.params[p], v, &reason)) {
-				return refuse(BlockError::type_error, "%s: %s", id, reason);
-			}
-			if (!param_valid(m.params[p], v, &reason)) {
-				return refuse(BlockError::invalid_parameter, "%s: %s", id, reason);
-			}
-			spec.defaults[p] = v;
-		}
-	}
-	size_t blamed = 0;
-	const char* reason = spec.type->check(spec.defaults, blamed);
-	if (reason != nullptr) {
-		if (blamed < m.param_count) {
-			at("blocks[%u].parameters.%s", static_cast<unsigned>(index), m.params[blamed].id);
-		} else {
-			at("blocks[%u].parameters", static_cast<unsigned>(index));
-		}
-		return refuse(BlockError::invalid_parameter, "%s", reason);
-	}
-	return true;
 }
 
 void free_spec(BlockSpec& spec) {
@@ -772,47 +238,230 @@ int BlockSet::find(const char* id) const {
 	return -1;
 }
 
-BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointModel& model, const BlockDirectory& directory,
-	const BlockRegistry& registry) {
-	ModelDirectory datapoints(model);
-	return load(blocks, datapoints, directory, registry);
+namespace {
+
+/// The refusal of a block of the binary image (spec/runtime-image.md 10.8): `<code>: <text>` at `path`.
+bool refuse(BlockLoadResult& result, BlockError error, const char* path, const char* format, ...)
+	HC_PRINTF_FORMAT(4, 5);
+bool refuse(BlockLoadResult& result, BlockError error, const char* path, const char* format, ...) {
+	result.error = error;
+	std::snprintf(result.path, sizeof(result.path), "%s", path);
+	va_list args;
+	va_start(args, format);
+	std::vsnprintf(result.text, sizeof(result.text), format, args);
+	va_end(args);
+	return false;
 }
 
-BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointDirectory& model, const BlockDirectory& directory,
-	const BlockRegistry& registry) {
+/// Compiles block `i` of the image into `spec`.
+bool bind_block(const image::bin::View& view, size_t i, const BlockRegistry& registry, BlockSpec& spec,
+	BlockLoadResult& result) {
+	using namespace image::bin;
+	const BlockRec& r = view.at<BlockRec>(kBlocks, i);
+	char path[sizeof(BlockLoadResult::path)];
+	std::snprintf(spec.id, sizeof(spec.id), "%s", view.str(r.id));
+	std::snprintf(result.block, sizeof(result.block), "%s", spec.id);
+	const char* type = view.str(r.type);
+	std::snprintf(path, sizeof(path), "blocks[%u].type", static_cast<unsigned>(i));
+	spec.type = registry.find(type, r.major);
+	if (spec.type == nullptr || spec.type->manifest().minor < r.minor) {
+		const BlockType* any = spec.type != nullptr ? spec.type : registry.find_any(type);
+		if (any == nullptr) {
+			return refuse(result, BlockError::unknown_type, path, "%s %u.%u (this firmware has no such block type)", type,
+				static_cast<unsigned>(r.major), static_cast<unsigned>(r.minor));
+		}
+		return refuse(result, BlockError::unknown_type, path, "%s %u.%u (this firmware has %u.%u)", type,
+			static_cast<unsigned>(r.major), static_cast<unsigned>(r.minor), static_cast<unsigned>(any->manifest().major),
+			static_cast<unsigned>(any->manifest().minor));
+	}
+	spec.minor = r.minor;
+	JsonWriter counter = JsonWriter::counter();
+	write_label(counter, view, r.label);
+	spec.label = new (std::nothrow) char[counter.length() + 1];
+	if (spec.label == nullptr) {
+		std::snprintf(path, sizeof(path), "blocks[%u]", static_cast<unsigned>(i));
+		return refuse(result, BlockError::out_of_memory, path, "no memory for the label");
+	}
+	JsonWriter json(spec.label, counter.length() + 1);
+	write_label(json, view, r.label);
+	spec.label[counter.length()] = '\0';
+	spec.enabled = (r.flags & 0x01) != 0;
+	spec.enabled_adjustable = (r.flags & 0x02) != 0;
+	const Manifest& m = spec.type->manifest();
+	if (r.port_count > m.port_count) {
+		std::snprintf(path, sizeof(path), "blocks.ports[%u].id", static_cast<unsigned>(r.first_port + m.port_count));
+		return refuse(result, BlockError::unknown_reference, path, "%u ports, the type %s has %u",
+			static_cast<unsigned>(r.port_count), m.type, static_cast<unsigned>(m.port_count));
+	}
+	if (r.parameter_count > m.param_count) {
+		std::snprintf(path, sizeof(path), "blocks.parameters[%u].id",
+			static_cast<unsigned>(r.first_parameter + m.param_count));
+		return refuse(result, BlockError::unknown_reference, path, "%u parameters, the type %s has %u",
+			static_cast<unsigned>(r.parameter_count), m.type, static_cast<unsigned>(m.param_count));
+	}
+	// The pool of bound ids (spec/blocks.md B20): the ports' runs, one slot per unbound output.
+	size_t listed = 0;
+	for (size_t p = 0; p < r.port_count; ++p) {
+		listed += view.at<BlockPortRec>(kBlockPorts, r.first_port + p).bound_count;
+	}
+	size_t outputs = m.port_count - m.inputs();
+	spec.bound_size = static_cast<uint16_t>(listed + outputs);
+	spec.ports = new (std::nothrow) PortBinding[m.port_count > 0 ? m.port_count : 1];
+	spec.defaults = new (std::nothrow) double[m.param_count > 0 ? m.param_count : 1];
+	spec.bound = new (std::nothrow) uint16_t[spec.bound_size > 0 ? spec.bound_size : 1];
+	if (spec.ports == nullptr || spec.defaults == nullptr || spec.bound == nullptr) {
+		std::snprintf(path, sizeof(path), "blocks[%u]", static_cast<unsigned>(i));
+		return refuse(result, BlockError::out_of_memory, path, "no memory for the block's tables");
+	}
+	size_t next = 0;
+	for (size_t p = 0; p < m.port_count; ++p) {
+		const PortDecl& decl = m.ports[p];
+		PortBinding& b = spec.ports[p];
+		b = PortBinding{spec.bound + next, 0, decl.default_aggregation};
+		if (p >= r.port_count) {
+			if (decl.direction == Direction::out) {
+				spec.bound[next++] = 0; // an unbound output keeps its slot
+			}
+			continue;
+		}
+		size_t q = r.first_port + p;
+		const BlockPortRec& port = view.at<BlockPortRec>(kBlockPorts, q);
+		auto at = [&](const char* field) {
+			std::snprintf(path, sizeof(path), "blocks.ports[%u].%s", static_cast<unsigned>(q), field);
+			return path;
+		};
+		if (std::strcmp(view.str(port.id), decl.id) != 0) {
+			return refuse(result, BlockError::unknown_reference, at("id"), "port '%s' at position %u, the type has '%s'",
+				view.str(port.id), static_cast<unsigned>(p), decl.id);
+		}
+		if (decl.direction == Direction::out) {
+			if (port.bound_count > 1) {
+				return refuse(result, BlockError::forbidden, at("boundCount"), "more datapoints than 'multiple'");
+			}
+			if (port.mirror == kNone) {
+				return refuse(result, BlockError::forbidden, at("mirror"), "the output '%s' has no mirror", decl.id);
+			}
+			if (port.aggregation != 0) {
+				return refuse(result, BlockError::forbidden, at("aggregation"), "an output has no aggregation");
+			}
+			spec.bound[next] = 0;
+			if (port.bound_count == 1) {
+				uint16_t id = view.at<uint16_t>(kBlockBound, port.first_bound);
+				ValueType type = static_cast<ValueType>(view.at<DatapointRec>(kDatapoints, id).type);
+				if (!output_accepts(decl.type, type)) {
+					return refuse(result, BlockError::type_error, at("firstBound"),
+						"the %s port '%s' cannot command the %s datapoint '%s'", port_type_name(decl.type), decl.id,
+						value_type_name(type), view.str(view.at<DatapointRec>(kDatapoints, id).name));
+				}
+				spec.bound[next] = id;
+				b.count = 1;
+			}
+			++next;
+			continue;
+		}
+		if (port.bound_count > decl.multiple) {
+			return refuse(result, BlockError::forbidden, at("boundCount"), "more datapoints than 'multiple' (%u)",
+				static_cast<unsigned>(decl.multiple));
+		}
+		if ((port.mirror != kNone) != (port.bound_count > 1)) {
+			return refuse(result, BlockError::forbidden, at("mirror"),
+				"an input has a mirror exactly when it is bound to more than one datapoint");
+		}
+		if (port.bound_count > 1) {
+			Aggregation a = static_cast<Aggregation>(port.aggregation);
+			if (a == Aggregation::none || (decl.aggregations & aggregation_bit(a)) == 0) {
+				return refuse(result, BlockError::forbidden, at("aggregation"), "the input '%s' does not allow the aggregation %u",
+					decl.id, static_cast<unsigned>(port.aggregation));
+			}
+			b.aggregation = a;
+		} else if (port.aggregation != 0) {
+			return refuse(result, BlockError::forbidden, at("aggregation"),
+				"the input '%s' does not bind several datapoints: nothing to aggregate", decl.id);
+		}
+		for (size_t k = 0; k < port.bound_count; ++k) {
+			uint16_t id = view.at<uint16_t>(kBlockBound, port.first_bound + k);
+			const DatapointRec& dp = view.at<DatapointRec>(kDatapoints, id);
+			ValueType type = static_cast<ValueType>(dp.type);
+			if (!input_accepts(decl.type, type)) {
+				return refuse(result, BlockError::type_error, at("firstBound"),
+					"the %s port '%s' cannot read the %s datapoint '%s'", port_type_name(decl.type), decl.id,
+					value_type_name(type), view.str(dp.name));
+			}
+			spec.bound[next + k] = id;
+		}
+		b.count = port.bound_count;
+		next += port.bound_count;
+	}
+	for (size_t p = 0; p < m.port_count; ++p) {
+		if (m.ports[p].direction == Direction::in && m.ports[p].required && spec.ports[p].count == 0) {
+			std::snprintf(path, sizeof(path), "blocks[%u].firstPort", static_cast<unsigned>(i));
+			return refuse(result, BlockError::missing_input, path, "the required input '%s' of %s is not bound",
+				m.ports[p].id, m.type);
+		}
+	}
+	for (size_t p = 0; p < m.param_count; ++p) {
+		const ParamDecl& decl = m.params[p];
+		spec.defaults[p] = decl.default_value;
+		if (p >= r.parameter_count) {
+			continue; // a newer minor of the type: the manifest's default, not adjustable (9.15)
+		}
+		size_t q = r.first_parameter + p;
+		const BlockParameterRec& param = view.at<BlockParameterRec>(kBlockParameters, q);
+		auto at = [&](const char* field) {
+			std::snprintf(path, sizeof(path), "blocks.parameters[%u].%s", static_cast<unsigned>(q), field);
+			return path;
+		};
+		if (std::strcmp(view.str(param.id), decl.id) != 0) {
+			return refuse(result, BlockError::unknown_reference, at("id"), "parameter '%s' at position %u, the type has '%s'",
+				view.str(param.id), static_cast<unsigned>(p), decl.id);
+		}
+		if ((param.datapoint != kNone) != decl.adjustable) {
+			return refuse(result, BlockError::invalid_parameter, at("datapoint"),
+				"the parameter '%s' %s a datapoint", decl.id, decl.adjustable ? "is adjustable and needs" : "is not adjustable and has no");
+		}
+		if ((param.flags & 0x01) != 0) {
+			const char* reason = nullptr;
+			if (!param_type_ok(decl, param.value, &reason)) {
+				return refuse(result, BlockError::type_error, at("value"), "%s: %s", decl.id, reason);
+			}
+			if (!param_valid(decl, param.value, &reason)) {
+				return refuse(result, BlockError::invalid_parameter, at("value"), "%s: %s", decl.id, reason);
+			}
+			spec.defaults[p] = param.value;
+		}
+	}
+	size_t blamed = 0;
+	const char* reason = spec.type->check(spec.defaults, blamed);
+	if (reason != nullptr) {
+		if (blamed < m.param_count && blamed < r.parameter_count) {
+			std::snprintf(path, sizeof(path), "blocks.parameters[%u].value", static_cast<unsigned>(r.first_parameter + blamed));
+		} else {
+			std::snprintf(path, sizeof(path), "blocks[%u]", static_cast<unsigned>(i));
+		}
+		return refuse(result, BlockError::invalid_parameter, path, "%s", reason);
+	}
+	return true;
+}
+
+} // namespace
+
+BlockLoadResult BlockSet::bind(const image::bin::View& view, const BlockRegistry& registry) {
 	clear();
 	BlockLoadResult result;
-	Compiler c{model, directory, registry, result};
-	c.at("blocks");
-	if (blocks.kind != JsonSpan::Kind::array) {
-		c.refuse(BlockError::malformed, "'blocks' must be an array");
-		return result;
-	}
-	size_t count = 0;
-	size_t position = 0;
-	JsonSpan item;
-	while (json_next_item(blocks, position, item)) {
-		++count;
-	}
-	if (count > BlockLimits::kBlocks) {
-		c.refuse(BlockError::limit_exceeded, "%u blocks exceed the limit of %u", static_cast<unsigned>(count),
-			static_cast<unsigned>(BlockLimits::kBlocks));
-		return result;
-	}
+	size_t count = view.count(image::bin::kBlocks);
 	if (count == 0) {
 		return result;
 	}
 	BlockSpec* specs = new (std::nothrow) BlockSpec[count];
 	if (specs == nullptr) {
-		c.refuse(BlockError::out_of_memory, "no memory for %u blocks", static_cast<unsigned>(count));
+		refuse(result, BlockError::out_of_memory, "blocks", "no memory for %u blocks", static_cast<unsigned>(count));
 		return result;
 	}
 	std::memset(static_cast<void*>(specs), 0, sizeof(BlockSpec) * count);
-	position = 0;
 	size_t done = 0;
 	bool ok = true;
-	while (ok && json_next_item(blocks, position, item)) {
-		ok = c.compile(item, done, specs[done], specs, done);
+	while (ok && done < count) {
+		ok = bind_block(view, done, registry, specs[done], result);
 		++done;
 	}
 	// The persistence keys of the device must not collide (spec/blocks.md 11): the record blobs and
@@ -820,9 +469,10 @@ BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointDirectory&
 	for (size_t i = 0; ok && i < count; ++i) {
 		for (size_t k = 0; ok && k < i; ++k) {
 			if (persist::fnv1a(specs[i].id) == persist::fnv1a(specs[k].id)) {
-				c.at("blocks[%u].id", static_cast<unsigned>(i));
-				ok = c.refuse(BlockError::limit_exceeded, "the state records of '%s' and '%s' collide in the device's storage",
-					specs[i].id, specs[k].id);
+				char path[24];
+				std::snprintf(path, sizeof(path), "blocks[%u]", static_cast<unsigned>(i));
+				ok = refuse(result, BlockError::limit_exceeded, path,
+					"the persistence keys of '%s' and '%s' collide in the device's store", specs[i].id, specs[k].id);
 			}
 		}
 	}
@@ -833,7 +483,7 @@ BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointDirectory&
 		}
 		uint64_t* hashes = new (std::nothrow) uint64_t[keys];
 		if (hashes == nullptr) {
-			ok = c.refuse(BlockError::out_of_memory, "no memory to check the stored overrides' keys");
+			ok = refuse(result, BlockError::out_of_memory, "blocks", "no memory to check the stored overrides' keys");
 		} else {
 			size_t n = 0;
 			for (size_t i = 0; i < count; ++i) {
@@ -847,9 +497,8 @@ BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointDirectory&
 			std::sort(hashes, hashes + n);
 			for (size_t i = 1; ok && i < n; ++i) {
 				if (hashes[i] == hashes[i - 1]) {
-					c.at("blocks");
-					ok = c.refuse(BlockError::limit_exceeded, "two stored parameter overrides of the blocks collide in the "
-						"device's storage");
+					ok = refuse(result, BlockError::limit_exceeded, "blocks",
+						"two stored parameter overrides of the blocks collide in the device's store");
 				}
 			}
 			delete[] hashes;
@@ -871,82 +520,6 @@ BlockLoadResult BlockSet::load(const JsonSpan& blocks, const DatapointDirectory&
 			sizeof(uint16_t) * specs[i].bound_size;
 	}
 	return result;
-}
-
-size_t implied_datapoints(const JsonSpan& blocks, const BlockRegistry& registry, ImpliedDatapoint* out,
-	size_t capacity, size_t first) {
-	if (blocks.kind != JsonSpan::Kind::array) {
-		return 0;
-	}
-	size_t count = 0;
-	auto add = [&](const char* id, const char* member, ValueType type, uint8_t flags) {
-		if (out != nullptr && count >= first && count - first < capacity) {
-			ImpliedDatapoint& d = out[count - first];
-			if (!mirror_name(id, member, d.name, sizeof(d.name))) {
-				return;
-			}
-			d.type = type;
-			d.flags = flags;
-		}
-		++count;
-	};
-	size_t position = 0;
-	JsonSpan item;
-	while (json_next_item(blocks, position, item)) {
-		JsonSpan member;
-		char id[BlockLimits::kIdLength + 2];
-		char type[72];
-		char version[16];
-		uint32_t major = 0, minor = 0;
-		if (item.kind != JsonSpan::Kind::object || !json_member(item, "id", member) ||
-			!json_string(member, id, sizeof(id)) || !block_id_valid(id) || !json_member(item, "type", member) ||
-			!json_string(member, type, sizeof(type)) || !json_member(item, "version", member) ||
-			!json_string(member, version, sizeof(version)) || !parse_version(version, major, minor)) {
-			continue;
-		}
-		const BlockType* t = registry.find(type, static_cast<uint16_t>(major));
-		if (t == nullptr) {
-			continue;
-		}
-		const Manifest& m = t->manifest();
-		bool adjustable = true;
-		bool b = false;
-		if (json_member(item, "enabledAdjustable", member) && json_bool(member, b)) {
-			adjustable = b;
-		}
-		uint8_t commandable = DatapointFlags::kWritable | DatapointFlags::kTransmit;
-		add(id, "enabled", ValueType::boolean, adjustable ? commandable : 0);
-		for (size_t p = 0; p < m.param_count; ++p) {
-			if (m.params[p].adjustable) {
-				add(id, m.params[p].id, param_datapoint_type(m.params[p].type), commandable);
-			}
-		}
-		for (size_t p = 0; p < m.port_count; ++p) {
-			if (m.ports[p].direction == Direction::out) {
-				add(id, m.ports[p].id, port_datapoint_type(m.ports[p].type), 0);
-			}
-		}
-		JsonSpan inputs;
-		if (json_member(item, "inputs", inputs) && inputs.kind == JsonSpan::Kind::object) {
-			for (size_t p = 0; p < m.port_count; ++p) {
-				JsonSpan bound;
-				if (m.ports[p].direction != Direction::in || !json_member(inputs, m.ports[p].id, bound) ||
-					bound.kind != JsonSpan::Kind::array) {
-					continue;
-				}
-				size_t n = 0;
-				size_t at = 0;
-				JsonSpan dp;
-				while (json_next_item(bound, at, dp)) {
-					++n;
-				}
-				if (n > 1) {
-					add(id, m.ports[p].id, port_datapoint_type(m.ports[p].type), 0);
-				}
-			}
-		}
-	}
-	return count;
 }
 
 } // namespace hc::blocks

@@ -31,7 +31,7 @@ bool mount() {
 	if (err != ESP_OK) {
 		std::snprintf(g_failure, sizeof(g_failure), "cannot mount the storage partition (%s); flash storage.bin",
 			esp_err_to_name(err));
-		Log::error(kTag, "%s (doc/persistence.md): values, history and the runtime image are not saved", g_failure);
+		Log::error(kTag, "%s (doc/persistence.md): values and history are not saved", g_failure);
 		return false;
 	}
 	g_mounted = true;

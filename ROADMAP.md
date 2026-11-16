@@ -306,3 +306,21 @@ outside world (weather, external services).
   session's 3.4 KB are heap while it runs. The capability is the presence of `ehome.bus` in the
   status. Not on the local `/ws`. Rejected: the controller executing E-Home's download plan; a device
   setting allowing it; the monitor's `send` to individual addresses.
+- **2026-11-16 — The runtime image is binary, compiled by E-Home, in one flash slot, used in place
+  (homecontrol #87, haumacher/ehome#176; the owner's design).** The device keeps no JSON reader for
+  images: E-Home validates the JSON source form and compiles it (spec/runtime-image.md 9); the
+  device writes the received image straight into its partition `image` (128 KB from `app` on 4 MB,
+  512 KB from `storage` on 8 and 16 MB), validates its structure once (signature on receipt only;
+  header, CRC and structure on receipt and at boot) and works from the mapped bytes. One slot: the
+  old image is gone with the first written byte, a failed image leaves none, E-Home sends the last
+  valid deployment again; values and rule runtime cross a swap in a RAM table keyed by id hashes.
+  Rejected: two slots (A/B) on the device, the JSON image with its staging area behind the updater,
+  chunked LittleFS generations and heap fallback (firmware up to 1.2), CBOR, a bytecode for the rules
+  (the flat expression tree the engine evaluated already is the format). Every controller is flashed
+  once over USB with the new partition table; nothing is migrated.
+- **2026-11-17 — The updater partition shrinks to 896 KB, the application gains its 64 KB
+  (homecontrol #87, agreed with the owner).** With the staging area for received images gone, the
+  updater (876 064 B) needs no room behind its image: `updater` 0x10000, 896 KB; `app` from 0xF0000
+  (2 688 KB on 4 MB, 4 160 and 6 208 KB on 8 and 16 MB); `image`, `otadata` and `storage` keep their
+  offsets. CI fails when the updater exceeds its partition less 16 KB. Every controller is flashed
+  over USB once anyway for the new table.

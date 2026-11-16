@@ -40,8 +40,8 @@ VERSION = re.compile(r'^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$')
 # The update channels (hc::setting::kUpdateChannel): each one a directory of the site.
 CHANNELS = ('stable', 'beta')
 PAGE_FILES = ('index.html', 'de/index.html', 'flasher.css', 'flasher.js')
-FLASH_PARTS = ('bootloader.bin', 'partition-table.bin', 'hc_updater.bin', 'homecontrol.bin', 'ota_data_ota0.bin',
-			   'storage.bin')
+FLASH_PARTS = ('bootloader.bin', 'partition-table.bin', 'hc_updater.bin', 'homecontrol.bin', 'image-empty.bin',
+			   'ota_data_ota0.bin', 'storage.bin')
 
 
 def precedence(version):

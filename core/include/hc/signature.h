@@ -57,12 +57,12 @@ bool parse_signature(const char* data, size_t length, uint8_t signature[kEd25519
 /// The signature construction of a runtime image (spec/api.md "Signed runtime images"): plain
 /// Ed25519 over the 52-byte message
 ///
-///     "homecontrol-image-v1" (20 ASCII bytes) || SHA-256(image bytes) (32 bytes)
+///     "homecontrol-image-v2" (20 ASCII bytes) || SHA-256(image[0, signedEnd)) (32 bytes)
 ///
 /// The image is hashed as it arrives, so the signed message is short and the memory flat whatever the
 /// image's size; the prefix keeps a signature of an image from being anything else the installation
 /// key may sign one day.
-constexpr char kImageSignatureContext[] = "homecontrol-image-v1";
+constexpr char kImageSignatureContext[] = "homecontrol-image-v2";
 constexpr size_t kImageSignatureContextLength = sizeof(kImageSignatureContext) - 1;
 constexpr size_t kImageMessageSize = kImageSignatureContextLength + 32;
 

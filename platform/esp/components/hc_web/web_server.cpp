@@ -26,7 +26,7 @@
 #include "lwip/sockets.h"
 #include "mbedtls/md.h"
 #include "mbedtls/pkcs5.h"
-#include "hc/image/image_body.h"
+#include "hc/image/image_service.h"
 #include "hc/log.h"
 #include "hc/network_settings.h"
 #include "hc/signature.h"
@@ -222,7 +222,7 @@ void EspCrypto::pbkdf2_sha256(const uint8_t* password, size_t password_length, c
 // ---- The job slot (httpd task -> event loop) ---------------------------------------------------
 
 struct WebServer::Job {
-	enum class Kind : uint8_t { api, api_poll, api_stream, ws_open, ws_message };
+	enum class Kind : uint8_t { api, api_poll, api_stream, image_begin, image_abort, ws_open, ws_message };
 
 	Kind kind = Kind::api;
 	uint32_t sequence = 0;
@@ -237,7 +237,8 @@ struct WebServer::Job {
 	char cookie[48] = {};
 	char authorization[kMaxAuthorization] = {};
 	char requested_with[kMaxRequestedWith] = {};
-	/// X-Image-Signature (128 hex digits; a longer value becomes "invalid", which the API refuses).
+	/// X-Image-Signature, the detached signature of firmware up to 1.2 (a longer value becomes
+	/// "invalid"); the API refuses a PUT /api/image that carries it (the signature is in the image).
 	char image_signature[2 * kEd25519SignatureSize + 1] = {};
 	char source[Auth::kMaxSource] = {};
 	// The request body of an api job and the text of a ws_message job share their storage: the
@@ -246,6 +247,9 @@ struct WebServer::Job {
 		char body[WebApi::kMaxBody + 1];
 		char text[kMaxIncoming + 1];
 	};
+
+	// image_begin: the announced length of a streamed PUT /api/image, its outcome in stream_ok
+	size_t image_length = 0;
 
 	// api_stream: the piece at `offset` of the streamed document `token`, into g_response
 	uint32_t stream_token = 0;
@@ -429,7 +433,7 @@ bool remove_tree(char* path, size_t capacity) {
 void WebServer::remove_legacy_ui() {
 	// Up to firmware 2026-11 the UI was a directory of the storage partition, written by flashing
 	// storage.bin; it now comes with the firmware (ui_files.h). Its about 30 blocks go back to the
-	// device's state (the stored runtime image, values and history; haumacher/homecontrol#45).
+	// device's state (values and history; haumacher/homecontrol#45).
 	if (!storage_mount()) {
 		return;
 	}
@@ -603,6 +607,14 @@ void WebServer::run_job(void* context, const LoopMessage&) {
 			job.stream_ok = self.api_.read_stream(job.stream_token, job.stream_offset, g_response, sizeof(g_response),
 				job.stream_got);
 			break;
+		case Job::Kind::image_begin:
+			job.stream_ok = self.api_.image_begin(job.request, job.image_length, job.response);
+			break;
+		case Job::Kind::image_abort:
+			if (self.api_.image() != nullptr) {
+				self.api_.image()->receive_abort();
+			}
+			break;
 		case Job::Kind::ws_open:
 			self.feed_.open(job.handle, job.has_cookie ? job.cookie : nullptr, job.has_origin ? job.origin : nullptr,
 				job.has_host ? job.host : nullptr);
@@ -621,6 +633,8 @@ void WebServer::run_job(void* context, const LoopMessage&) {
 			case Job::Kind::api: what = method_text(job.request.method); path = job.request.path; break;
 			case Job::Kind::api_poll: what = "poll"; path = job.request.path; break;
 			case Job::Kind::api_stream: what = "stream"; path = job.request.path; break;
+			case Job::Kind::image_begin: what = "image begin"; path = job.request.path; break;
+			case Job::Kind::image_abort: what = "image abort"; path = job.request.path; break;
 			case Job::Kind::ws_open: what = "WebSocket open"; break;
 			case Job::Kind::ws_message: what = "WebSocket message"; break;
 		}
@@ -669,72 +683,43 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 	if (query != nullptr) {
 		*query++ = '\0';
 	}
-	size_t limit = api_.body_limit(method_of(req->method), job.path);
+	HttpMethod method = method_of(req->method);
+	size_t limit = api_.body_limit(method, job.path);
 	if (req->content_len > limit) {
 		static char text[128];
-		api_.body_too_long(method_of(req->method), job.path, req->content_len, text, sizeof(text));
+		const char* code = api_.body_too_long(method, job.path, req->content_len, text, sizeof(text));
 		Log::warn(kTag, "refusing %s: %s", job.path, text);
-		return send_refusal(req, 413, "api.body_too_large", text);
+		return send_refusal(req, 413, code, text);
 	}
-	HttpMethod method = method_of(req->method);
 	if (const char* busy = api_.body_refusal(method, job.path)) {
-		// The previous image is still being stored off the loop (#68): not even the body is read.
+		// Another image is being received (issue #87): not even the body is read.
 		Log::warn(kTag, "refusing %s: %s", job.path, busy);
 		httpd_resp_set_hdr(req, "Retry-After", "1");
 		return send_refusal(req, 503, "image.busy", busy);
 	}
-	// A large body (the runtime image) in the image staging area (#66) or a heap buffer of its own,
-	// released on every path out (unless the image service took it over for its store, #68).
-	image::ImageBody large;
-	bool use_large = req->content_len > WebApi::kMaxBody;
-	if (use_large) {
-		const char* staging_refusal = nullptr;
-		if (!large.begin(req->content_len, api_.body_staging(method, job.path), &staging_refusal)) {
-			Log::warn(kTag, "refusing a %u-byte body for %s: no heap block that large (largest %u B)%s%s",
-				static_cast<unsigned>(req->content_len), job.path,
-				static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
-				staging_refusal != nullptr ? "; the staging area declined: " : "",
-				staging_refusal != nullptr ? staging_refusal : "");
-			return send_refusal(req, 507, "api.no_memory", "the device has not enough free memory for this body");
-		}
-		if (staging_refusal != nullptr) {
-			Log::info(kTag, "the %u-byte body for %s goes to the heap: %s", static_cast<unsigned>(req->content_len),
-				job.path, staging_refusal);
-		}
-	}
+	// PUT /api/image is written into the image slot as it arrives (issue #87, spec/runtime-image.md 6):
+	// only its first bytes (the header) go to the loop with the request.
+	bool image_put = method == HttpMethod::put && std::strcmp(job.path, "/api/image") == 0 && api_.image() != nullptr;
 	job.kind = Job::Kind::api;
 	job.request = WebRequest();
 	job.response = WebResponse(g_response, sizeof(g_response));
 
+	size_t first = req->content_len;
+	if (image_put && first > kImageHead) {
+		first = kImageHead;
+	}
 	size_t received = 0;
-	while (received < req->content_len) {
-		// A large body passes through the job's buffer in pieces.
-		char* into = use_large ? job.body : job.body + received;
-		size_t room = use_large ? WebApi::kMaxBody : req->content_len - received;
-		size_t want = req->content_len - received < room ? req->content_len - received : room;
-		int n = httpd_req_recv(req, into, want);
+	while (received < first) {
+		int n = httpd_req_recv(req, job.body + received, first - received);
 		if (n == HTTPD_SOCK_ERR_TIMEOUT) {
 			continue;
 		}
 		if (n <= 0) {
 			return ESP_FAIL; // connection lost: httpd closes it
 		}
-		if (use_large && !large.append(into, static_cast<size_t>(n))) {
-			Log::warn(kTag, "refusing the body for %s: the staging area failed", job.path);
-			return send_refusal(req, 507, "api.no_memory", "the device could not store this body");
-		}
 		received += static_cast<size_t>(n);
 	}
-	const char* body = job.body;
-	if (use_large) {
-		body = large.finish();
-		if (body == nullptr) {
-			Log::warn(kTag, "refusing the body for %s: the staged body cannot be read", job.path);
-			return send_refusal(req, 507, "api.no_memory", "the device could not read this body back");
-		}
-	} else {
-		job.body[received] = '\0';
-	}
+	job.body[received] = '\0';
 
 	WebRequest& request = job.request;
 	request.method = method;
@@ -747,19 +732,21 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 	request.requested_with =
 		copy_header(req, "X-Requested-With", job.requested_with, sizeof(job.requested_with), "invalid")
 		? job.requested_with : nullptr;
+	// The detached signature of firmware up to 1.2: the core refuses a request that carries it.
 	request.image_signature =
 		copy_header(req, "X-Image-Signature", job.image_signature, sizeof(job.image_signature), "invalid")
 		? job.image_signature : nullptr;
 	peer_address(httpd_req_to_sockfd(req), job.source, sizeof(job.source));
 	request.source = job.source;
-	request.body = body;
+	request.body = job.body;
 	request.body_length = received;
-	request.body_holder = use_large ? &large : nullptr;
 
-	if (!run_on_loop()) {
-		if (use_large) {
-			wait_job(); // the late job still reads the body
+	if (image_put) {
+		esp_err_t failed = ESP_OK;
+		if (!receive_image(req, received, failed)) {
+			return failed;
 		}
+	} else if (!run_on_loop()) {
 		return send_refusal(req, 503, "api.busy", "the controller is busy; try again");
 	}
 	if (job.response.needs_hash) {
@@ -797,7 +784,7 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 			return send_refusal(req, 504, "api.timeout", "the answer did not come in time");
 		}
 	}
-	if (!use_large) {
+	if (!image_put) {
 		std::memset(job.body, 0, received + 1); // may hold a password
 	}
 
@@ -817,6 +804,77 @@ esp_err_t WebServer::handle_api(httpd_req_t* req) {
 		return send_stream(req, response.stream_length, response.stream_token);
 	}
 	return httpd_resp_send(req, response.body, static_cast<ssize_t>(response.length));
+}
+
+void WebServer::run_on_loop_to_end() {
+	for (;;) {
+		wait_job(); // a job that timed out runs later
+		if (run_on_loop()) {
+			return;
+		}
+		wait_job();
+		if (job_->done.load() == job_->sequence) {
+			return; // it ran late
+		}
+		vTaskDelay(pdMS_TO_TICKS(10)); // the loop's queue was full: post it again
+	}
+}
+
+bool WebServer::receive_image(httpd_req_t* req, size_t head, esp_err_t& failed) {
+	Job& job = *job_;
+	size_t length = req->content_len;
+	// The header check, the swap's preparation and the stop of the running image, on the loop. The
+	// job must run even when the loop is slow: a receive it opened must be written or aborted.
+	job.kind = Job::Kind::image_begin;
+	job.image_length = length;
+	job.stream_ok = false;
+	run_on_loop_to_end();
+	if (!job.stream_ok) {
+		return true; // refused (the running image untouched): job.response holds the answer
+	}
+	image::ImageService& image = *api_.image();
+	const char* broke = nullptr;
+	bool writing = image.receive_write(job.body, head);
+	size_t received = head;
+	uint32_t timeouts = 0;
+	while (received < length && broke == nullptr) {
+		size_t want = length - received < WebApi::kMaxBody ? length - received : WebApi::kMaxBody;
+		int n = httpd_req_recv(req, job.body, want);
+		if (n == HTTPD_SOCK_ERR_TIMEOUT) {
+			if (++timeouts >= kImageRecvTimeouts) {
+				broke = "the client sent nothing for too long";
+			}
+			continue;
+		}
+		if (n <= 0) {
+			broke = "the connection was lost";
+			break;
+		}
+		timeouts = 0;
+		// After a refused write the rest is read and dropped; receive_end() reports the refusal.
+		if (writing && !image.receive_write(job.body, static_cast<size_t>(n))) {
+			writing = false;
+			Log::warn(kTag, "PUT /api/image: the slot refused the bytes at %u; reading the rest of the body",
+				static_cast<unsigned>(received));
+		}
+		received += static_cast<size_t>(n);
+	}
+	if (broke != nullptr) {
+		Log::warn(kTag, "PUT /api/image broke off after %u of %u bytes: %s; the device has no image",
+			static_cast<unsigned>(received), static_cast<unsigned>(length), broke);
+		job.kind = Job::Kind::image_abort;
+		run_on_loop_to_end();
+		failed = ESP_FAIL; // httpd closes the connection
+		return false;
+	}
+	// The check of the whole image and its application (spec/runtime-image.md 6 steps 4 to 12).
+	job.kind = Job::Kind::api;
+	job.request.image_streamed = true;
+	job.request.body = nullptr;
+	job.request.body_length = 0;
+	job.response = WebResponse(g_response, sizeof(g_response));
+	run_on_loop_to_end();
+	return true;
 }
 
 esp_err_t WebServer::send_stream(httpd_req_t* req, size_t length, uint32_t token) {

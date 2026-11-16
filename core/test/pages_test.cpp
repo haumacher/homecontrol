@@ -1,37 +1,32 @@
 /*
  * Copyright (c) 2026 Bernhard Haumacher
  */
-// The control pages of the runtime image (issue #54, schema 1.1, spec/runtime-image.md 3.9): the
-// fixture spec/fixtures/images/pages.json loads, its tables in the UI model, GET /api/pages, the
-// limits of section 5 and what they cost, the 1.0 images that still load, and the datapoint
-// metadata the page controls use (ranges, choices of /api/model; the history's store and mean).
+// The control pages of the runtime image (issue #54, spec/runtime-image.md 3.9; binary since issue
+// #87, 9.16): the image's `ui` section, which the compiler writes from the source's `ui.pages`, is
+// served unchanged by GET /api/pages (spec/api.md: five flat lists, the defaults resolved, the
+// datapoints by their index, one response without paging); the fixtures spec/fixtures/images/pages.json
+// and ehome-72-pages.json, the limits of section 5 in one response, the images without pages, and the
+// datapoint metadata the page controls use (ranges, choices of /api/model; the history's store and
+// mean).
 
 #include <cstring>
 #include <map>
 #include <string>
-
-#if defined(__GLIBC__)
-#include <malloc.h>
-#endif
+#include <vector>
 
 #include "doctest.h"
 #include "fake_blob_store.h"
 #include "hc/image/image_service.h"
-#include "hc/image/loader.h"
-#include "hc/image/model_view.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "test_support.h"
 #include "web_test_support.h"
 
 using hc::HttpMethod;
-using hc::image::Consolidation;
-using hc::image::Loader;
-using hc::image::ModelView;
-using hc::image::Plan;
-using hc::image::Report;
 using hc_test::WebFixture;
 
 namespace {
@@ -40,20 +35,6 @@ std::string fixture(const std::string& name) {
 	std::string text;
 	REQUIRE_MESSAGE(hc_test::read_text(HC_SPEC_DIR "/fixtures/images/" + name, text), "missing fixture " << name);
 	return text;
-}
-
-std::string describe(const Report& report) {
-	std::string out = std::string(hc::image::report_kind_name(report.kind)) + ":";
-	for (size_t i = 0; i < report.count; ++i) {
-		out += std::string("\n  ") + report.refusals[i].path + ": " + report.refusals[i].reason;
-	}
-	return out;
-}
-
-bool parse(const std::string& text, Plan& plan, Report& report) {
-	hc_test::FakeClock clock;
-	Loader loader(clock, hc::HistoryLimits().cap_bytes);
-	return loader.parse(text.data(), text.size(), plan, report);
 }
 
 std::string replace(std::string text, const std::string& from, const std::string& to) {
@@ -68,7 +49,8 @@ struct PagesFixture : WebFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel};
 	hc_test::FakeBlobStore blobs;
-	hc::image::ImageService service{controller, model, blobs, adapter, &tunnel};
+	hc::image::MemoryImageSlot slot;
+	hc::image::ImageService service{controller, model, blobs, slot, adapter, &tunnel};
 	std::string cookie;
 
 	PagesFixture() {
@@ -80,8 +62,9 @@ struct PagesFixture : WebFixture {
 		cookie = onboard();
 	}
 
+	/// Compiles the source `text` and deploys it.
 	void load(const std::string& text) {
-		REQUIRE(service.load(text.data(), text.size(), hc::image::Source::api, true));
+		REQUIRE_MESSAGE(hc_test::deploy(service, text), hc_test::describe(service.report()));
 	}
 
 	int id(const char* name) const {
@@ -90,29 +73,23 @@ struct PagesFixture : WebFixture {
 		return dp->id();
 	}
 
-	/// Every page of GET /api/pages, the lists concatenated.
-	hc_test::Json pages() {
-		hc_test::Json all;
-		uint32_t from = 0;
-		for (int guard = 0; guard < 100; ++guard) {
-			Result r = get("/api/pages?from=" + std::to_string(from), cookie);
-			REQUIRE_MESSAGE(r.status == 200, r.body);
-			if (guard == 0) {
-				all = r.json;
-			} else {
-				for (const char* list : {"pages", "sections", "elements", "series", "references"}) {
-					for (const hc_test::Json& item : r.json[list].items) {
-						all.members[list].items.push_back(item);
-					}
-				}
-			}
-			if (r.json["next"].kind != hc_test::Json::Kind::number) {
-				return all;
-			}
-			from = static_cast<uint32_t>(r.json["next"].number);
+	/// What the compiler wrote into the loaded image's `ui` section ("" for none).
+	std::string ui() const {
+		size_t length = 0;
+		const char* text = service.image().ui(length);
+		return text != nullptr ? std::string(text, length) : std::string();
+	}
+
+	/// GET /api/pages, read whole as a platform does (streamed when larger than the buffer); the
+	/// body must be the `ui` section byte for byte, in one response (no paging members).
+	hc_test::Json pages(bool* streamed = nullptr) {
+		Result r = get_streamed("/api/pages", cookie, streamed);
+		REQUIRE_MESSAGE(r.status == 200, r.body);
+		CHECK(r.body == ui());
+		for (const char* gone : {"loaded", "generation", "total", "next", "from"}) {
+			CHECK_MESSAGE(!r.json.has(gone), "GET /api/pages has no paging member " << gone);
 		}
-		FAIL("GET /api/pages does not end");
-		return all;
+		return r.json;
 	}
 };
 
@@ -149,112 +126,111 @@ std::string generated(size_t pages, size_t sections, size_t elements, size_t ser
 	return text + "]}}";
 }
 
-void refused_at(const std::string& text, const char* path, const char* reason) {
-	Plan plan;
-	Report report;
-	CHECK_FALSE(parse(text, plan, report));
-	bool found = false;
-	for (size_t i = 0; i < report.count && !found; ++i) {
-		found = std::string(report.refusals[i].path) == path && std::strstr(report.refusals[i].reason, reason) != nullptr;
-	}
-	CHECK_MESSAGE(found, "expected " << path << ": ..." << reason << "...\n" << describe(report));
-}
-
 } // namespace
 
-TEST_CASE("Pages.FixtureLoadsAsSchema11") {
-	Plan plan;
-	Report report;
-	REQUIRE_MESSAGE(parse(fixture("pages.json"), plan, report), describe(report));
-	CHECK(std::string(plan.info.schema_version) == "1.1");
-	// A newer minor loads (I4); the major refusal names what this firmware reads.
-	REQUIRE_MESSAGE(parse(replace(fixture("pages.json"), "\"1.1\"", "\"1.7\""), plan, report), describe(report));
-	CHECK_FALSE(parse(replace(fixture("pages.json"), "\"1.1\"", "\"2.0\""), plan, report));
-	CHECK(report.kind == Report::Kind::version);
-	CHECK(std::strstr(report.refusals[0].reason, (std::string("(1.x, up to ") + hc::image::schema_version_text() + ")").c_str()) !=
-		nullptr);
-}
-
-TEST_CASE("Pages.TablesOfTheUiModel") {
+TEST_CASE("Pages.FixtureCompilesAndLoads") {
+	// pages.json (schema 1.1) and the same source as a newer schema compile into images whose `ui`
+	// section the device takes; the image's schema version travels as text.
 	PagesFixture f;
 	f.load(fixture("pages.json"));
-	const ModelView& view = f.service.view();
-	REQUIRE(view.page_count() == 2);
-	REQUIRE(view.section_count() == 3);
-	REQUIRE(view.element_count() == 9);
-	REQUIRE(view.chart_count() == 2);
-	REQUIRE(view.series_count() == 4);
-	REQUIRE(view.reference_count() == 2);
-	CHECK(std::string(view.page(0).id) == "evening");
-	CHECK(std::string(view.page(0).icon) == "moon");
-	CHECK(std::string(view.page(0).label) == R"({"de": "Abend", "en": "Evening"})");
-	CHECK(view.page(0).sections == 2);
-	CHECK(view.page(1).icon == nullptr);
-	CHECK(view.section(1).label == nullptr);
-	CHECK(view.section(2).page == 1);
-	// Elements: the function by its index, the datapoint by its model id, readOnly kept.
-	const ModelView::Element& light = view.element(0);
-	CHECK(light.kind == ModelView::ElementKind::function);
-	CHECK(std::string(view.function(light.target).id) == "living-light");
-	CHECK(std::string(light.label) == R"({"de": "Decke"})");
-	const ModelView::Element& temperature = view.element(2);
-	CHECK(temperature.kind == ModelView::ElementKind::datapoint);
-	CHECK(temperature.target == f.id("1/3/1"));
-	CHECK(temperature.read_only);
-	CHECK(view.element(3).target == f.id("rule/heat/setpoint"));
-	CHECK_FALSE(view.element(3).read_only);
-	CHECK(view.element(4).target == f.id("rule/presence/enabled"));
+	CHECK(std::string(f.service.info().schema_version) == "1.1");
+	CHECK_FALSE(f.ui().empty());
+	f.load(replace(fixture("pages.json"), "\"1.1\"", "\"1.7\""));
+	CHECK(std::string(f.service.info().schema_version) == "1.7");
+	CHECK_FALSE(f.ui().empty());
+}
+
+TEST_CASE("Pages.UiSectionAsTheCompilerWroteIt") {
+	// The section is the finished body (spec/runtime-image.md 9.16): the defaults resolved, the
+	// functions by their ids, the datapoints by their index in the image (the API's id).
+	PagesFixture f;
+	f.load(fixture("pages.json"));
+	hc_test::Json ui;
+	std::string error;
+	REQUIRE_MESSAGE(hc_test::parse_json(f.ui(), ui, error), error << "\n" << f.ui());
+	REQUIRE(ui["pages"].items.size() == 2);
+	REQUIRE(ui["sections"].items.size() == 3);
+	REQUIRE(ui["elements"].items.size() == 9);
+	REQUIRE(ui["series"].items.size() == 4);
+	REQUIRE(ui["references"].items.size() == 2);
+	CHECK(ui["pages"].items[0]["id"].text == "evening");
+	CHECK(ui["pages"].items[0]["icon"].text == "moon");
+	CHECK(ui["pages"].items[0]["label"]["de"].text == "Abend");
+	CHECK(ui["pages"].items[0]["label"]["en"].text == "Evening");
+	CHECK(ui["pages"].items[0]["sections"].number == 2);
+	CHECK_FALSE(ui["pages"].items[1].has("icon"));
+	CHECK_FALSE(ui["sections"].items[1].has("label"));
+	CHECK(ui["sections"].items[2]["page"].number == 1);
+	// Elements: the function by its id, the datapoint by its model id, readOnly kept.
+	const auto& elements = ui["elements"].items;
+	CHECK(elements[0]["function"].text == "living-light");
+	CHECK(elements[0]["label"]["de"].text == "Decke");
+	CHECK(elements[2]["datapoint"].number == f.id("1/3/1"));
+	CHECK(elements[2]["readOnly"].boolean);
+	CHECK(elements[3]["datapoint"].number == f.id("rule/heat/setpoint"));
+	CHECK_FALSE(elements[3].has("readOnly"));
+	CHECK(elements[4]["datapoint"].number == f.id("rule/presence/enabled"));
 	// The chart and its series and reference lines.
-	const ModelView::Element& element = view.element(5);
-	REQUIRE(element.kind == ModelView::ElementKind::chart);
-	const ModelView::Chart& chart = view.chart(element.target);
-	CHECK(chart.width == 0);
-	CHECK(chart.height == 4);
-	CHECK(std::string(hc::image::chart_range_name(chart.range)) == "24h");
-	CHECK(chart.presets == 0x1E); // 24h, 7d, 30d, 1y
-	CHECK(chart.fixed == 0x0C);   // the right axis 0..100
-	CHECK(chart.min[1] == 0);
-	CHECK(chart.max[1] == 100);
-	CHECK(view.series(0).datapoint == f.id("1/3/1"));
-	CHECK(view.series(0).element == 5);
-	CHECK(view.series(1).axis == 1);
-	CHECK(view.series(2).consolidation == Consolidation::mean); // a boolean's default: the on-share
-	CHECK(view.series(3).consolidation == Consolidation::consumption);
-	CHECK(view.reference(0).constant);
-	CHECK(view.reference(0).value == 21);
-	CHECK_FALSE(view.reference(1).constant);
-	CHECK(view.reference(1).datapoint == f.id("rule/heat/setpoint"));
-	// The second chart's defaults: height 2, its range alone when no presets were given would be the range.
-	const ModelView::Chart& meter = view.chart(view.element(8).target);
-	CHECK(meter.width == 2);
-	CHECK(meter.height == 2);
-	CHECK(std::string(hc::image::chart_range_name(meter.range)) == "7d");
-	CHECK(meter.presets == 0x0C);
+	const auto& chart = elements[5]["chart"];
+	CHECK(chart["width"].text == "full");
+	CHECK(chart["height"].number == 4);
+	CHECK(chart["range"].text == "24h");
+	REQUIRE(chart["presets"].items.size() == 4);
+	CHECK(chart["presets"].items[0].text == "24h");
+	CHECK(chart["presets"].items[3].text == "1y");
+	CHECK(chart["axes"]["left"]["min"].kind == hc_test::Json::Kind::null);
+	CHECK(chart["axes"]["left"]["max"].kind == hc_test::Json::Kind::null);
+	CHECK(chart["axes"]["right"]["min"].number == 0);
+	CHECK(chart["axes"]["right"]["max"].number == 100);
+	const auto& series = ui["series"].items;
+	CHECK(series[0]["datapoint"].number == f.id("1/3/1"));
+	CHECK(series[0]["element"].number == 5);
+	CHECK(series[1]["axis"].text == "right");
+	CHECK(series[2]["consolidation"].text == "mean"); // a boolean's default: the on-share
+	CHECK(series[3]["consolidation"].text == "consumption");
+	CHECK(ui["references"].items[0]["value"].number == 21);
+	CHECK_FALSE(ui["references"].items[0].has("datapoint"));
+	CHECK(ui["references"].items[1]["datapoint"].number == f.id("rule/heat/setpoint"));
+	CHECK_FALSE(ui["references"].items[1].has("value"));
+	// The second chart's defaults: height 2, its range and presets as given, both axes automatic.
+	const auto& meter = elements[8]["chart"];
+	CHECK(meter["width"].number == 2);
+	CHECK(meter["height"].number == 2);
+	CHECK(meter["range"].text == "7d");
+	REQUIRE(meter["presets"].items.size() == 2);
+	CHECK(meter["presets"].items[0].text == "7d");
+	CHECK(meter["presets"].items[1].text == "30d");
+	CHECK(meter["axes"]["left"]["min"].kind == hc_test::Json::Kind::null);
+	CHECK(meter["axes"]["right"]["max"].kind == hc_test::Json::Kind::null);
+	CHECK(series[3]["axis"].text == "left");
+	// The section is read in place from the slot (spec/runtime-image.md I2): no copy in RAM.
+	size_t length = 0;
+	const char* text = f.service.image().ui(length);
+	CHECK(reinterpret_cast<const uint8_t*>(text) >= f.slot.bytes());
+	CHECK(reinterpret_cast<const uint8_t*>(text) + length <= f.slot.bytes() + f.service.info().bytes);
 }
 
 // The ui.pages E-Home exports for the amendment's acceptance case (ehome#72), verbatim in the fixture.
 TEST_CASE("Pages.EHomeExportLoads") {
 	PagesFixture f;
 	f.load(fixture("ehome-72-pages.json"));
-	const ModelView& view = f.service.view();
-	REQUIRE(view.page_count() == 2);
-	REQUIRE(view.section_count() == 3);
-	REQUIRE(view.element_count() == 10);
-	REQUIRE(view.chart_count() == 1);
-	REQUIRE(view.series_count() == 3);
-	REQUIRE(view.reference_count() == 2);
-	CHECK(std::string(view.function(view.element(3).target).id) == "kitchen-light");
-	CHECK(view.element(4).target == f.id("1/0/1"));
-	CHECK(view.element(4).read_only);
-	CHECK(view.element(5).target == f.id("holiday"));
-	CHECK(view.element(6).target == f.id("rule/heat/setpoint"));
-	CHECK(view.element(7).target == f.id("rule/heat/enabled"));
-	CHECK(view.element(8).kind == ModelView::ElementKind::chart);
-	CHECK(view.element(9).kind == ModelView::ElementKind::function);
 	hc_test::Json all = f.pages();
-	CHECK(all["total"].number == 2 + 3 + 10 + 3 + 2);
-	CHECK(all["elements"].items[7]["label"]["de"].text == "Heizregel");
-	CHECK(all["elements"].items[8]["chart"]["label"]["de"].text == "Temperaturen");
+	REQUIRE(all["pages"].items.size() == 2);
+	REQUIRE(all["sections"].items.size() == 3);
+	REQUIRE(all["elements"].items.size() == 10);
+	REQUIRE(all["series"].items.size() == 3);
+	REQUIRE(all["references"].items.size() == 2);
+	const auto& elements = all["elements"].items;
+	CHECK(elements[3]["function"].text == "kitchen-light");
+	CHECK(elements[4]["datapoint"].number == f.id("1/0/1"));
+	CHECK(elements[4]["readOnly"].boolean);
+	CHECK(elements[5]["datapoint"].number == f.id("holiday"));
+	CHECK(elements[6]["datapoint"].number == f.id("rule/heat/setpoint"));
+	CHECK(elements[7]["datapoint"].number == f.id("rule/heat/enabled"));
+	CHECK(elements[7]["label"]["de"].text == "Heizregel");
+	CHECK(elements[8].has("chart"));
+	CHECK(elements[8]["chart"]["label"]["de"].text == "Temperaturen");
+	CHECK(elements[9]["function"].text == "kitchen-light");
 	CHECK(all["series"].items[2]["consolidation"].text == "mean"); // the boolean's on-share
 
 	// A chart with an empty series array loads (E-Home drops such a chart, the device accepts it).
@@ -264,8 +240,9 @@ TEST_CASE("Pages.EHomeExportLoads") {
 	REQUIRE((from != std::string::npos && to != std::string::npos));
 	text.replace(from, to - from, "\"series\": [],\n   ");
 	f.load(text);
-	CHECK(f.service.view().chart_count() == 1);
-	CHECK(f.service.view().series_count() == 0);
+	all = f.pages();
+	CHECK(all["elements"].items[8].has("chart"));
+	CHECK(all["series"].items.empty());
 }
 
 TEST_CASE("Pages.ApiServesThePagesToTheUi") {
@@ -273,9 +250,11 @@ TEST_CASE("Pages.ApiServesThePagesToTheUi") {
 	f.load(fixture("pages.json"));
 	auto r = f.get("/api/pages", f.cookie);
 	REQUIRE_MESSAGE(r.status == 200, r.body);
-	CHECK(r.json["loaded"].boolean);
-	CHECK(r.json["total"].number == 2 + 3 + 9 + 4 + 2);
-	CHECK(r.json["next"].kind == hc_test::Json::Kind::null);
+	// The section as the compiler wrote it, byte for byte, in one response (spec/api.md).
+	CHECK(r.body == f.ui());
+	CHECK_FALSE(r.json.has("total"));
+	CHECK_FALSE(r.json.has("next"));
+	CHECK_FALSE(r.json.has("generation"));
 	auto& pages = r.json["pages"].items;
 	REQUIRE(pages.size() == 2);
 	CHECK(pages[0]["id"].text == "evening");
@@ -325,24 +304,21 @@ TEST_CASE("Pages.ApiServesThePagesToTheUi") {
 	CHECK(references[0]["label"]["de"].text == "Soll");
 	CHECK(references[1]["datapoint"].number == f.id("rule/heat/setpoint"));
 	CHECK(references[1].members.count("value") == 0);
-
-	// Paging: from= continues in the shared index space.
-	r = f.get("/api/pages?from=14", f.cookie);
-	REQUIRE(r.status == 200);
-	CHECK(r.json["pages"].items.empty());
-	CHECK(r.json["elements"].items.empty());
-	CHECK(r.json["series"].items.size() == 4);
-	CHECK(r.json["series"].items[0]["datapoint"].number == f.id("1/3/1"));
+	// The query of firmware up to 1.2 changes nothing: the whole answer.
+	CHECK(f.get("/api/pages?from=14", f.cookie).body == r.body);
 
 	CHECK(f.request(HttpMethod::post, "/api/pages", "{}", f.cookie).status == 405);
 	CHECK(f.get("/api/pages").status == 401);
 }
 
-TEST_CASE("Pages.ApiPagesAtTheLimitsSpanSeveralResponses") {
+TEST_CASE("Pages.ApiPagesAtTheLimitsInOneResponse") {
 	PagesFixture f;
-	// 16 pages of 8 sections of 4 datapoint elements (512): more than one response holds.
+	// 16 pages of 8 sections of 4 datapoint elements (512): larger than the response buffer, streamed
+	// as one body.
 	f.load(generated(16, 8, 4));
-	hc_test::Json all = f.pages();
+	bool streamed = false;
+	hc_test::Json all = f.pages(&streamed);
+	CHECK(streamed);
 	CHECK(all["pages"].items.size() == 16);
 	CHECK(all["sections"].items.size() == 128);
 	CHECK(all["elements"].items.size() == 512);
@@ -354,76 +330,44 @@ TEST_CASE("Pages.ApiPagesAtTheLimitsSpanSeveralResponses") {
 	CHECK(all["series"].items.size() == 256);
 	CHECK(all["references"].items.size() == 128);
 	CHECK(all["series"].items[255]["element"].number == 127);
+	// A stream of an image that has since been replaced breaks off (the token changed).
+	hc::WebRequest req;
+	req.method = hc::HttpMethod::get;
+	req.path = "/api/pages";
+	req.query = "";
+	req.cookie = f.cookie.c_str();
+	req.requested_with = "HomeControl";
+	req.source = "192.0.2.7";
+	hc::WebResponse resp(f.buffer, sizeof(f.buffer));
+	f.api.handle(req, resp);
+	REQUIRE(resp.stream);
+	f.load(generated(16, 8, 4));
+	char piece[100];
+	size_t length = 0;
+	CHECK_FALSE(f.api.read_stream(resp.stream_token, 0, piece, sizeof(piece), length));
 }
 
 TEST_CASE("Pages.WithoutPagesTheListsAreEmpty") {
 	PagesFixture f;
 	auto r = f.get("/api/pages", f.cookie);
 	REQUIRE(r.status == 200);
-	CHECK_FALSE(r.json["loaded"].boolean);
-	CHECK(r.json["pages"].items.empty());
-	// An image of 1.0 with `ui: {}` loads, keeps its model, and has no pages: the UI falls back to the
-	// generated overview.
+	CHECK(r.body == "{\"loaded\":false}");
+	// An image of 1.0 with `ui: {}` loads, keeps its model, and has no pages: every list empty, the
+	// UI falls back to the generated overview.
 	f.load(fixture("example.json"));
 	r = f.get("/api/pages", f.cookie);
 	REQUIRE(r.status == 200);
-	CHECK(r.json["loaded"].boolean);
-	CHECK(r.json["total"].number == 0);
-	CHECK(r.json["pages"].items.empty());
-	CHECK(r.json["elements"].items.empty());
+	CHECK(r.body == "{\"pages\":[],\"sections\":[],\"elements\":[],\"series\":[],\"references\":[]}");
 	CHECK(f.get("/api/model", f.cookie).json["functions"].items.size() == 9);
 	// A swap to an image with pages and back: the lists follow the image.
 	f.load(fixture("pages.json"));
 	CHECK(f.get("/api/pages", f.cookie).json["pages"].items.size() == 2);
 	f.load(fixture("minimal.json"));
 	CHECK(f.get("/api/pages", f.cookie).json["pages"].items.empty());
+	// Unloaded: no image again.
+	REQUIRE(f.request(HttpMethod::del, "/api/image", "", f.cookie).status == 200);
+	CHECK(f.get("/api/pages", f.cookie).body == "{\"loaded\":false}");
 }
-
-TEST_CASE("Pages.LimitsAreRefusedBeyondTheirMaximum") {
-	Plan plan;
-	Report report;
-	// At the limits: loads.
-	CHECK_MESSAGE(parse(generated(16, 8, 4), plan, report), describe(report));
-	CHECK_MESSAGE(parse(generated(16, 8, 1, 2, 1), plan, report), describe(report));
-	// One beyond each.
-	refused_at(generated(17, 1, 1), "ui.pages", "17 pages exceed the limit of 16");
-	refused_at(generated(1, 129, 0), "ui.pages", "129 sections exceed the limit of 128");
-	refused_at(generated(1, 1, 513), "ui.pages", "513 elements exceed the limit of 512");
-	refused_at(generated(1, 1, 1, 257, 0), "ui.pages", "257 chart series exceed the limit of 256");
-	refused_at(generated(1, 1, 1, 1, 129), "ui.pages", "129 reference lines exceed the limit of 128");
-	// A page id is unique and shaped like the other ids; the member `ui` and `pages` have their types.
-	refused_at(replace(generated(2, 1, 1), "\"id\": \"p1\"", "\"id\": \"p0\""), "ui.pages[1].id", "duplicate page id 'p0'");
-	refused_at(replace(generated(1, 1, 1), "\"id\": \"p0\"", "\"id\": \"a/b\""), "ui.pages[0].id", "page id 'a/b' must have");
-	refused_at(replace(generated(1, 1, 1), "\"ui\": {\"pages\": [", "\"ui\": {\"pages\": 3, \"x\": ["), "ui.pages",
-		"'pages' must be an array");
-}
-
-#if defined(__GLIBC__)
-TEST_CASE("Pages.MemoryOfTheKeptPageTable") {
-	// What the UI model keeps for the pages (spec/runtime-image.md 5): the tables and the labels'
-	// JSON text, on the 64-bit host (the device's pointers are half as wide).
-	struct Case {
-		const char* name;
-		std::string with;
-		std::string without;
-	} cases[] = {
-		{"pages.json", fixture("pages.json"), replace(fixture("pages.json"), "\"ui\": {\"pages\"", "\"ui\": {\"none\"")},
-		{"512 datapoint elements", generated(16, 8, 4), replace(generated(16, 8, 4), "\"ui\": {\"pages\"", "\"ui\": {\"none\"")},
-		{"128 charts, 256 series, 128 lines", generated(16, 8, 1, 2, 1),
-			replace(generated(16, 8, 1, 2, 1), "\"ui\": {\"pages\"", "\"ui\": {\"none\"")},
-	};
-	for (const Case& c : cases) {
-		PagesFixture f;
-		f.load(c.without);
-		size_t without = f.service.view().bytes();
-		f.load(c.with);
-		size_t with = f.service.view().bytes();
-		MESSAGE(c.name << ": the page table keeps " << (with - without) << " B (UI model " << with << " B, without pages "
-			<< without << " B)");
-		CHECK(with > without);
-	}
-}
-#endif
 
 TEST_CASE("Pages.ModelGivesTheControlsTheirRanges") {
 	PagesFixture f;

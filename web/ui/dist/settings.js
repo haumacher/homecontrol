@@ -252,24 +252,12 @@ function languageRow(setting, i18n, ctx, reload) {
 	return h("div", { class: "field" }, h("label", { for: id }, t("settings.key.ui.lang")), select, feedback);
 }
 
-/// The signature in a `.sig` file as the header carries it: 128 hex digits (the file's text, white
-/// space around it ignored) or 64 raw bytes, turned into hex; null if it is neither.
-async function signatureHex(file) {
-	const bytes = new Uint8Array(await file.arrayBuffer());
-	if (bytes.length === 64) {
-		return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-	}
-	const text = new TextDecoder().decode(bytes).trim();
-	return /^[0-9a-fA-F]{128}$/.test(text) ? text.toLowerCase() : null;
-}
-
 /// Installs a runtime image from a file the owner picked (the field round trip of issue #40: the
-/// image E-Home exported, carried here without an E-Home on this network). PUT /api/image as E-Home
-/// does, with the file's exact bytes and, if picked, its signature from the `.sig` file beside it
-/// (header X-Image-Signature, spec/api.md "Signed runtime images"); a refusal lists the reasons.
+/// binary image E-Home compiled, carried here without an E-Home on this network). PUT /api/image as
+/// E-Home does, with the file's exact bytes (its signature inside, spec/runtime-image.md 9.17); a
+/// refusal lists the reasons.
 function installControls(rerender, feedback) {
-	const input = h("input", { type: "file", accept: ".json,application/json" });
-	const sigInput = h("input", { type: "file", accept: ".sig" });
+	const input = h("input", { type: "file", accept: ".bin,application/octet-stream" });
 	const button = h("button", { type: "button", class: "button secondary", onclick: async () => {
 		const file = input.files && input.files[0];
 		if (!file) {
@@ -277,26 +265,16 @@ function installControls(rerender, feedback) {
 			return;
 		}
 		const bytes = await file.arrayBuffer();
-		try {
-			JSON.parse(new TextDecoder().decode(bytes));
-		} catch (error) {
+		const magic = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength));
+		if (magic.length < 4 || magic[0] !== 0x48 || magic[1] !== 0x43 || magic[2] !== 0x49 || magic[3] !== 0x4d) {
 			replace(feedback, t("image.install.invalid_file", { name: file.name }));
 			return;
-		}
-		const sigFile = sigInput.files && sigInput.files[0];
-		const headers = {};
-		if (sigFile) {
-			const hex = await signatureHex(sigFile);
-			if (!hex) {
-				replace(feedback, t("image.install.signature.invalid", { name: sigFile.name }));
-				return;
-			}
-			headers["X-Image-Signature"] = hex;
 		}
 		button.disabled = true;
 		replace(feedback, t("image.install.working", { name: file.name }));
 		try {
-			const result = await api("PUT", "/api/image", bytes, { raw: true, headers });
+			const result = await api("PUT", "/api/image", bytes,
+				{ raw: true, headers: { "Content-Type": "application/octet-stream" } });
 			replace(feedback, t("image.install.done", { name: result.image.name || result.image.projectId, revision: result.image.revision }));
 			rerender();
 		} catch (error) {
@@ -309,9 +287,7 @@ function installControls(rerender, feedback) {
 		}
 	} }, t("image.install"));
 	return h("div", { class: "field" }, h("label", null, t("image.install.label")),
-		h("div", { class: "field-row" }, input, button), h("span", { class: "hint" }, t("image.install.hint")),
-		h("label", null, t("image.install.signature.label")), h("div", { class: "field-row" }, sigInput),
-		h("span", { class: "hint" }, t("image.install.signature.hint")));
+		h("div", { class: "field-row" }, input, button), h("span", { class: "hint" }, t("image.install.hint")));
 }
 
 /// The deployed image: project, revision, when and how it came; "forget image" removes it; a file
@@ -345,7 +321,6 @@ function imageCard(ctx, rerender) {
 			model.generatedAt ? [t("image.generated"), model.generatedAt] : null,
 			model.generator ? [t("image.generator"), model.generator] : null,
 			[t("image.deployed"), t("image.deployed.value", { ago: formatAgo(deployedAgo), source: tv("image.source.", model.source) })],
-			[t("image.stored"), model.stored ? t("status.yes") : t("image.not_stored")],
 		]), h("p", { class: "hint" }, t("image.forget.hint")), forget, installControls(rerender, feedback), feedback);
 	}).catch((error) => {
 		replace(card, h("h2", null, t("image.title")), h("p", { class: "muted" },

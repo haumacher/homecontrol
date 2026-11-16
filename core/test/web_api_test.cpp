@@ -272,11 +272,15 @@ TEST_CASE("WebApi query parameters parse strictly") {
 
 // ---- The dashboard's view of the image (issue #14) ---------------------------------------------
 
+#include <memory>
+
 #include "fake_blob_store.h"
 #include "hc/image/image_service.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
 #include "knx_test_support.h"
+#include "image_support.h"
 #include "rules_test_support.h"
 
 namespace {
@@ -287,26 +291,50 @@ std::string image_fixture(const std::string& name) {
 	return text;
 }
 
-/// The API with the image service, a KNX adapter without a gateway and an in-memory blob store.
+/// The API with the image service, a KNX adapter without a gateway, an in-memory blob store and an
+/// image slot in RAM. restart() is the device started again: a new fixture on the same blob store,
+/// slot and settings, whose service loads the slot's image at boot.
 struct DashboardFixture : WebFixture {
 	hc_test::FakeUdpSocket socket{fake.clock};
 	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel};
-	hc_test::FakeBlobStore blobs;
-	hc::image::ImageService service{controller, model, blobs, adapter, &tunnel};
+	hc_test::FakeBlobStore own_blobs;
+	hc::image::MemoryImageSlot own_slot;
+	hc_test::FakeBlobStore& blobs;
+	hc::image::MemoryImageSlot& slot;
+	hc::image::ImageService service;
 	std::string cookie;
 
-	DashboardFixture() {
+	explicit DashboardFixture(DashboardFixture* before = nullptr)
+		: own_slot(before != nullptr ? 4096 : hc::image::MemoryImageSlot::kDefaultSize),
+		  blobs(before != nullptr ? before->blobs : own_blobs), slot(before != nullptr ? before->slot : own_slot),
+		  service(controller, model, blobs, slot, adapter, &tunnel) {
 		fake.clock.wall_seconds = 1792231392; // 2026-10-17
 		fake.clock.synchronized = true;
+		if (before != nullptr) {
+			fake.settings.entries = before->fake.settings.entries;
+			fake.clock.wall_seconds = before->fake.clock.wall_seconds;
+			fake.clock.synchronized = before->fake.clock.synchronized;
+		}
 		controller.start();
 		service.start();
 		api.set_image(&service);
 		cookie = onboard();
 	}
 
+	/// Compiles the source `text` and deploys it as PUT /api/image does.
 	void load(const std::string& text) {
-		REQUIRE(service.load(text.data(), text.size(), hc::image::Source::api, true));
+		REQUIRE_MESSAGE(hc_test::deploy(service, text), hc_test::describe(service.report()));
+	}
+
+	/// The device restarted (the boot path): what the value store and the history hold is written,
+	/// then a new fixture boots from the same slot, blob store and settings.
+	std::unique_ptr<DashboardFixture> restart() {
+		service.flush();
+		auto after = std::make_unique<DashboardFixture>(this);
+		REQUIRE_MESSAGE(after->service.loaded(), hc_test::describe(after->service.report()));
+		CHECK(after->service.source() == hc::image::Source::boot);
+		return after;
 	}
 
 	Result put(const std::string& target, const std::string& body, bool csrf = true) {
@@ -406,8 +434,6 @@ TEST_CASE("WebApi.Model of the example house: rooms, functions with roles, label
 	CHECK(r.json["revision"].number == 7);
 	CHECK(r.json["source"].text == "api");
 	CHECK(r.json["next"].kind == hc_test::Json::Kind::null);
-	MESSAGE("model view of the example house: " << f.service.view().bytes() << " heap bytes");
-	CHECK(f.service.view().bytes() <= 8192);
 	auto& locations = r.json["locations"].items;
 	REQUIRE(locations.size() == 4);
 	CHECK(locations[2]["id"].text == "living");
@@ -963,7 +989,6 @@ std::string with_block(const std::string& block) {
 
 TEST_CASE("Image.Blocks: schema 1.3; mirrors behind the image's datapoints; refusals with their paths") {
 	DashboardFixture f;
-	CHECK(std::string(hc::image::schema_version_text()) == "1.7");
 	f.load(kBlocksImage);
 	f.controller.run_once();
 	f.controller.run_once();
@@ -983,7 +1008,9 @@ TEST_CASE("Image.Blocks: schema 1.3; mirrors behind the image's datapoints; refu
 	CHECK(f.model.find("block/wz/valve")->value().as_real() == 30); // no temperature yet: the fallback
 	CHECK(f.model.find("heating")->value().as_bool() == true);       // the rule followed the demand
 
-	// Refusals, each with its path (spec/blocks.md 11).
+	// The device's own refusals (spec/runtime-image.md 10.8: the block types of this firmware, a
+	// block's ports and parameters against the manifest), each with its binary path; the image is
+	// compiled anyway (the corpus mode of 13.1) and refused when it is applied: no image afterwards.
 	struct Refusal {
 		std::string block;
 		const char* path;
@@ -993,60 +1020,29 @@ TEST_CASE("Image.Blocks: schema 1.3; mirrors behind the image's datapoints; refu
 			"blocks[0].type", "unknownType"},
 		{R"({"id": "a", "type": "org.example.nothing", "version": "1.0", "label": "A"})", "blocks[0].type", "unknownType"},
 		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A"})",
-			"blocks[0].inputs.temperature", "missingInput"},
+			"blocks[0].firstPort", "missingInput"}, // no port record is bound: the block's run of ports
 		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "flag"}})",
-			"blocks[0].inputs.temperature", "typeError"},
-		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": ["temp", "nope"]}})",
-			"blocks[0].inputs.temperature[1]", "unknownReference"},
+			"blocks.ports[", "typeError"},
 		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "parameters": {"comfort": 40}})",
-			"blocks[0].parameters.comfort", "invalidParameter"},
+			"blocks.parameters[", "invalidParameter"},
 		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "parameters": {"outputMin": 60, "outputMax": 50}})",
-			"blocks[0].parameters.outputMin", "invalidParameter"},
-		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "outputs": {"valve": "block/a/p"}})",
-			"blocks[0].outputs.valve", "outputConflict"},
-		{R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "block/a/valve"}})",
-			"blocks[0].inputs.temperature", "forbidden"},
+			"blocks.parameters[", "invalidParameter"},
 	};
 	for (const Refusal& r : refusals) {
 		CAPTURE(r.block);
 		std::string text = with_block(r.block);
-		hc::image::Report report;
-		hc::image::Plan plan;
-		hc::image::Loader loader(f.fake.clock, hc::HistoryLimits().cap_bytes);
-		std::string without = text;
-		without.replace(without.find(R"(,
-		               {"id": "block/x", "type": "real", "virtual": {}})"), std::strlen(R"(,
-		               {"id": "block/x", "type": "real", "virtual": {}})"), "");
-		CHECK_FALSE(loader.parse(without.data(), without.size(), plan, report));
-		REQUIRE(report.count > 0);
-		CHECK(std::string(report.refusals[0].path) == r.path);
-		CHECK(std::string(report.refusals[0].reason).find(r.reason) != std::string::npos);
-	}
-	// The prefix block/ is reserved for the mirrors.
-	{
-		std::string text = with_block(R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}})");
-		hc::image::Report report;
-		hc::image::Plan plan;
-		hc::image::Loader loader(f.fake.clock, hc::HistoryLimits().cap_bytes);
-		CHECK_FALSE(loader.parse(text.data(), text.size(), plan, report));
-		CHECK(std::string(report.refusals[0].path) == "datapoints[2].id");
-	}
-	// Strict inside (B1): an unknown member of a newer minor schema names the firmware's version (I4).
-	{
-		std::string text = with_block(R"({"id": "a", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "A", "inputs": {"temperature": "temp"}, "wasm": "abc"})");
-		std::string newer = "\"" + std::to_string(hc::image::kSchemaMajor) + "." +
-			std::to_string(hc::image::kSchemaMinor + 1) + "\""; // a minor newer than this firmware reads
-		text.replace(text.find("\"1.3\""), 5, newer);
 		text.replace(text.find(R"(,
 		               {"id": "block/x", "type": "real", "virtual": {}})"), std::strlen(R"(,
 		               {"id": "block/x", "type": "real", "virtual": {}})"), "");
-		hc::image::Report report;
-		hc::image::Plan plan;
-		hc::image::Loader loader(f.fake.clock, hc::HistoryLimits().cap_bytes);
-		CHECK_FALSE(loader.parse(text.data(), text.size(), plan, report));
-		CHECK(std::string(report.refusals[0].path) == "blocks[0]");
-		CHECK(std::string(report.refusals[0].reason).find("unknown member 'wasm'") != std::string::npos);
-		CHECK(std::string(report.refusals[0].reason).find("update the firmware") != std::string::npos);
+		std::vector<uint8_t> bytes;
+		std::string error;
+		REQUIRE_MESSAGE(hc::test::compile_image(text.data(), text.size(), bytes, &error), error);
+		CHECK_FALSE(hc_test::deploy_bytes(f.service, bytes));
+		const hc::image::Report& report = f.service.report();
+		REQUIRE(report.count > 0);
+		CHECK_MESSAGE(std::string(report.refusals[0].path).rfind(r.path, 0) == 0, hc_test::describe(report));
+		CHECK_MESSAGE(std::string(report.refusals[0].reason).find(r.reason) != std::string::npos, hc_test::describe(report));
+		CHECK_FALSE(f.service.loaded());
 	}
 }
 
@@ -1057,7 +1053,7 @@ TEST_CASE("WebApi.Blocks: list, types, changes applied whole or refused whole, r
 	f.controller.run_once();
 	auto status = f.get("/api/status", f.cookie);
 	REQUIRE(status.status == 200);
-	CHECK(status.json["device"]["schema"].text == "1.7");
+	CHECK(status.json["device"]["format"].text == "1.0");
 	CHECK(status.json["image"]["blocks"].number == 1);
 	auto r = f.get("/api/blocks", f.cookie);
 	REQUIRE(r.status == 200);
@@ -1104,12 +1100,13 @@ TEST_CASE("WebApi.Blocks: list, types, changes applied whole or refused whole, r
 	CHECK(back.json["block"]["status"].text == "running");
 	CHECK(f.model.find("block/wz/comfort")->value().as_real() == 21.5);
 
-	// The image survives a reload from the store with its blocks' overrides (the boot path).
+	// The image survives a restart with its blocks' overrides (the boot path).
 	CHECK(f.put("/api/blocks/wz", R"({"parameters": {"night": 16}})").status == 200);
-	REQUIRE(f.service.load_stored(hc::image::Source::boot));
-	f.controller.run_once();
-	f.controller.run_once();
-	CHECK(f.model.find("block/wz/night")->value().as_real() == 16);
+	auto restarted = f.restart();
+	DashboardFixture& g = *restarted;
+	g.controller.run_once();
+	g.controller.run_once();
+	CHECK(g.model.find("block/wz/night")->value().as_real() == 16);
 }
 
 TEST_CASE("Blocks probe: a rule sets a block's parameter in its cascade; a block reads another block's output") {
@@ -1266,13 +1263,14 @@ TEST_CASE("Blocks review probe: a heating demand over a room controller that is 
 	CHECK(f.model.find("block/hd/level")->value().as_real() == 80);
 	CHECK(f.model.find("block/hd/staleInputs")->value().as_signed() == 0);
 	CHECK(f.model.find("block/hd/valves")->value().as_real() == 80);
-	// A reload from the store (the boot path): wz stays disabled, the demand starts over the same inputs.
-	REQUIRE(f.service.load_stored(hc::image::Source::boot));
-	f.controller.run_once();
-	f.controller.run_once();
-	CHECK(f.model.find("block/wz/enabled")->value().as_bool() == false);
-	CHECK(f.model.find("block/wz/valve")->value().as_real() == 30);
-	CHECK(f.model.find("req")->value().as_bool() == true);
+	// A restart (the boot path): wz stays disabled, the demand starts over the same inputs.
+	auto restarted = f.restart();
+	DashboardFixture& g = *restarted;
+	g.controller.run_once();
+	g.controller.run_once();
+	CHECK(g.model.find("block/wz/enabled")->value().as_bool() == false);
+	CHECK(g.model.find("block/wz/valve")->value().as_real() == 30);
+	CHECK(g.model.find("req")->value().as_bool() == true);
 }
 
 TEST_CASE("Blocks review probe: sun shading without a wall clock; a wind alarm across an operation and an image swap") {
@@ -1359,19 +1357,20 @@ TEST_CASE("Blocks review probe: house mode drives a room controller; vacation en
 	CHECK(f.model.find("block/hm/mode")->value().as_enum() == 3);
 	CHECK(f.model.find("block/hm/occupied")->value().as_bool() == false);
 	CHECK(f.model.find("block/wz/activeSetpoint")->value().as_real() == 7);
-	// The persisted mode survives a reload from the store (the boot path).
-	REQUIRE(f.service.load_stored(hc::image::Source::boot));
-	f.controller.run_once();
-	f.controller.run_once();
-	CHECK(f.model.find("block/hm/mode")->value().as_enum() == 3);
+	// The persisted mode survives a restart (the boot path).
+	auto restarted = f.restart();
+	DashboardFixture& g = *restarted;
+	g.controller.run_once();
+	g.controller.run_once();
+	CHECK(g.model.find("block/hm/mode")->value().as_enum() == 3);
 	// A new image no longer binds vacation: it ends; presence makes it home again.
-	f.load(image(2, false));
-	f.fake.clock.advance(1000);
+	g.load(image(2, false));
+	g.fake.clock.advance(1000);
 	for (int i = 0; i < 4; ++i) {
-		f.controller.run_once();
+		g.controller.run_once();
 	}
-	CHECK(f.model.find("block/hm/mode")->value().as_enum() == 0);
-	CHECK(f.model.find("block/wz/activeSetpoint")->value().as_real() == 21);
+	CHECK(g.model.find("block/hm/mode")->value().as_enum() == 0);
+	CHECK(g.model.find("block/wz/activeSetpoint")->value().as_real() == 21);
 }
 
 TEST_CASE("Blocks review probe: a PV surplus chain through the controller; the second instance takes only what the "

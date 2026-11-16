@@ -172,7 +172,8 @@ TEST_CASE("WebSystem probe: labels are limited in bytes, not characters; closing
 	CHECK(f.call(HttpMethod::get, "/api/zigbee").json["devices"].items[0]["label"].text == ok);
 	r = f.call(HttpMethod::put, std::string(kBulbPath) + "/label", "{\"label\": \"\"}");
 	REQUIRE(r.status == 200);
-	const auto& cleared = f.call(HttpMethod::get, "/api/zigbee").json["devices"].items[0];
+	auto listing = f.call(HttpMethod::get, "/api/zigbee"); // kept: the device below is a part of it
+	const auto& cleared = listing.json["devices"].items[0];
 	bool label_gone = !cleared.has("label") || cleared["label"].text.empty();
 	CHECK(label_gone);
 

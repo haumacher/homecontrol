@@ -1,9 +1,9 @@
 /*
  * Copyright (c) 2026 Bernhard Haumacher
  */
-// Probe tests written at review time for the rule interpreter (issue #12): a rule from JSON driving
-// a technology through the model, a parameter override that survives a new engine over the same
-// settings, a refused load naming the rule, and the engine ignoring what it did not load.
+// Probe tests written at review time for the rule interpreter (issue #12): a rule of a compiled image
+// (issue #87) driving a technology through the model, and a parameter override that survives a new
+// engine over the same settings.
 
 #include <string>
 #include <vector>
@@ -21,8 +21,6 @@ using hc::ValueType;
 using hc::rules::Engine;
 using hc::rules::LoadResult;
 using hc::rules::StartReason;
-using hc_test::Json;
-using hc_test::JsonTree;
 
 namespace {
 
@@ -46,19 +44,14 @@ struct NoTime : hc::rules::TimeSource {
 	bool sun_time(hc::rules::SunEvent, hc::TimeOfDay&) const override { return false; }
 };
 
-struct NoSchedules : hc::rules::ScheduleDirectory {
-	bool has_schedule(const char*) const override { return false; }
-};
-
-const char* kRules = R"([
+const char* kRules = R"(
  {"id": "offset", "name": "b follows a plus p",
   "parameters": [{"id": "p", "label": "Offset", "type": "integer", "default": 1, "min": 0, "max": 10}],
   "reactions": [{
    "triggers": [{"kind": "datapoint", "datapoint": "a"}],
    "actions": [{"kind": "write", "datapoint": "b",
      "value": {"kind": "binary", "op": "+", "left": {"kind": "datapoint", "name": "a"}, "right": {"kind": "parameter", "id": "p"}}}]
-  }]}
-])";
+  }]})";
 
 struct Rig {
 	hc_test::ScopedCapture capture;
@@ -68,18 +61,21 @@ struct Rig {
 	hc_test::FakeSettings settings;
 	Recording tech;
 	NoTime time;
-	NoSchedules schedules;
-	JsonTree tree;
-	Json json;
-	std::vector<std::string> names{"a", "b"};
-	hc::DatapointSpec specs[2] = {
-		{"a", ValueType::signed_int, hc::DatapointFlags::kReadable},
-		{"b", ValueType::signed_int, hc::DatapointFlags::kReadable | hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit}};
+	/// a (0) readable, b (1) writable and transmitting; behind them the rule's parameter datapoints.
+	hc_test::RuleImage image;
 
 	Rig() {
-		REQUIRE(model.load(specs, 2) == DatapointStatus::ok);
+		REQUIRE(image.compile(hc_test::rules_source(
+			hc_test::datapoint_source("a", "signed", false) + "," + hc_test::datapoint_source("b", "signed"), kRules)));
+		image.load_model(model);
+		REQUIRE(model.get(0)->type() == ValueType::signed_int);
 		REQUIRE(model.bind(0, tech) == DatapointStatus::ok);
 		REQUIRE(model.bind(1, tech) == DatapointStatus::ok);
+	}
+	/// The image's rules into `engine`.
+	void adopt(Engine& engine) {
+		LoadResult result = engine.adopt(image.bind());
+		REQUIRE_MESSAGE(result.ok(), result.path << ": " << result.text);
 	}
 	void run() {
 		for (int i = 0; i < 10; ++i) {
@@ -90,14 +86,11 @@ struct Rig {
 
 } // namespace
 
-TEST_CASE("RulesProbe.ARuleFromJsonDrivesTheTechnologyAndItsParameterOverrideSurvivesANewEngine") {
+TEST_CASE("RulesProbe.ARuleOfTheImageDrivesTheTechnologyAndItsParameterOverrideSurvivesANewEngine") {
 	Rig r;
-	std::string error;
-	REQUIRE(hc_test::parse_json(kRules, r.json, error));
 	{
 		Engine engine(r.loop, r.model, r.clock, r.settings, r.time);
-		LoadResult result = engine.load(r.tree.value(r.json), &r.schedules);
-		REQUIRE(result.ok());
+		r.adopt(engine);
 		engine.start(StartReason::boot);
 		r.run();
 		// a = 5 -> b = 6 through the technology.
@@ -123,10 +116,14 @@ TEST_CASE("RulesProbe.ARuleFromJsonDrivesTheTechnologyAndItsParameterOverrideSur
 		CHECK(d.firings == 2);
 		CHECK(std::string(d.id) == "offset");
 	}
-	// A reboot: a new engine over the same settings restores the override.
+	// A reboot: a new model and engine over the same settings restore the override (the old
+	// engine's parameter technology went with it: the model is loaded anew, as at a boot).
+	r.image.load_model(r.model);
+	REQUIRE(r.model.bind(0, r.tech) == DatapointStatus::ok);
+	REQUIRE(r.model.bind(1, r.tech) == DatapointStatus::ok);
 	{
 		Engine engine(r.loop, r.model, r.clock, r.settings, r.time);
-		REQUIRE(engine.load(r.tree.value(r.json), &r.schedules).ok());
+		r.adopt(engine);
 		engine.start(StartReason::boot);
 		r.run();
 		CHECK(engine.parameter_overridden(0, 1));
@@ -142,40 +139,21 @@ TEST_CASE("RulesProbe.ARuleFromJsonDrivesTheTechnologyAndItsParameterOverrideSur
 		CHECK(r.tech.commands.back().value == Value::of_signed(12));
 	}
 	// A refused command by the technology does not change the datapoint and is counted as an error.
+	r.image.load_model(r.model);
+	REQUIRE(r.model.bind(0, r.tech) == DatapointStatus::ok);
+	REQUIRE(r.model.bind(1, r.tech) == DatapointStatus::ok);
 	{
 		Engine engine(r.loop, r.model, r.clock, r.settings, r.time);
-		REQUIRE(engine.load(r.tree.value(r.json), &r.schedules).ok());
+		r.adopt(engine);
 		engine.start(StartReason::boot);
 		r.run();
 		r.tech.refuse = true;
 		REQUIRE(r.model.report(r.tech, 0, Value::of_signed(20)) == DatapointStatus::ok);
 		r.run();
-		CHECK(r.model.get(1)->value() == Value::of_signed(12)); // unchanged
+		CHECK(r.model.get(1)->value().empty()); // unchanged (the new model has no value yet)
 		hc::rules::RuleDiagnostics d;
 		REQUIRE(engine.diagnostics(0, d));
 		CHECK(d.errors >= 1);
 		CHECK(d.has_error);
 	}
-}
-
-TEST_CASE("RulesProbe.ALoadRefusalNamesTheRuleAndLeavesTheEngineEmpty") {
-	Rig r;
-	std::string error;
-	const char* bad = R"([
-	 {"id": "broken", "name": "writes nowhere",
-	  "reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "a"}],
-	   "actions": [{"kind": "write", "datapoint": "does.not.exist", "value": {"kind": "datapoint", "name": "a"}}]}]}
-	])";
-	REQUIRE(hc_test::parse_json(bad, r.json, error));
-	Engine engine(r.loop, r.model, r.clock, r.settings, r.time);
-	LoadResult result = engine.load(r.tree.value(r.json), &r.schedules);
-	CHECK_FALSE(result.ok());
-	CHECK(std::string(result.rule) == "broken");
-	CHECK(std::string(result.text).size() > 0);
-	CHECK_FALSE(engine.loaded());
-	engine.start(StartReason::boot);
-	r.run();
-	REQUIRE(r.model.report(r.tech, 0, Value::of_signed(1)) == DatapointStatus::ok);
-	r.run();
-	CHECK(r.tech.commands.empty()); // nothing loaded, nothing fires
 }

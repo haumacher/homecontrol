@@ -1,13 +1,17 @@
 /*
  * Copyright (c) 2026 Bernhard Haumacher
  */
-// Runs the rule conformance corpus spec/fixtures/rules/*.json (format: its README.md), which
-// E-Home's reference interpreter passes too.
+// Runs the rule conformance corpus spec/fixtures/rules/*.json and the block corpus
+// spec/fixtures/blocks/*.json (format: their README.md), which E-Home's reference interpreter passes
+// too, on compiled runtime images (spec/runtime-image.md 13.1): the committed `.bin` beside a case,
+// or, where there is none yet, the image the test compiler makes of the case.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <string>
@@ -20,8 +24,10 @@
 #include "hc/blocks/block_set.h"
 #include "hc/datapoint.h"
 #include "hc/event_loop.h"
+#include "hc/image/binary.h"
 #include "hc/image/loader.h"
 #include "hc/image/rules_clock.h"
+#include "hc/image/validator.h"
 #include "hc/json.h"
 #include "hc/network_settings.h"
 #include "hc/rules/engine.h"
@@ -29,6 +35,8 @@
 #include "hc/rules/parameter_store.h"
 #include "hc/scheduler.h"
 #include "hc/value_store.h"
+#include "image_compiler.h"
+#include "image_support.h"
 #include "rules_test_support.h"
 #include "test_support.h"
 
@@ -67,10 +75,6 @@ std::vector<std::string> rule_corpus_files() { return corpus_files("rules"); }
 namespace {
 
 constexpr uint64_t kBase = 1000000; ///< Monotonic time of the corpus's time 0.
-
-/// The `blocks` of an image without blocks.
-constexpr char kEmptyArray[] = "[]";
-const hc::JsonSpan kNoBlocks{kEmptyArray, 2, hc::JsonSpan::Kind::array};
 
 /// The case's wall clock as the core's time service interface: UTC from the case's start and the
 /// monotonic clock, local time through the case's time zone (README "clock": `zone`, UTC without).
@@ -238,52 +242,36 @@ bool same(const Val& actual, const Val& expected) {
 	return hc::rules::val_identical(actual, expected);
 }
 
-/// The schedule entries of a case in the image's full form (README "schedules"), parsed by the
-/// device's image loader from a synthetic image that holds only them: the specs the scheduler loads
-/// and the time datapoints they imply (spec/schedules.md 2.2).
-struct SchedulePlan {
-	std::string text;
-	hc::image::Plan plan;
-	std::vector<std::string> time_datapoints;
+/// What the corpus run did with its cases (the report at the end of each corpus).
+struct CorpusStats {
+	size_t run = 0;        ///< Cases run (a refused load checked counts as run).
+	size_t from_files = 0; ///< Of them, images read from the committed `.bin` files.
+	size_t compiled = 0;   ///< Of them, images compiled by the test compiler (no `.bin` beside the case).
+	std::vector<std::string> skipped; ///< `loadRefused` cases that are E-Home's semantic refusals.
 
-	/// From the `schedules` array of the case or of an image step; false when it holds no full entry.
-	bool build(const hc::JsonSpan& list, const hc_test::FakeClock& clock) {
-		std::string entries;
-		size_t position = 0;
-		hc::JsonSpan item;
-		hc::JsonSpan kind;
-		while (hc::json_next_item(list, position, item)) {
-			if (item.kind == hc::JsonSpan::Kind::object && hc::json_member(item, "kind", kind)) {
-				entries += (entries.empty() ? "" : ",") + std::string(item.data, item.length);
-			}
-		}
-		if (entries.empty()) {
-			return false;
-		}
-		text = R"({"image": {"schemaVersion": "1.2", "projectId": "corpus", "revision": 1}, "schedules": [)" + entries + "]}";
-		hc::image::Loader loader(clock, hc::HistoryLimits().cap_bytes);
-		hc::image::Report report;
-		bool ok = loader.parse(text.data(), text.size(), plan, report);
-		std::string reasons;
-		for (size_t i = 0; i < report.count; ++i) {
-			reasons += std::string(report.refusals[i].path) + ": " + report.refusals[i].reason + "\n";
-		}
-		REQUIRE_MESSAGE(ok, "the case's schedules are refused:\n" << reasons);
-		for (size_t i = 0; i < plan.datapoint_count; ++i) {
-			if (plan.bindings[i] == hc::image::Binding::schedule) {
-				time_datapoints.push_back(plan.datapoints[i].name);
-			}
-		}
-		return true;
+	static CorpusStats& of(const std::string& directory) {
+		static CorpusStats rules, blocks;
+		return directory == "blocks" ? blocks : rules;
 	}
+};
+
+/// A binary image in RAM as the device holds it in its slot, checked (validator), and the Plan the
+/// device's Loader builds from it (datapoint specs in image order, schedules, rule and block sets).
+struct LoadedImage {
+	std::vector<uint8_t> bytes;
+	hc::image::bin::View view;
+	std::unique_ptr<hc::image::Plan> plan;
 };
 
 class CaseRunner {
 public:
-	CaseRunner(const Json& json, const std::string& text) : case_(json), text_(text) {
+	CaseRunner(const Json& json, const std::string& text, const std::string& path, const std::string& directory)
+		: case_(json), text_(text), path_(path), directory_(directory) {
 		// Index: 1 refuses commands, 2 refuses reads.
 		technologies_[1].refuse = technologies_[3].refuse = true;
 		technologies_[2].refuse_reads = technologies_[3].refuse_reads = true;
+		std::string file = std::filesystem::path(path).filename().string();
+		stem_ = file.substr(0, file.size() - 5);
 	}
 
 	void run() {
@@ -313,6 +301,7 @@ public:
 		}
 		if (case_.has("ui") && case_["ui"].has("lang")) {
 			REQUIRE(settings_.set_string(hc::setting::kUiLang, case_["ui"]["lang"].text.c_str()) == hc::SettingsStatus::ok);
+			language_ = case_["ui"]["lang"].text;
 		}
 		static const char* const kSun[] = {"sunrise", "sunset", "dawn", "dusk"};
 		for (size_t i = 0; i < 4; ++i) {
@@ -321,35 +310,32 @@ public:
 					hc::rules::LiteralStatus::ok);
 			}
 		}
-		for (const Json& s : case_["schedules"].items) {
-			if (s.kind == Json::Kind::object) {
-				schedules_.ids.push_back(s["id"].text);
-				if (s.has("output")) {
-					schedules_.outputs.push_back(s["output"].text);
-				}
-			} else {
-				schedules_.ids.push_back(s.text);
+		CorpusStats& stats = CorpusStats::of(directory_);
+		std::vector<uint8_t> bytes;
+		std::string error;
+		bool from_file = false;
+		bool have = image_bytes(-1, bytes, from_file, error);
+		if (case_["expected"].has("loadRefused")) {
+			if (!from_file && !device_refusal()) {
+				// spec/runtime-image.md 13.1: a refusal of E-Home's validation has no image; E-Home's test checks it.
+				stats.skipped.push_back(stem_);
+				MESSAGE("skipped: a semantic refusal of E-Home, no image");
+				return;
 			}
+			REQUIRE_MESSAGE(have, "the image of a device-side refusal cannot be compiled: " << error);
+			++stats.run;
+			++(from_file ? stats.from_files : stats.compiled);
+			check_refused(std::move(bytes));
+			return;
 		}
-		hc::JsonSpan root;
-		hc::JsonSpan list;
-		REQUIRE(hc::json_parse(text_.data(), text_.size(), root, nullptr, 100));
-		if (hc::json_member(root, "schedules", list)) {
-			auto plan = std::make_unique<SchedulePlan>();
-			if (plan->build(list, clock_)) {
-				schedule_plan_ = std::move(plan);
-			}
+		REQUIRE_MESSAGE(have, "the case's image cannot be compiled: " << error);
+		++stats.run;
+		++(from_file ? stats.from_files : stats.compiled);
+		image_ = open_image(std::move(bytes), "the case's image");
+		if (image_ == nullptr) {
+			return;
 		}
-		for (const Json& dp : case_["datapoints"].items) {
-			if (dp.has("readable") && !dp["readable"].boolean) {
-				schedules_.unreadable.push_back(dp["name"].text);
-			}
-		}
-		empty_rules_.kind = Json::Kind::array;
-		if (!hc::json_member(root, "blocks", blocks_span_)) {
-			blocks_span_ = kNoBlocks;
-		}
-		load_model(rules_of(case_), blocks_span_);
+		load_model(*image_);
 		for (const auto& entry : case_["persisted"].members) {
 			if (entry.first.compare(0, 6, "block/") == 0) {
 				persist_record(entry.first.substr(6), entry.second);
@@ -385,51 +371,21 @@ public:
 		for (const auto& entry : case_["initial"].members) {
 			report(entry.first, entry.second);
 		}
-		image_ = &rules_of(case_);
-		engine_ = std::make_unique<Engine>(loop_, model_, clock_, settings_, time_);
-		engine_->set_observer(&recorder_);
-		engine_->set_timeline_store(&blobs_);
-		LoadResult result = engine_->load(tree_.value(*image_), &schedules_);
-		if (case_["expected"].has("loadRefused") && (!result.ok() || !case_.has("blocks"))) {
-			CHECK_MESSAGE(!result.ok(), "the load must be refused");
-			CHECK(std::string(hc::rules::load_error_name(result.error)) == case_["expected"]["loadRefused"].text);
-			if (case_["expected"].has("path")) {
-				CHECK(std::string(result.path) == case_["expected"]["path"].text);
-			}
-			if (case_["expected"].has("text")) {
-				CHECK(std::string(result.text) == case_["expected"]["text"].text);
-			}
-			MESSAGE("refusal: " << std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
-			return;
-		}
-		REQUIRE_MESSAGE(result.ok(), "load refused: " << std::string(hc::rules::load_error_name(result.error)) << " rule "
-			<< std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
-		// The blocks after the rules (spec/fixtures/blocks/README.md).
-		hc::blocks::BlockSet set;
-		hc::blocks::BlockLoadResult block_result = set.load(blocks_span_, model_, owners_, hc_test::corpus_registry());
-		if (case_["expected"].has("loadRefused")) {
-			CHECK_MESSAGE(!block_result.ok(), "the load must be refused");
-			CHECK(std::string(hc::blocks::block_error_name(block_result.error)) == case_["expected"]["loadRefused"].text);
-			if (case_["expected"].has("path")) {
-				CHECK(std::string(block_result.path) == case_["expected"]["path"].text);
-			}
-			MESSAGE("refusal: " << std::string(block_result.block) << " at " << std::string(block_result.path) << ": "
-				<< std::string(block_result.text));
-			return;
-		}
-		REQUIRE_MESSAGE(block_result.ok(), "blocks refused at " << std::string(block_result.path) << ": "
-			<< std::string(hc::blocks::block_error_name(block_result.error)) << ": " << std::string(block_result.text));
-		make_blocks(std::move(set));
-		load_schedules(true);
-		engine_->start(StartReason::boot);
+		boot();
 		advance(0);
 		size_t step_index = 0;
 		for (const Json& step : case_["timeline"].items) {
+			if (failed_) {
+				return; // an image was refused (reported): the components are gone
+			}
 			current_step_ = step_index++;
 			uint64_t at = static_cast<uint64_t>(step["at"].number);
 			advance(at);
 			apply(step, at);
 			advance(at);
+		}
+		if (failed_) {
+			return;
 		}
 		advance(static_cast<uint64_t>(case_["end"].number));
 		compare_outputs();
@@ -439,21 +395,6 @@ public:
 	}
 
 private:
-	struct Schedules : hc::rules::ScheduleDirectory {
-		bool has_schedule(const char* id) const override {
-			return std::find(ids.begin(), ids.end(), std::string(id)) != ids.end();
-		}
-		bool owns_output(const char* datapoint) const override {
-			return std::find(outputs.begin(), outputs.end(), std::string(datapoint)) != outputs.end();
-		}
-		bool technology_reads(const char* datapoint) const override {
-			return std::find(unreadable.begin(), unreadable.end(), std::string(datapoint)) == unreadable.end();
-		}
-		std::vector<std::string> ids;
-		std::vector<std::string> outputs;
-		std::vector<std::string> unreadable; ///< "readable": false
-	};
-
 	/// Forwards the scheduler's firings to the current engine.
 	struct Firings : hc::ScheduleListener {
 		explicit Firings(CaseRunner& r) : runner(r) {}
@@ -461,82 +402,229 @@ private:
 		CaseRunner& runner;
 	};
 
-	/// The scheduler with the case's full entries (README "schedules"), after the rules' load as in
-	/// the image service (spec/runtime-image.md 6); the time datapoints take their values quietly.
-	/// `fresh`: a new scheduler (the start, a reboot).
-	void load_schedules(bool fresh) {
-		if (schedule_plan_ == nullptr) {
+	/// The bytes of the case's image (`step` -1) or of the image step at position `step`
+	/// (spec/runtime-image.md 13.1): the committed `NN-name.bin` (`NN-name.step-<k>.bin`) beside the
+	/// case when it exists, otherwise compiled by the test compiler. False (with `error`) when there
+	/// is no file and the image cannot be compiled.
+	bool image_bytes(int step, std::vector<uint8_t>& out, bool& from_file, std::string& error) const {
+		std::string file = std::filesystem::path(path_).parent_path().string() + "/" + stem_ +
+			(step < 0 ? std::string(".bin") : ".step-" + std::to_string(step) + ".bin");
+		std::ifstream in(file, std::ios::binary);
+		if (in) {
+			out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+			from_file = true;
+			return true;
+		}
+		from_file = false;
+		hc::test::CompileOptions options;
+		options.registry = &hc_test::corpus_registry();
+		options.case_name = stem_.c_str();
+		return hc::test::compile_case(text_.data(), text_.size(), step, out, &error, options);
+	}
+
+	/// Whether a `loadRefused` case without its `.bin` is one of the device's own refusals (spec/runtime-
+	/// image.md 13.1, 10.8: an unknown block type, a block's ports and parameters against the manifest,
+	/// a DPT, a limit), whose image the test compiler makes. Once E-Home's compiled corpus is committed
+	/// (a `.bin` beside any case of the directory), the files decide: a case without one is E-Home's.
+	/// Without them this list of the cases E-Home's corpus gives an image decides: the test compiler
+	/// validates nothing (image_compiler.h) and compiles many of E-Home's semantic refusals too.
+	bool device_refusal() const {
+		std::error_code ec;
+		for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(path_).parent_path(), ec)) {
+			if (entry.path().extension() == ".bin") {
+				return false;
+			}
+		}
+		// No rule case: E-Home's validation refuses them all first (97, a device limit, too).
+		static const char* const kBlocks[] = {"01-load-refused-unknown-type", "02-load-refused-missing-input",
+			"03-load-refused-type-mismatch", "05-load-refused-parameter-bounds", "06-load-refused-aggregation",
+			"32-load-refused-multiple", "33-load-refused-demand-thresholds", "39-load-refused-curve-points",
+			"52-load-refused-shading-horizon", "73-load-refused-pv-min-power", "74-load-refused-pv-must-run"};
+		return directory_ == "blocks" && std::find(std::begin(kBlocks), std::end(kBlocks), stem_) != std::end(kBlocks);
+	}
+
+	/// The device's checks of an image and its Plan (validator, then Loader::build with the corpus's
+	/// block types, labels in the case's language); false with the refusals in `report`.
+	bool check_image(LoadedImage& image, hc::image::Report& report) {
+		const uint8_t* b = image.bytes.data();
+		size_t n = image.bytes.size();
+		if (!hc::image::check_header(b, n, n, report) || !hc::image::check_crc(b, report) ||
+			!hc::image::check_structure(b, report)) {
+			return false;
+		}
+		image.view.open(b);
+		image.plan = std::make_unique<hc::image::Plan>();
+		hc::image::Loader loader(clock_, hc::HistoryLimits().cap_bytes, language_.c_str());
+		loader.set_block_registry(hc_test::corpus_registry());
+		return loader.build(image.view, *image.plan, report);
+	}
+
+	/// An image the device must accept; nullptr (a failure reported) when it refuses it.
+	std::unique_ptr<LoadedImage> open_image(std::vector<uint8_t> bytes, const std::string& what) {
+		auto image = std::make_unique<LoadedImage>();
+		image->bytes = std::move(bytes);
+		hc::image::Report report;
+		bool ok = check_image(*image, report);
+		CHECK_MESSAGE(ok, what << " is refused: " << hc_test::describe(report));
+		if (!ok) {
+			failed_ = true;
+			return nullptr;
+		}
+		return image;
+	}
+
+	/// README `loadRefused` with an image (spec/runtime-image.md 13.1): the device's checks refuse it
+	/// with the case's reason code (the path is the binary one, the text the device's).
+	void check_refused(std::vector<uint8_t> bytes) {
+		LoadedImage image;
+		image.bytes = std::move(bytes);
+		hc::image::Report report;
+		bool ok = check_image(image, report);
+		CHECK_MESSAGE(!ok, "the load must be refused");
+		if (ok) {
 			return;
 		}
-		if (fresh || scheduler_ == nullptr) {
-			scheduler_.reset();
-			scheduler_ = std::make_unique<hc::Scheduler>(loop_, time_.wall, settings_, &model_);
-			scheduler_->defer_time_reports(true);
-			scheduler_->add_listener(firings_);
+		REQUIRE(report.count > 0);
+		std::string reason = report.refusals[0].reason;
+		std::string code = reason.substr(0, reason.find(':'));
+		CHECK_MESSAGE(code == case_["expected"]["loadRefused"].text, "refused with " << hc_test::describe(report)
+			<< ", expected " << case_["expected"]["loadRefused"].text);
+		MESSAGE("refusal: " << hc_test::describe(report) << " (the case's path: "
+			<< (case_["expected"].has("path") ? case_["expected"]["path"].text : std::string("-")) << ")");
+	}
+
+	/// The model of the image's datapoints in image order (the Plan's specs); the case's datapoints
+	/// that no component of the image owns are bound to the test technologies by name (README
+	/// `refuseCommands`, `refuseReads`); an application datapoint stays without technology.
+	void load_model(const LoadedImage& image) {
+		const hc::image::Plan& plan = *image.plan;
+		REQUIRE(model_.load(plan.datapoints, plan.datapoint_count) == hc::DatapointStatus::ok);
+		for (const Json& dp : case_["datapoints"].items) {
+			if (dp.has("application") && dp["application"].boolean) {
+				continue; // a value of the application: no technology owns it
+			}
+			const hc::Datapoint* d = model_.find(dp["name"].text.c_str());
+			REQUIRE_MESSAGE(d != nullptr, "the image has no datapoint " << dp["name"].text);
+			if (d == nullptr) {
+				continue;
+			}
+			if (plan.bindings[d->id()] != hc::image::Binding::none) {
+				continue; // a schedule's output: the scheduler owns it
+			}
+			bool refuse = dp.has("refuseCommands") && dp["refuseCommands"].boolean;
+			bool refuse_reads = dp.has("refuseReads") && dp["refuseReads"].boolean;
+			REQUIRE(model_.bind(d->id(), technologies_[(refuse ? 1 : 0) + (refuse_reads ? 2 : 0)]) ==
+				hc::DatapointStatus::ok);
 		}
-		const hc::image::Plan& plan = schedule_plan_->plan;
+	}
+
+	/// The components on the loaded model, as the device boots (the image service's apply): the
+	/// engine with the image's rules, the block runtime with its blocks, the scheduler with its
+	/// schedules; every rule starts with the reason boot.
+	void boot() {
+		engine_ = std::make_unique<Engine>(loop_, model_, clock_, settings_, time_);
+		engine_->set_observer(&recorder_);
+		engine_->set_timeline_store(&blobs_);
+		LoadResult result = engine_->adopt(std::move(image_->plan->rule_set), nullptr);
+		REQUIRE_MESSAGE(result.ok(), "the engine refused the rules: " << std::string(hc::rules::load_error_name(result.error))
+			<< " rule " << std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
+		blocks_ = std::make_unique<hc::blocks::BlockRuntime>(loop_, model_, clock_, settings_, blobs_, *engine_);
+		blocks_->set_observer(&recorder_);
+		REQUIRE(blocks_->adopt(std::move(image_->plan->block_set)));
+		scheduler_.reset();
+		scheduler_ = std::make_unique<hc::Scheduler>(loop_, time_.wall, settings_, &model_);
+		scheduler_->defer_time_reports(true);
+		scheduler_->add_listener(firings_);
+		load_schedules();
+		engine_->start(StartReason::boot);
+	}
+
+	/// The image's schedules (its schedule records, the Plan's specs), after the rules' load as in the
+	/// image service (spec/runtime-image.md 6); the time datapoints take their values quietly.
+	void load_schedules() {
+		const hc::image::Plan& plan = *image_->plan;
 		REQUIRE(scheduler_->load(plan.schedules, plan.schedule_count) == hc::ScheduleStatus::ok);
 		engine_->quietly([this] { scheduler_->publish_times(); });
 	}
 
-	/// The case's datapoints, owned by the test technologies, then the parameter datapoints of
-	/// `rules` (spec/rules.md 8.6) as the image loader derives them, unbound: the engine binds them;
-	/// then the time datapoints of the full schedule entries, which the scheduler binds.
-	void load_model(const Json& rules, const hc::JsonSpan& blocks, bool keep_values = false) {
-		names_.clear();
-		specs_.clear();
-		std::vector<hc::ValueType> types;
-		std::vector<uint8_t> flags;
-		for (const Json& dp : case_["datapoints"].items) {
-			names_.push_back(dp["name"].text);
-			hc::ValueType type = hc::rules::datapoint_type_from_name(dp["type"].text.c_str());
-			REQUIRE_MESSAGE(type != hc::ValueType::none, "datapoint type " << dp["type"].text);
-			bool writable = !dp.has("writable") || dp["writable"].boolean;
-			bool application = dp.has("application") && dp["application"].boolean;
-			types.push_back(type);
-			flags.push_back(static_cast<uint8_t>(hc::DatapointFlags::kReadable |
-				(writable ? hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit : 0) |
-				(application ? hc::DatapointFlags::kApplication : 0)));
-		}
-		size_t own = names_.size();
-		std::vector<hc::rules::ParameterDatapoint> derived(256);
-		size_t count = hc::rules::parameter_datapoints(tree_.value(rules), derived.data(), derived.size());
-		REQUIRE(count <= derived.size());
-		for (size_t i = 0; i < count; ++i) {
-			names_.push_back(derived[i].name);
-			types.push_back(derived[i].type);
-			flags.push_back(derived[i].flags);
-		}
-		if (schedule_plan_ != nullptr) {
-			for (const std::string& name : schedule_plan_->time_datapoints) {
-				names_.push_back(name);
-				types.push_back(hc::ValueType::time_of_day);
-				flags.push_back(static_cast<uint8_t>(hc::DatapointFlags::kWritable | hc::DatapointFlags::kTransmit));
+	/// README `image`: the swap as the image service makes it (spec/runtime-image.md 6, 12): the
+	/// queues are processed, the values of the datapoints are kept by the hash of their names, the
+	/// rules are detached with their runtime, the old image is erased; the new image's model takes
+	/// the values whose hash and value type match, the engine adopts the new rules with the carry,
+	/// the block runtime the new blocks, the scheduler the new schedules; the rules start (image).
+	void swap(uint64_t at) {
+		engine_->flush();
+		blocks_->flush();
+		struct Kept {
+			hc::Value value;
+			hc::Quality quality;
+			uint64_t updated_ms;
+		};
+		std::map<uint64_t, Kept> kept;
+		std::vector<uint64_t> shared;
+		for (size_t i = 0; i < model_.size(); ++i) {
+			const hc::Datapoint* dp = model_.get(static_cast<uint16_t>(i));
+			if (dp->quality() == hc::Quality::unknown) {
+				continue;
+			}
+			uint64_t hash = hc::image::bin::fnv1a(dp->name());
+			if (!kept.emplace(hash, Kept{dp->value(), dp->quality(), dp->updated_ms()}).second) {
+				shared.push_back(hash); // two names, one hash: neither value is carried (section 12)
 			}
 		}
-		// The blocks' mirrors (spec/blocks.md 6), as the image loader derives them.
-		std::vector<hc::blocks::ImpliedDatapoint> mirrors(
-			hc::blocks::implied_datapoints(blocks, hc_test::corpus_registry(), nullptr, 0));
-		hc::blocks::implied_datapoints(blocks, hc_test::corpus_registry(), mirrors.data(), mirrors.size());
-		for (const hc::blocks::ImpliedDatapoint& mirror : mirrors) {
-			names_.push_back(mirror.name);
-			types.push_back(mirror.type);
-			flags.push_back(mirror.flags);
+		for (uint64_t hash : shared) {
+			kept.erase(hash);
 		}
-		for (size_t i = 0; i < names_.size(); ++i) {
-			specs_.push_back(DatapointSpec{names_[i].c_str(), types[i], flags[i]});
+		Engine::Carry* carry = engine_->detach();
+		scheduler_->clear();
+		model_.clear();
+		// The slot is erased and written anew: nothing may read the old image any more.
+		std::fill(image_->bytes.begin(), image_->bytes.end(), static_cast<uint8_t>(0xFF));
+		std::vector<uint8_t> bytes;
+		std::string error;
+		bool from_file = false;
+		bool have = image_bytes(static_cast<int>(current_step_), bytes, from_file, error);
+		CHECK_MESSAGE(have, "the image at " << at << " cannot be compiled: " << error);
+		std::unique_ptr<LoadedImage> next = have ? open_image(std::move(bytes), "the image at " + std::to_string(at)) : nullptr;
+		if (next == nullptr) {
+			Engine::free_carry(carry);
+			failed_ = true;
+			return;
 		}
-		REQUIRE(model_.load(specs_.data(), specs_.size(), keep_values) == hc::DatapointStatus::ok);
-		for (size_t i = 0; i < own; ++i) {
-			const Json& dp = case_["datapoints"].items[i];
-			if (dp.has("application") && dp["application"].boolean) {
-				continue; // a value of the application: no technology owns it
+		load_model(*next);
+		for (size_t i = 0; i < model_.size(); ++i) {
+			const hc::Datapoint* dp = model_.get(static_cast<uint16_t>(i));
+			auto it = kept.find(hc::image::bin::fnv1a(dp->name()));
+			if (it != kept.end() && it->second.value.type() == dp->type()) {
+				REQUIRE(model_.carry(static_cast<uint16_t>(i), it->second.value, it->second.quality, it->second.updated_ms) ==
+					hc::DatapointStatus::ok);
 			}
-			bool refuse = dp.has("refuseCommands") && dp["refuseCommands"].boolean;
-			bool refuse_reads = dp.has("refuseReads") && dp["refuseReads"].boolean;
-			REQUIRE(model_.bind(static_cast<uint16_t>(i), technologies_[(refuse ? 1 : 0) + (refuse_reads ? 2 : 0)]) ==
-				hc::DatapointStatus::ok);
 		}
+		LoadResult result = engine_->adopt(std::move(next->plan->rule_set), carry);
+		Engine::free_carry(carry);
+		REQUIRE_MESSAGE(result.ok(), "the engine refused the rules of the image at " << at << ": "
+			<< std::string(hc::rules::load_error_name(result.error)) << " rule " << std::string(result.rule) << " at "
+			<< std::string(result.path) << ": " << std::string(result.text));
+		REQUIRE(blocks_->adopt(std::move(next->plan->block_set)));
+		image_ = std::move(next);
+		load_schedules();
+		engine_->start(StartReason::image);
+	}
+
+	/// README `reboot`: an orderly reboot (the block runtime writes its due records), the slot's image
+	/// loaded again on a model without values.
+	void reboot() {
+		scheduler_.reset();
+		blocks_.reset();
+		engine_.reset();
+		std::vector<uint8_t> bytes = std::move(image_->bytes);
+		image_.reset();
+		image_ = open_image(std::move(bytes), "the image at the reboot");
+		if (image_ == nullptr) {
+			return;
+		}
+		load_model(*image_);
+		boot();
 	}
 
 	const hc::Datapoint& datapoint(const std::string& name) {
@@ -645,63 +733,9 @@ private:
 		} else if (step.has("setSchedule")) {
 			set_schedule(step["setSchedule"], at);
 		} else if (step.has("image")) {
-			// As the image service swaps (doc/image.md): the rules' queued events go, the model is
-			// loaded again with the values kept (the parameter datapoints follow the new rules), the
-			// rules follow the datapoints by their previous ids.
-			engine_->flush();
-			std::vector<std::string> old_names;
-			for (size_t i = 0; i < model_.size(); ++i) {
-				old_names.push_back(model_.get(static_cast<uint16_t>(i))->name());
-			}
-			std::unique_ptr<SchedulePlan> previous_plan;
-			if (step["image"].has("schedules")) {
-				// The step's entries replace the case's (README "image").
-				hc::JsonSpan list = timeline_member(current_step_, "image", "schedules");
-				auto plan = std::make_unique<SchedulePlan>();
-				REQUIRE_MESSAGE(plan->build(list, clock_), "the image step's schedules need full entries");
-				previous_plan = std::move(schedule_plan_);
-				schedule_plan_ = std::move(plan);
-				for (const Json& s : step["image"]["schedules"].items) {
-					if (std::find(schedules_.ids.begin(), schedules_.ids.end(), s["id"].text) == schedules_.ids.end()) {
-						schedules_.ids.push_back(s["id"].text);
-					}
-				}
-			}
-			const Json& next_rules = rules_of(step["image"]);
-			hc::JsonSpan next_blocks = step["image"].has("blocks") ? timeline_member(current_step_, "image", "blocks") : kNoBlocks;
-			load_model(next_rules, next_blocks, true);
-			std::vector<uint16_t> previous;
-			for (size_t i = 0; i < model_.size(); ++i) {
-				auto it = std::find(old_names.begin(), old_names.end(), std::string(model_.get(static_cast<uint16_t>(i))->name()));
-				previous.push_back(it == old_names.end() ? hc::rules::kNone : static_cast<uint16_t>(it - old_names.begin()));
-			}
-			LoadResult result = engine_->load(tree_.value(next_rules), &schedules_, previous.data());
-			REQUIRE_MESSAGE(result.ok(), "image at " << at << " refused: " << std::string(hc::rules::load_error_name(result.error))
-				<< " rule " << std::string(result.rule) << " at " << std::string(result.path) << ": " << std::string(result.text));
-			image_ = &next_rules;
-			blocks_span_ = next_blocks;
-			hc::blocks::BlockSet set;
-			hc::blocks::BlockLoadResult block_result = set.load(blocks_span_, model_, owners_, hc_test::corpus_registry());
-			REQUIRE_MESSAGE(block_result.ok(), "the blocks of the image at " << at << " are refused at "
-				<< std::string(block_result.path) << ": " << std::string(block_result.text));
-			REQUIRE(blocks_->adopt(std::move(set)));
-			load_schedules(false);
-			engine_->start(StartReason::image);
+			swap(at);
 		} else if (step.has("reboot")) {
-			scheduler_.reset();
-			blocks_.reset(); // an orderly reboot: its due records are written
-			engine_.reset();
-			load_model(*image_, blocks_span_);
-			engine_ = std::make_unique<Engine>(loop_, model_, clock_, settings_, time_);
-			engine_->set_observer(&recorder_);
-			engine_->set_timeline_store(&blobs_);
-			LoadResult result = engine_->load(tree_.value(*image_), &schedules_);
-			REQUIRE(result.ok());
-			hc::blocks::BlockSet set;
-			REQUIRE(set.load(blocks_span_, model_, owners_, hc_test::corpus_registry()).ok());
-			make_blocks(std::move(set));
-			load_schedules(true);
-			engine_->start(StartReason::boot);
+			reboot();
 		} else if (step.has("setBlock")) {
 			set_block(step["setBlock"], at);
 		} else if (step.has("check")) {
@@ -812,38 +846,6 @@ private:
 		}
 	}
 
-
-	/// The `rules` of the case or of an image step; none: an empty array (block cases).
-	const Json& rules_of(const Json& image) const { return image.has("rules") ? image["rules"] : empty_rules_; }
-
-	/// Which datapoints another component owns (spec/blocks.md B14): the schedule outputs of the case
-	/// and the implied datapoints.
-	struct Owners : hc::blocks::BlockDirectory {
-		explicit Owners(const Schedules& s) : schedules(s) {}
-		const char* owner(const char* datapoint) const override {
-			if (schedules.owns_output(datapoint)) {
-				return "a schedule entry";
-			}
-			if (std::strncmp(datapoint, "rule/", 5) == 0) {
-				return "the rule engine";
-			}
-			if (std::strncmp(datapoint, "schedule/", 9) == 0) {
-				return "a schedule entry";
-			}
-			if (std::strncmp(datapoint, "block/", 6) == 0) {
-				return "the block runtime";
-			}
-			return nullptr;
-		}
-		const Schedules& schedules;
-	};
-
-	/// A new block runtime on the current engine with `set` (the boot or the reboot).
-	void make_blocks(hc::blocks::BlockSet&& set) {
-		blocks_ = std::make_unique<hc::blocks::BlockRuntime>(loop_, model_, clock_, settings_, blobs_, *engine_);
-		blocks_->set_observer(&recorder_);
-		REQUIRE(blocks_->adopt(std::move(set)));
-	}
 
 	/// README "persisted": a state record `block/<id>` written as the device writes it.
 	void persist_record(const std::string& id, const Json& record) {
@@ -1074,7 +1076,7 @@ private:
 			int p = engine_->rules().find_parameter(static_cast<size_t>(r), entry.first.substr(slash + 1).c_str());
 			REQUIRE_MESSAGE(p >= 0, "no parameter " << entry.first);
 			const hc::rules::RuleSet& set = engine_->rules();
-			std::string have = set.str(set.parameter(set.rule(static_cast<size_t>(r)).first_parameter + p).label);
+			std::string have = set.label(set.parameter(set.rule(static_cast<size_t>(r)).first_parameter + p).label);
 			CHECK_MESSAGE(have == entry.second.text, where << ": label of " << entry.first << " is " << have
 				<< ", expected " << entry.second.text);
 		}
@@ -1361,6 +1363,10 @@ private:
 
 	const Json& case_;
 	const std::string& text_;
+	std::string path_;
+	std::string directory_;
+	std::string stem_;
+	std::string language_ = "en";
 	JsonTree tree_;
 	hc_test::FakeClock clock_;
 	hc_test::FakeSettings settings_;
@@ -1368,21 +1374,15 @@ private:
 	EventLoop loop_;
 	DatapointModel model_{clock_};
 	hc_test::TestTechnology technologies_[4];
-	Schedules schedules_;
 	Recorder recorder_{clock_};
-	std::vector<std::string> names_;
-	std::vector<DatapointSpec> specs_;
-	const Json* image_ = nullptr;
-	Json empty_rules_;
-	hc::JsonSpan blocks_span_ = kNoBlocks;
 	hc_test::FakeBlobStore blobs_;
-	Owners owners_{schedules_};
+	std::unique_ptr<LoadedImage> image_; ///< The slot's image; declared before the components: destroyed last.
 	std::unique_ptr<Engine> engine_;
 	std::unique_ptr<hc::blocks::BlockRuntime> blocks_; ///< Declared after the engine: destroyed first.
-	std::unique_ptr<SchedulePlan> schedule_plan_;
 	Firings firings_{*this};
 	std::unique_ptr<hc::Scheduler> scheduler_; ///< Declared after the engine: destroyed first.
 	size_t current_step_ = 0;
+	bool failed_ = false; ///< An image was refused: the run stops.
 };
 
 void run_case(const char* prefix, const char* directory = "rules") {
@@ -1398,7 +1398,7 @@ void run_case(const char* prefix, const char* directory = "rules") {
 	Json json;
 	REQUIRE_MESSAGE(hc_test::parse_json(text, json, error), path << ": " << error);
 	hc_test::ScopedCapture capture(hc::LogLevel::error); // keep the test output short
-	CaseRunner runner(json, text);
+	CaseRunner runner(json, text, path, directory);
 	runner.run();
 }
 
@@ -1509,9 +1509,23 @@ HC_RULE_CASE("99", "load-refused-write-state-datapoint")
 HC_RULE_CASE("100", "load-refused-own-state-datapoint")
 HC_RULE_CASE("101", "timeline-enable-override-watch")
 
+/// The counts of a corpus run (the cases selected in this run), for the log.
+void print_stats(const char* name, const std::string& directory) {
+	const CorpusStats& stats = CorpusStats::of(directory);
+	std::string skipped;
+	for (const std::string& s : stats.skipped) {
+		skipped += " " + s;
+	}
+	std::printf("%s: %u cases run (%u images from .bin files, %u compiled by the test compiler), %u skipped "
+		"(semantic refusals of E-Home without an image):%s\n", name, static_cast<unsigned>(stats.run),
+		static_cast<unsigned>(stats.from_files), static_cast<unsigned>(stats.compiled),
+		static_cast<unsigned>(stats.skipped.size()), skipped.c_str());
+}
+
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
 	CHECK(files.size() == 101);
+	print_stats("RulesCorpus", "rules");
 }
 
 // The block conformance corpus (spec/fixtures/blocks/README.md), run by the same runner.
@@ -1596,4 +1610,5 @@ HC_BLOCK_CASE("74", "load-refused-pv-must-run")
 TEST_CASE("BlocksCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::corpus_files("blocks");
 	CHECK(files.size() == 74);
+	print_stats("BlocksCorpus", "blocks");
 }

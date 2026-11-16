@@ -202,7 +202,7 @@ Nothing is allocated while the controller is not enrolled or the connection is o
 | TLS steady state with dynamic buffers (context, session, record buffers per record) | 3000 to 5000 |
 | **Connected, total** | **about 29 500 to 31 500** |
 | A bus session (`BusSession`, heap from `open` until it ended and its last frame left the tunnel): 4 frames of 264 octets for the tunnel and the 2 KB outbox | about 3400 |
-| A request body announced with `length` (heap, freed after the answer) | its length; a `PUT /api/image` body goes to the staging area behind the updater's image instead (#66, doc/ota.md "The staging area": 0 B of heap, up to 148 KB on the C6), to the heap when the area declines (logged), 507 when no block is that large either |
+| A request body announced with `length` (heap, freed after the answer) | its length; a `PUT /api/image` body goes into the image slot as its frames arrive (issue #87: 32 bytes of the header on the heap, the flash erased and written per frame on the loop) |
 
 The TLS handshake is the peak: with `CONFIG_MBEDTLS_DYNAMIC_BUFFER` the incoming record buffer is
 allocated at the size of the record being read, the largest being E-Home's certificate message

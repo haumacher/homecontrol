@@ -9,6 +9,7 @@
 
 #include "hc/blocks/block_type.h"
 #include "hc/datapoint.h"
+#include "hc/image/binary.h"
 #include "hc/json.h"
 
 namespace hc::blocks {
@@ -41,17 +42,6 @@ struct BlockLoadResult {
 	char text[176] = {};
 	bool strict = false; ///< An unknown member: the image loader adds the hint of spec/runtime-image.md I4.
 	bool ok() const { return error == BlockError::none; }
-};
-
-/// What the loader needs to know about the datapoints beyond the model (spec/blocks.md B14).
-class BlockDirectory {
-public:
-	/// Non-null when no block output may bind `datapoint` because another component owns it: the
-	/// owner for the refusal ("a schedule entry's output").
-	virtual const char* owner(const char* datapoint) const = 0;
-
-protected:
-	~BlockDirectory() = default;
 };
 
 /// The binding of one port of an instance.
@@ -87,13 +77,11 @@ public:
 	BlockSet(BlockSet&& other) noexcept;
 	BlockSet& operator=(BlockSet&& other) noexcept;
 
-	/// Compiles `blocks` (an array) against `model`; `directory` says which datapoints another
-	/// component owns. On a refusal the set stays empty and the result names the first problem.
-	BlockLoadResult load(const JsonSpan& blocks, const DatapointModel& model, const BlockDirectory& directory,
-		const BlockRegistry& registry);
-	/// The same against a directory of the datapoints (the image loader's tables: no scratch model).
-	BlockLoadResult load(const JsonSpan& blocks, const DatapointDirectory& datapoints, const BlockDirectory& directory,
-		const BlockRegistry& registry);
+	/// The blocks of the validated binary image `view` (spec/runtime-image.md 9.15), checked against
+	/// this firmware's types (10.8: the type and its version, the ports and parameters against the
+	/// manifest, the bound datapoints' types, the parameters' values, the type's check(), the
+	/// persistence keys). Replaces this set; a refusal leaves it empty with the result's path and text.
+	BlockLoadResult bind(const image::bin::View& view, const BlockRegistry& registry);
 
 	size_t size() const { return count_; }
 	const BlockSpec& at(size_t index) const { return specs_[index]; }
@@ -116,21 +104,6 @@ ValueType param_datapoint_type(ParamType type);
 /// `block/<block>/<member>`; false if it does not fit.
 bool mirror_name(const char* block, const char* member, char* out, size_t size);
 
-/// A datapoint the image implies for a block (spec/blocks.md 6), as the loader and the tests derive
-/// it from the `blocks` member.
-struct ImpliedDatapoint {
-	char name[Datapoint::kMaxName + 1];
-	ValueType type;
-	uint8_t flags;
-};
-
-/// The implied datapoints of `blocks`, in block order (`enabled`, the adjustable parameters, the
-/// outputs, the aggregated inputs), from the `first` on into `out` up to `capacity` (a caller fills
-/// its tables in batches); returns how many there are.
-/// Lenient: an instance that is not well-formed (no id, an unknown type) is skipped, since load()
-/// refuses it with the precise reason.
-size_t implied_datapoints(const JsonSpan& blocks, const BlockRegistry& registry, ImpliedDatapoint* out,
-	size_t capacity, size_t first = 0);
 
 /// The value of a parameter in its image form (spec/blocks.md 4): a number, a boolean, a choice's
 /// id or a time of day object. False (with `reason`) when it is not of the parameter's type; the

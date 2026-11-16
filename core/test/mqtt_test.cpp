@@ -11,6 +11,7 @@
 #include "doctest.h"
 #include "fake_blob_store.h"
 #include "hc/image/loader.h"
+#include "image_support.h"
 #include "hc/mqtt.h"
 #include "mqtt_test_support.h"
 #include "test_support.h"
@@ -53,6 +54,12 @@ public:
 /// The `mqtt` member a test adds to an image without one.
 const char* const kMember = "{\"broker\": \"mqtt://broker.example:1883\"}";
 
+/// A compiled image with its plan, kept while the configuration may point into it.
+struct Loaded {
+	hc_test::CompiledImage image;
+	hc::image::Plan plan;
+};
+
 struct Fixture {
 	ScopedCapture capture{hc::LogLevel::debug};
 	FakeClock clock;
@@ -64,6 +71,8 @@ struct Fixture {
 	FakeBlobStore blobs;
 	hc::History history{loop, clock, model, blobs};
 	FakeMqttClient client;
+	/// Every image loaded (the model and the client's configuration point into them).
+	std::vector<std::unique_ptr<Loaded>> images;
 	std::unique_ptr<Mqtt> mqtt;
 	uint64_t mono0;
 
@@ -79,37 +88,34 @@ struct Fixture {
 		mqtt.reset(new Mqtt(loop, clock, settings, connectivity, model, client, identity, &history));
 	}
 
-	/// Loads an image's datapoints and history into the model (what the image service does first).
-	void load_model(const std::string& text) {
-		hc::image::Plan plan;
+	/// Compiles `text`, loads its datapoints and history into the model (what the image service does
+	/// first) and returns the image (kept by the fixture).
+	const hc::image::bin::View& load_model(const std::string& text) {
+		images.emplace_back(new Loaded());
+		Loaded& loaded = *images.back();
+		REQUIRE(loaded.image.compile(text));
 		hc::image::Report report;
 		hc::image::Loader loader(clock, hc::HistoryLimits().cap_bytes);
-		REQUIRE_MESSAGE(loader.parse(text.data(), text.size(), plan, report),
-			(report.count > 0 ? std::string(report.refusals[0].path) + ": " + report.refusals[0].reason : ""));
-		REQUIRE(model.load(plan.datapoints, plan.datapoint_count, true) == DatapointStatus::ok);
-		REQUIRE(history.load(plan.history, plan.history_count, plan.history_budget) == hc::HistoryStatus::ok);
+		REQUIRE_MESSAGE(loader.build(loaded.image.view, loaded.plan, report), hc_test::describe(report));
+		REQUIRE(model.load(loaded.plan.datapoints, loaded.plan.datapoint_count, true) == DatapointStatus::ok);
+		REQUIRE(history.load(loaded.plan.history, loaded.plan.history_count, loaded.plan.history_budget) ==
+			hc::HistoryStatus::ok);
+		return loaded.image.view;
 	}
 
-	/// Loads an image and configures the client from it; `member` replaces (or adds) its `mqtt` member.
+	/// Loads an image and configures the client from it (Mqtt::configure_image); `member` is added
+	/// to an image without an `mqtt` member.
 	void load(const std::string& text, const char* member = nullptr) {
-		load_model(text);
+		std::string source = text;
+		if (member != nullptr) {
+			REQUIRE(source.find("\"mqtt\"") == std::string::npos);
+			size_t end = source.rfind('}');
+			REQUIRE(end != std::string::npos);
+			source.insert(end, std::string(",\n \"mqtt\": ") + member + "\n");
+		}
+		const hc::image::bin::View& view = load_model(source);
 		const char* error = nullptr;
-		if (member == nullptr) {
-			REQUIRE_MESSAGE(mqtt->configure_image(text.data(), text.size(), &error), (error ? error : ""));
-			return;
-		}
-		hc::JsonSpan root;
-		REQUIRE(hc::json_parse(text.data(), text.size(), root, nullptr, hc::kJsonMaxDepth));
-		hc::MqttImage image;
-		hc::json_member(root, "datapoints", image.datapoints);
-		hc::json_member(root, "functions", image.functions);
-		hc::JsonSpan info;
-		if (hc::json_member(root, "image", info)) {
-			hc::json_member(info, "name", image.name);
-		}
-		member_text = member;
-		REQUIRE(hc::json_parse(member_text.data(), member_text.size(), image.mqtt));
-		REQUIRE_MESSAGE(mqtt->configure(image, &error), (error ? error : ""));
+		REQUIRE_MESSAGE(mqtt->configure_image(view, &error), (error ? error : ""));
 	}
 
 	void sync_wall() { clock.wall_seconds = kWall0 + static_cast<int64_t>((clock.now_ms - mono0) / 1000); }
@@ -163,7 +169,6 @@ struct Fixture {
 		REQUIRE(model.report(technology, dp(name).id(), value) == DatapointStatus::ok);
 	}
 
-	std::string member_text;
 };
 
 std::string example() { return read_spec("fixtures/images/example.json"); }
@@ -740,9 +745,7 @@ TEST_CASE("MqttClearRemovesTheConfigsAndGoesOffline") {
 	f.load(example(), kMember);
 	f.connect();
 	f.client.published.clear();
-	std::string text = example(); // no mqtt member
-	f.load_model(text);
-	REQUIRE(f.mqtt->configure_image(text.data(), text.size()));
+	f.load(example()); // no mqtt record
 	f.settle();
 	CHECK(f.client.under("homeassistant/").size() == 9);
 	for (const auto& p : f.client.under("homeassistant/")) {

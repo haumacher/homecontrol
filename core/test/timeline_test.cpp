@@ -3,9 +3,11 @@
  */
 // The timelines of rules with states (spec/rules.md 2.8, 7.13, 8.7, 8.8; issue #84): what the
 // corpus (cases 74 to 100) does not cover. Every refusal of the table of spec 10.1 with its path
-// and text, the moments of points (a missing sun event, a moment kept within its date), the
-// canonical form, and the image and the API end to end with the heating program of
-// spec/fixtures/images/heating-timeline.json.
+// and text, which the device makes of the inhabitant's timeline (PUT /api/rules/<id>/timeline, still
+// JSON; the image's timeline is E-Home's to validate and comes as binary records, issue #87), the
+// moments of points (a missing sun event, a moment kept within its date), the canonical form of the
+// image's timeline (Timeline::from_image) and of an override, and the image and the API end to end
+// with the heating program of spec/fixtures/images/heating-timeline.json.
 #include <map>
 #include <string>
 #include <vector>
@@ -13,11 +15,13 @@
 #include "doctest.h"
 #include "fake_blob_store.h"
 #include "hc/image/image_service.h"
+#include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
 #include "hc/rules/engine.h"
 #include "hc/rules/timeline.h"
 #include "hc/web_api.h"
+#include "image_support.h"
 #include "knx_test_support.h"
 #include "rules_test_support.h"
 #include "web_test_support.h"
@@ -64,7 +68,9 @@ public:
 	bool no_dusk = false;
 };
 
-bool parse(const std::string& text, Timeline* out, TimelineRefusal& refusal, bool image = true) {
+/// Parses `text` as the inhabitant's timeline (spec 8.7: without `adjustable`), or with `image` in
+/// the image's form.
+bool parse(const std::string& text, Timeline* out, TimelineRefusal& refusal, bool image = false) {
 	States states;
 	return Timeline::parse_text(text.data(), text.size(), states, image, out, refusal);
 }
@@ -86,7 +92,7 @@ std::string clock_point(int minute, const char* state = "comfort") {
 
 } // namespace
 
-TEST_CASE("Timeline.Refusals: every check of spec/rules.md 10.1 with its reason, path and text") {
+TEST_CASE("Timeline.Refusals: every check of spec/rules.md 10.1 with its reason, path and text, of an override") {
 	struct Row {
 		std::string json;
 		LoadError error;
@@ -113,8 +119,8 @@ TEST_CASE("Timeline.Refusals: every check of spec/rules.md 10.1 with its reason,
 	const std::vector<Row> rows = {
 		{"[]", LoadError::malformed, "", "an object expected"},
 		{R"({"plans": [], "assignments": [], "x": 1})", LoadError::malformed, "", "unknown member 'x'"},
-		{R"({"adjustable": 1, "plans": [], "assignments": []})", LoadError::malformed, "adjustable",
-			"'adjustable' must be a boolean"},
+		// The inhabitant's timeline does not carry `adjustable` (spec 8.7).
+		{R"({"adjustable": true, "plans": [], "assignments": []})", LoadError::malformed, "", "unknown member 'adjustable'"},
 		{R"({"assignments": []})", LoadError::malformed, "", "member 'plans' missing"},
 		{with_plans("[]"), LoadError::malformed, "plans", "a timeline needs at least one plan"},
 		{with_plans("[" + nine_plans + "]"), LoadError::limit_exceeded, "plans", "more than 8 plans"},
@@ -178,10 +184,10 @@ TEST_CASE("Timeline.Refusals: every check of spec/rules.md 10.1 with its reason,
 		CHECK_MESSAGE(std::string(refusal.text) == row.text, row.json << ": " << refusal.text);
 		CHECK(timeline.empty());
 	}
-	// The inhabitant's timeline does not carry `adjustable` (spec 8.7).
+	// The image's form allows `adjustable`, a boolean (the text Timeline::from_image writes).
 	TimelineRefusal refusal;
-	CHECK_FALSE(parse(R"({"adjustable": true, "plans": [], "assignments": []})", nullptr, refusal, false));
-	CHECK(std::string(refusal.text) == "unknown member 'adjustable'");
+	CHECK(parse(R"({"adjustable": false, "plans": [{"id": "d", "label": "D", "points": []}], "assignments": [{"plan": "d"}]})",
+		nullptr, refusal, true));
 	// Allowed: an empty plan, an unassigned plan, two points at one moment.
 	CHECK(parse(with_plans(std::string("[") + kPlan + R"(, {"id": "spare", "label": "Spare", "points": []}])"), nullptr,
 		refusal));
@@ -189,20 +195,34 @@ TEST_CASE("Timeline.Refusals: every check of spec/rules.md 10.1 with its reason,
 }
 
 TEST_CASE("Timeline.Canonical form: the members in order, an offset 0 left out, days sorted; equality") {
-	const std::string text = R"({"adjustable": false, "plans": [{"label": {"en": "Day", "de": "Tag \"1\""}, "id": "day", "points": [
+	// The image's timeline from its binary records (spec/runtime-image.md 9.13), compiled from this
+	// source.
+	const std::string timeline = R"({"adjustable": false, "plans": [{"label": {"en": "Day", "de": "Tag \"1\""}, "id": "day", "points": [
 		{"state": "night", "sun": "sunset", "offset": 0, "notAfter": {"second": 0, "minute": 0, "hour": 22}},
 		{"state": "comfort", "time": {"hour": 6, "minute": 30, "second": 0}}]}],
 		"assignments": [{"plan": "day", "days": [7, 6]}, {"plan": "day"}]})";
+	hc_test::RuleImage image;
+	REQUIRE(image.compile(hc_test::rules_source("", R"({"id": "heating", "name": "H", "states": [{"id": "comfort"}, {"id": "standby"},
+		{"id": "night"}], "initialState": "comfort", "reactions": [{"triggers": [{"kind": "start"}], "actions": []}], "timeline": )" +
+		timeline + "}")));
+	hc::rules::RuleSet set = image.bind();
+	REQUIRE(set.rule(0).timeline != hc::rules::kNone);
+	hc::rules::RuleSetStates rule_states(set, 0);
 	Timeline a;
 	TimelineRefusal refusal;
-	REQUIRE(parse(text, &a, refusal));
+	REQUIRE_MESSAGE(Timeline::from_image(image.compiled.view, set.rule(0).timeline, rule_states, a, refusal), refusal.text);
 	CHECK_FALSE(a.adjustable());
+	// The rule set holds the same timeline.
+	REQUIRE(set.timeline(0) != nullptr);
+	CHECK(set.timeline(0)->equals(a));
+	CHECK_FALSE(set.timeline(0)->adjustable());
 	States states;
 	size_t length = 0;
 	char* canonical = a.canonical_text(states, length);
 	REQUIRE(canonical != nullptr);
 	CHECK(std::string(canonical) ==
 		R"({"plans":[{"id":"day","label":{"en":"Day","de":"Tag \"1\""},"points":[{"sun":"sunset","notAfter":{"hour":22,"minute":0,"second":0},"state":"night"},{"time":{"hour":6,"minute":30,"second":0},"state":"comfort"}]}],"assignments":[{"days":[6,7],"plan":"day"},{"plan":"day"}]})");
+	// The canonical text read back as an override is the same timeline.
 	Timeline b;
 	REQUIRE(Timeline::parse_text(canonical, length, states, false, &b, refusal));
 	CHECK(a.equals(b));
@@ -275,7 +295,8 @@ struct TimelineFixture : hc_test::WebFixture {
 	hc::knx::KnxTunnel tunnel{controller.loop(), fake.clock, controller.connectivity(), socket};
 	hc::knx::KnxAdapter adapter{controller.loop(), fake.clock, model, tunnel};
 	hc_test::FakeBlobStore blobs;
-	hc::image::ImageService service{controller, model, blobs, adapter, &tunnel};
+	hc::image::MemoryImageSlot slot;
+	hc::image::ImageService service{controller, model, blobs, slot, adapter, &tunnel};
 	std::string cookie;
 
 	TimelineFixture() {
@@ -287,8 +308,9 @@ struct TimelineFixture : hc_test::WebFixture {
 		cookie = onboard();
 	}
 
+	/// Compiles the source `text` and deploys it as PUT /api/image does.
 	void load(const std::string& text) {
-		REQUIRE(service.load(text.data(), text.size(), hc::image::Source::api, true));
+		REQUIRE_MESSAGE(hc_test::deploy(service, text), hc_test::describe(service.report()));
 		controller.run_once(); // the start cascades
 		controller.run_once();
 	}
@@ -454,25 +476,19 @@ TEST_CASE("Timeline.Image: a fixed timeline is refused 403; a rule without a tim
 	CHECK(f.get("/api/rules/heating/timeline", f.cookie).status == 200);
 }
 
-TEST_CASE("Timeline.Image: a parameter state of a rule with states: refused from 1.7, its datapoint before") {
+TEST_CASE("Timeline.Image: a parameter state of a rule with states before 1.7 keeps its datapoint") {
 	const char* kImage = R"({"image": {"schemaVersion": "%s", "projectId": "p", "revision": 1},
 		"datapoints": [{"id": "x", "type": "boolean", "writable": true, "virtual": {}}],
 		"rules": [{"id": "r", "name": "R", "parameters": [{"id": "state", "label": "S", "type": "integer", "default": 1}],
 			"states": [{"id": "a"}, {"id": "b"}], "initialState": "a",
 			"reactions": [{"triggers": [{"kind": "start"}], "actions": [], "to": "b"}]}]})";
 	char text[1024];
-	{
-		TimelineFixture f;
-		std::snprintf(text, sizeof(text), kImage, "1.6");
-		f.load(text);
-		Json dp = f.model_datapoint("rule/r/state");
-		REQUIRE(dp.kind == Json::Kind::object);
-		CHECK(dp["type"].text == "signed"); // the parameter's datapoint, not the state's
-		CHECK(dp["parameter"]["parameter"].text == "state");
-	}
-	{
-		TimelineFixture f;
-		std::snprintf(text, sizeof(text), kImage, "1.7");
-		CHECK_FALSE(f.service.load(text, std::strlen(text), hc::image::Source::api, true));
-	}
+	TimelineFixture f;
+	std::snprintf(text, sizeof(text), kImage, "1.6");
+	f.load(text);
+	Json dp = f.model_datapoint("rule/r/state");
+	REQUIRE(dp.kind == Json::Kind::object);
+	CHECK(dp["type"].text == "signed"); // the parameter's datapoint, not the state's
+	CHECK(dp["parameter"]["parameter"].text == "state");
+	// From 1.7 the declaration is refused by E-Home's validation (spec/rules.md 10.1): not the device's.
 }

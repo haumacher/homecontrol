@@ -38,7 +38,7 @@
 // ---- end web server ----
 // ---- runtime image (issue #8) ----
 #include "hc/image/image_service.h"
-#include "esp_image_staging.h"
+#include "esp_image_slot.h"
 #include "esp_load_probe.h"
 #include "esp_worker.h"
 #include "hc/image/memory_blob_store.h"
@@ -82,9 +82,11 @@ hc::esp::OtaService g_ota(g_queue);
 // ---- web server (issue #5): the datapoint model the technologies fill, and the server ----
 hc::DatapointModel g_model(g_clock);
 // ---- end web server ----
-// ---- runtime image (issue #8) and persistence (issue #21): the blobs (the stored image, persisted
-// values, history rings) live on the LittleFS partition under /storage/state ----
+// ---- runtime image (issue #8) and persistence (issue #21): the blobs (persisted values, history
+// rings) live on the LittleFS partition under /storage/state; the image itself in its own partition
+// `image`, used in place (issue #87, spec/runtime-image.md 7) ----
 hc::esp::LittleFsBlobStore g_blobs;
+hc::esp::EspImageSlot g_slot;
 // ---- end runtime image ----
 // ---- diagnostics (issue #4): reset reason, boot record, core dump, task watchdog (doc/diagnostics.md) ----
 hc::esp::EspDiagnostics g_diag;
@@ -113,7 +115,7 @@ int knx_console(void*, int argc, char** argv) {
 // ---- runtime image (issue #8): the loader, the rules, the schedules, persistence and history of
 // the image, and the console command `image` ----
 hc::image::ImageService& image() {
-	static hc::image::ImageService instance(controller(), g_model, g_blobs, knx().adapter(), &knx().tunnel());
+	static hc::image::ImageService instance(controller(), g_model, g_blobs, g_slot, knx().adapter(), &knx().tunnel());
 	return instance;
 }
 
@@ -156,13 +158,8 @@ hc::esp::MqttService& mqtt() {
 }
 // ---- end MQTT ----
 
-// The staging area for received images (#66) and for the loads of the stored image (#71): behind the
-// updater's image in its partition.
-hc::esp::EspImageStaging g_staging;
-// The image's store off the loop (#68): a task of its own per store.
-hc::esp::EspWorker g_worker(g_queue);
 // The storage figures of the status and the System page, measured off the loop after each change of
-// the blob store (#74), on a worker of their own (a deploy needs the store's worker when it arrives).
+// the blob store (#74), on a worker of their own.
 hc::StorageStats g_storage(g_blobs);
 hc::esp::EspWorker g_storage_worker(g_queue, "hc_stat", hc::esp::EspWorker::kStatsStack, true);
 // The heap at each phase of a load (#70): `log level hc.image debug`, or CONFIG_HC_IMAGE_HEAP_PHASES.
@@ -195,14 +192,10 @@ void loop_task(void*) {
 	g_blobs.start(); // mounts /storage (shared with the web server's UI files) and opens /storage/state
 	g_storage.set_worker(&g_storage_worker);
 	g_storage.measure_now(); // once here; after that off the loop when the store changed
-	image().set_storage_stats(&g_storage);
+	g_slot.start(); // the partition `image` (logged); the service maps it at start()
 	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services));
 	image().set_external(&external().values());
 	image().set_mqtt(&mqtt().mqtt());
-	g_staging.start();
-	image().set_staging(&g_staging.received());
-	image().set_stored_staging(&g_staging.stored());
-	image().set_worker(&g_worker);
 	image().set_load_probe(&g_load_probe);
 	image().start();
 	i18n().start(); // language packs: the boot sync (after the blob store started)

@@ -685,6 +685,25 @@ DatapointStatus DatapointModel::restore(uint16_t id, const Value& value) {
 	return DatapointStatus::ok;
 }
 
+DatapointStatus DatapointModel::carry(uint16_t id, const Value& value, Quality quality, uint64_t updated_ms,
+	bool pending) {
+	if (refuse_busy("carry")) {
+		return DatapointStatus::busy;
+	}
+	Datapoint* dp = lookup(id, "carry");
+	if (dp == nullptr) {
+		return DatapointStatus::unknown_id;
+	}
+	if (value.type() != dp->type_ && !value.empty()) {
+		return DatapointStatus::wrong_type;
+	}
+	dp->value_ = value;
+	dp->quality_ = quality;
+	dp->updated_ms_ = updated_ms;
+	dp->pending_ = pending; // bind() drops it unless the new owner holds commands
+	return DatapointStatus::ok;
+}
+
 DatapointStatus DatapointModel::command(uint16_t id, const Value& value) {
 	return take_command(id, value, false);
 }

@@ -9,6 +9,7 @@
 #include <new>
 
 #include "hc/image/image.h"
+#include "hc/image/image_service.h"
 #include "hc/log.h"
 #include "hc/sha.h"
 #include "hc/version.h"
@@ -223,6 +224,7 @@ EhomeLink::~EhomeLink() {
 		api_.set_ehome(nullptr);
 	}
 	free_answer();
+	delete[] body_;
 	delete[] out_;
 }
 
@@ -418,10 +420,10 @@ void EhomeLink::tick() {
 					break;
 				}
 			}
-			if (body_.active() && !body_stall_logged_ && now - body_progress_ms_ >= kBodyStallMs) {
+			if (body_active_ && !body_stall_logged_ && now - body_progress_ms_ >= kBodyStallMs) {
 				body_stall_logged_ = true;
 				Log::warn(kTag, "request %s %s: the body stalls at %u of %u bytes, nothing arrived for %u s", request_id_,
-					path_, static_cast<unsigned>(body_.have()), static_cast<unsigned>(body_.size()),
+					path_, static_cast<unsigned>(body_have_), static_cast<unsigned>(body_size_),
 					static_cast<unsigned>((now - body_progress_ms_) / 1000));
 			}
 			release_held();
@@ -587,7 +589,7 @@ void EhomeLink::handshake_message(const JsonSpan& message, const JsonSpan& type)
 			fail("cannot answer E-Home's challenge (a nonce of 32 to 128 hex digits, and the stored secret)");
 			return;
 		}
-		char auth[320];
+		char auth[768]; // with the image's refusal reason (spec/api.md "E-Home connection")
 		char fingerprint[kFingerprintSize];
 		uint8_t key[kEd25519KeySize];
 		bool has_key = load_installation_key(settings, key) == KeyState::ok;
@@ -601,7 +603,32 @@ void EhomeLink::handshake_message(const JsonSpan& message, const JsonSpan& type)
 			.member("mac", mac)
 			.member("version", kVersion)
 			.member("build", build_id())
-			.member("schema", image::schema_version_text()); // the newest image schema it reads
+			.member("format", image::bin::format_text()) // the newest image format it reads
+		.member("slot", static_cast<uint32_t>(api_.image() != nullptr ? api_.image()->slot_size() : 0));
+	// What runs (spec/api.md "E-Home connection"): E-Home sends the last valid deployment again after a
+	// refused one.
+	json.key("image").begin_object();
+	const image::ImageService* service = api_.image();
+	if (service != nullptr && service->loaded()) {
+		char crc[12];
+		std::snprintf(crc, sizeof(crc), "%08x", static_cast<unsigned>(service->info().crc));
+		json.member("loaded", true)
+			.member("project", service->info().project_id)
+			.member("revision", service->info().revision)
+			.member("crc", crc);
+	} else {
+		json.member("loaded", false);
+		if (service != nullptr && !service->report().ok()) {
+			json.member("refused", image::report_kind_code(service->report().kind));
+			if (service->report().count > 0) {
+				char reason[image::Report::kMaxPath + image::Report::kMaxReason + 4];
+				std::snprintf(reason, sizeof(reason), "%s: %s", service->report().refusals[0].path,
+					service->report().refusals[0].reason);
+				json.member("reason", reason);
+			}
+		}
+	}
+	json.end_object();
 		if (has_key) {
 			json.member("key", fingerprint); // the installation key the device holds
 		}
@@ -712,7 +739,7 @@ void EhomeLink::ws_close(uint32_t client, uint16_t code, const char* reason) {
 
 void EhomeLink::drop_request() {
 	has_signature_ = false;
-	body_.release();
+	release_body(true);
 	discard_ = 0;
 	busy_ = false;
 	streaming_ = false;
@@ -722,7 +749,7 @@ void EhomeLink::drop_request() {
 	loop_.cancel(stream_timer_);
 	stream_timer_ = TimerHandle();
 	if (deferring_) {
-		// The store goes on (the image service holds the body); only its answer is lost with the session.
+		// Only the answer is lost with the session.
 		Log::warn(kTag, "the deferred answer to request %s is dropped with the session", request_id_);
 	}
 	deferring_ = false;
@@ -813,14 +840,25 @@ void EhomeLink::request(const JsonSpan& message) {
 	} else {
 		query_ = path_ + std::strlen(path_); // ""
 	}
+	bool image = method_ == HttpMethod::put && std::strcmp(path_, "/api/image") == 0;
+	if (image && (has_signature_ || !has_length)) {
+		static const char kText[] = "the image is binary: it is sent with length and binary frames, its signature inside";
+		Log::warn(kTag, "request %s PUT /api/image refused: %s", id, kText);
+		answer(id, 400, "image.bad_request", kText);
+		has_signature_ = false;
+		if (has_length && length > 0) {
+			discard_ = static_cast<size_t>(length);
+		}
+		return;
+	}
 	if (has_length && length > 0) {
 		size_t bytes = static_cast<size_t>(length);
 		size_t limit = api_.body_limit(method_, path_);
 		if (bytes > limit) {
 			char text[128];
-			api_.body_too_long(method_, path_, bytes, text, sizeof(text));
+			const char* code = api_.body_too_long(method_, path_, bytes, text, sizeof(text));
 			Log::warn(kTag, "request %s %s refused: %s", method, path_, text);
-			answer(id, 413, "api.body_too_large", text);
+			answer(id, 413, code, text);
 			discard_ = bytes;
 			return;
 		}
@@ -830,37 +868,30 @@ void EhomeLink::request(const JsonSpan& message) {
 			discard_ = bytes;
 			return;
 		}
-		const char* staging_refusal = nullptr;
-		ImageStaging* staging = api_.body_staging(method_, path_);
-		if (!body_.begin(bytes, staging, &staging_refusal)) {
-			Log::warn(kTag, "request %s %s refused: no heap block of %u bytes for its body%s%s%s", method, path_,
-				static_cast<unsigned>(bytes), staging_refusal != nullptr ? " (the staging area declined: " : "",
-				staging_refusal != nullptr ? staging_refusal : "", staging_refusal != nullptr ? ")" : "");
-			answer(id, 507, "api.no_memory", "the device has not enough free memory for this body");
-			discard_ = bytes;
-			return;
+		if (!image) {
+			body_ = new (std::nothrow) char[bytes + 1];
+			if (body_ == nullptr) {
+				Log::warn(kTag, "request %s %s refused: no heap block of %u bytes for its body", method, path_,
+					static_cast<unsigned>(bytes));
+				answer(id, 507, "api.no_memory", "the device has not enough free memory for this body");
+				discard_ = bytes;
+				return;
+			}
 		}
-		if (staging_refusal != nullptr) {
-			Log::info(kTag, "request %s: the body goes to the heap: %s", id, staging_refusal);
-		}
+		body_size_ = bytes;
+		body_have_ = 0;
+		body_active_ = true;
+		image_body_ = image;
+		image_started_ = false;
 		busy_ = true;
 		body_progress_ms_ = api_.controller().clock().monotonic_ms();
 		body_stall_logged_ = false;
 		Log::info(kTag, "request %s: %s %s, receiving %u bytes%s", id, method, path_, static_cast<unsigned>(bytes),
-			body_.staged() ? " into the staging area" : "");
+			image ? " into the image slot" : "");
 		return; // dispatched when the last byte arrived (ws_client_binary)
 	}
 	JsonSpan body;
 	bool inline_body = json_member(message, "body", body);
-	if (inline_body && has_signature_ && method_ == HttpMethod::put && std::strcmp(path_, "/api/image") == 0) {
-		// The inline body is a span of parsed JSON, not the exported file's bytes the signature covers.
-		static const char kText[] = "a signed image is sent with length and binary frames: the signature covers its "
-			"exact bytes";
-		Log::warn(kTag, "request %s PUT /api/image refused: %s", id, kText);
-		answer(id, 400, "image.bad_request", kText);
-		has_signature_ = false;
-		return;
-	}
 	busy_ = true;
 	if (inline_body) {
 		// The body is a span of the message, valid during this call: dispatch now.
@@ -896,30 +927,57 @@ void EhomeLink::ws_client_binary(const uint8_t* data, size_t length, bool last) 
 			return;
 		}
 	}
-	if (!body_.active()) {
+	if (!body_active_) {
 		fail("E-Home sent a binary frame no request announced");
 		return;
 	}
-	if (length > body_.size() - body_.have()) {
-		fail("E-Home sent more body bytes than request %s announced (%u)", request_id_,
-			static_cast<unsigned>(body_.size()));
-		return;
-	}
-	if (!body_.append(data, length)) {
-		Log::warn(kTag, "request %s %s refused: the staging area failed while the body arrived", request_id_, path_);
-		answer(request_id_, 507, "api.no_memory", "the device could not store this body");
-		discard_ = body_.size() - body_.have() - length;
-		body_.release();
-		busy_ = false;
+	if (length > body_size_ - body_have_) {
+		fail("E-Home sent more body bytes than request %s announced (%u)", request_id_, static_cast<unsigned>(body_size_));
 		return;
 	}
 	body_progress_ms_ = api_.controller().clock().monotonic_ms();
-	if (body_.have() == body_.size()) {
+	if (!image_body_) {
+		std::memcpy(body_ + body_have_, data, length);
+		body_have_ += length;
+		if (body_have_ == body_size_) {
+			dispatch();
+		}
+		return;
+	}
+	// The runtime image: its header first (WebApi::image_begin()), then into the slot as it arrives.
+	if (!image_started_) {
+		size_t head = body_size_ < sizeof(head_) ? body_size_ : sizeof(head_);
+		size_t take = head - body_have_ < length ? head - body_have_ : length;
+		std::memcpy(head_ + body_have_, data, take);
+		body_have_ += take;
+		data += take;
+		length -= take;
+		if (body_have_ < head) {
+			return;
+		}
+		WebRequest req = request_of();
+		req.body = reinterpret_cast<const char*>(head_);
+		req.body_length = head;
+		WebResponse response(out_ + kPrefix, kMaxResponseBody);
+		if (!api_.image_begin(req, body_size_, response)) {
+			discard_ = body_size_ - body_have_ - length; // the rest of the body after this frame
+			release_body(false);
+			send_response(response);
+			return;
+		}
+		image_started_ = true;
+		api_.image()->receive_write(head_, head);
+	}
+	if (length > 0) {
+		api_.image()->receive_write(data, length);
+		body_have_ += length;
+	}
+	if (body_have_ == body_size_) {
 		dispatch();
 	}
 }
 
-void EhomeLink::dispatch() {
+WebRequest EhomeLink::request_of() const {
 	WebRequest req;
 	req.method = method_;
 	req.path = path_;
@@ -928,23 +986,35 @@ void EhomeLink::dispatch() {
 	req.source = "E-Home";
 	req.ehome = true;
 	req.image_signature = has_signature_ ? signature_ : nullptr;
-	const char* text = body_.active() ? body_.finish() : nullptr;
-	if (body_.active() && text == nullptr) {
-		Log::warn(kTag, "request %s %s refused: the staged body cannot be read", request_id_, path_);
-		body_.release();
-		WebResponse failed(out_ + kPrefix, kMaxResponseBody);
-		WebApi::refuse(failed, 507, "api.no_memory", "the device could not read this body back");
-		send_response(failed);
-		return;
+	return req;
+}
+
+void EhomeLink::release_body(bool abort) {
+	if (abort && image_started_ && api_.image() != nullptr) {
+		api_.image()->receive_abort(); // the connection went with the body: no image (spec/runtime-image.md I9)
 	}
-	req.body = text;
-	req.body_length = body_.size();
-	req.body_holder = text != nullptr ? &body_ : nullptr;
+	delete[] body_;
+	body_ = nullptr;
+	body_size_ = 0;
+	body_have_ = 0;
+	body_active_ = false;
+	image_body_ = false;
+	image_started_ = false;
+}
+
+void EhomeLink::dispatch() {
+	WebRequest req = request_of();
+	if (image_body_) {
+		req.image_streamed = true;
+	} else if (body_active_) {
+		body_[body_size_] = '\0';
+		req.body = body_;
+		req.body_length = body_size_;
+	}
+	image_started_ = false; // ended by the route (receive_end)
 	WebResponse response(out_ + kPrefix, kMaxResponseBody);
 	api_.handle(req, response);
-	// The routes are done with it when handle() returns (as with the HTTP servers' buffers), unless the
-	// image service took it over for its store off the loop (#68): then there is nothing left here.
-	body_.release();
+	release_body(false);
 	send_response(response);
 }
 
@@ -988,7 +1058,7 @@ void EhomeLink::deferred_timeout() {
 }
 
 void EhomeLink::send_response(WebResponse& response) {
-	if (response.deferred && response.deferred_kind == WebApi::kDeferredImageStore) {
+	if (response.deferred && response.deferred_kind != WebApi::kDeferredEnroll) {
 		// A deployed image is being stored off the loop (#68): the answer follows (deferred_ready()).
 		deferring_ = true;
 		deferred_kind_ = response.deferred_kind;

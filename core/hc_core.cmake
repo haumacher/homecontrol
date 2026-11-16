@@ -90,7 +90,7 @@ list(APPEND HC_CORE_SOURCES
 # The rule interpreter (doc/rules.md).
 list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/rules/value.cpp"
-	"${HC_CORE_DIR}/src/rules/loader.cpp"
+	"${HC_CORE_DIR}/src/rules/rule_set.cpp"
 	"${HC_CORE_DIR}/src/rules/parameter_store.cpp"
 	"${HC_CORE_DIR}/src/rules/printer.cpp"
 	"${HC_CORE_DIR}/src/rules/engine.cpp"
@@ -118,12 +118,13 @@ list(APPEND HC_CORE_SOURCES ${HC_CORE_BLOCK_SOURCES})
 if(NOT CMAKE_SCRIPT_MODE_FILE)
 	set_source_files_properties(${HC_CORE_BLOCK_SOURCES} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
-# The runtime image: format, loader, storage, the service that applies it (issue #8, doc/image.md).
+# The runtime image: the binary format, its validator, the loader, the service that applies it from
+# the image slot (issues #8 and #87, doc/image.md).
 list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/json_document.cpp"
+	"${HC_CORE_DIR}/src/image/binary.cpp"
+	"${HC_CORE_DIR}/src/image/validator.cpp"
 	"${HC_CORE_DIR}/src/image/loader.cpp"
-	"${HC_CORE_DIR}/src/image/image_body.cpp"
-	"${HC_CORE_DIR}/src/image/image_store.cpp"
 	"${HC_CORE_DIR}/src/image/image_service.cpp"
 	"${HC_CORE_DIR}/src/image/model_view.cpp"
 	"${HC_CORE_DIR}/src/image/rules_clock.cpp"

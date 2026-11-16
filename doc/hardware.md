@@ -56,7 +56,8 @@ logs appear on `/dev/ttyACMn`. A changed `sdkconfig.defaults` is **not** applied
 `build-<target>/sdkconfig`; delete that file (or run `set-target` again) to regenerate it.
 
 The 4 MB flash of this board is the small end of the module range: the OTA layout has a 4 MB
-variant, and the application partition (2752 KB) will get tight once Zigbee and the web UI are in.
+variant, and the application partition (2688 KB since the runtime image's slot took 128 KB of it and the updater gave 64 KB)
+will get tight once Zigbee and the web UI are in.
 A production board should carry 8 or 16 MB (issue #22).
 
 **Button and LED.** The firmware uses the devkit's BOOT button (GPIO9 on the C6, a strapping pin
@@ -67,27 +68,37 @@ WS2812 RGB pixel on GPIO8, driven over RMT with the `led_strip` component; other
 (the S3 build defaults to none). The blink patterns are in `doc/network.md`.
 
 **Partition table.** The asymmetric OTA layout of `doc/ota.md`: a small updater (factory) and one
-large application partition (ota_0), generated per flash size by `platform/esp/tools/gen_partitions.py`
-into `platform/esp/partitions-<size>.csv`. NVS stays at 0x9000 (24 KB) as in the single-app table
-before it, so stored settings survive the switch.
+large application partition (ota_0), and behind it the runtime image's slot (`image`, issue #87,
+spec/runtime-image.md 7), generated per flash size by `platform/esp/tools/gen_partitions.py` into
+`platform/esp/partitions-<size>.csv` (`--check` also checks the slot: present, type data, subtype
+0x40, on a 64 KB boundary, and the offsets and sizes of `app`, `image`, `otadata` and `storage` the
+spec gives). NVS stays at 0x9000 (24 KB) as in the single-app table before it, so stored settings
+survive the switch.
 
 | Partition | 4 MB (this board) | 8 MB | 16 MB |
 |---|---|---|---|
 | `nvs` | 0x9000, 24 KB | same | same |
 | `phy_init` | 0xF000, 4 KB | same | same |
-| `updater` (factory) | 0x10000, 960 KB | same | same |
-| `app` (ota_0) | 0x100000, 2752 KB | 4096 KB | 6144 KB |
-| `otadata` | 0x3B0000, 8 KB | 0x500000 | 0x700000 |
-| `storage` (LittleFS, issue #5) | 0x3B2000, 204 KB (268 KB before the core dump partition, 312 KB before the Zigbee partitions) | 2956 KB | 9100 KB |
+| `updater` (factory) | 0x10000, 896 KB (960 KB until issue #87) | same | same |
+| `app` (ota_0) | 0xF0000, 2688 KB (2752 KB at 0x100000 before the image slot) | 0xF0000, 4160 KB | 0xF0000, 6208 KB |
+| `image` (data, subtype 0x40; issue #87) | 0x390000, 128 KB | 0x500000, 512 KB | 0x700000, 512 KB |
+| `otadata` | 0x3B0000, 8 KB | 0x580000 | 0x780000 |
+| `storage` (LittleFS, issue #5) | 0x3B2000, 204 KB (268 KB before the core dump partition, 312 KB before the Zigbee partitions) | 0x582000, 2444 KB (2956 KB before the image slot) | 0x782000, 8588 KB (9100 KB before the image slot) |
 | `coredump` (issue #4) | 0x3E5000, 64 KB | 0x7E5000 | 0xFE5000 |
 | `zb_storage`, `zb_fct`, `zb_db` (issue #15) | 0x3F5000, 16 + 4 + 24 KB | 0x7F5000 | 0xFF5000 |
 
 The `coredump` partition (doc/diagnostics.md) took its 64 KB from the end of `storage`, whose offset
-stays; the 4 MB application keeps its 2752 KB (the C6 application measured 2,101,296 bytes on
-2026-10-18, 75 %). A board flashed with an older table needs the full `write_flash @flash_args` once:
-an OTA update does not change the partition table (the application then logs that it has no coredump
-partition), and the LittleFS image of the old, larger `storage` partition does not mount on the
-smaller one (values and history are not saved until `storage.bin` is flashed).
+stays. The image slot took 128 KB from the 4 MB application, and the updater, whose staging area
+is gone, gave it 64 KB (2752 KB -> 2688 KB at 0xF0000; the firmware measured 2,475,392 bytes on
+2026-11-17, 10 % stay free) and 512 KB from the storage of the 8
+and 16 MB tables, whose `otadata` and `storage` move behind it. A board flashed with an older table
+needs the full `write_flash @flash_args` once: an OTA update does not change the partition table
+(the application then logs that it has no partition `image` and takes no runtime image, or no
+coredump partition), and the LittleFS image of the old `storage` partition does not mount on one
+that moved or shrank (values and history are not saved until `storage.bin` is flashed). On 4 MB the
+slot lies where the end of the old application partition was: the full flash writes one erased
+sector there (`image-empty.bin`, 4 KB of 0xFF), so the slot starts as "no image" instead of old
+firmware bytes being checked as an image.
 
 Measured on 2026-10-17 (esp32c6): the updater 794,592 bytes (19 % of its partition free), the
 application 1,239,776 bytes (56 % free). The build chooses the table with the CMake variable
@@ -95,8 +106,8 @@ application 1,239,776 bytes (56 % free). The build chooses the table with the CM
 a build directory whose `sdkconfig` predates the OTA layout refuses to configure until its
 `sdkconfig` is deleted. `write_flash @flash_args` in `platform/esp/build-esp32c6` writes the whole
 layout - bootloader, table, the updater from `platform/esp/updater/build-esp32c6` (build it first),
-the application at 0x100000 and an otadata image that boots it - and `@app-flash_args` only the
-application. Flashing the application at 0x10000 (the old single-app offset) overwrites the updater;
+the application at 0xF0000, the erased first sector of the image slot, an otadata image that boots
+the application and the empty `storage.bin` - and `@app-flash_args` only the application. Flashing the application at 0x10000 (the old single-app offset) overwrites the updater;
 such an application logs that it does not run from ota_0 and refuses updates.
 
 ## Flash clock: 40 MHz on this board
@@ -141,8 +152,8 @@ a real installation, and no gateway is ever chosen from discovery automatically.
 The author's decision: the board on the desk — an ESP32-C6 module with **4 MB flash** (N4) and the
 C6's 512 KB SRAM — is the minimum a HomeControl installation may run on. Consequences:
 
-- The controller must keep fitting the 4 MB layout (`partitions-4MB.csv`: application 2.75 MB in
-  each OTA slot, updater 960 KB, storage, core dump, the Zigbee partitions). Nothing may depend on
+- The controller must keep fitting the 4 MB layout (`partitions-4MB.csv`: application 2688 KB,
+  updater 896 KB, the image slot 128 KB, storage, core dump, the Zigbee partitions). Nothing may depend on
   the 8 or 16 MB tables; they only give such modules more storage.
 - The size line of every build (`idf.py size`, the "free" percentage of the application partition)
   and the free heap after boot stay part of every package's report and of the build gate. When a

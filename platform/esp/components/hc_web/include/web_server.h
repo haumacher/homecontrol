@@ -47,10 +47,15 @@ public:
 ///
 /// - /api/* : the core's WebApi. The httpd task copies the request into a static slot and runs
 ///   WebApi::handle() on the event loop (LoopQueue, waits up to kJobTimeoutMs); the password hash
-///   of a login or onboarding is computed in the httpd task between the two passes. A body above
-///   WebApi::kMaxBody (PUT /api/image, up to WebApi::body_limit()) goes to a heap buffer of its
-///   length, freed after the response (507 when the heap has no block that large). A streamed
-///   response (GET /api/image) is sent chunked, each piece fetched by a job of its own.
+///   of a login or onboarding is computed in the httpd task between the two passes. PUT /api/image
+///   (up to WebApi::body_limit(), the image slot's size; issue #87) is written into the image slot
+///   as it arrives: its first kImageHead bytes go to the loop with the request
+///   (WebApi::image_begin(): authentication, the header check, the stop of the running image), the
+///   httpd task then passes the body piece by piece through the job's buffer to
+///   ImageService::receive_write(), and a last job applies it (WebRequest::image_streamed); a body
+///   that breaks off is aborted on the loop (the device then has no image). No body is held in RAM.
+///   A streamed response (GET /api/image, GET /api/pages) is sent chunked, each piece fetched by a
+///   job of its own.
 /// - /ws : the WebSocket of the core's LiveFeed. Incoming messages go to the loop the same way;
 ///   outgoing messages are formatted into (or copied into) one send ring of kSendRingBytes
 ///   (hc::WsSendRing: whole messages of variable length, one entry per message for all its
@@ -76,6 +81,12 @@ public:
 	/// login); 4608 B keep 1.9 KB over that. 6144 B before issue #45.
 	static constexpr uint32_t kStack = 4608;
 	static constexpr uint32_t kJobTimeoutMs = 5000;
+	/// The bytes of PUT /api/image that go to the loop with the request: the image's header
+	/// (spec/runtime-image.md 10.1).
+	static constexpr size_t kImageHead = 32;
+	/// Receive timeouts in a row (each the server's recv_wait_timeout, 5 s by default) after which a
+	/// PUT /api/image whose client stopped sending is aborted, so the slot does not stay claimed.
+	static constexpr uint32_t kImageRecvTimeouts = 6;
 	/// The WebSocket send ring (issue #45 item 7: it replaced a pool of 8 buffers of 1408 bytes,
 	/// 11 264 B): at least two messages of the largest size, many small ones.
 	static constexpr size_t kSendRingBytes = 4096;
@@ -114,7 +125,7 @@ public:
 	void set_external(ExternalValues* external) { api_.set_external(external); }
 	/// The blob store the factory reset empties.
 	void set_blob_store(BlobStore* blobs) { blobs_ = blobs; }
-	/// The storage figures of the "storage" status and the image's storable (homecontrol #74).
+	/// The storage figures of the "storage" status (homecontrol #74).
 	void set_storage_stats(StorageStats* stats) { api_.set_storage_stats(stats); }
 	/// The diagnostics whose core dump DELETE /api/coredump erases.
 	void set_diagnostics(EspDiagnostics* diagnostics) { diagnostics_ = diagnostics; }
@@ -164,6 +175,14 @@ private:
 	static int console_web(void* context, int argc, char** argv);
 
 	esp_err_t handle_api(httpd_req_t* req);
+	/// The rest of a PUT /api/image whose first `head` bytes are in the job with its request: opens
+	/// the receive on the loop, writes the body into the slot, applies it. True: job.response holds the
+	/// answer to send (also a refusal of the header). False: `failed` is what the handler returns (the
+	/// body broke off; the receive was aborted).
+	bool receive_image(httpd_req_t* req, size_t head, esp_err_t& failed);
+	/// run_on_loop() until the job has run, however long the loop takes (a job that must not be lost:
+	/// the receive of an image is opened, aborted or ended by it).
+	void run_on_loop_to_end();
 	esp_err_t send_stream(httpd_req_t* req, size_t length, uint32_t token);
 	void wait_job();
 	esp_err_t handle_ws(httpd_req_t* req);

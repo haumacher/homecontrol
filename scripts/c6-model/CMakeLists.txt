@@ -21,6 +21,7 @@ add_executable(swap_c6
 	"${HC_REPO_DIR}/core/test/test_main.cpp"
 	"${HC_REPO_DIR}/core/test/allocation_counter.cpp"
 	"${HC_REPO_DIR}/core/test/swap_memory_test.cpp"
+	"${HC_REPO_DIR}/core/test/image_compiler.cpp" # the images are compiled from their JSON source (issue #87)
 	sim_stubs.c)
 target_link_libraries(swap_c6 PRIVATE hc_core)
 target_include_directories(swap_c6 SYSTEM PRIVATE "${HC_REPO_DIR}/third_party/doctest")

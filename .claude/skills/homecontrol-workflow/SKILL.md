@@ -280,7 +280,7 @@ capture shows `hc.updater` writing the image and `hc.ota ... completed (uploaded
 About 40 s all in, the stored image and the Zigbee database stay in place, and the page shows the
 build id to compare with `hc_generated/hc_build_id.h`. USB (`esptool.py ... write_flash`) stays for
 the updater (`0x10000 hc_updater.bin`), the bootloader, the partition table, and the empty file
-system `storage.bin` (which wipes the stored runtime image and persisted values: redeploy
+system `storage.bin` and the erased image sector `image-empty.bin` (which wipe the runtime image and the persisted values: redeploy
 afterwards). The web UI is compiled into the application and comes with every OTA update.
 **The desk board runs the development build** `build-esp32c6-devtls` (configured with
 `-DHC_EXTRA_CA=$HOME/.config/ehome/dev-tls/ca.pem`, `doc/ehome.md` "TLS during development"; build
