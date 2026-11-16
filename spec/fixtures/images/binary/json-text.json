@@ -1,0 +1,1 @@
+{"from": "minimal.json", "mutation": "the source text minimal.json itself", "code": "image.format", "path": "header.magic", "reason": "not a runtime image: the magic is 7B 22 69 6D, not 48 43 49 4D (\"HCIM\"): a JSON text (E-Home compiles the image; send the binary form)"}

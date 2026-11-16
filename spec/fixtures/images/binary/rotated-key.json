@@ -1,0 +1,1 @@
+{"from": "minimal.signed.bin", "mutation": "minimal.signed.bin unchanged, sent to a device that holds the rotated key", "code": "image.bad_signature", "path": "signature", "reason": "the signature does not verify under the installation key 90ae 3702 f3a9 63ab", "deviceKey": "rotated"}

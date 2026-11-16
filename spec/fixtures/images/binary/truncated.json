@@ -1,0 +1,1 @@
+{"from": "minimal.bin", "mutation": "cut to 100 bytes", "code": "image.format", "path": "header.length", "reason": "the header says 112 bytes, the body has 100"}

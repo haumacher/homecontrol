@@ -1,0 +1,1 @@
+{"from": "example.bin", "mutation": "roles[0].datapoint 1203", "code": "image.invalid", "path": "roles[0].datapoint", "reason": "malformed: datapoint 1203 does not exist (21 datapoints)"}

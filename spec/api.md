@@ -648,7 +648,8 @@ The body is the binary runtime image (`spec/runtime-image.md` section 9, issue #
 `Content-Type: application/octet-stream`), compiled by E-Home, at most the device's slot (`image.slot`
 of `GET /api/status`: 131 072 bytes on a 4 MB board). A larger body is refused before it is read,
 413 `image.too_large`: `the image has 140000 bytes; the device holds at most 131072 (its image
-slot)`. The signature is part of the image (`spec/runtime-image.md` 9.17); a request with the
+slot)`, the bytes being the length the request announces (`Content-Length`, or the socket's
+`length`), since the body is not read. The signature is part of the image (`spec/runtime-image.md` 9.17); a request with the
 former header `X-Image-Signature` is refused 400 `image.bad_request` (`the signature is part of the
 binary image`).
 

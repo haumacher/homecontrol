@@ -1,0 +1,1 @@
+{"from": "minimal.bin", "mutation": "image.projectId 6", "code": "image.invalid", "path": "image[0].projectId", "reason": "malformed: 6 is no string (not the start of one of the 13 bytes of strings)"}

@@ -1893,7 +1893,16 @@ commit with the change.
 `spec/fixtures/images/binary/`: each mutation a file `<name>.bin` with `<name>.json` beside it giving
 `{"from": "<the image it mutates>", "mutation": "<what was changed, in words>", "code": "<code>",
 "path": "<path>", "reason": "<reason>"}` (`"code": null` for an image that must load), the table
-above its first entries.
+above its first entries; a mutation whose outcome depends on the device's key has the member
+`"deviceKey": "installation"` (the device holds the test installation key) or `"rotated"` (it holds
+another key). `images/test-system.template.json` is a template, not an image: it gets no `.bin`.
+
+Readings fixed while writing the compiler (haumacher/ehome#176):
+- A node without a value type (a timer node) carries type code 0 (10.6).
+- A schedule given in a rule case by its id alone gets its id as its `label`.
+- A limit the device checks but E-Home's own validation refuses first (rule case 97: 17 points in a
+  plan) gets no `.bin`: E-Home cannot produce it; the device's limit is covered by the mutation
+  corpus where a mutation can express it.
 
 **Rule and block cases** (`spec/fixtures/rules/`, `spec/fixtures/blocks/`, their `README.md`). A
 case `NN-<name>.json` stays the test's script; its image is compiled into `NN-<name>.bin` beside it,

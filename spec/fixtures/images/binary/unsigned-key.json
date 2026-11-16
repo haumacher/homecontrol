@@ -1,0 +1,1 @@
+{"from": "minimal.bin", "mutation": "minimal.bin unchanged, sent to a device that holds the installation key", "code": "image.unsigned", "path": "header.flags", "reason": "the image is not signed; the device accepts only images signed with the installation key ce7d 4a41 a476 9ee3", "deviceKey": "installation"}

@@ -1,0 +1,1 @@
+{"from": "minimal.bin", "mutation": "byte 0x66 changed, the CRC kept", "code": "image.damaged", "path": "header.crc", "reason": "the CRC-32 is 59772c42, the bytes give 162a2f92: the image was damaged on the way or in the slot"}

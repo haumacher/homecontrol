@@ -1,0 +1,1 @@
+{"from": "minimal.bin", "mutation": "sections[1].length 12 (the last NUL outside)", "code": "image.invalid", "path": "strings", "reason": "malformed: the last byte is not a NUL"}

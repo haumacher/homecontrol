@@ -1,0 +1,1 @@
+{"from": "minimal.bin", "mutation": "sections[0].length 64 with entrySize 32: two image records, the strings moved behind them", "code": "image.invalid", "path": "sections[0].length", "reason": "malformed: the section image holds 2 records, it has one"}

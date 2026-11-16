@@ -1,0 +1,1 @@
+{"from": "minimal.bin", "mutation": "sections[1].id 0x61 with flags 1 (required)", "code": "image.invalid", "path": "sections[1].id", "reason": "malformed: section 0x61 is required, but this firmware does not know it"}

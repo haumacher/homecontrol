@@ -1,0 +1,1 @@
+{"from": "minimal.bin", "mutation": "sections[1].offset 0x61", "code": "image.invalid", "path": "sections[1].offset", "reason": "malformed: offset 0x61 is not a multiple of 8"}

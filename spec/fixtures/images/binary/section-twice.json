@@ -1,0 +1,1 @@
+{"from": "minimal.bin", "mutation": "sections[1].id 0x01", "code": "image.invalid", "path": "sections[1].id", "reason": "malformed: section 0x01 twice"}
