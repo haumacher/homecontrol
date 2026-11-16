@@ -1461,3 +1461,85 @@ TEST_CASE("Blocks review probe: a PV chain whose meter falls silent releases bot
 	CHECK(f.model.find("car")->value().as_bool() == false);
 	CHECK_FALSE(car_on_after_loss);
 }
+
+namespace {
+
+/// Owns datapoints and records the commands it receives.
+class RecordingTechnology : public hc::Technology {
+public:
+	const char* name() const override { return "recording"; }
+	bool command(const hc::Datapoint& datapoint, const hc::Value& value) override {
+		commands.push_back(std::string(datapoint.name()) + "=" + (value == hc::Value::of_bool(true) ? "true" : "other"));
+		return true;
+	}
+	std::vector<std::string> commands;
+};
+
+} // namespace
+
+TEST_CASE("WebApi addresses a datapoint by its number or by its name (homecontrol #88)") {
+	RecordingTechnology tech; // outlives the model that binds it
+	WebFixture f;
+	std::string cookie = f.onboard();
+	static const DatapointSpec specs[] = {
+		{"kueche.licht", ValueType::boolean, DatapointFlags::kWritable | DatapointFlags::kTransmit},
+		{"Wohnzimmer Licht", ValueType::boolean, DatapointFlags::kWritable},
+		{"rule/r1/state", ValueType::unsigned_int, DatapointFlags::kReadable},
+		{"100%", ValueType::boolean, DatapointFlags::kReadable},
+		{"x/command", ValueType::boolean, DatapointFlags::kWritable},
+		{"x", ValueType::boolean, DatapointFlags::kWritable},
+		{"Küche", ValueType::boolean, DatapointFlags::kReadable},
+	};
+	REQUIRE(f.model.load(specs, sizeof(specs) / sizeof(specs[0])) == hc::DatapointStatus::ok);
+	REQUIRE(f.model.bind(0, tech) == hc::DatapointStatus::ok);
+
+	// By number and by name: the same datapoint.
+	auto by_number = f.get("/api/datapoints/0", cookie);
+	auto by_name = f.get("/api/datapoints/kueche.licht", cookie);
+	REQUIRE(by_number.status == 200);
+	REQUIRE(by_name.status == 200);
+	CHECK(by_name.json["id"].number == 0);
+	CHECK(by_name.json["name"].text == "kueche.licht");
+	CHECK(by_name.body == by_number.body);
+
+	// Percent-encoded: a space, a '/' as %2F or as it is, a literal '%', UTF-8, hex in either case.
+	CHECK(f.get("/api/datapoints/Wohnzimmer%20Licht", cookie).json["id"].number == 1);
+	CHECK(f.get("/api/datapoints/rule%2Fr1%2Fstate", cookie).json["id"].number == 2);
+	CHECK(f.get("/api/datapoints/rule%2fr1%2fstate", cookie).json["id"].number == 2);
+	CHECK(f.get("/api/datapoints/rule/r1/state", cookie).json["id"].number == 2);
+	CHECK(f.get("/api/datapoints/100%25", cookie).json["id"].number == 3);
+	CHECK(f.get("/api/datapoints/K%C3%BCche", cookie).json["id"].number == 6);
+	CHECK(f.get("/api/datapoints/k%75eche.licht", cookie).json["id"].number == 0);
+
+	// Unknown, malformed escapes, an encoded NUL, a name longer than any datapoint's: 404.
+	for (const char* path : {"/api/datapoints/kueche.dunkel", "/api/datapoints/100%", "/api/datapoints/100%2",
+			 "/api/datapoints/100%G5", "/api/datapoints/kueche%00.licht", "/api/datapoints/7",
+			 "/api/datapoints/01", "/api/datapoints/65536"}) {
+		auto r = f.get(path, cookie);
+		CHECK_MESSAGE(r.status == 404, path);
+		CHECK_MESSAGE(r.json["code"].text == "dp.unknown_id", path);
+	}
+	CHECK(f.get("/api/datapoints/" + std::string(hc::Datapoint::kMaxName + 1, 'a'), cookie).status == 404);
+	CHECK(f.post("/api/datapoints/kueche.dunkel/command", "{\"value\": true}", cookie).json["code"].text ==
+		"dp.unknown_id");
+
+	// A command by name reaches the technology, plain or percent-encoded.
+	auto command = f.post("/api/datapoints/kueche.licht/command", "{\"value\": true}", cookie);
+	REQUIRE(command.status == 200);
+	CHECK(command.json["datapoint"]["id"].number == 0);
+	CHECK(command.json["datapoint"]["value"].boolean == true);
+	REQUIRE(tech.commands.size() == 1);
+	CHECK(tech.commands[0] == "kueche.licht=true");
+	CHECK(f.post("/api/datapoints/kueche%2Elicht/command", "{\"value\": true}", cookie).status == 200);
+	CHECK(tech.commands.size() == 2);
+	CHECK(f.post("/api/datapoints/Wohnzimmer%20Licht/command", "{\"value\": false}", cookie).status == 200);
+	CHECK(f.get("/api/datapoints/1", cookie).json["value"].boolean == false);
+	CHECK(f.post("/api/datapoints/rule/r1/state/command", "{\"value\": 1}", cookie).json["code"].text ==
+		"dp.not_writable");
+
+	// "x/command" is the command of "x"; the datapoint named "x/command" is read with GET.
+	CHECK(f.post("/api/datapoints/x/command", "{\"value\": true}", cookie).json["datapoint"]["id"].number == 5);
+	CHECK(f.get("/api/datapoints/x/command", cookie).status == 405);
+	CHECK(f.get("/api/datapoints/x%2Fcommand", cookie).json["id"].number == 4);
+	CHECK(f.post("/api/datapoints/kueche.licht", "{\"value\": true}", cookie).status == 405);
+}

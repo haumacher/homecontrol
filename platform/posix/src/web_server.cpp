@@ -307,9 +307,12 @@ bool WebServer::start() {
 		std::string authorization = req.get_header_value("Authorization");
 		std::string requested_with = req.get_header_value("X-Requested-With");
 		std::string image_signature = req.get_header_value("X-Image-Signature");
+		// The path as sent, like the ESP server hands it: the core decodes what it reads as a name
+		// (a datapoint's, homecontrol #88); httplib's req.path is already percent-decoded.
+		std::string raw_path = req.target.substr(0, req.target.find('?'));
 		WebRequest request;
 		request.method = method_of(req.method);
-		request.path = req.path.c_str();
+		request.path = raw_path.c_str();
 		request.query = query.c_str();
 		request.cookie = req.has_header("Cookie") ? cookie.c_str() : nullptr;
 		request.authorization = req.has_header("Authorization") ? authorization.c_str() : nullptr;

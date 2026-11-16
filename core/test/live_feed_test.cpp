@@ -169,6 +169,34 @@ TEST_CASE("LiveFeed executes commands and answers with the result and the reason
 	CHECK(f.transport.messages(1, "error").back()["code"].text == "ws.unknown_type");
 }
 
+TEST_CASE("LiveFeed commands a datapoint by its name as by its number (homecontrol #88)") {
+	FeedFixture f;
+	REQUIRE(f.demo.load());
+	REQUIRE(f.feed.open(1, f.cookie.c_str(), nullptr, nullptr));
+	f.send(1, "{\"type\":\"command\",\"id\":\"Kitchen light\",\"value\":true,\"ref\":3}");
+	auto result = f.transport.messages(1, "result").back();
+	CHECK(result["ok"].boolean == true);
+	CHECK(result["id"].text == "Kitchen light");
+	CHECK(result["ref"].number == 3);
+	const hc::Datapoint* kitchen = f.model.find("Kitchen light");
+	REQUIRE(kitchen != nullptr);
+	CHECK(kitchen->value() == hc::Value::of_bool(true));
+	// JSON escapes are the name's, not URL escapes.
+	f.send(1, "{\"type\":\"command\",\"id\":\"Kitchen\\u0020light\",\"value\":false}");
+	CHECK(f.transport.messages(1, "result").back()["ok"].boolean == true);
+	CHECK(kitchen->value() == hc::Value::of_bool(false));
+	f.send(1, "{\"type\":\"command\",\"id\":\"Kitchen%20light\",\"value\":true}");
+	result = f.transport.messages(1, "result").back();
+	CHECK(result["code"].text == "dp.unknown_id");
+	CHECK(result["id"].text == "Kitchen%20light");
+	f.send(1, "{\"type\":\"command\",\"id\":\"Outside brightness\",\"value\":3}");
+	CHECK(f.transport.messages(1, "result").back()["code"].text == "dp.not_writable");
+	f.send(1, "{\"type\":\"command\",\"id\":\"\",\"value\":true}");
+	CHECK(f.transport.messages(1, "result").back()["code"].text == "dp.unknown_id");
+	f.send(1, "{\"type\":\"command\",\"id\":true,\"value\":true}");
+	CHECK(f.transport.messages(1, "result").back()["code"].text == "dp.unknown_id");
+}
+
 TEST_CASE("LiveFeed answers a ping with a pong, but only once authenticated") {
 	FeedFixture f;
 	REQUIRE(f.feed.open(1, f.cookie.c_str(), nullptr, nullptr));

@@ -218,7 +218,20 @@ on the last page.
 
 One datapoint, 404 `dp.unknown_id`.
 
+`<id>` is the datapoint's number or its name (homecontrol #88): a segment of digits only is the
+number (`id`, decimal without leading zeros), anything else is the name (`name`), percent-decoded,
+so a name with a space, a `%` or a non-ASCII letter is sent encoded (`Wohnzimmer%20Licht`, `100%25`);
+a `/` of the name may stay as it is (`rule/r1/state`) or be sent as `%2F`. A malformed escape, an
+encoded NUL or no datapoint of that name is 404 `dp.unknown_id`. **External clients address a
+datapoint by its name**: the number is its position in the loaded runtime image and holds only until
+the next image load (or a reload of the providers' datapoints), the name is what E-Home gave it. The
+lookup is a binary search over the model's name index (no allocation, no scan).
+
 ### `POST /api/datapoints/<id>/command`
+
+`<id>` as in `GET /api/datapoints/<id>`. A trailing `/command` is the command when the part before it
+names a datapoint (so `POST /api/datapoints/x/command` commands `x`; a datapoint whose name ends in
+`/command` is read with that name, or with the `/` encoded).
 
 Body `{"value": <JSON value>}`. Hands the value to the datapoint's technology: 200
 `{"ok": true, "datapoint": {...}}`. Refusals: 400 `dp.value_missing`, 404 `dp.unknown_id`, 409
@@ -1496,7 +1509,7 @@ Server to client:
 | `hello` | on connect: `authenticated`, `onboarded`, `device`, `version` |
 | `status` | the members of `GET /api/status`; when one of its discrete fields changes (network state, address, LED, time sync, Improv, mDNS, sessions, clients, datapoint count) and every 10 s |
 | `datapoints` | `now_ms`, `updates`: `[{"id", "value", "quality", "updated_ms", "pending"}]` (also when only `pending` changed: the held value was sent). After `subscribe`: a snapshot in chunks with `snapshot: true`, `count`, `from`, `done` and the full datapoints (as in the REST API); then the changes, batched per event-loop turn (each datapoint once, with its latest value) |
-| `result` | answer to `command`: `id`, `ref` (echoed), `ok`, and on refusal `error` and `code` (the `dp.*` codes of the REST command) |
+| `result` | answer to `command`: `id` (echoed as sent: the number or the name), `ref` (echoed), `ok`, and on refusal `error` and `code` (the `dp.*` codes of the REST command) |
 | `pong` | answer to `ping` |
 | `monitor` | the monitor stream: the answer to a `monitor` message, and the event batches (see "Monitor") |
 | `zigbee` | a change of the Zigbee network or its devices: `event`, `ieee` (the device, 16 hex digits; not for `network` and `permit`), `permit_join_s` (only `permit`), `generation` (as in `GET /api/zigbee`) |
@@ -1508,7 +1521,7 @@ Client to server:
 | --- | --- |
 | `auth` | `token` (see above) |
 | `subscribe` | start the snapshot and the updates |
-| `command` | `id`, `value`, optional `ref` (any JSON value, echoed in the result) |
+| `command` | `id` (the datapoint's number, or its name as a JSON string, not percent-encoded; homecontrol #88), `value`, optional `ref` (any JSON value, echoed in the result) |
 | `ping` | keep-alive; the UI sends one every 20 s (the ESP server purges the least recently used connection when its sockets run out) |
 | `monitor` | `subscribe` (with `since`), `send` or `read` (see "Monitor") |
 

@@ -47,7 +47,7 @@ struct PasswordHash {
 /// the header values (nullptr when the header is absent); everything stays valid during handle().
 struct WebRequest {
 	HttpMethod method = HttpMethod::get;
-	const char* path = "";            ///< Without the query, e.g. "/api/status".
+	const char* path = "";            ///< Without the query, as sent (not percent-decoded), e.g. "/api/status".
 	const char* query = "";           ///< After the '?', "" if none.
 	const char* cookie = nullptr;     ///< Cookie
 	const char* authorization = nullptr; ///< Authorization
@@ -274,8 +274,8 @@ private:
 	void auth_sessions_clear(const WebRequest& request, WebResponse& response);
 	void status(WebResponse& response);
 	void datapoints(const WebRequest& request, WebResponse& response);
-	void datapoint(uint16_t id, WebResponse& response);
-	void command(uint16_t id, const WebRequest& request, WebResponse& response);
+	void datapoint(const Datapoint& dp, WebResponse& response);
+	void command(const Datapoint& target, const WebRequest& request, WebResponse& response);
 	void log(const WebRequest& request, WebResponse& response);
 	void settings(WebResponse& response);
 	void put_setting(const char* key, const WebRequest& request, WebResponse& response);

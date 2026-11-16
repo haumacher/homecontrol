@@ -405,11 +405,21 @@ void LiveFeed::command(Client& client, const JsonSpan& message) {
 	const char* code = nullptr;
 	DatapointModel& model = api_.model();
 	const Datapoint* dp = nullptr;
-	if (!json_member(message, "id", id_span) || !json_number(id_span, id_number) || id_number < 0 ||
-		id_number > 65535 || id_number != std::floor(id_number) ||
-		(dp = model.get(static_cast<uint16_t>(id_number))) == nullptr) {
+	// `id` is the datapoint's number or its name (homecontrol #88).
+	bool has_id = json_member(message, "id", id_span);
+	bool by_name = has_id && id_span.kind == JsonSpan::Kind::string;
+	if (by_name) {
+		char name[Datapoint::kMaxName + 1];
+		if (json_string(id_span, name, sizeof(name))) {
+			dp = model.find(name);
+		}
+	} else if (has_id && json_number(id_span, id_number) && id_number >= 0 && id_number <= 65535 &&
+		id_number == std::floor(id_number)) {
+		dp = model.get(static_cast<uint16_t>(id_number));
+	}
+	if (dp == nullptr) {
 		code = "dp.unknown_id";
-		reason = "no datapoint with this id";
+		reason = "no datapoint with this id or name";
 	} else if (!json_member(message, "value", value_span)) {
 		code = "dp.value_missing";
 		reason = "the command needs a \"value\"";
@@ -433,7 +443,9 @@ void LiveFeed::command(Client& client, const JsonSpan& message) {
 	}
 	deliver_to(client, [&](JsonWriter& json) {
 		json.begin_object().member("type", "result");
-		if (id_number >= 0 && id_number <= 65535) {
+		if (by_name) {
+			json.key("id").raw(id_span.data, id_span.length); // the name as the client sent it
+		} else if (id_number >= 0 && id_number <= 65535) {
 			json.member("id", static_cast<uint32_t>(id_number));
 		}
 		if (has_ref) {

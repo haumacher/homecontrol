@@ -62,6 +62,61 @@ bool parse_id(const char* p, uint16_t& id, const char*& end) {
 	return true;
 }
 
+int hex_digit(char c) {
+	if (c >= '0' && c <= '9') {
+		return c - '0';
+	}
+	if (c >= 'a' && c <= 'f') {
+		return c - 'a' + 10;
+	}
+	if (c >= 'A' && c <= 'F') {
+		return c - 'A' + 10;
+	}
+	return -1;
+}
+
+/// The datapoint a path segment of `length` bytes at `p` names (homecontrol #88): digits only are
+/// its number (parse_id, as before), anything else is its name, percent-decoded (the segment as the
+/// client sent it; a '/' of the name may stay as it is or be sent as %2F). nullptr if there is none,
+/// also for a malformed escape, an encoded NUL or a decoded name longer than Datapoint::kMaxName.
+const Datapoint* resolve_datapoint(const DatapointModel& model, const char* p, size_t length) {
+	if (length == 0) {
+		return nullptr;
+	}
+	bool digits = true;
+	for (size_t i = 0; i < length && digits; ++i) {
+		digits = p[i] >= '0' && p[i] <= '9';
+	}
+	if (digits) {
+		uint16_t id = 0;
+		const char* end = nullptr;
+		if (!parse_id(p, id, end) || end != p + length) {
+			return nullptr;
+		}
+		return model.get(id);
+	}
+	char name[Datapoint::kMaxName + 1];
+	size_t n = 0;
+	for (size_t i = 0; i < length; ++i) {
+		char c = p[i];
+		if (c == '%') {
+			int high = i + 2 < length ? hex_digit(p[i + 1]) : -1;
+			int low = high >= 0 ? hex_digit(p[i + 2]) : -1;
+			if (low < 0 || (high == 0 && low == 0)) {
+				return nullptr;
+			}
+			c = static_cast<char>(high * 16 + low);
+			i += 2;
+		}
+		if (n == Datapoint::kMaxName) {
+			return nullptr;
+		}
+		name[n++] = c;
+	}
+	name[n] = '\0';
+	return model.find(name);
+}
+
 const char* method_name(HttpMethod method) {
 	switch (method) {
 	case HttpMethod::get: return "GET";
@@ -465,28 +520,32 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		return;
 	}
 	if (starts_with(path, "/api/datapoints/")) {
-		uint16_t id = 0;
-		const char* end = nullptr;
-		if (!parse_id(path + 16, id, end)) {
-			refuse(response, 404, "dp.unknown_id", "no datapoint with this id");
-			return;
-		}
-		if (*end == '\0') {
-			if (request.method != HttpMethod::get) {
-				refuse(response, 405, "api.method_not_allowed", "use GET");
-				return;
-			}
-			datapoint(id, response);
-			return;
-		}
-		if (std::strcmp(end, "/command") == 0) {
+		// The datapoint by its number or its name (homecontrol #88); a name may contain '/', so a
+		// trailing "/command" is the command only when what precedes it names a datapoint.
+		const char* ref = path + 16;
+		size_t length = std::strlen(ref);
+		constexpr size_t kSuffix = sizeof("/command") - 1;
+		const Datapoint* target = nullptr;
+		if (length > kSuffix && std::strcmp(ref + length - kSuffix, "/command") == 0 &&
+			(target = resolve_datapoint(model_, ref, length - kSuffix)) != nullptr) {
 			if (request.method != HttpMethod::post) {
 				refuse(response, 405, "api.method_not_allowed", "use POST");
 				return;
 			}
-			command(id, request, response);
+			command(*target, request, response);
 			return;
 		}
+		target = resolve_datapoint(model_, ref, length);
+		if (target == nullptr) {
+			refuse(response, 404, "dp.unknown_id", "no datapoint with this id or name");
+			return;
+		}
+		if (request.method != HttpMethod::get) {
+			refuse(response, 405, "api.method_not_allowed", "use GET");
+			return;
+		}
+		datapoint(*target, response);
+		return;
 	}
 	// ---- What the dashboard reads of the image ----
 	bool model_path = std::strcmp(path, "/api/model") == 0;
@@ -953,14 +1012,9 @@ void WebApi::datapoints(const WebRequest& request, WebResponse& response) {
 	finish(response, json);
 }
 
-void WebApi::datapoint(uint16_t id, WebResponse& response) {
-	const Datapoint* dp = model_.get(id);
-	if (dp == nullptr) {
-		refuse(response, 404, "dp.unknown_id", "no datapoint with this id");
-		return;
-	}
+void WebApi::datapoint(const Datapoint& dp, WebResponse& response) {
 	JsonWriter json(response.body, response.capacity);
-	write_datapoint(json, *dp);
+	write_datapoint(json, dp);
 	finish(response, json);
 }
 
@@ -1007,12 +1061,8 @@ const char* datapoint_command_reason(DatapointStatus status) {
 	}
 }
 
-void WebApi::command(uint16_t id, const WebRequest& request, WebResponse& response) {
-	const Datapoint* dp = model_.get(id);
-	if (dp == nullptr) {
-		refuse(response, 404, "dp.unknown_id", "no datapoint with this id");
-		return;
-	}
+void WebApi::command(const Datapoint& target, const WebRequest& request, WebResponse& response) {
+	const Datapoint* dp = &target;
 	JsonSpan body;
 	JsonSpan member;
 	const char* error = nullptr;
@@ -1036,14 +1086,14 @@ void WebApi::command(uint16_t id, const WebRequest& request, WebResponse& respon
 	MonitorOrigin origin(feed_ != nullptr ? &feed_->monitor() : nullptr, MonitorEvent::CommandOrigin::api,
 		request.ehome ? MonitorEvent::Via::ehome
 		: request.authorization != nullptr ? MonitorEvent::Via::token : MonitorEvent::Via::session);
-	DatapointStatus status = model_.command(id, *value);
+	DatapointStatus status = model_.command(dp->id(), *value);
 	if (status != DatapointStatus::ok) {
 		refuse(response, command_http_status(status), datapoint_status_code(status), datapoint_command_reason(status));
 		return;
 	}
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object().member("ok", true).key("datapoint");
-	write_datapoint(json, *model_.get(id));
+	write_datapoint(json, *model_.get(dp->id()));
 	json.end_object();
 	finish(response, json);
 }
