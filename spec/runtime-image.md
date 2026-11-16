@@ -1652,7 +1652,7 @@ The fields not listed here are reserved (not checked) or plain numbers the runti
 | `rules.assignments` | `plan`; `days` | below the timeline's `planCount`; flags 0..6 |
 | `constants` | every record | `type` code 0..11; `present` 1; `length` 0..28 for a string, 0..14 for raw, 0 otherwise; a string without a NUL in its bytes and with one after them; a boolean 0 or 1; a time of day with day of week 0..7, hour 0..23, minute and second 0..59; a date with year 1900..2155, month 1..12, day 1..31; a date and time likewise with hour 0..24; a controlled value's bit 0 or 1; a color's `valid` flags 0..3; a real finite |
 | `blocks` | `id`, `type`; `label`; ports, parameters; `flags`; `enabledDatapoint` | id strings; label; runs in their tables; flags 0..1; datapoint index |
-| `blocks.ports` | `id`; bound; `aggregation`; `mirror` | id string; run in `blocks.bound` of at most 32; code 0..5; datapoint index or `kNone` |
+| `blocks.ports` | `id`; bound; `aggregation`; `mirror` | id string; run in `blocks.bound` (its count is checked by the type's `multiple`, 10.8); code 0..5; datapoint index or `kNone` |
 | `blocks.bound` | each entry | datapoint index |
 | `blocks.parameters` | `id`; `datapoint`; `flags`; `value` | id string; datapoint index or `kNone`; flags 0; finite |
 
