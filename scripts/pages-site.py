@@ -44,6 +44,16 @@ FLASH_PARTS = ('bootloader.bin', 'partition-table.bin', 'hc_updater.bin', 'homec
 			   'ota_data_ota0.bin', 'storage.bin')
 
 
+def flash_parts(assets):
+	"""The flash parts the release's install.json names, or FLASH_PARTS without one."""
+	path = os.path.join(assets, 'install.json')
+	if not os.path.isfile(path):
+		return FLASH_PARTS
+	with open(path, encoding='utf-8') as f:
+		install = json.load(f)
+	return tuple(os.path.basename(part['path']) for build in install.get('builds', []) for part in build.get('parts', []))
+
+
 def precedence(version):
 	"""Sort key by semver precedence: a pre-release before its release."""
 	match = VERSION.match(version)
@@ -88,8 +98,10 @@ def main():
 	releases = {}
 	for assets in args.release:
 		version = release_version(assets, 'manifest.json')
-		missing = [n for n in FLASH_PARTS + ('install.json', 'manifest.json', 'manifest.sig', 'i18n-manifest.json')
-				   if not os.path.isfile(os.path.join(assets, n))]
+		# The flash parts a release needs are those its install.json names: a release before the image
+		# partition (#87, up to 1.2.0) has no image-empty.bin.
+		missing = [n for n in flash_parts(assets) + ('install.json', 'manifest.json', 'manifest.sig',
+				   'i18n-manifest.json') if not os.path.isfile(os.path.join(assets, n))]
 		if missing:
 			raise SystemExit('release %s (%s) lacks %s' % (version, assets, ', '.join(missing)))
 		if release_version(assets, 'i18n-manifest.json') != version:
