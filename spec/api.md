@@ -9,8 +9,9 @@ that breaks a client needs a new path or field, not a changed meaning.
 ## Conventions
 
 - Bodies are UTF-8 JSON objects (`Content-Type: application/json`), at most 1024 bytes in a
-  request (413 `api.body_too_large` otherwise), except `PUT /api/image` (256 KB; on a device with a
-  staging area its capacity less one byte, below) and `PUT /api/rules/<rule>/timeline` (16 KB,
+  request (413 `api.body_too_large` otherwise), except `PUT /api/image` (the binary runtime image,
+  `application/octet-stream`, at most the device's image slot: `image.slot` of `GET /api/status`,
+  below) and `PUT /api/rules/<rule>/timeline` (16 KB,
   which every timeline the limits admit fits in its compact form: spec/rules.md 10.2). Responses carry `Cache-Control: no-store`.
 - Every refusal is a 4xx/5xx status with the body `{"error": "<English reason>", "code": "<key>"}`.
   The `code` is stable and is the key a UI translates (doc/web.md, "Texts"); the `error` text is
@@ -108,7 +109,7 @@ sessions are ended until the restart). The console's `web session clear` does th
 
 ```json
 {"device": {"name": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "...", "ui": "3c0dcd52e390bb91",
-            "schema": "1.6"},
+            "format": "1.0"},
  "uptime_s": 5321,
  "network": {"state": "up", "ip": "192.0.2.10", "mode": "normal", "pairing": false, "mdns": "homecontrol-a1b2c3.local",
              "mdns_announced": true},
@@ -122,38 +123,35 @@ sessions are ended until the restart). The console's `web session clear` does th
  "web": {"sessions": 1, "remembered": 0, "tokens": 0, "ws_clients": 1},
  "datapoints": 8,
  "image": {"loaded": true, "project": "example-house", "revision": 7, "name": "Example house", "source": "api",
+           "format": "1.0", "schemaVersion": "1.7", "bytes": 9472, "crc": "59772c42", "slot": 131072,
            "datapoints": 17, "rules": 2, "schedules": 2, "blocks": 1, "degraded": false}}
 ```
 
-`device.schema` is the newest runtime image schema the firmware reads (`spec/runtime-image.md` I4,
-section 8): E-Home warns before deploying an image of a newer one, and refuses to deploy an image
-with `blocks` to a controller below 1.3 (`spec/blocks.md` B1), one with an enumeration press below
-1.4, and one with a rule parameter whose id is not an identifier (`$"max-helligkeit"`,
-`spec/rules.md` 2.1) below 1.5.
+`device.format` is the newest format of the binary runtime image the firmware reads
+(`spec/runtime-image.md` I4, section 11; issue #87): E-Home compiles the image for it and refuses,
+before sending, a project that needs a newer one. It replaces `schema`, the JSON schema version that
+firmware up to 1.2 reported.
 
 `web.sessions` counts the alive sessions of both kinds, `web.remembered` (firmware from 2026-11)
 those of them that stay logged in.
 
-`image` (builds with the runtime image service): without an image `{"loaded": false}`, after a
-refused load while no image runs also `"refused": "<code>"`. `source` is how the image came: `boot` (the stored
-one at start), `api`, `console`, `file` (POSIX `--image`), `restore` (the stored one again after a
-failed apply). `degraded`: the image has KNX datapoints and the tunnel is down (the LED shows
-degraded). The WebSocket's `status` message carries the same member.
+`image` (builds with the runtime image service): without an image `{"loaded": false, "slot": 131072}`;
+after a refused load (a deploy, or the image in the slot at boot: `spec/runtime-image.md` I9) also
+`"refused": "<code>"` and `"reason": "<path>: <reason>"` (the first refusal), which E-Home takes as
+the signal to send the last valid deployment again. `slot` is the size of the image slot in bytes,
+the largest image the device takes (128 KB on 4 MB flash, 512 KB on 8 and 16 MB;
+`spec/runtime-image.md` 7); it replaces `storable`. `source` is how the image came: `boot` (the
+slot's at start), `api`, `console`, `file` (POSIX `--image`). `format` is the image's format
+version, `schemaVersion` the source's schema it was compiled from, `bytes` its length and `crc` its
+CRC-32 (8 hex digits, the header's): a deployment tool compares `crc` with what it would deploy.
+`degraded`: the image has KNX datapoints and the tunnel is down (the LED shows degraded). The
+WebSocket's `status` message carries the same member.
 
 Members only `GET /api/status` carries (not the WebSocket's `status` message, which must fit one
 1400-byte frame):
 
-- `image.storable` (homecontrol #52; firmware from 2026-11): the largest image in bytes the device
-  can store and load again (`spec/runtime-image.md` 7): the least of what the blob store takes
-  beside the stored image, keeping the flash free the history's archives still take as they fill,
-  and what the staging slot of the stored image holds beside a failed received image of the same
-  size (a restore reads the stored image while the image that failed is still staged). A deploy
-  that is larger is accepted and runs; it may not be stored (`stored: false`, the `storeError` names
-  the store's limit) or, stored, may not load again beside a failed later image (the device logs a
-  warning naming the limit). E-Home warns before such a deploy. A controller without the member
-  gives no figure (older firmware).
 - `storage`: `{"total", "used", "free"}` (bytes of the storage partition; ESP only) and `{"files",
-  "bytes"}` (the blob store's files and their size). Like `image.storable`, the figures are the last
+  "bytes"}` (the blob store's files and their size). The figures are the last
   measurement, which the device makes off its event loop after each change of the blob store
   (homecontrol #74): a change shows a request or two later, never in the request that follows it.
 - `knx`: `{"state": "down|connecting|up", "reason", "gateway": "<host:port or \"\">", "nat",
@@ -417,7 +415,7 @@ does not know is left out.
 
 ```json
 {"uptime_s": 3725, "now_ms": 3725012,
- "device": {"name", "version", "build", "ui", "schema"}, "boot": {...}, "update": {...},
+ "device": {"name", "version", "build", "ui", "format"}, "boot": {...}, "update": {...},
  "chip": {"available": true, "model": "ESP32-C6", "revision": "v0.1", "cores": 1, "cpu_mhz": 160,
           "flash_size": 4194304, "flash_mode": "dio", "flash_freq": "80m", "idf": "v5.5.6", "ota_state": "valid"},
  "led": "ready", "time": {"synchronized": true, "local": "..."}, "improv": {"active": false},
@@ -646,72 +644,71 @@ Authenticated like every endpoint: a bearer token, or the session cookie with th
 
 ### `PUT /api/image`
 
-The body is the image (JSON, at most 256 KB; larger: 413 `api.body_too_large` before it is read).
-On a device with a staging area for received images (the ESP: the flash behind the updater, 124 KB
-on the C6, doc/ota.md) the limit is the area's capacity less one byte (the NUL after the text): a
-larger image would need a heap block of its size, which the C6 never has, so it is refused before
-it is read, with the reason naming both sizes (`the image has 130000 bytes; the device receives at
-most 126975 (its staging area)`).
-The header `X-Image-Signature: <128 hex digits>` carries the image's detached Ed25519 signature
-(E-Home connection: the request's `signature` member; section "Signed runtime images" below). While
-the device holds the installation key it checks the signature over the body's exact bytes before
-anything is parsed or written; without a key the header is not checked. The device validates the
-image completely, then swaps it in on the event loop and stores it. The answer comes when the image
-is on the flash (homecontrol #68: the store runs beside the event loop, the image runs already;
-about 0.4 s for 23 KB on the C6): 200:
+The body is the binary runtime image (`spec/runtime-image.md` section 9, issue #87;
+`Content-Type: application/octet-stream`), compiled by E-Home, at most the device's slot (`image.slot`
+of `GET /api/status`: 131 072 bytes on a 4 MB board). A larger body is refused before it is read,
+413 `image.too_large`: `the image has 140000 bytes; the device holds at most 131072 (its image
+slot)`. The signature is part of the image (`spec/runtime-image.md` 9.17); a request with the
+former header `X-Image-Signature` is refused 400 `image.bad_request` (`the signature is part of the
+binary image`).
+
+The device checks the image's header first (`spec/runtime-image.md` 10.1): a body that is not a
+binary image (a JSON text among them), another major format, a length that does not match the body,
+or an unsigned image while the device holds the installation key are refused with the running image
+untouched. Then the running image ends: the device takes the values it carries across the swap
+(`spec/runtime-image.md` 12), erases the slot as the bytes arrive and writes them into it, checks
+the CRC, the signature and the structure, and applies the image (`spec/runtime-image.md` 6). The
+answer comes when the image runs (a few hundred milliseconds after the last byte, plus the erase of
+about 45 ms per 4 KB written), 200:
 
 ```json
 {"ok": true,
- "image": {"schemaVersion": "1.0", "projectId": "example-house", "revision": 7, "generatedAt": "2026-10-17T12:00:00Z",
-           "generator": "E-Home 4.2", "name": "Example house", "bytes": 7126},
+ "image": {"format": "1.0", "schemaVersion": "1.7", "projectId": "example-house", "revision": 7,
+           "generatedAt": "2026-10-17T12:00:00Z", "generator": "E-Home 4.2", "name": "Example house",
+           "bytes": 9472, "crc": "59772c42", "signed": true},
  "counts": {"datapoints": 17, "knx": 13, "rules": 2, "schedules": 2, "locations": 4, "functions": 9,
             "historyRings": 1, "timeMaster": true},
- "source": "api", "stored": true}
+ "source": "api"}
 ```
 
-`stored: false` with `storeError` when the image runs but could not be written (after a restart
-the previous one loads, complete: a restart during the store also leaves the previous image). An
-image larger than the store takes names the limit: `the storage is full (it stores at most 122876
-bytes)` (`image.storable` in `GET /api/status` gives it before the deploy). While
-the previous deploy is still being stored, a deploy is refused 503 `image.busy` with `Retry-After: 1`
-before its body is read (nothing changes; deploy again). Should an answer be fetched only after a
-later deploy's store began (a deploy within the HTTP server's 100 ms poll of the answer), it is 409
-`image.superseded`: GET /api/status and GET /api/image tell what runs and is stored. A refusal
-changes nothing and reports every problem:
+A refusal reports every problem it found:
 
 ```json
 {"error": "the image is invalid", "code": "image.invalid",
- "refusals": [{"path": "datapoints[0].knx.dpt", "reason": "DPT 9.001 carries real values, the datapoint is boolean"},
-              {"path": "functions[1].datapoints.state", "reason": "unknown datapoint 'nothing'"}],
- "total": 2, "loaded": true, "revision": 7}
+ "refusals": [{"path": "knx.bindings[2].dptMain", "reason": "unsupported: DPT 9.123 is not supported by this firmware"},
+              {"path": "nodes[17].argc", "reason": "malformed: if() takes 3 arguments, the node has 2"}],
+ "total": 2, "loaded": false}
 ```
 
-`refusals` lists up to 12, `total` counts all; `loaded`/`revision` say what still runs. Status and
-code: 400 `image.bad_json` (not JSON; the reason names the byte), 422 `image.version` (a newer
-major schema version), 422 `image.invalid`, 413 `image.too_large`, 507 `image.no_memory` (also
-`api.no_memory` from the ESP server when no heap block holds the body), 500 `image.apply_failed`
-(valid, but refused while applied; the stored image was loaded again), 400 `image.missing` (empty
-body), 403 `image.unsigned` (the device holds the installation key and the image comes without a
-signature), 403 `image.bad_signature` (the signature does not verify under the installation key,
-or the stored key is damaged), 400 `image.bad_signature` (the header is not 128 hex digits, with or
-without a key), 503 `image.busy` (above). Both 403 refusals name the fingerprint of the key the device expects in
-`refusals[0].reason`; they are 403, not 401, because a 401 means an expired login to the UI. The size
-limit comes first (413), then the signature, then the loader's refusals: a correctly signed image
-with invalid content gets the loader's code. A load takes up to a few hundred milliseconds on the
-device; requests meanwhile wait (the store after it does not hold them).
+`refusals` lists up to 12, `total` counts all; `loaded` says whether an image runs: true only for the
+refusals before the erase (then also `revision`, the running image's), false for every later one (the
+device has no image now, `spec/runtime-image.md` I9; E-Home sends the last valid deployment again).
+Status and code (`spec/runtime-image.md` 4): 413 `image.too_large`, 400 `image.format`, 422
+`image.version`, 403 `image.unsigned` (the running image untouched); 422 `image.damaged` (the CRC
+does not match), 403 `image.bad_signature` (the signature does not verify under the installation
+key, or the stored key is damaged), 422 `image.invalid`, 507 `image.no_memory`, 500
+`image.apply_failed` (valid, but refused while applied) (no image afterwards); 400 `image.missing`
+(empty body), 400 `image.bad_request` (above); 503 `image.busy` with `Retry-After: 1` while another
+image is being received (nothing changes). Both 403 refusals name the fingerprint of the key the
+device expects in `refusals[0].reason`; they are 403, not 401, because a 401 means an expired login
+to the UI. A body that ends early (the connection dropped) leaves no image; the device logs it and
+reports `image.format` (`the header says 9472 bytes, the body has 4096`) in `GET /api/status`. A
+load takes up to a few hundred milliseconds on the device; requests meanwhile wait.
 
 ### `GET /api/image`
 
-The stored image, byte for byte as it was deployed (`application/json`; the ESP server sends it
-chunked). 404 `image.none` when none is stored. A deployment tool compares it, or its
-`image.revision`, with what it would deploy.
+The loaded image, byte for byte as it is in the slot (`application/octet-stream`, `header.length`
+bytes, the signature included; the ESP server sends it chunked). 404 `image.none` when no image is
+loaded, also when the slot holds bytes that did not validate. A deployment tool compares it, or the
+`crc` of `GET /api/status`, with what it would deploy; E-Home decodes it into its JSON view
+(haumacher/ehome#176).
 
 ### `DELETE /api/image`
 
-Unloads the image and removes it with the persisted values and history rings; the device returns
-to setup (LED: short pulse). 200 `{"ok": true, "loaded": false}`; 500 `image.storage_error` when
-the stored copy could not be removed (the image is unloaded anyway); 503 `image.busy` with
-`Retry-After: 1` while a deployed image is still being stored (nothing changes).
+Unloads the image and erases it from the slot with the persisted values and history rings; the
+device returns to setup (LED: short pulse). 200 `{"ok": true, "loaded": false}`; 500
+`image.storage_error` when the slot could not be erased (the image is unloaded anyway); 503
+`image.busy` with `Retry-After: 1` while an image is being received (nothing changes).
 
 All three: 404 `image.unavailable` in a build without the image service (POSIX `--demo`), 405
 `api.method_not_allowed` for other methods.
@@ -730,7 +727,7 @@ a client builds the dashboard without the image. Without an image: 200 `{"loaded
 
 ```json
 {"loaded": true, "project": "example-house", "name": "Example house", "revision": 7,
- "generatedAt": "2026-10-17T12:00:00Z", "generator": "E-Home 4.2", "source": "api", "stored": true,
+ "generatedAt": "2026-10-17T12:00:00Z", "generator": "E-Home 4.2", "source": "api",
  "loaded_ms": 51230, "now_ms": 90211, "generation": 3, "total": 30, "from": 0,
  "locations": [{"id": "living", "label": {"en": "Living room", "de": "Wohnzimmer"}, "kind": "room", "parent": "ground"}],
  "functions": [{"id": "living-light", "label": "Ceiling light", "kind": "light", "room": "living",
@@ -776,16 +773,16 @@ a client builds the dashboard without the image. Without an image: 200 `{"loaded
 Refusals: 507 `model.no_memory` (the device could not hold the model of this image; the image
 runs), 500 `api.response_too_large`.
 
-### `GET /api/pages[?from=<n>]`
+### `GET /api/pages`
 
-The control pages of the image (spec/runtime-image.md 3.9, issue #54), as five flat lists in one
-paged index space: the pages, then the sections, the elements, the chart series and the reference
-lines. An entry names its owner by its index in the owner's list; a client concatenates the lists of
-every page of the response and assembles the tree.
+The control pages of the image (spec/runtime-image.md 3.9, issue #54), as five flat lists: the
+pages, the sections, the elements, the chart series and the reference lines. An entry names its
+owner by its index in the owner's list; a client assembles the tree. The body is the image's section
+`ui` (spec/runtime-image.md 9.16), which E-Home compiled and the device sends unchanged
+(`application/json`, chunked by the ESP server; issue #87): one response, no paging.
 
 ```json
-{"loaded": true, "generation": 3, "total": 20, "from": 0,
- "pages": [{"id": "evening", "label": {"de": "Abend", "en": "Evening"}, "icon": "moon", "sections": 2}],
+{"pages": [{"id": "evening", "label": {"de": "Abend", "en": "Evening"}, "icon": "moon", "sections": 2}],
  "sections": [{"page": 0, "label": {"de": "Wohnzimmer"}, "elements": 5}, {"page": 0, "elements": 1}],
  "elements": [{"section": 0, "function": "living-light", "label": {"de": "Decke"}},
               {"section": 0, "datapoint": 3, "readOnly": true},
@@ -795,24 +792,24 @@ every page of the response and assembles the tree.
  "series": [{"element": 2, "datapoint": 3, "label": {"de": "Wohnzimmer"}, "axis": "left", "consolidation": "mean"},
             {"element": 2, "datapoint": 5, "axis": "left", "consolidation": "mean"}],
  "references": [{"element": 2, "value": 21, "label": {"de": "Soll"}, "axis": "left"},
-                {"element": 2, "datapoint": 10, "axis": "left"}],
- "next": null}
+                {"element": 2, "datapoint": 10, "axis": "left"}]}
 ```
 
 - A function element names the function by its image id (as `/api/model` lists it), a datapoint
   element, a series and a reference line the datapoint by its id of `/api/datapoints` and the live
-  feed. `readOnly` is present only when true.
+  feed (the index of the image's `datapoints`). `readOnly` is present only when true.
 - A chart's members are resolved: the defaults filled in (`width` `"full"`, `height` 2, `range`
   `"24h"`, `presets` `[range]`, each axis bound `null` when automatic) and each series'
   `consolidation` given (the image's, or the default for the datapoint's type).
 - `label`, `icon` are left out when the image has none; a label is passed as the image gives it.
-- **Paging** as `/api/model`: a response holds what fits the 8 KB buffer, `from=<next>` continues
-  until `next` is `null`, and a changed `generation` means start over.
-- Without an image `loaded` is false; without pages (or without an image) every list is empty: the
-  UI shows the generated overview.
+- Without an image: `{"loaded": false}`. An image without pages: every list empty
+  (`{"pages": [], "sections": [], "elements": [], "series": [], "references": []}`): the UI shows
+  the generated overview.
+- Over the E-Home connection a body above 4 KB is streamed as a stored document (`length` and binary
+  frames, "The socket" below).
 
-Refusals: 507 `model.no_memory` (the device could not hold the UI model of this image; the image
-runs), 500 `api.response_too_large`.
+Firmware up to 1.2 paged this answer (`from`, `next`, `generation`, `total`) because it built it from
+tables in RAM; the binary image holds it ready (spec/runtime-image.md I10).
 
 ### `GET /api/history?ids=<id>[,<id>...][&from=<unix>][&to=<unix>][&points=<n>]`
 
@@ -1159,12 +1156,17 @@ With `ehome.enabled` true the controller opens the WebSocket of `socket` (TLS) a
 
 ```
 E-Home → {"type": "challenge", "nonce": "<32 to 128 hex digits>"}
-device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "schema": "1.6", "key": "ce7d 4a41 a476 9ee3"}
+device → {"type": "auth", "controller": "<id>", "mac": "<64 hex digits>", "version": "0.1.0", "build": "a9d0216", "format": "1.0", "slot": 131072,
+          "image": {"loaded": true, "project": "example-house", "revision": 7, "crc": "59772c42"}, "key": "ce7d 4a41 a476 9ee3"}
 E-Home → {"type": "ready", "installation": "<name>"}        or {"type": "refused", "code": "...", "error": "..."} and the close
 ```
 
-`schema` is the newest runtime image schema the firmware reads (as in `GET /api/status`), so E-Home
-knows at every connection whether an image it would deploy is too new for the device.
+`format` is the newest format of the binary runtime image the firmware reads and `slot` the size of
+its image slot in bytes (as `device.format` and `image.slot` in `GET /api/status`; issue #87): E-Home
+compiles for that format and refuses, before sending, an image larger than the slot. `image` is what
+runs: `{"loaded": true, "project", "revision", "crc"}`, or `{"loaded": false}` with `refused` and
+`reason` after a refused load (also of the slot's image at boot); E-Home then sends the last valid
+deployment again (haumacher/ehome#176). They replace `schema` of firmware up to 1.2.
 `key` (only while the device holds an installation key) is that key's fingerprint (below): E-Home
 learns at every connection which key the device accepts images from, and signs with it.
 `mac` is HMAC-SHA256 with the 32 bytes the secret's hex digits denote as the key, over the bytes the
@@ -1191,19 +1193,20 @@ device → {"type": "response", "id": 7, "status": 200, "body": {...}}
 query) and `body` are what the local API takes; the answer carries the route's status, its JSON body
 (or `{"error", "code"}` on a refusal; `null` for none) and `retry_after_s` when the route sets
 one. A response body is at most 4 KB (a larger one is answered 500 `api.response_too_large`); a
-stored document (`GET /api/image`, `GET /api/coredump`) is streamed instead:
-`{"type": "response", "id": 9, "status": 200, "length": 10226, "content_type": "application/json"}`
+stored document (`GET /api/image`, `GET /api/pages`, `GET /api/coredump`) is streamed instead:
+`{"type": "response", "id": 9, "status": 200, "length": 9472, "content_type": "application/octet-stream"}`
 followed by binary messages of at most 2 KB carrying `length` bytes; the request ends with the last
 byte. Live feed messages (text) may arrive between those binary messages.
 
-A request body that does not fit the 4 KB text message (the runtime image) is announced with
-`length` instead of `body`: `{"type": "request", "id": 8, "method": "PUT", "path": "/api/image",
-"length": 10226}` followed by binary messages carrying the body (their number does not matter, only
-the byte count); the controller answers after the last byte. When `length` exceeds what the route
-accepts the answer is 413 `api.body_too_large`, when the controller has no memory for it 507
-`api.no_memory`; the announced bytes are then read and dropped. A signed image always goes with
-`length` and binary frames; the inline `body` form is for unsigned images on a device without a key
-(a `PUT /api/image` with `body` and `signature` is refused 400 `image.bad_request`, below). A malformed request is answered 400
+A request body that does not fit the 4 KB text message, and always the binary runtime image, is
+announced with `length` instead of `body`: `{"type": "request", "id": 8, "method": "PUT", "path":
+"/api/image", "length": 9472}` followed by binary messages carrying the body (their number does not
+matter, only the byte count); the controller answers after the last byte. When `length` exceeds
+what the route accepts the answer is 413 (`image.too_large` for an image larger than the slot,
+`api.body_too_large` elsewhere), when the controller has no memory for it 507 `api.no_memory`; the
+announced bytes are then read and dropped. A `PUT /api/image` with an inline `body`, or with the
+former member `signature`, is refused 400 `image.bad_request` (`the image is binary: it is sent with
+length and binary frames, its signature inside`). A malformed request is answered 400
 `ehome.bad_request`; binary messages nobody announced are dropped.
 
 Requests run with the "E-Home" principal: everything a token may do, minus what is decided on site
@@ -1213,7 +1216,7 @@ only. Refused with 403 `ehome.forbidden` (and logged): `/api/auth/*` (onboarding
 setting. One
 request at a time per socket; a second before the response is refused 429 `ehome.busy` (a second
 that announces `length` closes the socket: its binary messages could not be told apart). The response
-to `PUT /api/image` comes when the image is stored (above), the request is running until then. The device
+to `PUT /api/image` comes when the image runs or is refused (above), the request is running until then. The device
 pings every 30 s; a pong missing after 10 s closes the socket and the backoff reconnects it.
 
 ### Signed runtime images (issue #35)
@@ -1224,45 +1227,35 @@ stores it as `ehome.key`. Its **fingerprint**, which the Settings page, the cons
 messages below show, is the first 8 bytes of SHA-256 over the 32 public-key bytes, as 16 lower-case
 hex digits in four groups of four separated by a space: `ce7d 4a41 a476 9ee3`.
 
-**The signature construction.** A runtime image is signed with plain Ed25519 (RFC 8032 section
-5.1.6, "pure" Ed25519 with SHA-512, no context, not Ed25519ph) over the 52-byte message
+**The signature construction** (format 1.0 of the binary image, issue #87; `spec/runtime-image.md`
+9.17). A runtime image is signed with plain Ed25519 (RFC 8032 section 5.1.6, "pure" Ed25519 with
+SHA-512, no context, not Ed25519ph) over the 52-byte message
 
 ```
-M = "homecontrol-image-v1" || SHA-256(image)
+M = "homecontrol-image-v2" || SHA-256(image[0, signedEnd))
 ```
 
-where `"homecontrol-image-v1"` is those 20 ASCII bytes without a terminator and `SHA-256(image)` the
-32-byte digest of the image's exact bytes as deployed (the body of `PUT /api/image`, the bytes the
-binary frames carry, the file a user installs: the same bytes `GET /api/image` returns later). The
-signature is the 64-byte `R || S` of RFC 8032, written as 128 lower-case hex digits (the device also
-reads upper case). In Java: `Signature.getInstance("Ed25519")` over `M`; in Python
-`Ed25519PrivateKey.sign(M)` (scripts/sign.py does exactly this).
-
-**Where the signature travels.**
-
-- Over the socket: the request carries `"signature": "<128 hex digits>"` next to `length`:
-  `{"type": "request", "id": 8, "method": "PUT", "path": "/api/image", "length": 10226, "signature": "9f1c…"}`.
-  The signature belongs to that request only. A signed image always goes with `length` and binary
-  frames; the inline `body` form is for unsigned images on a device without a key. A `PUT
-  /api/image` request carrying both `body` and `signature` is refused up front, whatever the key, with
-  400 `image.bad_request` and the error `a signed image is sent with length and binary frames: the
-  signature covers its exact bytes` (the inline body is parsed JSON, not the exported bytes).
-- Over HTTP: the header `X-Image-Signature: <128 hex digits>`.
-- As a file: `<image>.sig` beside the image, holding the 128 hex digits (optionally followed by a line
-  end; white space around them is ignored) or, alternatively, the 64 raw bytes. The Settings page's
-  "Install project file" takes it in its second file field and sends it as the header; the POSIX
-  build's `--image <file>` reads `<file>.sig`; the console takes `image load <url> <128 hex digits>`.
+where `"homecontrol-image-v2"` is those 20 ASCII bytes without a terminator and the digest covers the
+image's bytes before its signature: the header (with the flag `signed`, the final `length` and the
+CRC), the section table, the sections and the padding. The signature's 64 bytes (`R || S` of RFC
+8032) are the image's last 64 bytes. In Java: `Signature.getInstance("Ed25519")` over `M`; in Python
+`Ed25519PrivateKey.sign(M)`. The context `v1` of firmware up to 1.2 signed the JSON text and
+travelled detached (the header `X-Image-Signature`, the socket's `signature`, a `.sig` file); none of
+these exists any more: the image carries its signature wherever it goes (the body of
+`PUT /api/image`, the binary frames, a file a user installs, the slot, `GET /api/image`).
 
 **What the device checks.** While `ehome.key` is stored, every image from the API, the socket, the
-console or a file needs a signature that verifies under that key over the bytes received; it is
-checked after the size limit and before anything is parsed or written, so a refused image changes
-nothing and the previous image keeps running. Refusals (the `PUT /api/image` answer, in the socket's
-`response` the same body): 403 `image.unsigned` (no signature), 403 `image.bad_signature` (it does
-not verify, or `ehome.key` is damaged), 400 `image.bad_signature` (the signature is not 128 hex
-digits); the reason names the fingerprint of the expected key, e.g. `the image is not signed; the
-device accepts only images signed with the installation key ce7d 4a41 a476 9ee3`. The stored image
-loads at boot without a new check (it passed the check when it was stored). Without a key the device
-accepts images as before (the API's token or session); a signature is then not checked.
+console or a file must be signed, and the signature must verify under that key: an image whose
+header says it is unsigned is refused 403 `image.unsigned` before the slot is erased (the running
+image keeps running); a signature that does not verify is found after the bytes are in the slot,
+403 `image.bad_signature`, and leaves no image (`spec/runtime-image.md` I9, 10.2). The reason names
+the fingerprint of the expected key, e.g. `the image is not signed; the device accepts only images
+signed with the installation key ce7d 4a41 a476 9ee3`. The signature is checked on receipt only: at
+boot the device checks the slot's image for its CRC and structure, not its signature, because only
+the verified receive path writes the slot (`spec/runtime-image.md` I11); an image signed with a key
+since rotated keeps loading until the next deployment, which E-Home signs with the new key from
+`key_accepted` on. Without a key the device does not check a signature (the API's
+token or session suffices), signed or not.
 
 **What clears the key.** Only two things: the factory reset (erases it) and a new enrollment's
 authenticated answer (replaces it with its `public_key`, or removes it when the answer has none).
@@ -1299,12 +1292,13 @@ fingerprint was sent), 400 `api.bad_json` (no fingerprint), 500 `settings.storag
 
 **Test vectors** (`spec/fixtures/signatures/vectors.json`, TEST KEYS ONLY): the key pair
 "installation" (public key `13833fbfa81080cdb4c1210131a5bb3e98f17675236e66124aed84cc490bccb1`,
-fingerprint `ce7d 4a41 a476 9ee3`) signs `spec/fixtures/images/example.json`; its signature is
-`spec/fixtures/images/example.json.sig`, and the vectors file spells out the digest, the message `M`
-and the signature with the "rotated" key; the "release" key signs `spec/fixtures/signatures/
-manifest.json` (doc/ota.md); RFC 8032 section 7.1 test 1 checks the Ed25519 implementation itself.
-The device's tests verify all of them; E-Home's must produce the same signatures (Ed25519 is
-deterministic).
+fingerprint `ce7d 4a41 a476 9ee3`) signs `spec/fixtures/images/minimal.signed.bin`, whose bytes,
+digest, message `M` and signature `spec/runtime-image.md` 13 spells out; the "release" key signs
+`spec/fixtures/signatures/manifest.json` (doc/ota.md); RFC 8032 section 7.1 test 1 checks the
+Ed25519 implementation itself. The device's tests verify all of them; E-Home's must produce the same
+signatures (Ed25519 is deterministic). The vectors of context `v1` (the JSON
+image `example.json` with its detached `example.json.sig`) are obsolete: the `.sig` file is deleted,
+the vectors file keeps the entry as history.
 
 ### What E-Home refuses on the socket
 
@@ -1322,8 +1316,7 @@ path and host as the reverse proxy presents it (`X-Forwarded-Proto`, `X-Forwarde
 
 - Binary bodies are sent in frames of at most 4096 bytes; the last frame completes the body.
 - An inline JSON `body` is re-serialized by the receiver (whitespace is not preserved), so a body
-  whose bytes matter, such as the runtime image whose stored copy must equal what E-Home exported,
-  always travels as `length` plus binary frames.
+  whose bytes matter travels as `length` plus binary frames; the binary runtime image always does.
 - The enrollment request may carry `"controller": "<id>"` when the device believes it is already
   enrolled with this E-Home (a retry after a lost answer); E-Home answers 409 `ehome.enrolled` for a
   known id it did not just issue.

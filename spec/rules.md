@@ -6,6 +6,12 @@ corpus `spec/fixtures/rules/` (format in `spec/fixtures/rules/README.md`). The t
 expressions is also in `spec/rules-grammar.ebnf`. Rules travel in the runtime image (issue #8);
 this document defines the `rules` member of the image and everything the interpreters do with it.*
 
+*Since issue #87 the image has two forms (`spec/runtime-image.md` I1): the JSON members of this
+document are the **source form**, which E-Home validates (every check of section 10.1, as "the
+loader" says below) and compiles; the controller receives the **binary image**, whose rule tables
+and expression nodes are `spec/runtime-image.md` 9.13 and 9.14, and checks only its structure and
+limits (`spec/runtime-image.md` 10). What the interpreters do at run time is unchanged.*
+
 ## 1. Introduction
 
 A *rule* is engineered in E-Home and executed by the controller. It reacts to *events* (a datapoint
@@ -104,8 +110,9 @@ presence light: one reaction starts the timer, another reacts to its expiry) and
 between the reaction that starts them and the one that handles their expiry); separate classes for
 plain rules and state machines (two structures with the same parts).
 
-**D8. Datapoints are referenced by name in the image.** The image loader resolves names to ids
-when it loads; a dangling name refuses the image. *Alternatives:* numeric ids (the AST would be
+**D8. Datapoints are referenced by name in the image.** In the source form; E-Home's compiler
+resolves names to the datapoints' indices of the binary image (`spec/runtime-image.md` 9.7, issue
+#87), and its validation refuses a dangling name. *Alternatives:* numeric ids (the AST would be
 unreadable in a diff and break when E-Home reorders datapoints).
 
 **D9. Time is monotonic for durations and local wall time for the calendar.** Timers, `sinceChange`
@@ -1269,7 +1276,7 @@ which uses that API. What the inhabitant cannot change is the machine: the state
 and the reactions; and the timeline's own `adjustable`.
 
 1. **A change replaces the timeline as a whole**: its plans with their points and its assignments.
-   It is checked exactly as the loader checks the image's timeline (10.1, the same reasons and
+   It is checked exactly as E-Home's validation checks the image's timeline (10.1, the same reasons and
    texts, the paths relative to the timeline) and against the limits of 10.2, the budget of the
    effective timelines included, and applied whole or refused whole with the reason: the timeline
    is not adjustable, a point names a state the rule does not have, a moment or a member is
@@ -1389,8 +1396,11 @@ occurrence only; the diagnostics' `errors` counter counts logged entries only.
 
 ### 10.1 Checks
 
-The loader (device) and E-Home's export check every rule before the image is accepted; the first
-failure refuses the whole image with the rule id, the JSON path and one of these reasons:
+E-Home's validation checks every rule of the source form before it compiles the image (until issue
+#87 the device's loader checked the JSON too); the first failure refuses the whole image with the
+rule id, the JSON path and one of these reasons. The device checks the compiled rules for their
+structure and the limits of 10.2 (`spec/runtime-image.md` 10.5, 10.6), and, at run time, the
+inhabitant's timeline of 8.7 with the timeline's checks below:
 
 | Reason | Examples |
 |---|---|
@@ -1405,8 +1415,8 @@ failure refuses the whole image with the rule id, the JSON path and one of these
 | `forbidden` | a time, history, timer or state function in a `match` condition; a datapoint, or a time, history, timer or state function, in the `after` of a `silence` trigger; a reference to `enabled`; a reference to the rule's own parameter datapoints (8.6) or its own state datapoint (8.8); `from` or `to` in a rule without states; `elseActions` together with `to`; a `timer` node outside `running`/`remaining`; `state()` arguments other than one string literal; a `timeline` in a rule without states |
 | `limitExceeded` | a limit of 10.2; two persistence keys of the image (8.4, 8.5) that collide in the device's storage (the device's mapping, `doc/rules.md`; practically never, but checked) |
 
-Every check belongs to loading the rule set itself, so every loader (the image service, a checker
-in E-Home, a test) refuses the same images.
+Every check belongs to loading the rule set itself, so every checker (E-Home's validation, its
+simulation, a test) refuses the same images.
 
 **The checks of a timeline and the state datapoint** (schema 1.7, issue #84). E-Home's validation
 refuses the same with the same texts at the field; the device's API refuses an inhabitant's

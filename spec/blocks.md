@@ -10,6 +10,13 @@ runtime image as the member `blocks` (`spec/runtime-image.md`, schema 1.3); thei
 of `spec/rules.md` (camelCase members, the JSON literal values of its 3.1, labels of its 2.2,
 refusal reasons of its 10.1).*
 
+*The JSON member `blocks` (section 4) is the source form of the image (`spec/runtime-image.md` I1,
+issue #87): E-Home validates it (section 11) and compiles it; the controller receives the binary
+records of `spec/runtime-image.md` 9.15 and checks their structure and what only it knows: the type
+and its version, the ports and parameters against its manifest, the parameter values and the type's
+`check()` (`spec/runtime-image.md` 10.8). "The loader" below is E-Home's validation and compiler
+where the source is meant.*
+
 ## 1. Introduction
 
 A *block type* is a function with a *manifest*: its ports (inputs and outputs), its parameters, its
@@ -407,8 +414,9 @@ Outputs are written by the block's calls, also at its start: those are events.
 
 ## 6. Datapoints of a block
 
-The loader derives, for every instance in block order, behind the image's own datapoints, the time
-master's, the rule parameters' and the schedules' (`spec/runtime-image.md` 3.3):
+E-Home's compiler derives, for every instance in block order, behind the image's own datapoints,
+the time master's, the rule parameters' and the schedules' (`spec/runtime-image.md` 3.3), and writes
+them as records of the binary image's `datapoints` owned by the block (`spec/runtime-image.md` 9.7):
 
 | Datapoint | Type | Flags | Value |
 |---|---|---|---|
@@ -529,7 +537,8 @@ modules are not part of schema 1.3; their member follows with the WebAssembly ru
 
 ## 11. Loading: checks and limits
 
-The loader checks every instance after the datapoints, the schedules and the rules; the first
+E-Home's validation checks every instance after the datapoints, the schedules and the rules (the
+device repeats the checks against its own types, `spec/runtime-image.md` 10.8); the first
 failure of an instance refuses the image with the path and one of the reasons of `spec/rules.md`
 10.1, plus `unknownType` and `missingInput`:
 

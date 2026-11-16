@@ -59,9 +59,11 @@ from it, configured by the runtime image's optional `mqtt` member. Implemented b
 | `history.enabled` | boolean | no, true | The history export (section 5). |
 | `history.interval` | integer 1..1440 (minutes) | no, 15 | Period of the export. |
 
-Unknown members are ignored (runtime-image I5); `comment` and `description` are allowed. The member
-is checked by `Mqtt::check_json()` (the loader's validation pass) and applied after the datapoint
-model; a refusal names the member (`mqtt.baseTopic: must be ...`).
+Unknown members are ignored (runtime-image I5); `comment` and `description` are allowed. This is the
+source form (`spec/runtime-image.md` I1): E-Home validates the member and compiles it into the
+binary image's record `mqtt` (`spec/runtime-image.md` 9.11, the defaults written out); a refusal
+names the member (`mqtt.baseTopic: must be ...`). The device checks the record's structure and
+applies it after the datapoint model.
 
 The **node id** is the device's mDNS host name (`homecontrol-<last three MAC bytes>`, `doc/network.md`):
 the MQTT client id, Home Assistant's node id and device identifier.

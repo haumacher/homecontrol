@@ -33,6 +33,17 @@ All steps of the rules corpus, and:
 | `image` | `{"rules"?: [...], "blocks"?: [...], "schedules"?: [...]}`: an image swap; an absent `rules` or `blocks` means the new image has none. |
 | `reboot` | As for rules; the block runtime writes its due records first (an orderly reboot, `spec/blocks.md` 8.1). |
 
+## The compiled images
+
+The device's test harness reads no JSON image (issue #87): beside each case `NN-<name>.json` lies its
+image `NN-<name>.bin`, and for each `image` step of its `timeline` `NN-<name>.step-<k>.bin` (`k` the
+step's 0-based position), compiled by E-Home and committed here. How a case maps to an image, what
+stays in the case's JSON for the harness (the clock, the location, the language, the persisted
+values, the initial values, the timeline, the expected outputs, the datapoints' harness properties),
+and which `loadRefused` cases have an image: `spec/runtime-image.md` 13.1. The runner steps below
+describe the semantics; on the device, "build the datapoint model" and "load the rules" (and the
+blocks) are the load of the `.bin`.
+
 ## Running a case
 
 As in the rules corpus, with these additions:

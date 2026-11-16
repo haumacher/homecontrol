@@ -1,9 +1,12 @@
 # External values in the runtime image
 
 The runtime image's member `external` declares HTTP JSON sources whose values feed datapoints
-(issue #17; the device side is `doc/external.md`). The image loader (issue #8) hands the member's
-JSON to `hc::ExternalValues::configure_json()` after the datapoint model is loaded. The member is
-optional; an image without it has no external values.
+(issue #17; the device side is `doc/external.md`). This is the source form (`spec/runtime-image.md`
+I1): E-Home validates the member and compiles it into the binary image's sections
+`external.sources` and `external.bindings` (`spec/runtime-image.md` 9.11, defaults written out); the
+device checks their structure, its presets and their variables (10.8) and configures
+`hc::ExternalValues` from them after the datapoint model is loaded. The member is optional; an image
+without it has no external values.
 
 Example (`spec/fixtures/external/image-external.json`, tested in `core/test/external_values_test.cpp`):
 
@@ -60,7 +63,7 @@ Example (`spec/fixtures/external/image-external.json`, tested in `core/test/exte
 | `unit` | string | no | At most 15 bytes, for display only (the model has no units); a preset variable has a default. |
 
 Unknown members are refused with their name (a typo must not pass silently); so is every violation
-above, and the device keeps its previous configuration.
+above: E-Home's validation refuses the image, which is then not compiled nor sent.
 
 ### Values
 

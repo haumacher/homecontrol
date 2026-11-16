@@ -40,7 +40,10 @@ datapoints, added to the model behind the image's (`doc/image.md` "Dynamic datap
 | `command` | The cluster commands go to (0..65534); absent: read-only. Only the function's own cluster, or Level Control (8) for `on_off` (cluster 6), is accepted. |
 | `reporting` | The attribute reporting the controller configures for this function instead of the function table's defaults (below, "Reporting overrides"). Optional; not for a client binding (`action`), `multistate` and `ias_zone`. |
 
-The loader checks every binding before anything changes and refuses with the path and the reason:
+E-Home's validation checks every binding of the source form, and the device the compiled bindings
+(`spec/runtime-image.md` 9.11, 10.8: the cluster and attribute against its function table, the
+command cluster, the reporting) before anything changes; both refuse with the path (the device's in
+the binary image, `zigbee.bindings[i].cluster`) and the reason:
 
 | Path | Reason |
 |---|---|

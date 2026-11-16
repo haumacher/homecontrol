@@ -252,8 +252,9 @@ another technology or named by another entry.
 
 ## 6. Loading: checks and limits
 
-The device refuses the whole image at the first failure, naming the entry and one of these reasons
-(those of `spec/rules.md` 10.1, plus one):
+E-Home's validation refuses the whole image at the first failure (the source form; the device
+checks the compiled entries of `spec/runtime-image.md` 9.12 for their structure and ranges,
+10.5), naming the entry and one of these reasons (those of `spec/rules.md` 10.1, plus one):
 
 | Reason | Examples |
 |---|---|
