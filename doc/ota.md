@@ -132,7 +132,9 @@ issue #43, which carries the language packs, the external values and the E-Home 
   scheme and host); the result must fit 127 characters.
 - `sha256`, `size`: of the image file.
 - `min_version` (optional): a release below it refuses the update ("install an intermediate release
-  first").
+  first"). A release names the first release of its partition layout (`LAYOUT_SINCE` in
+  `scripts/release-assets.py`, 1.3.0 since the partition `image` of #87): a controller of an older
+  layout is not updated over the air but flashed over USB once (the web flasher).
 - Unknown members are ignored. Anything malformed is refused with the reason in the log.
 
 ## Manifest signature

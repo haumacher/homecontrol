@@ -34,6 +34,11 @@ FLASHER_TEMPLATE = os.path.join(REPO, 'web', 'flasher', 'manifest.json')
 # keeps the scheme and host of update.url, doc/ota.md "The manifest").
 SITE_PATH = '/homecontrol/firmware/%s/homecontrol.bin'
 MAX_MANIFEST = 1024
+# The first release of the current partition layout: the update manifest names it as min_version, so a
+# device of an older layout refuses the update over the air and is flashed over USB once (1.3.0: the
+# partition `image`, the updater shrunk to 896 KB, the application from 0xF0000; homecontrol #87).
+# Raise it with every release that changes the partition table.
+LAYOUT_SINCE = '1.3.0'
 
 
 def fail(message):
@@ -125,7 +130,7 @@ def cmd_assemble(args):
 
 	image = read(os.path.join(out, 'homecontrol.bin'), 'rb')
 	manifest = {'version': version, 'url': SITE_PATH % version, 'sha256': hashlib.sha256(image).hexdigest(),
-				'size': len(image)}
+				'size': len(image), 'min_version': LAYOUT_SINCE}
 	text = (json.dumps(manifest, indent=2) + '\n').encode('utf-8')
 	if len(text) > MAX_MANIFEST:
 		fail('manifest.json is %d bytes, the device reads at most %d' % (len(text), MAX_MANIFEST))
