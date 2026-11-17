@@ -595,6 +595,29 @@ TEST_CASE("WebApi.History: an archive answers with its resolution; a boolean has
 		truncated = truncated || s["truncated"].boolean;
 	}
 	CHECK(truncated);
+
+	// Whatever buffer the points fill, a series that ends early still closes (homecontrol#93: its
+	// closing was written from the reserve of the series still to come).
+	std::string query = "ids=0,1&from=" + std::to_string(now - 7200) + "&to=" + std::to_string(now) + "&points=80";
+	for (size_t capacity = 400; capacity <= 3000; ++capacity) {
+		CAPTURE(capacity);
+		std::vector<char> buffer(capacity);
+		hc::WebRequest req;
+		req.method = hc::HttpMethod::get;
+		req.path = "/api/history";
+		req.query = query.c_str();
+		req.cookie = f.cookie.c_str();
+		req.requested_with = "HomeControl";
+		req.source = "192.0.2.7";
+		hc::WebResponse resp(buffer.data(), buffer.size());
+		f.api.handle(req, resp);
+		std::string body(resp.body, resp.length);
+		REQUIRE_MESSAGE(resp.status == 200, body);
+		hc_test::Json json;
+		std::string error;
+		REQUIRE_MESSAGE(hc_test::JsonReader(body).parse(json, error), error << ": " << body);
+		REQUIRE(json["series"].items.size() == 2);
+	}
 }
 
 TEST_CASE("WebApi.History: buckets, refusals, a datapoint without history") {
