@@ -389,6 +389,14 @@ svg {
 	gap: var(--gap);
 }
 
+/* Every tile keeps its own height (flow.js, haumacher/homecontrol#90): fine rows without a gap
+   between them, each tile spanning its height plus the gap; tiles are not stretched to a row. */
+.tiles.flow {
+	grid-auto-rows: 4px;
+	row-gap: 0;
+	align-items: start;
+}
+
 .tile {
 	display: flex;
 	align-items: center;

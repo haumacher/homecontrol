@@ -10,6 +10,7 @@ import { h, replace } from "/dom.js";
 import { t } from "/i18n.js";
 import { label, loadModel, pages as fetchPages } from "/model.js";
 import { functionTile } from "/tiles.js";
+import { flowTiles } from "/flow.js";
 import { openSheet } from "/sheet.js";
 import { valueTile, chartTile, CHART_REFRESH_MS } from "/elements.js";
 
@@ -87,6 +88,7 @@ export function renderPage(content, ctx, page) {
 	let byId = new Map();
 	let messageTimer = null;
 	let resize = null;
+	let flows = [];
 	let disposed = false;
 
 	const show = (text) => {
@@ -169,6 +171,8 @@ export function renderPage(content, ctx, page) {
 			grids.forEach((grid) => resize.observe(grid));
 		}
 		replace(body, page.sections.length ? element : h("div", { class: "empty" }, t("page.empty")));
+		flows.forEach((stop) => stop());
+		flows = grids.map(flowTiles);
 		layout();
 	}
 
@@ -235,6 +239,7 @@ export function renderPage(content, ctx, page) {
 		if (resize) {
 			resize.disconnect();
 		}
+		flows.forEach((stop) => stop());
 		tiles.forEach((tile) => tile.dispose && tile.dispose());
 	};
 }

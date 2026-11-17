@@ -11,6 +11,7 @@ import { formatValue } from "/format.js";
 import { t } from "/i18n.js";
 import { dpLabel, label, loadModel } from "/model.js";
 import { functionTile } from "/tiles.js";
+import { flowTiles } from "/flow.js";
 import { openSheet } from "/sheet.js";
 
 const SPARK_REFRESH_MS = 5 * 60 * 1000;
@@ -41,6 +42,7 @@ function iconFor(dp) {
 /// (null or not loaded: the ids).
 function flatTiles(live, model, show) {
 	const grid = h("div", { class: "tiles" });
+	const stopFlow = flowTiles(grid);
 	const tiles = new Map();
 	const pending = new Set();
 
@@ -127,6 +129,7 @@ function flatTiles(live, model, show) {
 			}
 		},
 		tick() {},
+		dispose: stopFlow,
 	};
 }
 
@@ -154,6 +157,7 @@ function dashboard(model, live, show) {
 	};
 	const tiles = [];
 	const byId = new Map();
+	const flows = [];
 	const sections = new Map(); // room id ("" for none) -> functions
 	for (const fn of model.functions) {
 		const room = fn.room && model.locationsById.has(fn.room) ? fn.room : "";
@@ -174,7 +178,7 @@ function dashboard(model, live, show) {
 			h("h2", { class: "section-title", id: headingId },
 				location ? label(location.label, room) : t("overview.elsewhere"),
 				parent ? h("span", { class: "section-sub" }, label(parent.label, parent.id)) : null),
-			h("div", { class: "tiles" }, sections.get(room).map((fn) => {
+			flowing(h("div", { class: "tiles" }, sections.get(room).map((fn) => {
 				const tile = functionTile(fn, env);
 				tiles.push(tile);
 				for (const id of tile.ids) {
@@ -184,8 +188,12 @@ function dashboard(model, live, show) {
 					byId.get(id).push(tile);
 				}
 				return tile.element;
-			})));
+			}))));
 	}));
+	function flowing(grid) {
+		flows.push(flowTiles(grid));
+		return grid;
+	}
 	return {
 		element,
 		datapoints(detail) {
@@ -212,6 +220,9 @@ function dashboard(model, live, show) {
 				}
 			}
 		},
+		dispose() {
+			flows.forEach((stop) => stop());
+		},
 	};
 }
 
@@ -236,10 +247,17 @@ export function renderOverview(content, ctx) {
 		}
 	};
 
+	function setView(next) {
+		if (view && view.dispose) {
+			view.dispose();
+		}
+		view = next;
+	}
+
 	function flat(hintKey, params) {
 		hint.textContent = t(hintKey, params);
 		hint.hidden = false;
-		view = flatTiles(live, model, show);
+		setView(flatTiles(live, model, show));
 		replace(body, h("h2", { class: "section-title" }, t("overview.datapoints")), view.element);
 	}
 
@@ -256,7 +274,7 @@ export function renderOverview(content, ctx) {
 				flat("overview.no_functions", { name: model.name || model.project, revision: model.revision });
 			} else {
 				hint.hidden = true;
-				view = dashboard(model, live, show);
+				setView(dashboard(model, live, show));
 				replace(body, view.element);
 			}
 		} catch (error) {
@@ -301,5 +319,6 @@ export function renderOverview(content, ctx) {
 		clearTimeout(messageTimer);
 		clearInterval(ageTimer);
 		clearInterval(sparkTimer);
+		setView(null);
 	};
 }

@@ -352,6 +352,16 @@ the technology: the technology's own reason is in the log, `Technology::command(
 boolean). The tiles update from the WebSocket feed; a status with another image revision reloads
 the model.
 
+**Every tile keeps its own height** (homecontrol#90, `flow.js`), in the overview and on the pages: the
+grid has rows of 4 px without a gap between them (`.tiles.flow`), and each tile spans as many rows as
+it is high plus the gap, measured with a `ResizeObserver` and followed when it changes (an error
+line, a sparkline, a font size), so a new kind of tile needs no rule of its own. Tiles are not
+stretched to the height of a row. The grid's normal placement (not `dense`) keeps the order of the
+page: with a blind and lights in one section, the lights after the first row go below the first
+lights, next to the blind. Without `ResizeObserver` the grid stays as before (rows as high as their
+highest tile). Rejected: a fixed height per kind (a blind without a stop button, a thermostat with a
+sparkline), CSS columns (order top to bottom), `dense` (reorders), CSS masonry (not in the browsers).
+
 The **detail sheet** (a modal `<dialog>`: Escape and the backdrop close it, a bottom sheet on a
 phone) lists the function's datapoints by role and label with their value, quality and age
 (live), and a chart over 24 h or 7 days for each datapoint that keeps a history (the line of the
