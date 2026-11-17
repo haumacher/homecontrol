@@ -15,11 +15,30 @@ namespace hc {
 /// is then incomplete and must not be sent (the caller refuses or pages).
 class JsonWriter {
 public:
+	/// The smallest limit of bounded(): the quotes and the "…".
+	static constexpr size_t kMinBound = 5;
+	/// The widest form of a number (uint64_t and int64_t: 20 characters, uint32_t 10, int32_t 11,
+	/// a double 24).
+	static constexpr size_t kWidestInteger = 20;
+	static constexpr size_t kWidestInteger32 = 10;
+	static constexpr size_t kWidestSigned32 = 11;
+	static constexpr size_t kWidestDouble = 24;
+
 	JsonWriter(char* buffer, size_t size);
 
 	/// A writer without a buffer that only counts: length() is the length the text would have
 	/// (a buffer of length() + 1 bytes holds it with its NUL). Lets a caller allocate exactly.
 	static JsonWriter counter() { return JsonWriter(); }
+
+	/// A counter of the largest text the same calls can produce, whatever the values (homecontrol
+	/// #92): a bounded() string counts its limit, a number its widest form, a boolean as `false`, a
+	/// value_of() its length. A string written without a bound counts as it is and in unbounded()
+	/// too, so a caller that must fit a size by construction can require none.
+	static JsonWriter bound() {
+		JsonWriter json;
+		json.bounding_ = true;
+		return json;
+	}
 
 	JsonWriter& begin_object();
 	JsonWriter& end_object();
@@ -30,16 +49,23 @@ public:
 
 	JsonWriter& string(const char* text);
 	JsonWriter& string(const char* text, size_t length);
+	/// A string whose JSON form, quotes and escapes included, takes at most `limit` bytes (at least
+	/// kMinBound): a longer text is cut at a character boundary and ends in "…".
+	JsonWriter& bounded(const char* text, size_t limit);
+	/// A value another writer produced, of at most `length` bytes: only for a counter (a bound()
+	/// counts `length`); a writer with a buffer overflows.
+	JsonWriter& value_of(size_t length);
 	JsonWriter& number(double value);
 	JsonWriter& number(int64_t value);
 	JsonWriter& number(uint64_t value);
-	JsonWriter& number(int32_t value) { return number(static_cast<int64_t>(value)); }
-	JsonWriter& number(uint32_t value) { return number(static_cast<uint64_t>(value)); }
+	JsonWriter& number(int32_t value);
+	JsonWriter& number(uint32_t value);
 	JsonWriter& boolean(bool value);
 	JsonWriter& null();
 
 	/// Shorthands for a member.
 	JsonWriter& member(const char* name, const char* text) { return key(name).string(text); }
+	JsonWriter& member(const char* name, const char* text, size_t limit) { return key(name).bounded(text, limit); }
 	JsonWriter& member(const char* name, bool value) { return key(name).boolean(value); }
 	JsonWriter& member(const char* name, uint64_t value) { return key(name).number(value); }
 	JsonWriter& member(const char* name, uint32_t value) { return key(name).number(value); }
@@ -58,6 +84,10 @@ public:
 	bool overflowed() const { return overflow_; }
 	/// Whether this is a counter() (data() is nullptr then).
 	bool counting() const { return buffer_ == nullptr; }
+	/// Whether this is a bound() counter.
+	bool bounding() const { return bounding_; }
+	/// A bound(): the strings written without a bound.
+	size_t unbounded() const { return unbounded_; }
 	size_t length() const { return length_; }
 	const char* data() const { return buffer_; }
 
@@ -78,6 +108,9 @@ private:
 	void separate();
 	void put(char c);
 	void put(const char* text, size_t length);
+	/// A bound(): a number of at most `width` characters.
+	JsonWriter& widest(size_t width);
+	void quoted(const char* text, size_t length, size_t limit);
 
 	char* buffer_;
 	size_t size_;
@@ -87,6 +120,8 @@ private:
 	bool need_comma_ = false;
 	uint8_t depth_ = 0;
 	bool after_key_ = false;
+	bool bounding_ = false;
+	size_t unbounded_ = 0;
 };
 
 /// A JSON value inside a text: where it starts and how long it is, and its kind.

@@ -2,6 +2,7 @@
  * Copyright (c) 2026 Bernhard Haumacher
  */
 #include "hc/image/image_service.h"
+#include "hc/status_text.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -1257,30 +1258,55 @@ void write_format(JsonWriter& json, const char* name, uint16_t major, uint16_t m
 
 void ImageService::write_status(JsonWriter& json, bool full) const {
 	(void)full;
+	using namespace status_text;
 	json.member("loaded", loaded_);
 	json.member("slot", static_cast<uint32_t>(slot_.size()));
-	if (loaded_) {
-		json.member("project", info_.project_id)
+	auto write_loaded = [&]() {
+		json.member("project", info_.project_id, kName)
 			.member("revision", info_.revision)
-			.member("name", info_.name)
-			.member("source", source_name(source_));
-		write_format(json, "format", info_.format_major, info_.format_minor);
-		json.member("schemaVersion", info_.schema_version).member("bytes", static_cast<uint32_t>(info_.bytes));
-		write_crc(json, "crc", info_.crc);
+			.member("name", info_.name, kName)
+			.member("source", source_name(source_), kCode);
+		char format[16];
+		std::snprintf(format, sizeof(format), "%u.%u", static_cast<unsigned>(info_.format_major),
+			static_cast<unsigned>(info_.format_minor));
+		json.member("format", format, kTiny);
+		json.member("schemaVersion", info_.schema_version, kShort).member("bytes", static_cast<uint32_t>(info_.bytes));
+		char crc[12];
+		std::snprintf(crc, sizeof(crc), "%08x", static_cast<unsigned>(info_.crc));
+		json.member("crc", crc, kTiny);
 		json.member("datapoints", static_cast<uint32_t>(info_.datapoints))
 			.member("rules", static_cast<uint32_t>(info_.rules))
 			.member("schedules", static_cast<uint32_t>(info_.schedules))
 			.member("blocks", static_cast<uint32_t>(info_.blocks))
 			.member("degraded", image_degraded());
+	};
+	auto write_refused = [&]() {
+		json.member("refused", report_kind_code(report_.kind), kCode);
+		if (json.bounding()) {
+			json.member("reason", "", kText); // counted at its limit
+		} else if (report_.count > 0) {
+			char reason[Report::kMaxPath + Report::kMaxReason + 4];
+			std::snprintf(reason, sizeof(reason), "%s: %s", report_.refusals[0].path, report_.refusals[0].reason);
+			json.member("reason", reason, kText);
+		}
+	};
+	if (json.bounding()) {
+		// The larger of the exclusive branches (receiving is a boolean).
+		JsonWriter::Mark start = json.mark();
+		write_refused();
+		size_t refused = json.length();
+		json.reset(start);
+		write_loaded();
+		if (refused > json.length()) {
+			json.reset(start);
+			write_refused();
+		}
+	} else if (loaded_) {
+		write_loaded();
 	} else if (receiving()) {
 		json.member("receiving", true);
 	} else if (!report_.ok()) {
-		json.member("refused", report_kind_code(report_.kind));
-		if (report_.count > 0) {
-			char reason[Report::kMaxPath + Report::kMaxReason + 4];
-			std::snprintf(reason, sizeof(reason), "%s: %s", report_.refusals[0].path, report_.refusals[0].reason);
-			json.member("reason", reason);
-		}
+		write_refused();
 	}
 }
 

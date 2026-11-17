@@ -25,6 +25,11 @@
 #include "hc/live_feed.h"
 #include "hc/network_name.h"
 #include "hc/sha.h"
+#include "hc/connectivity.h"
+#include "hc/diagnostics.h"
+#include "hc/improv_protocol.h"
+#include "hc/status_led.h"
+#include "hc/status_text.h"
 #include "hc/signature.h"
 #include "hc/websocket.h"
 #include "image_support.h"
@@ -2265,4 +2270,173 @@ TEST_CASE("E-Home: a network name change is answered when its lookup is over (ho
 	CHECK(taken["body"]["code"].text == "settings.name_taken");
 	CHECK(f.fake.settings.entries["net.hostname"].text == "kitchen");
 	f.api.set_network_name(nullptr);
+}
+
+
+// ---- The status fits the live feed's message by construction (homecontrol #92) -------------------
+
+namespace {
+
+/// The ESP's update state (platform/esp/components/hc_web/web_server.cpp) with the texts of an
+/// ordinary run: an update channel, a check done, the release key.
+void esp_update_state(hc::JsonWriter& json) {
+	json.member("available", true)
+		.member("partition", "ota_0")
+		.member("confirmed", true)
+		.member("checking", false)
+		.member("source", "https://haumacher.github.io/homecontrol/stable")
+		.member("last", "up to date: 1.3.1 is the newest release")
+		.member("release_key", "3f9a0c1d2b7e4f5a6c8d")
+		.member("last_ago_s", static_cast<uint32_t>(5321))
+		.member("next_check_s", static_cast<uint32_t>(80879));
+}
+
+/// The ESP's boot record (platform/esp/components/hc_platform/esp_diagnostics.cpp) of a board that
+/// has run for a while, without a core dump.
+class EspBootFacts : public hc::Diagnostics {
+public:
+	hc::ResetReason reset_reason() const override { return hc::ResetReason::software; }
+	void visit_boot(hc::DiagnosticsVisitor& visitor) const override {
+		visitor.number("count", 187);
+		visitor.number("brownouts", 0);
+		visitor.number("previous_uptime_s", 412377);
+		visitor.flag("coredump", false);
+	}
+};
+
+} // namespace
+
+TEST_CASE("Status: the live status reaches E-Home with an image, a bus session open and the ESP's update state (homecontrol #92)") {
+	// homecontrol-f8d198, a Compare over the controller: "E hc.ws status message larger than 1400
+	// bytes: not sent" every few seconds, through the session and the reconnects after it.
+	EspBootFacts boot;
+	hc_test::ScopedPlatformDiagnostics diagnostics(boot);
+	BusFixture f;
+	f.host.update_writer = esp_update_state;
+	REQUIRE_MESSAGE(hc_test::deploy(f.service, image_fixture("example.json")), hc_test::describe(f.service.report()));
+	f.client.deliver("{\"type\":\"subscribe\"}");
+	f.run();
+	size_t before = f.client.sent("status").size();
+	f.open();
+	f.advance(hc::LiveFeed::kTickMs); // the status check sends the changed status
+	auto status = f.client.sent("status");
+	REQUIRE(status.size() > before);
+	const Json& last = status.back();
+	CHECK(last["boot"]["count"].number == 187);
+	CHECK(last["image"]["loaded"].boolean);
+	CHECK(last["update"]["source"].text == "https://haumacher.github.io/homecontrol/stable");
+	CHECK(last["ehome"]["bus"]["open"].boolean);
+	CHECK(last["ehome"]["bus"]["address"].text == "1.1.250");
+	CHECK_FALSE(f.capture.sink.contains("status message larger than"));
+}
+
+TEST_CASE("Status: the largest status, every optional member present and every text at its limit, fits kMessageSize") {
+	EhomeFixture f;
+	// Through the bound counter: every text at its limit, every number at its widest, every
+	// optional member present (an image loaded or refused, whichever is larger; Improv active; an
+	// E-Home link with its key, a pending key, an error and an open bus session; the platform's
+	// update state and boot facts at their budgets).
+	hc::JsonWriter bound = hc::JsonWriter::bound();
+	f.feed.write_status_message(bound, false);
+	MESSAGE("the largest status: " << bound.length() << " bytes of " << hc::LiveFeed::kMessageSize);
+	CHECK(bound.unbounded() == 0); // every text of the status has its limit
+	// The writer needs one byte more than the text (its NUL).
+	CHECK(bound.length() < hc::LiveFeed::kMessageSize);
+
+	hc::JsonWriter anonymous = hc::JsonWriter::bound();
+	f.feed.write_status_message(anonymous, true);
+	CHECK(anonymous.unbounded() == 0);
+	CHECK(anonymous.length() < bound.length());
+
+	// The status as it is now is within the bound.
+	char buffer[hc::LiveFeed::kMessageSize];
+	hc::JsonWriter json(buffer, sizeof(buffer));
+	f.feed.write_status_message(json, false);
+	CHECK_FALSE(json.overflowed());
+	CHECK(json.length() <= bound.length());
+}
+
+TEST_CASE("Status: no name of the tables the status writes as a code is cut by its limit") {
+	using hc::status_text::kCode;
+	auto fits = [](const char* name) {
+		INFO(std::string(name));
+		CHECK(std::strlen(name) + 2 <= kCode);
+	};
+	for (int i = 0; i <= static_cast<int>(hc::LinkState::up); ++i) {
+		fits(hc::link_state_name(static_cast<hc::LinkState>(i)));
+	}
+	for (int i = 0; i <= static_cast<int>(hc::NetworkMode::failsafe_connecting); ++i) {
+		fits(hc::network_mode_name(static_cast<hc::NetworkMode>(i)));
+	}
+	for (int i = static_cast<int>(hc::improv::State::authorization_required);
+		 i <= static_cast<int>(hc::improv::State::provisioned); ++i) {
+		fits(hc::improv::state_name(static_cast<hc::improv::State>(i)));
+	}
+	for (int i = 0; i <= static_cast<int>(hc::LedStatus::ready); ++i) {
+		fits(hc::led_status_name(static_cast<hc::LedStatus>(i)));
+	}
+	for (int i = 0; i <= static_cast<int>(hc::image::Source::file); ++i) {
+		fits(hc::image::source_name(static_cast<hc::image::Source>(i)));
+	}
+	for (int i = 0; i <= static_cast<int>(hc::image::Report::Kind::busy); ++i) {
+		fits(hc::image::report_kind_code(static_cast<hc::image::Report::Kind>(i)));
+	}
+	for (int i = 0; i <= static_cast<int>(EhomeState::failed); ++i) {
+		fits(hc::ehome_state_name(static_cast<EhomeState>(i)));
+	}
+	for (int i = 0; i <= static_cast<int>(hc::ResetReason::cpu_lockup); ++i) {
+		fits(hc::reset_reason_name(static_cast<hc::ResetReason>(i)));
+	}
+}
+
+TEST_CASE("Status: a platform's member over its budget is replaced by its error, logged once, and the status still goes out") {
+	EhomeFixture f;
+	f.host.update_writer = [](hc::JsonWriter& json) {
+		json.member("available", true);
+		for (int i = 0; i < 40; ++i) {
+			json.member(("member_" + std::to_string(i)).c_str(), "a text the core does not know the length of");
+		}
+	};
+	f.handshake();
+	f.client.deliver("{\"type\":\"subscribe\"}");
+	f.run();
+	f.advance(2 * hc::LiveFeed::kHeartbeatMs);
+	auto status = f.client.sent("status");
+	REQUIRE(status.size() >= 2);
+	for (const Json& s : status) {
+		CHECK(s["update"]["error"].text == "the platform's update status is larger than 380 bytes");
+		CHECK_FALSE(s["update"].has("available"));
+		CHECK(s["ehome"]["state"].text == "connected"); // the members after it are there
+	}
+	CHECK(f.capture.sink.count("E hc.web: the platform's update status is larger than 380 bytes: left out of the status") == 1);
+	CHECK_FALSE(f.capture.sink.contains("status message larger than"));
+}
+
+TEST_CASE("Status: texts longer than their limits, escaped at their widest, are cut and the status goes out whole") {
+	EhomeFixture f;
+	// The update source as the ESP writes it (bounded), of control characters (6 bytes each in JSON).
+	f.host.update_writer = [](hc::JsonWriter& json) {
+		std::string control(300, '\x01');
+		json.member("available", true).member("source", control.c_str(), hc::status_text::kUrl);
+	};
+	f.handshake();
+	f.client.deliver("{\"type\":\"subscribe\"}");
+	f.run();
+	REQUIRE(f.client.sent("status").size() >= 1);
+	std::string raw;
+	for (const std::string& t : f.client.texts) {
+		if (t.find("\"type\":\"status\"") != std::string::npos) {
+			raw = t;
+		}
+	}
+	// The source: as many escaped control characters as its limit holds, then the ellipsis.
+	size_t at = raw.find("\"source\":\"");
+	REQUIRE(at != std::string::npos);
+	size_t end = raw.find('"', at + 10);
+	std::string form = raw.substr(at + 9, end - at - 9 + 1);
+	CHECK(form.size() <= hc::status_text::kUrl);
+	CHECK(form.size() > hc::status_text::kUrl - 6);
+	CHECK(form.compare(form.size() - 4, 4, "\xE2\x80\xA6\"") == 0);
+	CHECK(form.compare(1, 6, "\\u0001") == 0);
+	CHECK_FALSE(f.capture.sink.contains("status message larger than"));
 }

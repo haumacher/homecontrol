@@ -4,6 +4,7 @@
 #include "hc/diagnostics.h"
 
 #include "hc/log.h"
+#include "hc/status_text.h"
 
 #include <cinttypes>
 #include <cstdarg>
@@ -53,7 +54,7 @@ public:
 	explicit JsonFacts(JsonWriter& json) : json_(json) {}
 
 	void number(const char* key, uint64_t value) override { json_.member(key, value); }
-	void text(const char* key, const char* value) override { json_.member(key, value); }
+	void text(const char* key, const char* value) override { json_.member(key, value, status_text::kFact); }
 	void flag(const char* key, bool value) override { json_.member(key, value); }
 
 private:
@@ -105,14 +106,18 @@ private:
 
 void write_boot_status(JsonWriter& json, const Diagnostics* diagnostics) {
 	json.key("boot").begin_object();
+	write_boot_facts(json, diagnostics);
+	json.end_object();
+}
+
+void write_boot_facts(JsonWriter& json, const Diagnostics* diagnostics) {
 	if (diagnostics == nullptr) {
-		json.member("reason", reset_reason_name(ResetReason::unknown));
+		json.member("reason", reset_reason_name(ResetReason::unknown), status_text::kCode);
 	} else {
-		json.member("reason", reset_reason_name(diagnostics->reset_reason()));
+		json.member("reason", reset_reason_name(diagnostics->reset_reason()), status_text::kCode);
 		JsonFacts facts(json);
 		diagnostics->visit_boot(facts);
 	}
-	json.end_object();
 }
 
 size_t format_boot_facts(const Diagnostics& diagnostics, char* buffer, size_t size) {

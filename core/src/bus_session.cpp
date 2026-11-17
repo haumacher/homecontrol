@@ -2,6 +2,7 @@
  * Copyright (c) 2026 Bernhard Haumacher
  */
 #include "hc/bus_session.h"
+#include "hc/status_text.h"
 
 #include <cstdio>
 #include <cstring>
@@ -498,9 +499,9 @@ void BusSession::release_if_unused() {
 
 void BusSession::write_status(JsonWriter& json) const {
 	json.begin_object().member("open", open_);
-	if (open_) {
-		json.member("since_s", (clock_.monotonic_ms() - opened_ms_) / 1000)
-			.member("address", address_)
+	if (open_ || json.bounding()) { // a bound counts the open session (homecontrol #92)
+		json.member("since_s", static_cast<uint32_t>((clock_.monotonic_ms() - opened_ms_) / 1000))
+			.member("address", address_, status_text::kShort)
 			.member("sent", sent_)
 			.member("received", received_)
 			.member("dropped", dropped_total_);

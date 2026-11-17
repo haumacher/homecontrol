@@ -2,6 +2,7 @@
  * Copyright (c) 2026 Bernhard Haumacher
  */
 #include "hc/ehome_link.h"
+#include "hc/status_text.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -1694,27 +1695,29 @@ void EhomeLink::key_route(const WebRequest& request, WebResponse& response) {
 // ---- Status -----------------------------------------------------------------------------------
 
 void EhomeLink::write_status(JsonWriter& json) const {
+	using namespace status_text;
 	uint64_t now = api_.controller().clock().monotonic_ms();
+	bool bound = json.bounding(); // every optional member, each at its limit (homecontrol #92)
 	json.begin_object()
 		.member("enabled", enabled_)
 		.member("enrolled", enrolled_)
-		.member("state", ehome_state_name(state_))
-		.member("since_s", (now - since_ms_) / 1000);
-	if (enrolled_) {
-		json.member("installation", installation_); // the address is the setting ehome.url
+		.member("state", ehome_state_name(state_), kCode)
+		.member("since_s", static_cast<uint32_t>((now - since_ms_) / 1000));
+	if (enrolled_ || bound) {
+		json.member("installation", installation_, kName); // the address is the setting ehome.url
 	}
-	char fingerprint[kFingerprintSize];
-	KeyState key = stored_key(fingerprint);
+	char fingerprint[kFingerprintSize] = {};
+	KeyState key = bound ? KeyState::ok : stored_key(fingerprint);
 	if (key == KeyState::ok) {
-		json.member("key", fingerprint);
+		json.member("key", fingerprint, kShort);
 	} else if (key == KeyState::damaged) {
-		json.member("key", "damaged");
+		json.member("key", "damaged", kShort);
 	}
-	if (pending_key(fingerprint)) {
-		json.member("pending_key", fingerprint);
+	if (bound || pending_key(fingerprint)) {
+		json.member("pending_key", fingerprint, kShort);
 	}
-	if (error_[0] != '\0') {
-		json.member("error", error_);
+	if (error_[0] != '\0' || bound) {
+		json.member("error", error_, kText);
 	}
 	json.key("bus"); // the member's presence: this firmware has the bus session (homecontrol #85)
 	bus_.write_status(json);

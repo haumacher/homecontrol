@@ -194,7 +194,7 @@ needed); MQTT (a broker dependency for a local UI).
 
 `/ws` accepts at most 4 clients (the fifth gets an error message and close code 1013, and the UI
 says so). A client authenticates with the cookie of the handshake or with a token in its first
-message, then subscribes: the feed sends a snapshot of all datapoints in chunks of up to 1400 bytes
+message, then subscribes: the feed sends a snapshot of all datapoints in chunks of up to 2688 bytes
 (4 chunks per client and loop turn, so a large model does not hog the loop), then the updates. The
 `DatapointListener` callback only records the id of a changed datapoint (each once, up to 32 per
 turn) and posts one flush; the flush sends one `datapoints` message per client with the current
@@ -215,7 +215,7 @@ their origin (the model's listener), and the image loads and unloads. The live f
 these sources through the image service at start and after every model change, so the platforms
 wire nothing. A client turns it on with `{"type":"monitor","subscribe":true,"since":n}`; the feed
 keeps only a flag and a cursor per client and, once per loop turn, sends what lies between the
-cursor and the newest event in messages of up to 1400 bytes (4 per client and turn). A client that
+cursor and the newest event in messages of up to 2688 bytes (4 per client and turn). A client that
 falls behind does not queue: when the ring has overtaken its cursor it gets a `gap` marker with the
 number of lost events and continues with the oldest held. `GET /api/monitor?since=n` reads the same
 ring for tools without a socket. The monitor also sends a typed (DPT and value) or raw group
@@ -505,8 +505,9 @@ When the heap is exhausted the image still runs and `GET /api/model` refuses wit
   (`CONFIG_HTTPD_MAX_REQ_HDR_LEN`; browsers exceed the default 512 B), `CONFIG_LWIP_MAX_SOCKETS=16`.
 - The httpd task never touches the core: requests, WebSocket opens and messages go through a static
   job slot to the event loop; closes and "writable again" are posted. Outgoing WebSocket messages go
-  into one send ring of 4 KB (`hc::WsSendRing`, issue #45 item 7; it replaced a pool of 8 buffers
-  of 1408 bytes, 11 KB) and are sent by work queued to the httpd task (`httpd_queue_work`). The live
+  into one send ring of 8 KB (`hc::WsSendRing`, issue #45 item 7; it replaced a pool of 8 buffers
+  of 1408 bytes, 11 KB; 4 KB until homecontrol #92 raised the largest message, the status, from 1400
+  to 2688 bytes) and are sent by work queued to the httpd task (`httpd_queue_work`). The live
   feed formats a message straight into a claim of the ring (`WsTransport::ws_claim()`, so it has no
   message buffer of its own any more), and a message to several clients (the status, a batch of
   updates, a Zigbee event) is one entry naming them all, not a copy per client. A message never
@@ -552,7 +553,7 @@ When the heap is exhausted the image still runs and `GET /api/model` refuses wit
 - The `web` console command: `web status`, `web token create|list|revoke`, `web session clear` (log
   out everywhere), `web password clear`, `web demo` (the demo datapoints until the next restart).
 - Static RAM of this package on the C6 (`idf.py size`, .bss): +38 KB, of which the web server object
-  (API, feed, auth) 2.2 KB, the send ring 4 KB (the send pool 11 KB before issue #45), the response buffer 8 KB (files are sent in
+  (API, feed, auth) 2.2 KB, the send ring 8 KB (4 KB before homecontrol #92, the send pool 11 KB before issue #45), the response buffer 8 KB (files are sent in
   chunks from its front), the job slot 2.3 KB (the API body and the WebSocket text share it), the
   controller's log ring 4 KB. `GET /api/log` reads that ring in place under its busy flag (no copy;
   lines other tasks log meanwhile are dropped and counted in `dropped`); issue #44. The heap the server takes

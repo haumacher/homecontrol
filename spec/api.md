@@ -200,8 +200,18 @@ CRC-32 (8 hex digits, the header's): a deployment tool compares `crc` with what 
 `degraded`: the image has KNX datapoints and the tunnel is down (the LED shows degraded). The
 WebSocket's `status` message carries the same member.
 
+The status has a fixed largest size (homecontrol #92): every text member has a limit, the bytes of
+its JSON form (a longer text is cut and ends in `…`: names and ids at 66 bytes, reasons and errors at
+100, the update source at 82, codes and states at 32; a code of the firmware's tables is never cut), and
+the members a platform writes have a budget (`update` 380 bytes, `boot` 230): a platform's member
+over its budget is replaced by `{"error": "the platform's <member> status is larger than <n> bytes"}`
+and logged once, and the rest of the status goes out. A deployment tool compares ids (`image.project`,
+`crc`) and codes, never a text that may be cut. The largest status is 2643 bytes; the WebSocket's
+messages are at most 2688 bytes (firmware from 2026-11; 1400 before, when a longer status was not
+sent at all).
+
 Members only `GET /api/status` carries (not the WebSocket's `status` message, which must fit one
-1400-byte frame):
+message of at most 2688 bytes):
 
 - `storage`: `{"total", "used", "free"}` (bytes of the storage partition; ESP only) and `{"files",
   "bytes"}` (the blob store's files and their size). The figures are the last
@@ -492,7 +502,7 @@ reason), 409 `system.busy`, 500 `settings.storage_error`.
 
 The System page (issue #42, `core/src/web_api_diagnostics.cpp`): everything the console's `status`
 prints and what else helps with a complaint, read on each request (the page polls every 5 s; the
-WebSocket's `status` message stays within its 1400 bytes and carries none of it). Session or token.
+WebSocket's `status` message stays within its 2688 bytes and carries none of it). Session or token.
 Each section a platform cannot fill says `"available": false` with `"reason"`; a figure the platform
 does not know is left out.
 
@@ -1695,7 +1705,7 @@ After authentication (see "WebSocket"):
   Both echo a `ref` (number or string) if given. The datapoint subscription (`subscribe`) is
   independent.
 - The events follow as `{"type": "monitor", "now_ms", "events": [...], "next": <n>}`: what happened
-  in one event-loop turn, in messages of at most 1400 bytes (up to 4 messages per client and turn;
+  in one event-loop turn, in messages of at most 2688 bytes (1400 before 2026-11; up to 4 messages per client and turn;
   the rest follows in the next turns). `next` is the sequence after the last event of the message.
   A client whose connection cannot take messages (send buffers full) is not queued for: the batch
   is retried, and once the ring has overtaken the client's position the next batch starts with a

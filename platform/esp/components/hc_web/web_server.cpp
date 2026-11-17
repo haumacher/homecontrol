@@ -30,6 +30,7 @@
 #include "hc/log.h"
 #include "hc/network_settings.h"
 #include "hc/signature.h"
+#include "hc/status_text.h"
 #include "hc/update_check.h"
 #include "hc/websocket.h"
 #include "hc/language_packs.h"
@@ -320,25 +321,26 @@ void WebServer::ntp_server_changed() {
 
 void WebServer::write_update_state(JsonWriter& json) const {
 	const esp_partition_t* running = esp_ota_get_running_partition();
-	json.member("available", true).member("partition", running != nullptr ? running->label : "?");
+	using namespace status_text; // the member's budget is status_text::kUpdateBudget (homecontrol #92)
+	json.member("available", true).member("partition", running != nullptr ? running->label : "?", kShort);
 	json.member("confirmed", ota_.confirmed()).member("checking", ota_.checking());
 	char url[Settings::kMaxStringLength + 1] = {};
 	bool has_url = update_source(controller_.settings(), url, sizeof(url));
-	json.member("source", has_url ? url : "");
-	json.member("last", ota_.last_result());
+	json.member("source", has_url ? url : "", kUrl);
+	json.member("last", ota_.last_result(), kText);
 	// The release key the firmware trusts for manifests (doc/ota.md "Manifest signature").
 	if (const uint8_t* key = release_public_key()) {
 		char fingerprint[kFingerprintSize];
 		key_fingerprint(key, fingerprint);
-		json.member("release_key", fingerprint);
+		json.member("release_key", fingerprint, kShort);
 	}
 	uint64_t now = controller_.clock().monotonic_ms();
 	if (ota_.last_result_ms() != 0) {
-		json.member("last_ago_s", (now - ota_.last_result_ms()) / 1000);
+		json.member("last_ago_s", static_cast<uint32_t>((now - ota_.last_result_ms()) / 1000));
 	}
 	if (has_url) {
 		uint64_t next = ota_.next_check_ms();
-		json.member("next_check_s", next > now ? (next - now) / 1000 : 0);
+		json.member("next_check_s", static_cast<uint32_t>(next > now ? (next - now) / 1000 : 0));
 	}
 }
 

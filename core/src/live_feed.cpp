@@ -2,6 +2,8 @@
  * Copyright (c) 2026 Bernhard Haumacher
  */
 #include "hc/live_feed.h"
+#include "hc/status_text.h"
+#include "hc/ws_send_ring.h"
 
 #include <cmath>
 #include <cstdio>
@@ -14,6 +16,8 @@
 #include "hc/websocket.h"
 
 namespace hc {
+
+static_assert(LiveFeed::kMessageSize == WsSendRing::kMaxMessage, "the send ring holds the largest message");
 
 namespace {
 
@@ -549,26 +553,32 @@ void LiveFeed::send_status(Client* only) {
 
 void LiveFeed::send_status_to(Client* const* targets, size_t count, bool anonymous) {
 	deliver(targets, count, false, [this, anonymous](JsonWriter& json) {
-		json.begin_object().member("type", "status");
-		if (anonymous) {
-			// The image's identity only: it tells the UI that other pages run (spec/api.md "WebSocket").
-			const image::ImageService* image = api_.image();
-			bool loaded = image != nullptr && image->loaded();
-			json.key("image").begin_object().member("loaded", loaded);
-			if (loaded) {
-				json.member("project", image->info().project_id).member("revision", image->info().revision);
-			}
-			json.end_object();
-		} else {
-			api_.write_status(json);
-		}
-		json.end_object();
+		write_status_message(json, anonymous);
 		if (json.overflowed()) {
+			// Cannot happen: the status fits kMessageSize by construction (the status test).
 			Log::error(kTag, "status message larger than %u bytes: not sent", static_cast<unsigned>(kMessageSize));
 			return false;
 		}
 		return true;
 	});
+}
+
+void LiveFeed::write_status_message(JsonWriter& json, bool anonymous) const {
+	json.begin_object().member("type", "status", status_text::kCode);
+	if (anonymous) {
+		// The image's identity only: it tells the UI that other pages run (spec/api.md "WebSocket").
+		const image::ImageService* image = api_.image();
+		bool loaded = image != nullptr && image->loaded();
+		json.key("image").begin_object().member("loaded", loaded);
+		if (loaded || json.bounding()) {
+			json.member("project", loaded ? image->info().project_id : "", status_text::kName)
+				.member("revision", loaded ? image->info().revision : 0);
+		}
+		json.end_object();
+	} else {
+		api_.write_status(json);
+	}
+	json.end_object();
 }
 
 bool LiveFeed::still_authorized(Client& client) {
@@ -692,7 +702,7 @@ void LiveFeed::flush() {
 				json.release();
 				json.end_array().end_object();
 				if (in_message == 0 && index < pending_count_) {
-					++index; // cannot happen with a 1400-byte buffer; never loop forever
+					++index; // cannot happen with kMessageSize; never loop forever
 				}
 				return in_message > 0;
 			});
@@ -913,7 +923,7 @@ void LiveFeed::monitor_flush() {
 				break;
 			}
 			if (skipped) {
-				// Cannot happen with 1400 bytes (an event is at most a few hundred); never loop forever.
+				// Cannot happen with kMessageSize (an event is at most a few hundred); never loop forever.
 				Log::error(kTag, "monitor event %u does not fit a WebSocket message: skipped",
 					static_cast<unsigned>(next));
 				c.monitor_next = next < monitor_.first() ? monitor_.first() : next + 1;

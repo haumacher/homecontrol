@@ -249,6 +249,9 @@ public:
 
 	/// The members of the status object (also the WebSocket's status message); `full` (GET /api/status)
 	/// adds the members of the image only GET /api/status carries (ImageService::write_status()).
+	/// Every text has its limit and every platform member its budget (status_text, homecontrol
+	/// #92): through JsonWriter::bound() it yields the largest status, which LiveFeed::kMessageSize
+	/// holds; with `bounding()` every optional member is counted.
 	void write_status(JsonWriter& json, bool full = false);
 	/// The members GET /api/status adds to write_status() (the WebSocket's status message has no
 	/// room for them): zigbee, storage, knx, external, lang, mqtt.
@@ -290,6 +293,10 @@ public:
 	WebHost& host() { return host_; }
 
 private:
+	/// A platform's status member was over its budget (logged once).
+	bool boot_over_budget_ = false;
+	bool update_over_budget_ = false;
+
 	void image_changed();
 	/// A network name check has its outcome: the E-Home connection's deferred answer goes out.
 	void rename_checked();

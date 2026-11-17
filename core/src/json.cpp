@@ -4,6 +4,7 @@
 #include "hc/json.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -98,7 +99,9 @@ JsonWriter& JsonWriter::end_array() {
 }
 
 JsonWriter& JsonWriter::key(const char* name) {
-	string(name);
+	separate();
+	quoted(name != nullptr ? name : "", name != nullptr ? std::strlen(name) : 0, SIZE_MAX);
+	need_comma_ = true;
 	put(':');
 	after_key_ = true;
 	return *this;
@@ -150,46 +153,114 @@ size_t utf8_sequence(const unsigned char* p, size_t available) {
 
 } // namespace
 
-JsonWriter& JsonWriter::string(const char* text, size_t length) {
-	separate();
-	put('"');
+namespace {
+
+/// The JSON form of the character at `p` (at most `available` bytes) into `out` (6 bytes); returns
+/// its length and sets `consumed` to the bytes of `p` it stands for.
+size_t encode_char(const unsigned char* p, size_t available, char* out, size_t& consumed) {
+	unsigned char c = p[0];
+	consumed = 1;
+	if (c == '"' || c == '\\') {
+		out[0] = '\\';
+		out[1] = static_cast<char>(c);
+		return 2;
+	}
+	if (c == '\n' || c == '\r' || c == '\t') {
+		out[0] = '\\';
+		out[1] = c == '\n' ? 'n' : c == '\r' ? 'r' : 't';
+		return 2;
+	}
+	if (c < 0x20 || c == 0x7F) {
+		static const char kHex[] = "0123456789abcdef";
+		out[0] = '\\';
+		out[1] = 'u';
+		out[2] = '0';
+		out[3] = '0';
+		out[4] = kHex[c >> 4];
+		out[5] = kHex[c & 0xF];
+		return 6;
+	}
+	if (c < 0x80) {
+		out[0] = static_cast<char>(c);
+		return 1;
+	}
+	size_t n = utf8_sequence(p, available);
+	if (n == 0) {
+		std::memcpy(out, "\xEF\xBF\xBD", 3); // U+FFFD
+		return 3;
+	}
+	std::memcpy(out, p, n);
+	consumed = n;
+	return n;
+}
+
+constexpr char kEllipsis[] = "\xE2\x80\xA6"; // "…"
+constexpr size_t kEllipsisBytes = sizeof(kEllipsis) - 1;
+
+} // namespace
+
+void JsonWriter::quoted(const char* text, size_t length, size_t limit) {
 	const unsigned char* p = reinterpret_cast<const unsigned char*>(text);
-	size_t i = 0;
-	while (i < length && !overflow_) {
-		unsigned char c = p[i];
-		if (c == '"' || c == '\\') {
-			put('\\');
-			put(static_cast<char>(c));
-			++i;
-		} else if (c == '\n') {
-			put("\\n", 2);
-			++i;
-		} else if (c == '\r') {
-			put("\\r", 2);
-			++i;
-		} else if (c == '\t') {
-			put("\\t", 2);
-			++i;
-		} else if (c < 0x20 || c == 0x7F) {
-			char escape[8];
-			std::snprintf(escape, sizeof(escape), "\\u%04x", c);
-			put(escape, 6);
-			++i;
-		} else if (c < 0x80) {
-			put(static_cast<char>(c));
-			++i;
-		} else {
-			size_t n = utf8_sequence(p + i, length - i);
-			if (n == 0) {
-				put("\xEF\xBF\xBD", 3); // U+FFFD
-				++i;
-			} else {
-				put(text + i, n);
-				i += n;
-			}
+	char piece[6];
+	size_t consumed = 0;
+	// The room of the characters: all of them when the whole form fits the limit, otherwise those
+	// before the "…".
+	size_t room = SIZE_MAX;
+	if (limit != SIZE_MAX) {
+		size_t encoded = 2;
+		for (size_t i = 0; i < length && encoded <= limit; i += consumed) {
+			encoded += encode_char(p + i, length - i, piece, consumed);
+		}
+		if (encoded > limit) {
+			room = limit < kMinBound ? 0 : limit - 2 - kEllipsisBytes;
 		}
 	}
 	put('"');
+	size_t written = 0;
+	size_t i = 0;
+	while (i < length && !overflow_) {
+		size_t n = encode_char(p + i, length - i, piece, consumed);
+		if (n > room - written) {
+			break;
+		}
+		put(piece, n);
+		written += n;
+		i += consumed;
+	}
+	if (room != SIZE_MAX && limit >= kMinBound) {
+		put(kEllipsis, kEllipsisBytes);
+	}
+	put('"');
+}
+
+JsonWriter& JsonWriter::string(const char* text, size_t length) {
+	separate();
+	if (bounding_) {
+		++unbounded_;
+	}
+	quoted(text, length, SIZE_MAX);
+	need_comma_ = true;
+	return *this;
+}
+
+JsonWriter& JsonWriter::bounded(const char* text, size_t limit) {
+	separate();
+	if (bounding_) {
+		length_ += limit;
+	} else {
+		quoted(text != nullptr ? text : "", text != nullptr ? std::strlen(text) : 0, limit);
+	}
+	need_comma_ = true;
+	return *this;
+}
+
+JsonWriter& JsonWriter::value_of(size_t length) {
+	separate();
+	if (buffer_ != nullptr) {
+		overflow_ = true;
+	} else {
+		length_ += length;
+	}
 	need_comma_ = true;
 	return *this;
 }
@@ -197,6 +268,9 @@ JsonWriter& JsonWriter::string(const char* text, size_t length) {
 JsonWriter& JsonWriter::number(double value) {
 	if (!std::isfinite(value)) {
 		return null();
+	}
+	if (bounding_) {
+		return widest(kWidestDouble);
 	}
 	separate();
 	char text[32];
@@ -227,7 +301,25 @@ char* decimal_digits(uint64_t value, char* buffer, size_t size) {
 
 } // namespace
 
+JsonWriter& JsonWriter::widest(size_t width) {
+	separate();
+	length_ += width;
+	need_comma_ = true;
+	return *this;
+}
+
+JsonWriter& JsonWriter::number(int32_t value) {
+	return bounding_ ? widest(kWidestSigned32) : number(static_cast<int64_t>(value));
+}
+
+JsonWriter& JsonWriter::number(uint32_t value) {
+	return bounding_ ? widest(kWidestInteger32) : number(static_cast<uint64_t>(value));
+}
+
 JsonWriter& JsonWriter::number(int64_t value) {
+	if (bounding_) {
+		return widest(kWidestInteger);
+	}
 	separate();
 	char text[24];
 	uint64_t magnitude = value < 0 ? static_cast<uint64_t>(0) - static_cast<uint64_t>(value) : static_cast<uint64_t>(value);
@@ -241,6 +333,9 @@ JsonWriter& JsonWriter::number(int64_t value) {
 }
 
 JsonWriter& JsonWriter::number(uint64_t value) {
+	if (bounding_) {
+		return widest(kWidestInteger);
+	}
 	separate();
 	char text[24];
 	const char* digits = decimal_digits(value, text, sizeof(text));
@@ -251,7 +346,7 @@ JsonWriter& JsonWriter::number(uint64_t value) {
 
 JsonWriter& JsonWriter::boolean(bool value) {
 	separate();
-	if (value) {
+	if (value && !bounding_) {
 		put("true", 4);
 	} else {
 		put("false", 5);
@@ -269,6 +364,9 @@ JsonWriter& JsonWriter::null() {
 
 JsonWriter& JsonWriter::raw(const char* text, size_t length) {
 	separate();
+	if (bounding_) {
+		++unbounded_;
+	}
 	put(text, length);
 	need_comma_ = true;
 	return *this;

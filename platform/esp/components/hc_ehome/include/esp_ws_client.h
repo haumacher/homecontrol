@@ -48,8 +48,9 @@ public:
 	static constexpr int kTaskStack = 5120;
 	static constexpr int kTaskPriority = 4;
 	/// The send queue: one snapshot chunk of the live feed beside EhomeLink::kBulkReserve (a whole
-	/// response and small messages), each message with a header of kQueueHeader bytes.
-	static constexpr size_t kSendQueueBytes = 6144;
+	/// response and small messages), each message with a header of kQueueHeader bytes. 7168 B since
+	/// LiveFeed::kMessageSize grew to the largest status (homecontrol #92); 6144 B before.
+	static constexpr size_t kSendQueueBytes = 7168;
 	static constexpr size_t kQueueHeader = 4;
 	/// Stack of the sender task: the TLS write and, at the end, the close frame and the client's
 	/// teardown (logged at the end of every session: "sender task stack ... unused").

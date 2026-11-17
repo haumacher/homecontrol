@@ -5,6 +5,7 @@
 #define HC_WEB_TEST_SUPPORT_H
 
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -51,6 +52,10 @@ public:
 	const char* ntp_server() const override { return "pool.ntp.org"; }
 	void ntp_server_changed() override { ++ntp_changes; }
 	void write_update_state(hc::JsonWriter& json) const override {
+		if (update_writer) {
+			update_writer(json);
+			return;
+		}
 		json.member("available", false).member("source", update_url.c_str());
 	}
 	const char* ui_version() const override { return "abc123"; }
@@ -105,6 +110,8 @@ public:
 	bool mdns = true;
 	int ntp_changes = 0;
 	std::string update_url;
+	/// Writes the update state instead of the default (a platform's own members).
+	std::function<void(hc::JsonWriter&)> update_writer;
 	bool system_actions = false;
 	std::vector<hc::SystemAction> actions;
 	bool updates = false;

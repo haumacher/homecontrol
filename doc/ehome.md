@@ -196,11 +196,11 @@ Nothing is allocated while the controller is not enrolled or the connection is o
 | Session: the text reassembly buffer and the hand-over slot (heap) | about 4400 |
 | Client receive and send buffers (`buffer_size` 1024 each) | 2048 |
 | Client task stack (issue #45: 2612 B used against the development CA) | 5120 |
-| Send queue (issue #55, heap per session) | 6144 |
+| Send queue (issue #55, heap per session; 6144 before homecontrol #92) | 7168 |
 | Sender task stack (issue #55: 1572 B used, a session with the snapshot) and its TCB | 3072 + about 350 |
 | Client structure, configuration, its event loop, locks | about 1500 |
 | TLS steady state with dynamic buffers (context, session, record buffers per record) | 3000 to 5000 |
-| **Connected, total** | **about 29 500 to 31 500** |
+| **Connected, total** | **about 30 500 to 32 500** |
 | A bus session (`BusSession`, heap from `open` until it ended and its last frame left the tunnel): 4 frames of 264 octets for the tunnel and the 2 KB outbox | about 3400 |
 | A request body announced with `length` (heap, freed after the answer) | its length; a `PUT /api/image` body goes into the image slot as its frames arrive (issue #87: 32 bytes of the header on the heap, the flash erased and written per frame on the loop) |
 

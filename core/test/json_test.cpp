@@ -5,6 +5,7 @@
 #include <deque>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include <cstdint>
 
@@ -247,4 +248,88 @@ TEST_CASE("ValueJson refuses values that do not fit the type") {
 	CHECK_FALSE(hc::read_value_json(parse("{\"red\":256,\"green\":0,\"blue\":0}"), ValueType::color, &error));
 	CHECK(hc::read_value_json(parse("{\"red\":1,\"green\":2,\"blue\":3}"), ValueType::color, &error).has_value());
 	CHECK_FALSE(hc::read_value_json(parse("true"), ValueType::none, &error));
+}
+
+// ---- Bounded texts and the bound counter (homecontrol #92) ---------------------------------------
+
+namespace {
+
+/// `text` through bounded(`limit`) as a member's value: the JSON form and the unescaped text.
+std::pair<std::string, std::string> bounded_form(const std::string& text, size_t limit) {
+	char buffer[1024];
+	hc::JsonWriter json(buffer, sizeof(buffer));
+	json.begin_object().member("t", text.c_str(), limit).end_object();
+	REQUIRE_FALSE(json.overflowed());
+	std::string all(buffer, json.length());
+	std::string form = all.substr(5, all.size() - 6); // {"t": ... }
+	hc_test::Json parsed;
+	std::string error;
+	bool parsed_ok = hc_test::JsonReader(all).parse(parsed, error);
+	REQUIRE_MESSAGE(parsed_ok, all);
+	return {form, parsed["t"].text};
+}
+
+} // namespace
+
+TEST_CASE("JsonWriter::bounded: a text that fits is written as string() writes it") {
+	CHECK(bounded_form("pool.ntp.org", 14).first == "\"pool.ntp.org\"");
+	CHECK(bounded_form("say \"hi\"\n", 14).first == "\"say \\\"hi\\\"\\n\"");
+	CHECK(bounded_form("", hc::JsonWriter::kMinBound).first == "\"\"");
+}
+
+TEST_CASE("JsonWriter::bounded: a longer text is cut at a character boundary, ends in an ellipsis, and never exceeds its limit") {
+	const std::string ellipsis = "\xE2\x80\xA6";
+	CHECK(bounded_form("pool.ntp.org", 13).second == "pool.ntp" + ellipsis);
+	// Every limit, for texts whose characters take 1 to 6 bytes in JSON: never longer, valid JSON,
+	// the unescaped text a prefix of the original (with the ellipsis when cut).
+	const std::string texts[] = {
+		std::string(200, 'a'),
+		std::string(80, '"'),
+		std::string(50, '\x01'),
+		"Gr\xC3\xBC\xC3\x9F" "e \xE2\x82\xAC \xF0\x9F\x8F\xA0 \x7F \t done",
+		"bad \xFF utf-8 \xC3",
+	};
+	for (const std::string& text : texts) {
+		std::string whole = bounded_form(text, 4096).second;
+		for (size_t limit = hc::JsonWriter::kMinBound; limit < 80; ++limit) {
+			auto [form, value] = bounded_form(text, limit);
+			CHECK(form.size() <= limit);
+			if (value == whole) {
+				continue;
+			}
+			REQUIRE(value.size() >= ellipsis.size());
+			CHECK(value.compare(value.size() - ellipsis.size(), ellipsis.size(), ellipsis) == 0);
+			CHECK(whole.compare(0, value.size() - ellipsis.size(), value, 0, value.size() - ellipsis.size()) == 0);
+			// Cut as late as the limit allows: one more character would not have fitted.
+			CHECK(form.size() + 6 > limit);
+		}
+	}
+}
+
+TEST_CASE("JsonWriter::bound counts the largest output of the same calls, whatever the values") {
+	hc::JsonWriter bound = hc::JsonWriter::bound();
+	CHECK(bound.bounding());
+	bound.begin_object()
+		.member("a", "x", 20)
+		.member("b", uint32_t(1))
+		.member("c", int32_t(1))
+		.member("d", uint64_t(1))
+		.member("e", int64_t(1))
+		.member("f", 1.5)
+		.member("g", true)
+		.key("h").value_of(30)
+		.end_object();
+	std::string widest = "{\"a\":" + std::string(20, 'x') + ",\"b\":4294967295,\"c\":-2147483648,"
+		"\"d\":18446744073709551615,\"e\":-9223372036854775808,\"f\":" + std::string(24, '9') + ",\"g\":false,\"h\":" +
+		std::string(30, 'v') + "}";
+	CHECK(bound.length() == widest.size());
+	CHECK(bound.unbounded() == 0);
+	// A text without a bound counts as it is, and is counted.
+	bound.member("i", "text");
+	CHECK(bound.unbounded() == 1);
+	// value_of() is only for a counter: a writer with a buffer overflows.
+	char buffer[64];
+	hc::JsonWriter json(buffer, sizeof(buffer));
+	json.begin_object().key("h").value_of(3);
+	CHECK(json.overflowed());
 }

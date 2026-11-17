@@ -15,6 +15,10 @@ namespace hc {
 /// <the platform's facts>}`; without diagnostics (nullptr) `{"reason": "unknown"}`. Called inside
 /// the status object.
 void write_boot_status(JsonWriter& json, const Diagnostics* diagnostics);
+/// The members of `boot` alone (inside its object); the platform's texts are bounded
+/// (status_text::kFact), the number of facts is the platform's (WebApi::write_status() holds the
+/// member to status_text::kBootBudget).
+void write_boot_facts(JsonWriter& json, const Diagnostics* diagnostics);
 
 /// Formats the platform's facts as "key value, key value, ..." (texts unquoted, flags as yes/no)
 /// into `buffer`; an empty string if there are none. Returns the length (truncated to fit).

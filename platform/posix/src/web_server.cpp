@@ -27,6 +27,7 @@
 #include "hc/image/image.h"
 #include "hc/log.h"
 #include "hc/sha.h"
+#include "hc/status_text.h"
 #include "hc/update_check.h"
 #include "hc/websocket.h"
 #include "httplib.h"
@@ -265,7 +266,9 @@ void WebServer::system_action(SystemAction action) {
 void WebServer::write_update_state(JsonWriter& json) const {
 	char url[Settings::kMaxStringLength + 1] = {};
 	update_source(controller_.settings(), url, sizeof(url));
-	json.member("available", false).member("source", url).member("last", "the POSIX build does not update itself");
+	json.member("available", false)
+		.member("source", url, status_text::kUrl)
+		.member("last", "the POSIX build does not update itself", status_text::kText);
 }
 
 bool WebServer::start() {

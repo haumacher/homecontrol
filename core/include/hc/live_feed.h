@@ -82,8 +82,10 @@ public:
 	static constexpr size_t kMaxClients = 4;
 	/// Distinct datapoints collected per loop turn before an early flush.
 	static constexpr size_t kMaxPending = 32;
-	/// Largest outgoing message.
-	static constexpr size_t kMessageSize = 1400;
+	/// Largest outgoing message: the largest status (homecontrol #92: write_status_message() through
+	/// JsonWriter::bound(), 2643 bytes when it was set; the status test fails when it grows beyond).
+	/// The snapshot chunks and monitor batches fill messages up to it too.
+	static constexpr size_t kMessageSize = 2688;
 	/// Status check period; a heartbeat status goes out every kHeartbeatMs.
 	static constexpr uint32_t kTickMs = 1000;
 	static constexpr uint32_t kHeartbeatMs = 10000;
@@ -138,6 +140,11 @@ public:
 	/// client gets a {"type": "zigbee"} message at once (spec/api.md "Zigbee"). A client that missed
 	/// it (no send buffer) gets a snapshot, which tells it to read GET /api/zigbee again.
 	void zigbee_event(const zigbee::ZigbeeEvent& event);
+
+	/// The `status` message (spec/api.md "WebSocket"): WebApi::write_status(), or for an anonymous
+	/// client the image's identity only. Through JsonWriter::bound() it yields the largest status,
+	/// which kMessageSize holds (homecontrol #92, the status test).
+	void write_status_message(JsonWriter& json, bool anonymous) const;
 
 	/// The monitor stream (GET /api/monitor reads it through WebApi).
 	MonitorFeed& monitor() { return monitor_; }

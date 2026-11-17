@@ -35,7 +35,7 @@ public:
 	/// Clients one entry can name (the live feed's browser clients).
 	static constexpr size_t kMaxRecipients = 4;
 	/// The largest message (LiveFeed::kMessageSize).
-	static constexpr size_t kMaxMessage = 1400;
+	static constexpr size_t kMaxMessage = 2688;
 
 	struct Header {
 		uint16_t length;

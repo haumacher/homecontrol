@@ -405,7 +405,22 @@ struct FakePlatform {
 	FakeTimeZone time_zone;
 	FakeNetworkDriver network{clock};
 
-	hc::Platform platform() { return hc::Platform{clock, sink, system, settings, time_zone, network}; }
+	/// The diagnostics platform() passes (nullptr: none): a test sets it around the fixtures it
+	/// builds (ScopedPlatformDiagnostics).
+	static inline const hc::Diagnostics* diagnostics = nullptr;
+
+	hc::Platform platform() {
+		hc::Platform platform{clock, sink, system, settings, time_zone, network};
+		platform.diagnostics = diagnostics;
+		return platform;
+	}
+};
+
+/// Gives the controllers built in its scope `diagnostics` (FakePlatform::diagnostics).
+class ScopedPlatformDiagnostics {
+public:
+	explicit ScopedPlatformDiagnostics(const hc::Diagnostics& diagnostics) { FakePlatform::diagnostics = &diagnostics; }
+	~ScopedPlatformDiagnostics() { FakePlatform::diagnostics = nullptr; }
 };
 
 } // namespace hc_test

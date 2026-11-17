@@ -23,6 +23,7 @@
 #include "hc/network_name.h"
 #include "hc/network_settings.h"
 #include "hc/signature.h"
+#include "hc/status_text.h"
 #include "hc/tz.h"
 #include "hc/update_check.h"
 #include "hc/value_json.h"
@@ -907,36 +908,72 @@ void WebApi::auth_sessions_clear(const WebRequest& request, WebResponse& respons
 
 // ---- Status -----------------------------------------------------------------------------------
 
+namespace {
+
+/// The member `key` with the object `write` fills, at most `budget` bytes (status_text: a member a
+/// platform writes). A bound() counts the budget; a larger object is replaced by {"error": ...}, the
+/// first time with a log line (`logged`), so the rest of the status still goes out.
+template <class Write>
+void write_budgeted(JsonWriter& json, const char* key, size_t budget, bool& logged, Write write) {
+	if (json.bounding()) {
+		json.key(key).value_of(budget);
+		return;
+	}
+	JsonWriter::Mark before = json.mark();
+	json.key(key);
+	size_t start = json.length();
+	json.begin_object();
+	write(json);
+	json.end_object();
+	if (!json.overflowed() && json.length() - start <= budget) {
+		return;
+	}
+	json.reset(before);
+	char error[96];
+	std::snprintf(error, sizeof(error), "the platform's %s status is larger than %u bytes", key,
+		static_cast<unsigned>(budget));
+	json.key(key).begin_object().member("error", error, status_text::kText).end_object();
+	if (!logged) {
+		Log::error(kTag, "%s: left out of the status", error);
+		logged = true;
+	}
+}
+
+} // namespace
+
 void WebApi::write_status(JsonWriter& json, bool full) {
+	using namespace status_text;
 	Controller& ctl = controller_;
 	const Connectivity& net = ctl.connectivity();
 	json.key("device").begin_object()
-		.member("name", host_.device_name())
-		.member("version", kVersion)
-		.member("build", build_id())
-		.member("ui", host_.ui_version())
-		.member("format", image::bin::format_text())
+		.member("name", host_.device_name(), kHost)
+		.member("version", kVersion, kShort)
+		.member("build", build_id(), kBuild)
+		.member("ui", host_.ui_version(), kShort)
+		.member("format", image::bin::format_text(), kTiny)
 		.end_object();
-	json.member("uptime_s", ctl.uptime_ms() / 1000);
-	write_boot_status(json, ctl.diagnostics());
+	json.member("uptime_s", static_cast<uint32_t>(ctl.uptime_ms() / 1000));
+	write_budgeted(json, "boot", kBootBudget, boot_over_budget_, [&](JsonWriter& out) {
+		write_boot_facts(out, ctl.diagnostics());
+	});
 	char mdns[80];
 	std::snprintf(mdns, sizeof(mdns), "%s.local", network_name());
 	json.key("network").begin_object()
-		.member("state", link_state_name(net.state()))
-		.member("ip", net.is_up() ? net.ip() : "")
-		.member("mode", network_mode_name(net.mode()))
+		.member("state", link_state_name(net.state()), kCode)
+		.member("ip", net.is_up() ? net.ip() : "", kAddress)
+		.member("mode", network_mode_name(net.mode()), kCode)
 		.member("pairing", net.pairing_active())
-		.member("mdns", mdns)
+		.member("mdns", mdns, kHost)
 		.member("mdns_announced", host_.mdns_announced())
 		.end_object();
 	char local[64];
 	bool synchronized = ctl.format_wall_time(local, sizeof(local));
 	json.key("time").begin_object()
 		.member("synchronized", synchronized)
-		.member("local", local)
+		.member("local", local, kHost)
 		.member("unix", ctl.clock().wall_time().seconds)
-		.member("tz", ctl.time_zone())
-		.member("ntp_server", host_.ntp_server())
+		.member("tz", ctl.time_zone(), kName)
+		.member("ntp_server", host_.ntp_server(), kName)
 		.end_object();
 	MemoryInfo memory = ctl.system().memory();
 	json.key("memory").begin_object()
@@ -945,17 +982,17 @@ void WebApi::write_status(JsonWriter& json, bool full) {
 		.end_object();
 	const Improv& improv = ctl.improv();
 	json.key("improv").begin_object().member("active", improv.active());
-	if (improv.active()) {
+	if (improv.active() || json.bounding()) {
 		uint64_t now = ctl.clock().monotonic_ms();
 		uint64_t ends = improv.ends_at();
-		json.member("state", improv::state_name(improv.state()));
-		json.member("ends_in_s", ends > now ? (ends - now) / 1000 : 0);
+		json.member("state", improv::state_name(improv.state()), kCode);
+		json.member("ends_in_s", static_cast<uint32_t>(ends > now ? (ends - now) / 1000 : 0));
 	}
 	json.end_object();
-	json.key("update").begin_object();
-	host_.write_update_state(json);
-	json.end_object();
-	json.member("led", led_status_name(ctl.led_status()));
+	write_budgeted(json, "update", kUpdateBudget, update_over_budget_, [&](JsonWriter& out) {
+		host_.write_update_state(out);
+	});
+	json.member("led", led_status_name(ctl.led_status()), kCode);
 	json.key("web").begin_object()
 		.member("sessions", static_cast<uint32_t>(auth_.session_count()))
 		.member("remembered", static_cast<uint32_t>(auth_.remembered_count()))

@@ -116,8 +116,8 @@ TEST_CASE("LiveFeed sends a snapshot on subscribe, then batched updates per loop
 	CHECK(f.transport.messages(1, "status").size() == 1);
 	f.run();
 	auto snapshot = f.transport.messages(1, "datapoints");
-	// The demo's datapoints take two messages of kMessageSize (with the pending member, #72).
-	REQUIRE(snapshot.size() == 2);
+	// The demo's datapoints take one message of kMessageSize (two of 1400 bytes before #92).
+	REQUIRE(snapshot.size() == 1);
 	size_t total = 0;
 	for (size_t i = 0; i < snapshot.size(); ++i) {
 		CHECK(snapshot[i]["snapshot"].boolean == true);

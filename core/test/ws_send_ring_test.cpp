@@ -43,7 +43,7 @@ struct Lcg {
 } // namespace
 
 TEST_CASE("WsSendRing: whole messages in order, never torn, through many wraps") {
-	alignas(4) uint8_t storage[4096];
+	alignas(4) uint8_t storage[8192]; // the device's ring (kSendRingBytes)
 	WsSendRing ring(storage, sizeof(storage));
 	Lcg random;
 	uint32_t written = 0;
@@ -98,30 +98,36 @@ TEST_CASE("WsSendRing: whole messages in order, never torn, through many wraps")
 }
 
 TEST_CASE("WsSendRing: a refused claim queues nothing; bulk keeps room for a single message") {
-	alignas(4) uint8_t storage[4096];
+	alignas(4) uint8_t storage[8192]; // the device's ring (kSendRingBytes)
 	WsSendRing ring(storage, sizeof(storage));
 	uint32_t client = 7;
 	std::string big = pattern(1, WsSendRing::kMaxMessage);
-	// Bulk takes one full message, then refuses: the reserve stays for single messages.
-	CHECK(ring.push(&client, 1, big.data(), big.size(), false, true));
-	CHECK_FALSE(ring.push(&client, 1, big.data(), big.size(), false, true));
+	// Bulk takes full messages while one more stays free beside them, then refuses: the reserve
+	// stays for single messages.
+	size_t bulk = 0;
+	while (ring.push(&client, 1, big.data(), big.size(), false, true)) {
+		++bulk;
+	}
+	CHECK(bulk == (sizeof(storage) - WsSendRing::kBulkReserve) / WsSendRing::cost(WsSendRing::kMaxMessage));
 	CHECK(ring.claim(WsSendRing::kMaxMessage, true) == nullptr);
 	CHECK(ring.push(&client, 1, big.data(), big.size(), false, false));
-	// Full now for a claim of the largest message, while a small copy still fits.
+	// Full now for a claim of the largest message, while a small copy of the rest still fits.
 	CHECK(ring.claim(WsSendRing::kMaxMessage, false) == nullptr);
-	std::string small = pattern(2, 100);
+	REQUIRE(ring.free_bytes() > sizeof(WsSendRing::Header));
+	std::string small = pattern(2, ring.free_bytes() - sizeof(WsSendRing::Header));
 	CHECK(ring.push(&client, 1, small.data(), small.size(), false, false));
-	// Exactly three messages are visible, each whole.
+	// The messages are visible in order, each whole.
 	WsSendRing::Entry entry;
 	std::vector<std::string> seen;
 	while (ring.front(entry)) {
 		seen.push_back(std::string(entry.data, entry.length));
 		ring.pop();
 	}
-	REQUIRE(seen.size() == 3);
-	CHECK(seen[0] == big);
-	CHECK(seen[1] == big);
-	CHECK(seen[2] == small);
+	REQUIRE(seen.size() == bulk + 2);
+	for (size_t i = 0; i <= bulk; ++i) {
+		CHECK(seen[i] == big);
+	}
+	CHECK(seen[bulk + 1] == small);
 	// An abandoned claim leaves nothing behind.
 	REQUIRE(ring.claim(WsSendRing::kMaxMessage, false) != nullptr);
 	ring.abandon();
@@ -130,48 +136,46 @@ TEST_CASE("WsSendRing: a refused claim queues nothing; bulk keeps room for a sin
 
 TEST_CASE("WsSendRing: an empty ring whose end is too short for a bulk message takes it after the reader passed the end") {
 	// The C6 (316d479, 2026-11-04): a page reload's snapshot stalled the loop until the task watchdog
-	// reset it. The ring was empty with its head 1300 bytes before the end: a largest bulk message
-	// needs the rest as padding (1300) and itself (1420) and leaves 1376, less than kBulkReserve
-	// (1420), so every claim was refused, the drain found nothing to send and posted writable(), and
-	// the feed claimed again, for ever, without the loop ever sleeping.
-	alignas(4) uint8_t storage[4096];
-	WsSendRing ring(storage, sizeof(storage));
+	// reset it. The ring (4096 bytes, messages of 1400) was empty with its head 1300 bytes before the
+	// end: a largest bulk message needed the rest as padding and itself and left less than
+	// kBulkReserve, so every claim was refused, the drain found nothing to send and posted
+	// writable(), and the feed claimed again, for ever, without the loop ever sleeping. For every
+	// head of an empty ring of the device's size: the claim fits at once or after one pass of the
+	// reader.
 	uint32_t client = 1;
-	const size_t to_end = 1300;
-	// Small messages up to that offset, all sent.
 	std::string small(80, 's');
-	size_t offset = 0;
-	while (offset + WsSendRing::cost(small.size()) <= sizeof(storage) - to_end) {
-		REQUIRE(ring.push(&client, 1, small.data(), small.size(), false, false));
-		offset += WsSendRing::cost(small.size());
-	}
-	WsSendRing::Entry entry;
-	while (ring.front(entry)) {
+	for (size_t head = 0; head < 8192; head += WsSendRing::cost(small.size())) {
+		alignas(4) uint8_t storage[8192]; // the device's ring (kSendRingBytes)
+		WsSendRing ring(storage, sizeof(storage));
+		WsSendRing::Entry entry;
+		for (size_t offset = 0; offset < head; offset += WsSendRing::cost(small.size())) {
+			REQUIRE(ring.push(&client, 1, small.data(), small.size(), false, false));
+			if (ring.free_bytes() < WsSendRing::cost(small.size()) + WsSendRing::kBulkReserve) {
+				while (ring.front(entry)) {
+					ring.pop();
+				}
+			}
+		}
+		while (ring.front(entry)) {
+			ring.pop();
+		}
+		REQUIRE(ring.free_bytes() == sizeof(storage));
+		bool taken = ring.claim(WsSendRing::kMaxMessage, true) != nullptr;
+		if (!taken) {
+			CHECK_FALSE(ring.front(entry)); // nothing to send; the padding is skipped
+			char* room = ring.claim(WsSendRing::kMaxMessage, true);
+			REQUIRE(room != nullptr);
+		}
+		ring.commit(&client, 1, WsSendRing::kMaxMessage);
+		REQUIRE(ring.front(entry));
+		CHECK(entry.length == WsSendRing::kMaxMessage);
 		ring.pop();
+		CHECK(ring.free_bytes() == sizeof(storage));
 	}
-	REQUIRE(ring.free_bytes() == sizeof(storage));
-	size_t rest = sizeof(storage) - offset;
-	REQUIRE(rest < WsSendRing::cost(WsSendRing::kMaxMessage));
-	REQUIRE(sizeof(storage) - rest - WsSendRing::cost(WsSendRing::kMaxMessage) < WsSendRing::kBulkReserve);
-
-	// The first claim may be refused, but it leaves the end to the reader: one pass of the reader
-	// (which finds nothing to send) and the claim fits at the front.
-	bool taken = ring.claim(WsSendRing::kMaxMessage, true) != nullptr;
-	if (!taken) {
-		CHECK_FALSE(ring.front(entry)); // nothing to send; the padding is skipped
-		char* room = ring.claim(WsSendRing::kMaxMessage, true);
-		REQUIRE(room != nullptr);
-		std::memset(room, 'b', WsSendRing::kMaxMessage);
-	}
-	ring.commit(&client, 1, WsSendRing::kMaxMessage);
-	REQUIRE(ring.front(entry));
-	CHECK(entry.length == WsSendRing::kMaxMessage);
-	ring.pop();
-	CHECK(ring.free_bytes() == sizeof(storage));
 }
 
 TEST_CASE("WsSendRing: one entry for a message to several clients, and close frames") {
-	alignas(4) uint8_t storage[4096];
+	alignas(4) uint8_t storage[8192]; // the device's ring (kSendRingBytes)
 	WsSendRing ring(storage, sizeof(storage));
 	uint32_t clients[] = {1, 2, 3, 4};
 	char* claim = ring.claim(WsSendRing::kMaxMessage, false);
@@ -201,7 +205,7 @@ namespace {
 /// size, the test is the httpd task that drains it. A client in `slow` cannot be written (its
 /// socket's send times out): the drain cuts it, as WebServer::drain() does.
 struct RingTransport : hc::WsTransport {
-	alignas(4) uint8_t storage[4096];
+	alignas(4) uint8_t storage[8192]; // the device's ring (kSendRingBytes)
 	WsSendRing ring{storage, sizeof(storage)};
 	LiveFeed* feed = nullptr;
 	bool starved = false;

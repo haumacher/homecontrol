@@ -88,8 +88,10 @@ public:
 	/// PUT /api/image whose client stopped sending is aborted, so the slot does not stay claimed.
 	static constexpr uint32_t kImageRecvTimeouts = 6;
 	/// The WebSocket send ring (issue #45 item 7: it replaced a pool of 8 buffers of 1408 bytes,
-	/// 11 264 B): at least two messages of the largest size, many small ones.
-	static constexpr size_t kSendRingBytes = 4096;
+	/// 11 264 B): at least two messages of the largest size, many small ones. 8192 B since the status
+	/// grew to its bound (homecontrol #92: LiveFeed::kMessageSize 2688, two of them 5416 B); 4096 B
+	/// before.
+	static constexpr size_t kSendRingBytes = 8192;
 	static constexpr size_t kResponseBuffer = 8192;
 	/// Largest WebSocket message accepted from a client.
 	static constexpr size_t kMaxIncoming = 1024;
