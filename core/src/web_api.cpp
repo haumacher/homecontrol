@@ -2046,8 +2046,27 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		return false;
 	};
 	bool operate = true;
-	// The three lists share one index space: locations, then functions, then datapoints.
-	json.key("locations").begin_array();
+	// The three lists share one index space: locations, then functions, then datapoints. A page that
+	// is full closes the lists still open, and opens and closes the ones that follow, after the
+	// closing reserve is released: whatever an entry left, the closing fits (a page whose last entry
+	// ended at the reserve was refused, homecontrol#93).
+	static const char* const kLists[] = {"locations", "functions", "datapoints"};
+	size_t opened = 0;
+	// Closes the open list and opens the next; nothing is written when that does not fit.
+	auto next_list = [&]() {
+		JsonWriter::Mark mark = json.mark();
+		if (opened > 0) {
+			json.end_array();
+		}
+		json.key(kLists[opened]).begin_array();
+		if (json.overflowed()) {
+			json.reset(mark);
+			return false;
+		}
+		++opened;
+		return true;
+	};
+	full = !next_list();
 	for (; !full && index < locations; ++index) {
 		if (!location_shown(index)) {
 			continue;
@@ -2061,8 +2080,9 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		}
 		++written;
 	}
-	json.end_array();
-	json.key("functions").begin_array();
+	if (!full) {
+		full = !next_list();
+	}
 	for (; !full && index >= locations && index < locations + functions; ++index) {
 		if (anonymous && !image.anonymous_function(index - locations)) {
 			continue;
@@ -2076,8 +2096,9 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		}
 		++written;
 	}
-	json.end_array();
-	json.key("datapoints").begin_array();
+	if (!full) {
+		full = !next_list();
+	}
 	for (; !full && index >= locations + functions && index < total; ++index) {
 		size_t id = index - locations - functions;
 		if (!datapoint_visible(role_, id, operate)) {
@@ -2195,12 +2216,15 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 		}
 		++written;
 	}
-	json.end_array();
 	if (written == 0 && index < total) {
 		refuse(response, 500, "api.response_too_large", "an entry of the model does not fit the server's buffer");
 		return;
 	}
 	json.release();
+	while (opened < 3) {
+		next_list();
+	}
+	json.end_array();
 	json.key("next");
 	if (index < total) {
 		json.number(static_cast<uint32_t>(index));
@@ -2288,6 +2312,9 @@ void WebApi::history(const WebRequest& request, WebResponse& response) {
 	// members of each series still to come.
 	constexpr size_t kClosing = 32;
 	constexpr size_t kSeriesHead = 96;
+	// The closing of a series that ends early: `],"truncated":true}`; held back while its points are
+	// written, so the points cannot take it (homecontrol#93).
+	constexpr size_t kSeriesClose = 24;
 	json.reserve(kClosing + count * kSeriesHead);
 	json.begin_object()
 		.member("from", from)
@@ -2297,7 +2324,7 @@ void WebApi::history(const WebRequest& request, WebResponse& response) {
 	bool full = false;
 	for (size_t i = 0; i < count; ++i) {
 		json.release();
-		json.reserve(kClosing + (count - i - 1) * kSeriesHead);
+		json.reserve(kClosing + (count - i - 1) * kSeriesHead + kSeriesClose);
 		json.begin_object().member("id", static_cast<uint32_t>(ids[i]));
 		// Writes the buckets as points: [t, value] for a single sample, [t, last, min, max, count,
 		// mean] for a consolidated bucket, and on_s for a boolean.
@@ -2350,6 +2377,8 @@ void WebApi::history(const WebRequest& request, WebResponse& response) {
 		if (!full) {
 			hist.query(ids[i], from, to, static_cast<uint32_t>(points), sink, answer);
 		}
+		json.release();
+		json.reserve(kClosing + (count - i - 1) * kSeriesHead);
 		json.end_array();
 		if (full || sink.truncated) {
 			json.member("truncated", true);

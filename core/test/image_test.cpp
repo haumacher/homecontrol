@@ -990,3 +990,61 @@ TEST_CASE("Image.MemoryFootprint") {
 	}
 }
 #endif
+
+namespace {
+
+/// GET `path` with the query into a response buffer of `capacity` bytes, as a platform with that
+/// buffer (8 KB on the device and the POSIX server, 4 KB through the E-Home connection) does.
+hc_test::WebFixture::Result get_into(ApiFixture& f, const char* path, const std::string& query, const std::string& cookie,
+	size_t capacity) {
+	std::vector<char> buffer(capacity);
+	hc::WebRequest req;
+	req.method = hc::HttpMethod::get;
+	req.path = path;
+	req.query = query.c_str();
+	req.cookie = cookie.c_str();
+	req.requested_with = "HomeControl";
+	req.source = "192.0.2.7";
+	hc::WebResponse resp(buffer.data(), buffer.size());
+	f.api.handle(req, resp);
+	hc_test::WebFixture::Result r;
+	r.status = resp.status;
+	r.body.assign(resp.body, resp.length);
+	std::string error;
+	hc_test::JsonReader(r.body).parse(r.json, error);
+	return r;
+}
+
+} // namespace
+
+TEST_CASE("Image.ApiModelPagesAtEveryBoundary") {
+	// A page of GET /api/model filled up to the closing reserve still closes its lists (found on a
+	// controller: the page whose last entry ended exactly at the reserve was refused with
+	// api.response_too_large, depending on the length of the live numbers in its head). Every page
+	// start, buffers of every size around the entries' lengths, every image with a model.
+	for (const char* name : {"example.json", "pages.json", "zigbee-bindings.json", "heating-timeline.json"}) {
+		CAPTURE(name);
+		ApiFixture f;
+		std::string cookie = f.onboard();
+		REQUIRE(f.request(hc::HttpMethod::put, "/api/image", as_text(hc_test::compiled(fixture(name))), cookie).status == 200);
+		auto first = get_into(f, "/api/model", "from=0", cookie, 8192);
+		REQUIRE(first.status == 200);
+		size_t total = static_cast<size_t>(first.json["total"].number);
+		size_t pages = 0;
+		for (size_t capacity = 700; capacity <= 1400; ++capacity) {
+			for (size_t from = 0; from < total; ++from) {
+				std::string query = "from=" + std::to_string(from);
+				auto r = get_into(f, "/api/model", query, cookie, capacity);
+				if (r.status == 500 && r.body.find("an entry of the model does not fit") != std::string::npos) {
+					continue; // one entry larger than this buffer: refused as such
+				}
+				CAPTURE(capacity);
+				CAPTURE(from);
+				REQUIRE_MESSAGE(r.status == 200, r.body);
+				REQUIRE_MESSAGE(r.json.kind == hc_test::Json::Kind::object, r.body);
+				++pages;
+			}
+		}
+		CHECK(pages > 0);
+	}
+}
