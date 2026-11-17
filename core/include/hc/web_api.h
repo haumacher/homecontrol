@@ -24,6 +24,7 @@ class ExternalValues;
 class LanguagePacks;
 class Mqtt;
 class LiveFeed;
+class NetworkName;
 
 namespace knx {
 class GatewaySearch;
@@ -151,6 +152,8 @@ public:
 	static constexpr uint32_t kDeferredLimitMs = 60000;
 	/// WebResponse::deferred_kind: the E-Home enrollment's answer.
 	static constexpr uint8_t kDeferredEnroll = 1;
+	/// WebResponse::deferred_kind: the check of a new network name (PUT /api/settings/net.hostname).
+	static constexpr uint8_t kDeferredRename = 2;
 
 	WebApi(Controller& controller, DatapointModel& model, Auth& auth, WebHost& host);
 
@@ -160,6 +163,12 @@ public:
 	/// The language packs (doc/i18n.md): a changed ui.lang starts their sync; GET /api/settings
 	/// reports their state as "i18n". Optional (the POSIX build serves the bundled packs only).
 	void set_language_packs(LanguagePacks* packs) { packs_ = packs; }
+	/// The network name (doc/network.md "Network name"): the setting net.hostname, `network.mdns` of
+	/// the status. Without one (the POSIX build) net.hostname is shown but not editable and the mDNS
+	/// name is the WebHost's device name.
+	void set_network_name(NetworkName* name);
+	/// The mDNS host name the device answers to, without ".local" (the announced network name).
+	const char* network_name() const;
 	/// The MQTT client (doc/mqtt.md): the settings mqtt.user and mqtt.password reconnect it.
 	void set_mqtt(Mqtt* mqtt) { mqtt_ = mqtt; }
 	/// The KNX tunnel and its telegram log: the "knx" member of /api/status; the settings knx.gateway
@@ -264,6 +273,12 @@ public:
 
 private:
 	void image_changed();
+	/// A network name check has its outcome: the E-Home connection's deferred answer goes out.
+	void rename_checked();
+	/// PUT /api/settings/net.hostname (answered deferred while the name is looked up).
+	void put_network_name(const char* value, WebResponse& response);
+	/// The answer to a finished network name check (WebResponse::deferred).
+	bool poll_rename(WebResponse& response);
 	/// The principal checks of handle() for a state-changing request (image_begin()); false with the
 	/// refusal in `response`.
 	bool authorized(const WebRequest& request, WebResponse& response);
@@ -343,6 +358,7 @@ private:
 	ExternalValues* external_ = nullptr;
 	StorageStats* storage_ = nullptr;
 	EhomeLink* ehome_ = nullptr;
+	NetworkName* network_name_ = nullptr;
 	/// The deferred system action (restart, factory reset, WiFi reconnect, the restart into the
 	/// updater for an upload) and its timer.
 	enum class Pending : uint8_t { none, restart, factory_reset, wifi, upload };

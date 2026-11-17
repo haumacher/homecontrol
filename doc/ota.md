@@ -373,7 +373,7 @@ under any address. It takes the updater's address from the `url` of the
 
 - Opened under that IP address (same origin), it polls `/status` and sends `/firmware` at its own
   origin, as before #80; this works with every updater.
-- Opened under another address (`http://homecontrol-xxxxxx.local/`, a router's DNS name), it polls
+- Opened under another address (`http://homecontrol.local/`, a router's DNS name), it polls
   `http://<IP>/status` and sends to `http://<IP>/firmware` across origins. The updater allows every
   origin (CORS): `OPTIONS /firmware` answers the browser's preflight (the `Authorization` header and
   the `Content-Type` of the body make the `PUT` a non-simple request), and `GET /status` and every

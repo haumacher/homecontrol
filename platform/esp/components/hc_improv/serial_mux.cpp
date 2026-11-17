@@ -143,8 +143,10 @@ bool SerialMux::init() {
 	return true;
 }
 
-bool SerialMux::start_improv(LoopQueue& queue, Improv& improv, const char* device_name) {
+bool SerialMux::start_improv(LoopQueue& queue, Improv& improv, const char* device_name,
+	const NetworkName& network_name) {
 	device_name_ = device_name;
+	network_name_ = &network_name;
 	if (!initialized_) {
 		ESP_LOGE(kTag, "Improv not started: the serial port is not set up (see the error above)");
 		return false;

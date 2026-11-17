@@ -12,6 +12,7 @@
 #include "freertos/stream_buffer.h"
 #include "hc/improv.h"
 #include "hc/improv_protocol.h"
+#include "hc/network_name.h"
 #include "hc/platform/improv_port.h"
 #include "loop_queue.h"
 
@@ -42,16 +43,19 @@ public:
 	/// before the console starts. Logs and returns false on failure.
 	bool init();
 
-	/// Starts the reader task that hands Improv frames to `improv` through `queue`. `device_name`
-	/// must outlive the mux. Without this call (or if it fails, logged) the console reads the port
+	/// Starts the reader task that hands Improv frames to `improv` through `queue`. `device_name` (the
+	/// identity, homecontrol-<MAC>) and `network_name` (the URL's host, NetworkName) must outlive the mux. Without this call (or if it fails, logged) the console reads the port
 	/// directly and Improv receives nothing.
-	bool start_improv(LoopQueue& queue, Improv& improv, const char* device_name);
+	bool start_improv(LoopQueue& queue, Improv& improv, const char* device_name, const NetworkName& network_name);
 
 	// ImprovPort (event loop)
 	void send_frame(const uint8_t* frame, size_t length) override;
 	void improv_ended() override;
 	const char* chip_family() const override;
 	const char* device_name() const override { return device_name_; }
+	const char* network_name() const override {
+		return network_name_ != nullptr ? network_name_->announced() : device_name_;
+	}
 
 private:
 	static void reader_task(void* arg);
@@ -73,6 +77,7 @@ private:
 	LoopQueue* queue_ = nullptr;
 	Improv* improv_ = nullptr;
 	const char* device_name_ = "homecontrol";
+	const NetworkName* network_name_ = nullptr;
 	ImprovReader reader_;
 	Mailbox mailbox_ = {};
 	std::atomic<bool> mailbox_full_{false};

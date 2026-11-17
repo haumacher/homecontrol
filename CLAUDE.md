@@ -13,7 +13,8 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
 ## Layout
 
 - `core/` — the portable library: the controller, the event loop, the network workflow
-  (`Connectivity`, `Backoff`), Improv Wi-Fi serial provisioning (`Improv`, `ImprovReader`), status
+  (`Connectivity`, `Backoff`), the network name (`NetworkName`: picked once over the platform's
+  `NameService`, stored as `net.hostname`, changed by the user; doc/network.md), Improv Wi-Fi serial provisioning (`Improv`, `ImprovReader`), status
   LED patterns, settings keys and validators, the datapoint model (`DatapointModel`, `Technology`)
   and the KNX DPT codecs (`doc/datapoints.md`), KNXnet/IP tunnelling (`hc::knx`: `KnxTunnel`,
   `KnxAdapter`, the telegram tap `TelegramLog`, the gateway search `GatewaySearch` over the platform's

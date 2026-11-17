@@ -69,12 +69,12 @@ const char* WifiDriver::reason_name(int32_t reason) {
 	return "unknown";
 }
 
-bool WifiDriver::init(Connectivity& connectivity) {
+bool WifiDriver::init(Connectivity& connectivity, const char* network_name) {
 	connectivity_ = &connectivity;
 
 	uint8_t mac[6] = {};
 	esp_read_mac(mac, ESP_MAC_WIFI_STA);
-	std::snprintf(hostname_, sizeof(hostname_), "homecontrol-%02x%02x%02x", mac[3], mac[4], mac[5]);
+	std::snprintf(device_name_, sizeof(device_name_), "homecontrol-%02x%02x%02x", mac[3], mac[4], mac[5]);
 
 	esp_err_t err = esp_netif_init();
 	if (err == ESP_OK) {
@@ -92,7 +92,9 @@ bool WifiDriver::init(Connectivity& connectivity) {
 		ESP_LOGE(kTag, "cannot create the WiFi station interface; WiFi disabled");
 		return false;
 	}
-	esp_netif_set_hostname(netif_, hostname_);
+	// Before esp_wifi_start(): the first DHCP exchange carries the name (later changes go out with the
+	// next request).
+	set_dhcp_hostname(network_name);
 
 	wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
 	err = esp_wifi_init(&config);
@@ -114,7 +116,20 @@ bool WifiDriver::init(Connectivity& connectivity) {
 		return false;
 	}
 	initialized_ = true;
-	ESP_LOGI(kTag, "WiFi station ready, host name %s", hostname_);
+	ESP_LOGI(kTag, "WiFi station ready, device %s, DHCP host name %s", device_name_, network_name);
+	return true;
+}
+
+bool WifiDriver::set_dhcp_hostname(const char* name) {
+	if (netif_ == nullptr) {
+		ESP_LOGE(kTag, "DHCP host name %s not set: no station interface", name);
+		return false;
+	}
+	esp_err_t err = esp_netif_set_hostname(netif_, name);
+	if (err != ESP_OK) {
+		ESP_LOGE(kTag, "DHCP host name %s not set: %s", name, esp_err_to_name(err));
+		return false;
+	}
 	return true;
 }
 

@@ -17,6 +17,7 @@
 #include "esp_platform.h"
 #include "esp_status_light.h"
 #include "hc/controller.h"
+#include "hc/network_name.h"
 #include "external_service.h"
 #include "fetch_service.h"
 #include "ehome_service.h"
@@ -153,7 +154,7 @@ hc::esp::I18nService& i18n() {
 // ---- MQTT (issue #18): states, commands, Home Assistant discovery and the history export, to the
 // broker the runtime image's mqtt member names (doc/mqtt.md) ----
 hc::esp::MqttService& mqtt() {
-	static hc::esp::MqttService instance(controller(), g_queue, g_model, &image().history(), g_wifi.hostname());
+	static hc::esp::MqttService instance(controller(), g_queue, g_model, &image().history(), g_wifi.device_name());
 	return instance;
 }
 // ---- end MQTT ----
@@ -165,6 +166,13 @@ hc::esp::EspWorker g_storage_worker(g_queue, "hc_stat", hc::esp::EspWorker::kSta
 // The heap at each phase of a load (#70): `log level hc.image debug`, or CONFIG_HC_IMAGE_HEAP_PHASES.
 hc::esp::EspLoadProbe g_load_probe(g_queue);
 
+// ---- the network name (homecontrol #89, doc/network.md "Network name"): picked once and stored
+// (net.hostname), announced over mDNS by g_services, the DHCP host name of g_wifi ----
+hc::NetworkName& network_name() {
+	static hc::NetworkName instance(controller().loop(), g_clock, g_settings, g_services);
+	return instance;
+}
+
 hc::esp::ImageConsole& image_console() {
 	static hc::esp::ImageConsole instance(image(), fetches().image());
 	return instance;
@@ -175,8 +183,9 @@ void loop_task(void*) {
 	hc::Controller& ctl = controller();
 	g_queue.set_loop(&ctl.loop()); // the messages' run time counts as loop turns (the System page)
 	g_system.start_temperature_sensor(); // before the radio starts (#69)
-	g_wifi.init(ctl.connectivity());
-	g_services.init(ctl.connectivity(), g_wifi.hostname());
+	network_name().start(ctl.connectivity()); // reads net.hostname: the first DHCP host name
+	g_wifi.init(ctl.connectivity(), network_name().name());
+	g_services.init(ctl.connectivity(), g_wifi);
 	g_ota.set_fetcher(&fetches().update());
 	g_ota.init(ctl);
 	bool serial_ready = g_serial.init();
@@ -203,13 +212,14 @@ void loop_task(void*) {
 		static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
 	// ---- end runtime image ----
 	if (serial_ready) {
-		g_serial.start_improv(g_queue, ctl.improv(), g_wifi.hostname());
+		g_serial.start_improv(g_queue, ctl.improv(), g_wifi.device_name(), network_name());
 	}
 
 	static hc::esp::WpsButton button(ctl.loop(), g_clock, ctl.connectivity());
 	button.start();
 	// ---- web server (issue #5) ----
-	static hc::esp::WebServer web(ctl, g_model, g_queue, g_services, g_ota, g_wifi.hostname());
+	static hc::esp::WebServer web(ctl, g_model, g_queue, g_services, g_ota, g_wifi.device_name());
+	web.set_network_name(&network_name());
 	web.set_image(&image());
 	web.set_language_packs(&i18n().packs());
 	web.set_mqtt(&mqtt().mqtt());

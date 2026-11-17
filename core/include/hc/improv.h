@@ -27,7 +27,7 @@ namespace hc {
 ///   provisioning path stores them) and restarts the connection workflow
 ///   (Connectivity::request_connect()). The state is `provisioning` (the status LED shows pairing)
 ///   until the link comes up - then `provisioned` and the RPC result carries the device URL
-///   `http://<device name>.local/` - or until kProvisionFailures attempts failed or
+///   `http://<network name>.local/` - or until kProvisionFailures attempts failed or
 ///   kProvisionTimeoutMs passed: error `unable to connect`. The credentials stay stored either way
 ///   (a corrected retry overwrites them; WPS and the failsafe remain).
 /// - `get current state`: the state; when provisioned also the URL as an RPC result.

@@ -108,6 +108,8 @@ public:
 	/// before and after. Returns false (logged) if the server cannot start.
 	bool start();
 
+	/// The network name: net.hostname, `network.mdns`, the address in the log (call before start()).
+	void set_network_name(NetworkName* name) { api_.set_network_name(name); }
 	/// The runtime image behind /api/image and the status (call before start()).
 	void set_image(image::ImageService* image) { api_.set_image(image); }
 	/// The language packs (doc/i18n.md): ui.lang changes start their sync, /api/settings reports them;

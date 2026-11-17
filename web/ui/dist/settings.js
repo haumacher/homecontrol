@@ -380,7 +380,7 @@ export function renderSettings(content, ctx) {
 		lastState = i18n ? i18n.state : null;
 		const url = data.settings.find((s) => s.key === "ehome.url");
 		ehome.setAddress(url ? url.value : "");
-		replace(editable, data.settings.filter((s) => !s.key.startsWith("ehome.")).map((s) => (s.key === "ui.lang" ? languageRow(s, i18n, ctx, reload)
+		replace(editable, data.settings.filter((s) => !s.key.startsWith("ehome.") && s.key !== "net.hostname").map((s) => (s.key === "ui.lang" ? languageRow(s, i18n, ctx, reload)
 			: kChoices[s.key] ? choiceRow(s, kChoices[s.key]) : settingRow(s, () => {}))));
 	}).catch((error) => {
 		replace(editable, h("p", { class: "message error" }, errorText(error)));

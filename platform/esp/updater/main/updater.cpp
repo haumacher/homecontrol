@@ -26,7 +26,6 @@
 #include "esp_http_server.h"
 #include "esp_image_format.h"
 #include "esp_log.h"
-#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
@@ -250,7 +249,7 @@ bool wifi_start(const char*& why) {
 	// The stack is set up once; a failure here is not retried within this boot.
 	static bool stack_tried = false;
 	static bool stack_ready = false;
-	static char hostname[24];
+	static char hostname[hc::setting::kMaxNetHostnameLength + 1];
 	if (!stack_tried) {
 		stack_tried = true;
 		g_events = xEventGroupCreate();
@@ -261,9 +260,11 @@ bool wifi_start(const char*& why) {
 		}
 		esp_netif_t* netif = err == ESP_OK ? esp_netif_create_default_wifi_sta() : nullptr;
 		if (netif != nullptr) {
-			uint8_t mac[6] = {};
-			esp_read_mac(mac, ESP_MAC_WIFI_STA);
-			std::snprintf(hostname, sizeof(hostname), "homecontrol-%02x%02x%02x", mac[3], mac[4], mac[5]);
+			// The application's network name (net.hostname, doc/network.md "Network name") as the DHCP
+			// host name, so that the router keeps listing the device under it during an update.
+			if (!hc::read_network_name(g_settings, hostname, kTag)) {
+				std::snprintf(hostname, sizeof(hostname), "%s", hc::setting::kDefaultNetHostname);
+			}
 			esp_netif_set_hostname(netif, hostname);
 			wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
 			err = esp_wifi_init(&init);

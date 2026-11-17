@@ -16,12 +16,14 @@
 #include "hc/image/image.h"
 #include "fake_blob_store.h"
 #include "fake_fetch.h"
+#include "fake_name_service.h"
 #include "hc/ehome_link.h"
 #include "hc/image/image_service.h"
 #include "hc/image/memory_image_slot.h"
 #include "hc/knx/adapter.h"
 #include "hc/knx/tunnel.h"
 #include "hc/live_feed.h"
+#include "hc/network_name.h"
 #include "hc/sha.h"
 #include "hc/signature.h"
 #include "hc/websocket.h"
@@ -2234,4 +2236,33 @@ TEST_CASE("Bus session probe: a long group telegram during a session stays out o
 	f.gateway(bytes(kAckFromDevice));
 	REQUIRE(f.events("frames").size() == 1);
 	CHECK(f.last("frames")["frames"].items[0].text == compact(kAckFromDevice));
+}
+
+TEST_CASE("E-Home: a network name change is answered when its lookup is over (homecontrol #89)") {
+	EhomeFixture f;
+	hc_test::FakeNameService names{f.fake.clock};
+	names.taken = {"printer"};
+	REQUIRE(f.fake.settings.set_string("net.hostname", "homecontrol") == hc::SettingsStatus::ok);
+	hc::NetworkName name{f.controller.loop(), f.fake.clock, f.fake.settings, names};
+	REQUIRE(name.start(f.controller.connectivity()));
+	f.api.set_network_name(&name);
+	f.handshake();
+
+	f.client.deliver("{\"type\":\"request\",\"id\":21,\"method\":\"PUT\",\"path\":\"/api/settings/net.hostname\","
+		"\"body\":{\"value\":\"Kitchen\"}}");
+	CHECK_FALSE(f.response(21).has("status")); // the lookup runs
+	f.advance(500);
+	Json done = f.response(21);
+	REQUIRE(done.has("status"));
+	CHECK(done["status"].number == 200);
+	CHECK(f.fake.settings.entries["net.hostname"].text == "kitchen");
+
+	f.client.deliver("{\"type\":\"request\",\"id\":22,\"method\":\"PUT\",\"path\":\"/api/settings/net.hostname\","
+		"\"body\":{\"value\":\"printer\"}}");
+	f.advance(500);
+	Json taken = f.response(22);
+	CHECK(taken["status"].number == 422);
+	CHECK(taken["body"]["code"].text == "settings.name_taken");
+	CHECK(f.fake.settings.entries["net.hostname"].text == "kitchen");
+	f.api.set_network_name(nullptr);
 }

@@ -59,8 +59,9 @@ With `mosquitto_sub -v -t 'homecontrol/#' -t 'homeassistant/#'`:
   longer has is cleared with an empty retained payload. Removal therefore works across image swaps
   and reboots without the controller remembering the previous image.
 
-The **node id** is the device's mDNS host name (`homecontrol-<MAC>`), on the host
-`homecontrol-<host name>`: the MQTT client id, Home Assistant's node id and device identifier.
+The **node id** is the device name (`homecontrol-<MAC>`, `doc/network.md` "Network name"; not the
+network name, so a rename keeps the entities), on the host `homecontrol-<host name>`: the MQTT client
+id, Home Assistant's node id and device identifier.
 
 ## In Home Assistant
 

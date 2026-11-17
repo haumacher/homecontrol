@@ -154,7 +154,11 @@ int wifi_status(ConsoleContext& c) {
 		std::printf("next step in %llu ms\n",
 			static_cast<unsigned long long>(net.next_action_at() > now ? net.next_action_at() - now : 0));
 	}
-	std::printf("hostname  %s.local (mDNS %s)\n", c.wifi.hostname(), c.services.mdns_running() ? "announced" : "not yet");
+	if (c.services.mdns_running()) {
+		std::printf("name      %s.local (mDNS; device %s)\n", c.services.announced_name(), c.wifi.device_name());
+	} else {
+		std::printf("name      not announced yet (device %s)\n", c.wifi.device_name());
+	}
 	std::printf("ntp       %s\n", c.services.sntp_running() ? c.services.ntp_server() : "not started yet");
 	return 0;
 }

@@ -23,6 +23,12 @@ constexpr const char* kUiLang = "ui.lang";
 /// WiFi power save (doc/network.md, doc/zigbee.md "coexistence"): `none`, `min` (modem sleep
 /// between DTIM beacons) or `max`; default kDefaultWifiPowerSave. Only the ESP driver acts on it.
 constexpr const char* kWifiPowerSave = "wifi.ps";
+/// The network name (doc/network.md "Network name"): the DHCP host name, the mDNS host name and the
+/// mDNS instance name, `<name>.local`. Picked once when the controller first enters a network
+/// (kDefaultNetHostname, or the first of kDefaultNetHostname-2, -3, ... no other host answers for)
+/// and stored; changed only by the user (PUT /api/settings/net.hostname). Never the device's
+/// identity (MQTT node id, Improv, `device.name`: homecontrol-<MAC>). Rules: network_name_valid().
+constexpr const char* kNetHostname = "net.hostname";
 
 /// Central European time with its EU DST rules.
 constexpr const char* kDefaultTimeZone = "CET-1CEST,M3.5.0,M10.5.0/3";
@@ -36,6 +42,12 @@ constexpr size_t kMaxUiLangLength = 5;
 /// maximum modem sleep (the listen interval of the station config).
 enum class WifiPowerSave : uint8_t { none, min, max };
 constexpr WifiPowerSave kDefaultWifiPowerSave = WifiPowerSave::min;
+
+/// The network name a controller announces when nothing is stored yet.
+constexpr const char* kDefaultNetHostname = "homecontrol";
+/// Longest network name (the phoneblock dongle's limit: short enough to type, fits the FRITZ!Box's
+/// device list; RFC 1123 allows 63 per label).
+constexpr size_t kMaxNetHostnameLength = 32;
 
 /// Longest SSID in bytes (IEEE 802.11).
 constexpr size_t kMaxSsidLength = 32;
@@ -67,6 +79,28 @@ void read_ui_lang(const Settings& settings, char (&buffer)[setting::kMaxUiLangLe
 /// Validates and stores ui.lang (the web API and the console use it). False with `error` pointing
 /// to the reason if the tag is invalid or the write fails (nothing stored then).
 bool store_ui_lang(Settings& settings, const char* lang, const char** error);
+
+/// A network name as stored (net.hostname): one RFC 1123 label of 1 to kMaxNetHostnameLength
+/// characters from [a-z0-9-], not starting or ending with a hyphen (the phoneblock dongle's rules).
+/// Upper case is refused here (normalize_network_name() lowers it). On refusal `error` names the
+/// problem.
+bool network_name_valid(const char* name, const char** error = nullptr);
+
+/// Turns user input into the network name to store: surrounding whitespace dropped, ASCII letters
+/// lower-cased, then network_name_valid(). An empty input (or whitespace only) is refused ("a name
+/// is required"). False with `error` and `out` set to "" for anything else (underscore, dot,
+/// non-ASCII, too long, leading or trailing hyphen).
+bool normalize_network_name(const char* input, char (&out)[setting::kMaxNetHostnameLength + 1],
+	const char** error = nullptr);
+
+/// The stored network name: true with `out` holding net.hostname if it is stored and valid; false
+/// with `out` = "" if none is stored (an unusable stored value is logged under `tag` and counts as
+/// none: the controller picks again).
+bool read_network_name(const Settings& settings, char (&out)[setting::kMaxNetHostnameLength + 1], const char* tag);
+
+/// Validates (network_name_valid(), no normalization) and stores net.hostname. False with `error`
+/// if the name is invalid or the write fails (nothing stored then).
+bool store_network_name(Settings& settings, const char* name, const char** error);
 
 /// "none", "min" or "max".
 const char* wifi_power_save_name(setting::WifiPowerSave mode);

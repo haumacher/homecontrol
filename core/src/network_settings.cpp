@@ -143,6 +143,93 @@ bool store_ui_lang(Settings& settings, const char* lang, const char** error) {
 	return true;
 }
 
+bool network_name_valid(const char* name, const char** error) {
+	if (name == nullptr || name[0] == '\0') {
+		return refuse(error, "a name is required");
+	}
+	size_t length = std::strlen(name);
+	if (length > setting::kMaxNetHostnameLength) {
+		return refuse(error, "the name is longer than 32 characters");
+	}
+	for (size_t i = 0; i < length; ++i) {
+		char c = name[i];
+		if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) {
+			return refuse(error, "the name may contain only letters a-z, digits and '-' (no dot, no underscore, no space)");
+		}
+	}
+	if (name[0] == '-' || name[length - 1] == '-') {
+		return refuse(error, "the name must not start or end with '-'");
+	}
+	return true;
+}
+
+bool normalize_network_name(const char* input, char (&out)[setting::kMaxNetHostnameLength + 1], const char** error) {
+	out[0] = '\0';
+	if (input == nullptr) {
+		return refuse(error, "a name is required");
+	}
+	auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+	const char* start = input;
+	while (space(*start)) {
+		++start;
+	}
+	const char* end = start + std::strlen(start);
+	while (end > start && space(end[-1])) {
+		--end;
+	}
+	size_t length = static_cast<size_t>(end - start);
+	if (length == 0) {
+		return refuse(error, "a name is required");
+	}
+	if (length > setting::kMaxNetHostnameLength) {
+		return refuse(error, "the name is longer than 32 characters");
+	}
+	char buffer[setting::kMaxNetHostnameLength + 1];
+	for (size_t i = 0; i < length; ++i) {
+		char c = start[i];
+		buffer[i] = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+	}
+	buffer[length] = '\0';
+	if (!network_name_valid(buffer, error)) {
+		return false;
+	}
+	std::memcpy(out, buffer, length + 1);
+	return true;
+}
+
+bool read_network_name(const Settings& settings, char (&out)[setting::kMaxNetHostnameLength + 1], const char* tag) {
+	out[0] = '\0';
+	// Read into a setting-sized buffer, so that an overlong stored value is refused, not cut.
+	char value[Settings::kMaxStringLength + 1];
+	SettingsStatus status = settings.get_string(setting::kNetHostname, value, sizeof(value));
+	if (status == SettingsStatus::not_found) {
+		return false;
+	}
+	if (status != SettingsStatus::ok) {
+		Log::error(tag, "setting %s unreadable (%s): the network name is picked again", setting::kNetHostname,
+			settings_status_name(status));
+		return false;
+	}
+	const char* error = nullptr;
+	if (!network_name_valid(value, &error)) {
+		Log::error(tag, "setting %s is invalid (%s): the network name is picked again", setting::kNetHostname, error);
+		return false;
+	}
+	std::memcpy(out, value, std::strlen(value) + 1); // valid: at most kMaxNetHostnameLength
+	return true;
+}
+
+bool store_network_name(Settings& settings, const char* name, const char** error) {
+	if (!network_name_valid(name, error)) {
+		return false;
+	}
+	SettingsStatus status = settings.set_string(setting::kNetHostname, name);
+	if (status != SettingsStatus::ok) {
+		return refuse(error, settings_status_name(status));
+	}
+	return true;
+}
+
 const char* wifi_power_save_name(setting::WifiPowerSave mode) {
 	switch (mode) {
 	case setting::WifiPowerSave::min:

@@ -375,7 +375,7 @@ void Improv::send(size_t length) {
 }
 
 void Improv::format_url(char* buffer, size_t size) const {
-	std::snprintf(buffer, size, "http://%s.local/", port_->device_name());
+	std::snprintf(buffer, size, "http://%s.local/", port_->network_name());
 }
 
 // ---- Lifetime ---------------------------------------------------------------------------------

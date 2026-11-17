@@ -375,8 +375,10 @@ public:
 	void improv_ended() override { ++ended; }
 	const char* chip_family() const override { return "ESP32-C6"; }
 	const char* device_name() const override { return "homecontrol-a1b2c3"; }
+	const char* network_name() const override { return network.empty() ? device_name() : network.c_str(); }
 
 	std::vector<std::vector<uint8_t>> frames;
+	std::string network; ///< The network name ("": the device name, as on a platform without one).
 	int ended = 0;
 };
 

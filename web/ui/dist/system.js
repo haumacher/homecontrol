@@ -3,7 +3,8 @@
 // console (issue #38, spec/api.md "System"): the update (also from a firmware file, issue #39),
 // restart and factory reset, log levels, the core dump, the API tokens, the sessions ("log out
 // everywhere", issue #53), storage, the connections
-// (KNX, MQTT, external sources, the language pack) and the WiFi credentials. Every refusal shows the
+// (KNX, MQTT, external sources, the language pack), the network name (homecontrol #89) and the WiFi
+// credentials. Every refusal shows the
 // device's reason.
 
 import { api, errorText } from "/api.js";
@@ -510,12 +511,59 @@ function connectionsCard(details) {
 	return card(t("system.connections"), parts.length ? rows(parts) : h("p", { class: "muted" }, t("status.none")), feedback);
 }
 
+/// The network name (net.hostname, doc/network.md "Network name"): the DHCP and mDNS host name the
+/// device answers to. The device checks a new name on the network (a few seconds) and refuses one
+/// another host uses; afterwards the new address is shown as a link (the page stays where it is).
+function networkNameCard(status) {
+	const feedback = feedbackLine();
+	const link = (name) => h("a", { href: `http://${name}/` }, `http://${name}/`);
+	const address = h("span", null, status.network && status.network.mdns ? link(status.network.mdns) : "—");
+	const input = h("input", { type: "text", id: "net-hostname", autocomplete: "off", autocapitalize: "none",
+		spellcheck: "false", maxlength: "32", disabled: true });
+	const save = h("button", { type: "submit", class: "button small", disabled: true }, t("system.name.save"));
+	api("GET", "/api/settings").then((data) => {
+		const setting = (data.settings || []).find((s) => s.key === "net.hostname");
+		if (!setting) {
+			return;
+		}
+		input.value = setting.value ?? setting.default ?? "";
+		input.disabled = !setting.editable;
+		save.disabled = !setting.editable;
+	}).catch((error) => {
+		feedback.className = "error-text";
+		feedback.textContent = errorText(error);
+	});
+	const form = h("form", {
+		class: "field",
+		onsubmit: async (event) => {
+			event.preventDefault();
+			save.disabled = true;
+			feedback.className = "hint";
+			feedback.textContent = t("system.name.checking");
+			try {
+				const data = await api("PUT", "/api/settings/net.hostname", { value: input.value.trim() });
+				const setting = (data.settings || []).find((s) => s.key === "net.hostname");
+				const name = setting && setting.value ? setting.value : input.value.trim().toLowerCase();
+				input.value = name;
+				replace(address, link(`${name}.local`));
+				replace(feedback, `${t("system.name.done")} `, link(`${name}.local`));
+			} catch (error) {
+				feedback.className = "error-text";
+				feedback.textContent = errorText(error);
+			} finally {
+				save.disabled = false;
+			}
+		},
+	}, h("label", { for: "net-hostname" }, t("system.name.label")), h("div", { class: "input-row" }, input, save));
+	return card(t("system.name"), rows([[t("system.name.address"), address]]), form, feedback);
+}
+
 function wifiCard(ctx) {
 	const feedback = feedbackLine();
 	const ssid = h("input", { type: "text", id: "wifi-ssid", spellcheck: "false", autocomplete: "off" });
 	const psk = h("input", { type: "password", id: "wifi-psk", autocomplete: "new-password" });
 	const save = actionButton(t("system.wifi.save"), feedback, () => api("PUT", "/api/system/wifi", { ssid: ssid.value, psk: psk.value }),
-		{ danger: true, confirm: () => t("system.wifi.confirm", { ssid: ssid.value, name: `${ctx.deviceName}.local` }),
+		{ danger: true, confirm: () => t("system.wifi.confirm", { ssid: ssid.value, name: ctx.mdns }),
 			done: (r) => t("system.wifi.done", { name: r.mdns }) });
 	return card(t("system.wifi"), h("p", { class: "message error" }, t("system.wifi.warning")),
 		h("div", { class: "field" }, h("label", { for: "wifi-ssid" }, t("system.wifi.ssid")), ssid),
@@ -529,12 +577,14 @@ function wifiCard(ctx) {
 /// left.
 export function renderSystem(container, app) {
 	api("GET", "/api/status").then((status) => {
-		const ctx = { deviceName: (status.device && status.device.name) || status.name || "" };
+		const deviceName = (status.device && status.device.name) || status.name || "";
+		// The identity (the factory reset's confirmation) and the network name the device answers to.
+		const ctx = { deviceName, mdns: (status.network && status.network.mdns) || `${deviceName}.local` };
 		const dump = h("div", null);
 		const drawDump = (s) => replace(dump, coredumpCard(s, () => api("GET", "/api/status").then(drawDump)));
 		drawDump(status);
 		replace(container, h("div", { class: "cards" },
 			updateCard(status, app), restartCard(ctx), dump, storageCard(status),
-			connectionsCard(status), logCard(), tokenCard(), sessionsCard(status, app), wifiCard(ctx)));
+			connectionsCard(status), logCard(), tokenCard(), sessionsCard(status, app), networkNameCard(status), wifiCard(ctx)));
 	}).catch((error) => replace(container, h("p", { class: "message error" }, errorText(error))));
 }

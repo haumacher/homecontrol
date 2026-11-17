@@ -290,7 +290,9 @@ are all local).
   address, otherwise it links there, doc/ota.md "Upload from the browser"), restart, factory reset (the button unlocks only once the device name is
   typed), the core dump (present, download, clear), storage usage, the connections (KNX state and
   gateway, MQTT with "publish discovery", each external source with "fetch", the language pack with
-  "sync"), log levels per tag, API tokens (list, create with the token shown once, revoke) and the
+  "sync"), log levels per tag, API tokens (list, create with the token shown once, revoke), the network
+  name (`net.hostname`, doc/network.md "Network name": the address as a link, a field and **Rename**;
+  the device checks the name on the network first, then the new address is shown as a link) and the
   WiFi credentials behind a warning and a confirmation that names the `.local` address to use
   afterwards; logout. Every refusal shows the device's reason under the card.
 - **Zigbee** (`zigbee.js`): the network (state, channel, devices, whether joining is open with a

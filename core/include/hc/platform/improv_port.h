@@ -27,8 +27,14 @@ public:
 	/// The chip as the web flasher names it ("ESP32-C6").
 	virtual const char* chip_family() const = 0;
 
-	/// The device's network name ("homecontrol-a1b2c3"), also its mDNS host name.
+	/// The device's name ("homecontrol-a1b2c3"), its Improv device name: the device's identity, not
+	/// its network name.
 	virtual const char* device_name() const = 0;
+
+	/// The mDNS host name the device answers to (doc/network.md "Network name"), for the URL the
+	/// provisioning answers with (`http://<name>.local/`). The device name on a platform without a
+	/// network name of its own.
+	virtual const char* network_name() const { return device_name(); }
 
 protected:
 	~ImprovPort() = default;

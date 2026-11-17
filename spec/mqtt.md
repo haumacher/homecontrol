@@ -52,7 +52,7 @@ from it, configured by the runtime image's optional `mqtt` member. Implemented b
 | `broker` | `mqtt://host[:port]` or `mqtts://host[:port]`, at most 127 bytes | yes | Host name or IPv4 literal; port 1..65535, default 1883 (8883 with TLS). No user, path or query. `mqtts://` verifies the server with the device's certificate bundle; the POSIX build has no TLS and refuses it at connect (logged). |
 | `username` | string, 1..63 | no | The user name; without it the setting `mqtt.user`, else none. |
 | `password` | — | **refused** | The setting `mqtt.password` (Q2). |
-| `baseTopic` | 1..64 bytes of printable ASCII without spaces, `+`, `#`, empty levels or a leading or trailing `/` | no, `homecontrol/<device>` | Every topic of this controller starts with it. `<device>` is the node id without its `homecontrol-` prefix (`homecontrol/a1b2c3` for `homecontrol-a1b2c3.local`). |
+| `baseTopic` | 1..64 bytes of printable ASCII without spaces, `+`, `#`, empty levels or a leading or trailing `/` | no, `homecontrol/<device>` | Every topic of this controller starts with it. `<device>` is the node id without its `homecontrol-` prefix (`homecontrol/a1b2c3` for the device `homecontrol-a1b2c3`). |
 | `retain` | boolean | no, true | Whether the state topics are retained. |
 | `discovery.enabled` | boolean | no, true | Home Assistant discovery (section 4). `false` also clears the configs the sweep finds. |
 | `discovery.prefix` | like `baseTopic`, at most 32 bytes | no, `homeassistant` | Home Assistant's discovery prefix. |
@@ -65,8 +65,9 @@ binary image's record `mqtt` (`spec/runtime-image.md` 9.11, the defaults written
 names the member (`mqtt.baseTopic: must be ...`). The device checks the record's structure and
 applies it after the datapoint model.
 
-The **node id** is the device's mDNS host name (`homecontrol-<last three MAC bytes>`, `doc/network.md`):
-the MQTT client id, Home Assistant's node id and device identifier.
+The **node id** is the device name (`homecontrol-<last three MAC bytes>`, `doc/network.md` "Network
+name"; not the network name `net.hostname`, which the user may change): the MQTT client id, Home
+Assistant's node id and device identifier.
 
 ## 3. Topics and payloads
 

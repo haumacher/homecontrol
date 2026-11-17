@@ -477,6 +477,7 @@ LiveFeed::StatusSignature LiveFeed::signature() {
 	s.improv = ctl.improv().active();
 	s.mdns = api_.host().mdns_announced();
 	s.ip_hash = fnv(ctl.connectivity().ip());
+	s.name_hash = fnv(api_.network_name()); // network.mdns: a rename reaches the open pages at once
 	s.sessions = static_cast<uint32_t>(api_.auth().session_count());
 	s.clients = static_cast<uint32_t>(client_count());
 	s.datapoints = static_cast<uint32_t>(api_.model().size());

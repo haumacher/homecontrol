@@ -203,13 +203,15 @@ private:
 		bool improv = false;
 		bool mdns = false;
 		uint32_t ip_hash = 0;
+		uint32_t name_hash = 0; ///< The network name (network.mdns).
 		uint32_t sessions = 0;
 		uint32_t clients = 0;
 		uint32_t datapoints = 0;
 		uint8_t ehome = 0; ///< The E-Home connection's state.
 		bool operator!=(const StatusSignature& o) const {
 			return link != o.link || mode != o.mode || led != o.led || synchronized != o.synchronized ||
-				improv != o.improv || mdns != o.mdns || ip_hash != o.ip_hash || sessions != o.sessions ||
+				improv != o.improv || mdns != o.mdns || ip_hash != o.ip_hash || name_hash != o.name_hash ||
+				sessions != o.sessions ||
 				clients != o.clients || datapoints != o.datapoints || ehome != o.ehome;
 		}
 	};

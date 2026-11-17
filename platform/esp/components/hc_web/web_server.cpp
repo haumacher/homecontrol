@@ -535,7 +535,7 @@ bool WebServer::start() {
 	files.handler = &WebServer::file_handler;
 	httpd_register_uri_handler(server_, &files);
 
-	Log::info(kTag, "web server on port %u (http://%s.local/)%s", static_cast<unsigned>(kPort), device_name_,
+	Log::info(kTag, "web server on port %u (http://%s.local/)%s", static_cast<unsigned>(kPort), api_.network_name(),
 		auth_.has_password() ? "" : ": no device password yet, the onboarding page sets it");
 	log_heap("web server started");
 	return true;
@@ -1277,7 +1277,7 @@ int WebServer::web_command(int argc, char** argv) {
 	const char* sub = argc >= 2 ? argv[1] : "status";
 	if (std::strcmp(sub, "status") == 0 && argc <= 2) {
 		std::printf("server    %s, http://%s.local/\n", server_ != nullptr ? "running on port 80" : "not running",
-			device_name_);
+			api_.network_name());
 		std::printf("password  %s\n", auth_.has_password() ? "set" : "not set (the onboarding page sets it)");
 		std::printf("sessions  %u (%u of %u remembered, %u of %u in RAM)\n", static_cast<unsigned>(auth_.session_count()),
 			static_cast<unsigned>(auth_.remembered_count()), static_cast<unsigned>(Auth::kRememberedSlots),
@@ -1348,7 +1348,7 @@ int WebServer::web_command(int argc, char** argv) {
 			std::printf("error: %s\n", auth_status_text(status));
 			return 1;
 		}
-		std::printf("device password cleared, all sessions ended; set a new one at http://%s.local/\n", device_name_);
+		std::printf("device password cleared, all sessions ended; set a new one at http://%s.local/\n", api_.network_name());
 		return 0;
 	}
 	if (std::strcmp(sub, "demo") == 0 && argc == 2) {

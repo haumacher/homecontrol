@@ -20,6 +20,7 @@
 #include "hc/live_feed.h"
 #include "hc/language_packs.h"
 #include "hc/mqtt.h"
+#include "hc/network_name.h"
 #include "hc/network_settings.h"
 #include "hc/signature.h"
 #include "hc/tz.h"
@@ -141,6 +142,7 @@ constexpr SettingInfo kShownSettings[] = {
 	{setting::kUpdateChannel, true},
 	{setting::kUiLang, true},
 	{setting::kWifiPowerSave, true},
+	{setting::kNetHostname, true},
 	{setting::kMqttUser, true},
 	{setting::kMqttPassword, true, true},
 	{knx::setting::kGateway, true},
@@ -319,8 +321,27 @@ uint8_t WebApi::ehome_signature() const {
 	return ehome_ != nullptr ? static_cast<uint8_t>(static_cast<uint8_t>(ehome_->state()) + 1) : 0;
 }
 
-bool WebApi::poll_deferred(WebResponse& response) {
+void WebApi::set_network_name(NetworkName* name) {
+	network_name_ = name;
+	if (network_name_ != nullptr) {
+		network_name_->set_rename_listener(Callback::member<WebApi, &WebApi::rename_checked>(this));
+	}
+}
 
+const char* WebApi::network_name() const {
+	return network_name_ != nullptr ? network_name_->announced() : host_.device_name();
+}
+
+void WebApi::rename_checked() {
+	if (ehome_ != nullptr) {
+		ehome_->deferred_ready(); // a check E-Home asked for: its answer goes out (no-op otherwise)
+	}
+}
+
+bool WebApi::poll_deferred(WebResponse& response) {
+	if (response.deferred_kind == kDeferredRename) {
+		return poll_rename(response);
+	}
 	if (ehome_ == nullptr) {
 		refuse(response, 500, "api.not_deferred", "no answer is pending");
 		return true;
@@ -889,7 +910,7 @@ void WebApi::write_status(JsonWriter& json, bool full) {
 	json.member("uptime_s", ctl.uptime_ms() / 1000);
 	write_boot_status(json, ctl.diagnostics());
 	char mdns[80];
-	std::snprintf(mdns, sizeof(mdns), "%s.local", host_.device_name());
+	std::snprintf(mdns, sizeof(mdns), "%s.local", network_name());
 	json.key("network").begin_object()
 		.member("state", link_state_name(net.state()))
 		.member("ip", net.is_up() ? net.ip() : "")
@@ -1196,6 +1217,12 @@ void WebApi::settings(WebResponse& response) {
 			fallback = wifi_power_save_name(setting::kDefaultWifiPowerSave);
 			std::snprintf(value, sizeof(value), "%s", wifi_power_save_name(read_wifi_power_save(store, kTag)));
 			status = SettingsStatus::ok;
+		} else if (std::strcmp(info.key, setting::kNetHostname) == 0) {
+			// The stored name (null until the first pick stored one); the default is the first candidate.
+			fallback = setting::kDefaultNetHostname;
+			char name[setting::kMaxNetHostnameLength + 1];
+			status = read_network_name(store, name, kTag) ? SettingsStatus::ok : SettingsStatus::not_found;
+			std::snprintf(value, sizeof(value), "%s", name);
 		} else if (std::strcmp(info.key, setting::kEhomeEnabled) == 0) {
 			fallback = "false";
 			bool on = false;
@@ -1222,7 +1249,8 @@ void WebApi::settings(WebResponse& response) {
 		} else {
 			json.null();
 		}
-		json.member("default", fallback).member("editable", info.editable);
+		bool editable = info.editable && (network_name_ != nullptr || std::strcmp(info.key, setting::kNetHostname) != 0);
+		json.member("default", fallback).member("editable", editable);
 		if (info.secret) {
 			json.member("secret", true).member("stored", status == SettingsStatus::ok);
 		}
@@ -1421,6 +1449,10 @@ void WebApi::put_setting(const char* key, const WebRequest& request, WebResponse
 		refuse(response, 400, "settings.value_missing", "the body needs {\"value\": \"...\"} (at most 127 bytes)");
 		return;
 	}
+	if (std::strcmp(key, setting::kNetHostname) == 0) {
+		put_network_name(value, response);
+		return;
+	}
 	const char* code = nullptr;
 	if (!apply_setting(key, value, &code, &error)) {
 		Log::warn(kTag, "setting %s refused: %s", key, error);
@@ -1428,6 +1460,72 @@ void WebApi::put_setting(const char* key, const WebRequest& request, WebResponse
 		return;
 	}
 	settings(response);
+}
+
+namespace {
+
+/// The HTTP status of a network name refusal (spec/api.md "PUT /api/settings/<key>").
+int rename_status(const char* code) {
+	if (std::strcmp(code, "settings.busy") == 0) {
+		return 409;
+	}
+	if (std::strcmp(code, "settings.name_unchecked") == 0) {
+		return 503;
+	}
+	if (std::strcmp(code, "settings.storage_error") == 0 || std::strcmp(code, "api.not_deferred") == 0) {
+		return 500;
+	}
+	return 422; // settings.invalid, settings.name_taken
+}
+
+} // namespace
+
+void WebApi::put_network_name(const char* value, WebResponse& response) {
+	if (network_name_ == nullptr) {
+		refuse(response, 403, "settings.not_editable", "this platform announces no network name (no mDNS)");
+		return;
+	}
+	const char* code = "";
+	const char* error = "";
+	switch (network_name_->begin_rename(value, &code, &error)) {
+	case NetworkName::Begin::refused:
+		Log::warn(kTag, "setting %s refused: %s", setting::kNetHostname, error);
+		refuse(response, rename_status(code), code, error);
+		return;
+	case NetworkName::Begin::done:
+		settings(response);
+		return;
+	case NetworkName::Begin::checking:
+		// The answer follows when the lookup is over (poll_rename()).
+		response.deferred = true;
+		response.deferred_kind = kDeferredRename;
+		response.length = 0;
+		return;
+	}
+}
+
+bool WebApi::poll_rename(WebResponse& response) {
+	bool ok = false;
+	const char* code = "";
+	const char* error = "";
+	if (network_name_ == nullptr) {
+		refuse(response, 500, "api.not_deferred", "no answer is pending");
+		return true;
+	}
+	if (!network_name_->rename_finished(ok, &code, &error)) {
+		return false;
+	}
+	response.deferred = false;
+	response.deferred_kind = 0;
+	response.deferred_token = 0;
+	if (!ok) {
+		refuse(response, rename_status(code), code, error);
+		return true;
+	}
+	response.status = 200;
+	response.content_type = "application/json";
+	settings(response);
+	return true;
 }
 
 // ---- Runtime image ----------------------------------------------------------------------------

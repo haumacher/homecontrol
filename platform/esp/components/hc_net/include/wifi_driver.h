@@ -41,15 +41,20 @@ namespace esp {
 /// It is refused while WPS runs: the core pauses pairing first (Connectivity::pause_pairing()).
 class WifiDriver : public NetworkDriver, public WifiScanner {
 public:
-	/// Longest host name including the NUL ("homecontrol-" + 6 hex digits).
-	static constexpr size_t kMaxHostname = 24;
+	/// Longest device name including the NUL ("homecontrol-" + 6 hex digits).
+	static constexpr size_t kMaxDeviceName = 24;
 
 	WifiDriver(Settings& settings, LoopQueue& queue);
 
-	/// Creates the station interface, initializes esp_wifi and registers the event handlers. Must
+	/// Creates the station interface with `network_name` as its DHCP host name (hc::NetworkName,
+	/// doc/network.md "Network name"), initializes esp_wifi and registers the event handlers. Must
 	/// run before the Controller starts (it calls connect()). Logs and returns false on failure;
 	/// connect() then refuses.
-	bool init(Connectivity& connectivity);
+	bool init(Connectivity& connectivity, const char* network_name);
+
+	/// Makes `name` the DHCP host name; the next DHCP request (lease renewal, reconnect) carries it.
+	/// False (logged) before init() or if the interface refuses it.
+	bool set_dhcp_hostname(const char* name);
 
 	bool provisioned() const override;
 	ConnectResult connect() override;
@@ -63,8 +68,9 @@ public:
 
 	bool start_scan(WifiScanSink& sink) override;
 
-	/// "homecontrol-<last three MAC bytes in lower-case hex>", also the DHCP host name.
-	const char* hostname() const { return hostname_; }
+	/// "homecontrol-<last three MAC bytes in lower-case hex>": the device's identity (MQTT node id,
+	/// Improv device name, `device.name` of the status), not its network name.
+	const char* device_name() const { return device_name_; }
 
 	/// RSSI of the access point in dBm while associated; false otherwise.
 	bool rssi(int8_t& out) const;
@@ -107,7 +113,7 @@ private:
 	/// The sink of the scan in progress; nullptr when none runs.
 	WifiScanSink* scan_sink_ = nullptr;
 	esp_netif_t* netif_ = nullptr;
-	char hostname_[kMaxHostname] = {};
+	char device_name_[kMaxDeviceName] = {};
 	int32_t last_reason_ = 0;
 	WpsCredentials wps_mailbox_ = {};
 	std::atomic<bool> wps_mailbox_full_{false};

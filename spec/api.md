@@ -111,7 +111,7 @@ sessions are ended until the restart). The console's `web session clear` does th
 {"device": {"name": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "...", "ui": "3c0dcd52e390bb91",
             "format": "1.0"},
  "uptime_s": 5321,
- "network": {"state": "up", "ip": "192.0.2.10", "mode": "normal", "pairing": false, "mdns": "homecontrol-a1b2c3.local",
+ "network": {"state": "up", "ip": "192.0.2.10", "mode": "normal", "pairing": false, "mdns": "homecontrol.local",
              "mdns_announced": true},
  "time": {"synchronized": true, "local": "2026-10-17 14:03:12 CEST (UTC+02:00)", "unix": 1792231392,
           "tz": "CET-1CEST,M3.5.0,M10.5.0/3", "ntp_server": "pool.ntp.org"},
@@ -131,6 +131,14 @@ sessions are ended until the restart). The console's `web session clear` does th
 (`spec/runtime-image.md` I4, section 11; issue #87): E-Home compiles the image for it and refuses,
 before sending, a project that needs a newer one. It replaces `schema`, the JSON schema version that
 firmware up to 1.2 reported.
+
+`device.name` is the device's identity, `homecontrol-<last three MAC bytes>`: it never changes (the
+MQTT node id, the `controller` of the Zigbee export and the Improv device name are the same).
+`network.mdns` is the name the device answers to on the LAN, `<network name>.local` (the setting
+`net.hostname`, doc/network.md "Network name", homecontrol #89): the name the mDNS responder
+announces, which differs from the stored name for the current run when another host took the stored
+name while the controller was off (the responder then announces `<name>-2`). The POSIX build has no
+network name and reports `<device.name>.local`.
 
 `web.sessions` counts the alive sessions of both kinds, `web.remembered` (firmware from 2026-11)
 those of them that stay logged in.
@@ -271,6 +279,7 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
               {"key": "update.channel", "value": "stable", "default": "stable", "editable": true},
               {"key": "ui.lang", "value": "de", "default": "en", "editable": true},
               {"key": "wifi.ps", "value": "min", "default": "min", "editable": true},
+              {"key": "net.hostname", "value": "homecontrol", "default": "homecontrol", "editable": true},
               {"key": "mqtt.user", "value": null, "default": "", "editable": true},
               {"key": "mqtt.password", "value": null, "default": "", "editable": true, "secret": true, "stored": true},
               {"key": "knx.gateway", "value": "192.0.2.20", "default": "", "editable": true},
@@ -281,7 +290,8 @@ that could not be stored (written from two threads at once). 503 `log.busy`: try
           "release": "0.2.0", "offered": [{"code": "de", "name": "Deutsch"}]}}
 ```
 
-`value` is `null` when the setting is not stored (the default applies); `ui.lang` and `tz` always
+`value` is `null` when the setting is not stored (the default applies; for `net.hostname`: the
+controller has not picked its network name yet); `ui.lang` and `tz` always
 show the value in use, as do the on/off settings (`knx.nat`, `led.quiet`). Secrets (`wifi.psk`, the password and token hashes `web.*`) never appear;
 the write-only `mqtt.password` (doc/mqtt.md) is listed with `secret: true` and `stored` saying
 whether one is kept, its `value` always `null`.
@@ -298,12 +308,27 @@ console (`tz` a POSIX TZ string, `ntp.server` a host name, `update.channel` one 
 `ui.lang` a language tag `[a-z]{2}(-[A-Z]{2})?`, doc/i18n.md; `wifi.ps` one of `none`, `min`, `max`,
 doc/network.md; `mqtt.user` and `mqtt.password` 1 to 63 bytes, `""` removes them; `knx.gateway` a host or IPv4
 address with an optional `:port`, `""` removes it; `knx.nat` `on` or `off`, doc/knx.md; `led.quiet` `on` or `off`, also `true` or
-`false`, doc/network.md) and applied
+`false`, doc/network.md; `net.hostname` below) and applied
 at once (a new `knx.gateway` or `knx.nat` reconnects the KNX tunnel, a new `led.quiet` changes the
 status LED at its next tick, a new `ui.lang` starts the download of its language pack, a new `wifi.ps` is set on the
 running WiFi link, a new `mqtt.user` or `mqtt.password` reconnects the MQTT client). 200 with the settings list as for GET. Refusals: 404 `settings.unknown`, 403
 `settings.not_editable`, 400 `settings.value_missing`, 422 `settings.invalid` (with the reason),
 500 `settings.storage_error`.
+
+`net.hostname`, the network name (firmware after 1.3.0, homecontrol #89; doc/network.md "Network name"):
+the input is trimmed and lower-cased, then it must be one RFC 1123 label of 1 to 32 characters from
+`[a-z0-9-]`, not starting or ending with `-` (the phoneblock dongle's rules); anything else, the
+empty value included (`"a name is required"`), is refused 422 `settings.invalid` with the reason.
+Before storing, the device asks the LAN by mDNS whether another host answers for `<name>.local`
+(up to 2 s; the answer to the `PUT` waits for it, over the E-Home connection as well): 422
+`settings.name_taken` (`"<name> is already in use on this network"`) and nothing changes. A free name
+is stored and applied at once: the mDNS host and instance name answer for it right away, the DHCP
+host name goes out with the next DHCP request (the router lists the new name after its next
+lease). The device's own name (stored or announced) is taken without a lookup. Further refusals:
+409 `settings.busy` (the controller is still picking its first name, or another name is being
+checked: try again), 503 `settings.name_unchecked` (the lookup cannot run, e.g. mDNS is not up),
+403 `settings.not_editable` on a platform without a network name (the POSIX build; the listing says
+`editable: false`).
 
 ## System
 
@@ -412,8 +437,8 @@ empty, longer than 23 characters or contains a space or `*`; all 8 tag slots tak
 
 Body `{"ssid": "<1 to 32 bytes>", "psk": "<8 to 63 characters, or \"\" for an open network>"}`.
 Validated and stored as the console's `wifi set`; the link reconnects after the answer:
-200 `{"ok": true, "ssid": "...", "open": false, "reconnect_in_ms": 750, "mdns": "homecontrol-a1b2c3.local"}`.
-The device keeps its name, so the UI is found again at `mdns` once the new network is joined;
+200 `{"ok": true, "ssid": "...", "open": false, "reconnect_in_ms": 750, "mdns": "homecontrol.local"}`.
+The device keeps its network name, so the UI is found again at `mdns` once the new network is joined;
 wrong credentials take it off the network (the console or a factory reset bring it back), so the
 UI warns before sending. The psk is never logged or echoed. Refusals: 422 `wifi.invalid` (with the
 reason), 409 `system.busy`, 500 `settings.storage_error`.
@@ -1651,7 +1676,7 @@ with `reset: true`; one below `first` gets a `gap` marker first. Refusals: 400 `
 ## Examples
 
 ```sh
-DEV=http://homecontrol-a1b2c3.local
+DEV=http://homecontrol.local
 TOKEN=hct_...   # from the console: web token create scripts
 curl -s -H "Authorization: Bearer $TOKEN" $DEV/api/status
 curl -s -H "Authorization: Bearer $TOKEN" $DEV/api/datapoints

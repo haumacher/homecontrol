@@ -409,7 +409,7 @@ void WebApi::wifi(const WebRequest& request, WebResponse& response) {
 	action_timer_ = controller_.loop().schedule_at(controller_.clock().monotonic_ms() + kActionDelayMs,
 		Callback::member<WebApi, &WebApi::action_due>(this));
 	char mdns[80];
-	std::snprintf(mdns, sizeof(mdns), "%s.local", host_.device_name());
+	std::snprintf(mdns, sizeof(mdns), "%s.local", network_name());
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object()
 		.member("ok", true)

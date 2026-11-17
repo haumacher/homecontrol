@@ -21,11 +21,13 @@ enum class HostResult : uint8_t { ok, unavailable, refused };
 enum class SystemAction : uint8_t { restart, factory_reset };
 
 /// What the web API (hc::WebApi) needs from the platform beyond hc::Platform: the device's
-/// network name, the services that live in platform components (mDNS, SNTP, the OTA update) and
+/// name, the services that live in platform components (mDNS, SNTP, the OTA update) and
 /// the web UI image. Called on the event loop's thread.
 class WebHost {
 public:
-	/// The network name ("homecontrol-a1b2c3"); its mDNS host name is "<name>.local".
+	/// The device name ("homecontrol-a1b2c3"): its identity (`device.name`, the factory reset's
+	/// confirmation, the Zigbee export), not its network name (hc::NetworkName,
+	/// WebApi::set_network_name()). A platform without a network name answers to "<name>.local".
 	virtual const char* device_name() const = 0;
 
 	/// Whether the mDNS announcement is up (false on platforms without mDNS).

@@ -204,6 +204,20 @@ TEST_CASE("Improv.WifiSettingsStoreConnectAndAnswerWithTheUrl") {
 	CHECK(f.capture.sink.contains("I hc.improv: Improv: provisioned (link up), device at " + kUrl));
 }
 
+TEST_CASE("Improv.TheUrlNamesTheNetworkNameAndTheDeviceInfoTheDeviceName") {
+	// homecontrol #89: the device name stays the identity; the URL is where the device answers.
+	Fixture f(true);
+	f.port.network = "kitchen";
+	f.connectivity.link_up("192.0.2.10");
+	f.receive(rpc(improv::kRpcGetCurrentState));
+	CHECK(f.sent() == std::vector<Bytes>{error_frame(improv::Error::none), state_frame(improv::State::provisioned),
+		result_frame(improv::kRpcGetCurrentState, {"http://kitchen.local/"})});
+	f.receive(rpc(improv::kRpcGetDeviceInfo));
+	std::string version = std::string(hc::kVersion) + " (" + hc::build_id() + ")";
+	CHECK(f.sent() == std::vector<Bytes>{error_frame(improv::Error::none),
+		result_frame(improv::kRpcGetDeviceInfo, {"HomeControl", version, "ESP32-C6", "homecontrol-a1b2c3"})});
+}
+
 TEST_CASE("Improv.WifiSettingsThatDoNotConnectAreReportedAfterThreeFailures") {
 	Fixture f(true);
 	f.connectivity.link_up("192.0.2.10");

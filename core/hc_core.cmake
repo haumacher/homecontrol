@@ -19,6 +19,7 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/improv.cpp"
 	"${HC_CORE_DIR}/src/improv_protocol.cpp"
 	"${HC_CORE_DIR}/src/log.cpp"
+	"${HC_CORE_DIR}/src/network_name.cpp"
 	"${HC_CORE_DIR}/src/network_settings.cpp"
 	"${HC_CORE_DIR}/src/settings.cpp"
 	"${HC_CORE_DIR}/src/status_led.cpp"

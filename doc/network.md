@@ -77,13 +77,13 @@ in `doc/ota.md`). "Connect, install, set up
 WiFi" is one browser session: after the install ESP Web Tools resets the board, asks it over Improv
 for its state and device info, offers the networks it scanned, and sends the chosen SSID and key.
 The device stores them exactly as WPS and `wifi set` do (`store_wifi_credentials()`), restarts the
-connection workflow and answers with `http://homecontrol-<mac>.local/` once the link is up; the
+connection workflow and answers with `http://<network name>.local/` once the link is up; the
 page then offers it as "visit device". Without a link after 25 s, or after 3 failed attempts (a
 wrong key), it answers "unable to connect"; the credentials stay stored (a corrected retry
 overwrites them, WPS and the failsafe remain).
 
 The protocol is the phoneblock dongle's, ported: the RPCs `wifi settings`, `get current state`,
-`get device info` (`HomeControl`, `<version> (<build>)`, the chip, `homecontrol-<mac>`) and `get
+`get device info` (`HomeControl`, `<version> (<build>)`, the chip, the device name `homecontrol-<mac>`) and `get
 wifi networks` (one entry per SSID, strongest first, hidden networks left out; the IDF refuses to
 scan while WPS owns the station, so the core pauses pairing for the scan,
 `Connectivity::pause_pairing()`, and resumes it afterwards). A bad checksum or malformed RPC is
@@ -211,15 +211,61 @@ project default is 11 dBm (44) because the development board browns out at the d
 of 20 dBm on its USB supply (`doc/hardware.md`). Lower power means shorter range: raise it for a
 board with a proper supply.
 
+## Network name
+
+The controller has two names (homecontrol #89):
+
+- the **device name** `homecontrol-<last three bytes of the WiFi MAC in lower-case hex>`, for
+  example `homecontrol-a1b2c3`: its identity, never changed — the MQTT node id and Home Assistant's
+  device (`doc/mqtt.md`), the `controller` of the Zigbee export, the Improv device name, `device.name`
+  of `/api/status` and the confirmation of the factory reset;
+- the **network name**, the setting `net.hostname`: the DHCP host name, the mDNS host name and the
+  mDNS instance name, `<name>.local`. It is used for nothing else.
+
+**Picked once, then stored** (`hc::NetworkName`, core). When the network first comes up and no name is
+stored, the controller asks the LAN by mDNS whether a host answers for `homecontrol.local` (a query
+for its A record, up to 2 s); if one does, it asks for `homecontrol-2`, `homecontrol-3`, … (up to
+`homecontrol-9`; when all are taken it announces `homecontrol-9` and the responder's probing renames
+it). It announces the first free name; 5 s later (the time the responder's probing has to rename a
+name another host defends at the same moment, `name` → `name-2`) it stores the name the responder
+announces as `net.hostname` (`hc.name: network name homecontrol picked and stored (net.hostname)`).
+From then on it announces the stored name at every start and never picks again; after a power cut
+two controllers keep their names, whichever starts first. A factory reset erases the setting: the
+next start picks again. Controllers that ran a firmware without the setting pick a name on their
+first start with it, so their address changes once (from `homecontrol-<mac>.local`).
+
+The pick asks before it announces because the ESP responder settles a probe conflict by comparing
+the two IPv4 addresses: a host with a lower address than the controller's would not make it rename.
+
+**Changed by the user**: the System section of the Settings page (card "Network name"), or
+`PUT /api/settings/net.hostname` (`spec/api.md`). The rules are the phoneblock dongle's: the input is
+trimmed and lower-cased, then it must be one RFC 1123 label of 1 to 32 characters from `[a-z0-9-]`,
+not starting or ending with `-`; an empty input is refused ("a name is required"). Before storing,
+the controller asks the LAN for the new name; if another host answers, the change is refused
+("`<name>` is already in use on this network") and nothing changes. A free name is stored and applied
+at once: the mDNS host and instance name answer for it without a restart, the DHCP host name
+(`esp_netif_set_hostname`) goes out with the next DHCP request (the router lists it after the next
+lease). The page then shows the new address `http://<name>.local/` as a link. The OTA updater sends
+the stored name as its DHCP host name as well.
+
+**A stored name another host took while the controller was off**: the responder's probing renames
+it for this run (`name-2`, logged as `mDNS: the name was taken on the network, the responder
+announces …` and `hc.name: <name>.local is taken on this network: announcing <name>-2.local until the
+restart (net.hostname stays <name>)`); the setting stays the user's choice. `network.mdns` of the
+status reports the name actually announced.
+
+The console's `wifi status` shows both names (`name homecontrol.local (mDNS; device
+homecontrol-a1b2c3)`). The POSIX build has no network name (no mDNS): `net.hostname` is listed but
+not editable there.
+
 ## mDNS
 
 When the network first comes up the controller announces itself:
 
-- host name `homecontrol-<last three bytes of the WiFi MAC in lower-case hex>`, for example
-  `homecontrol-a1b2c3.local` (also sent as the DHCP host name);
+- host name: the network name (above), for example `homecontrol.local`;
 - service `_homecontrol._tcp` on port 80 (the web server and API, `doc/web.md`), instance name =
-  the host name (unique per device, so E-Home's controller search lists every controller; #32), TXT
-  records `version=<hc::kVersion>` and `build=<git describe of the build>`;
+  the network name (unique on the LAN like the host name, so E-Home's controller search lists every
+  controller; #32), TXT records `version=<hc::kVersion>` and `build=<git describe of the build>`;
 - service `_http._tcp` on port 80 with the TXT record `path=/` (added 2026-10-18 at the author's
   request): the standard announcement of a web interface, which routers such as the FRITZ!Box turn
   into a link to the device in their home-network list, as they do for the phoneblock dongle.
