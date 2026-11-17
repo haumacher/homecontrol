@@ -347,6 +347,8 @@ void MonitorFeed::datapoint_updated(const DatapointUpdate& update) {
 		event.flags |= MonitorEvent::kViaToken;
 	} else if (origin_via_ == MonitorEvent::Via::ehome) {
 		event.flags |= MonitorEvent::kViaEhome;
+	} else if (origin_via_ == MonitorEvent::Via::anonymous) {
+		event.flags |= MonitorEvent::kViaAnonymous;
 	}
 	event.datapoint = dp.id();
 	event.value = dp.value();
@@ -432,7 +434,7 @@ void MonitorFeed::rule_commanded(const char* rule, const Datapoint& datapoint, c
 	}
 	event->kind = MonitorEvent::Kind::rule;
 	event->sub = static_cast<uint8_t>(MonitorEvent::RuleAction::command);
-	event->flags &= static_cast<uint8_t>(~(MonitorEvent::kViaToken | MonitorEvent::kViaEhome));
+	event->flags &= static_cast<uint8_t>(~(MonitorEvent::kViaToken | MonitorEvent::kViaEhome | MonitorEvent::kViaAnonymous));
 	copy_text(event->named.text, sizeof(event->named.text), rule);
 }
 
@@ -498,7 +500,8 @@ void MonitorFeed::write_event(JsonWriter& json, const MonitorEvent& event, uint3
 			json.member("origin", sub_name(event));
 			if (event.sub != static_cast<uint8_t>(MonitorEvent::CommandOrigin::app)) {
 				json.member("via", (event.flags & MonitorEvent::kViaEhome) != 0 ? "ehome"
-					: (event.flags & MonitorEvent::kViaToken) != 0 ? "token" : "session");
+					: (event.flags & MonitorEvent::kViaToken) != 0 ? "token"
+					: (event.flags & MonitorEvent::kViaAnonymous) != 0 ? "anonymous" : "session");
 			}
 			break;
 		case MonitorEvent::Kind::image:

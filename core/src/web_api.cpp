@@ -406,12 +406,13 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		return;
 	}
 
-	// ---- Everything else needs a principal ----
+	// ---- Everything else needs a principal, or the role anonymous where the image grants it ----
 	if (!auth_.has_password()) {
 		refuse(response, 403, auth_status_code(AuthStatus::no_password), auth_status_text(AuthStatus::no_password));
 		return;
 	}
 	bool by_token = false;
+	Role role = Role::administrator;
 	if (request.ehome) {
 		by_token = true; // EhomeLink authenticated the socket (spec/api.md "E-Home connection")
 	} else if (request.authorization != nullptr) {
@@ -422,6 +423,11 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		}
 		by_token = true;
 	} else if (!auth_.session_from_cookie(request.cookie).valid()) {
+		role = Role::anonymous;
+	}
+	// Default deny (spec/api.md "Roles"): before any routing, so an endpoint is closed to a role
+	// until minimum_role() opens it.
+	if (role < minimum_role(request.method, path) || (role == Role::anonymous && !anonymous_pages())) {
 		refuse(response, 401, "auth.required", "log in first (session expired or missing)");
 		return;
 	}
@@ -429,6 +435,7 @@ void WebApi::handle(const WebRequest& request, WebResponse& response) {
 		refuse(response, 403, "auth.csrf", "state-changing requests need the header X-Requested-With: HomeControl");
 		return;
 	}
+	role_ = role;
 
 	if (clear_sessions) {
 		if (request.method != HttpMethod::post) {
@@ -709,6 +716,9 @@ void WebApi::auth_session(const WebRequest& request, WebResponse& response) {
 	} else {
 		json.null();
 	}
+	// The role (spec/api.md "Roles"); an invalid token is no role, but the UI reads it as anonymous.
+	json.member("role", role_name(via != nullptr ? Role::administrator : Role::anonymous))
+		.member("anonymous_pages", anonymous_pages());
 	json.member("device", host_.device_name())
 		.member("version", kVersion)
 		.member("build", build_id())
@@ -975,13 +985,60 @@ void WebApi::status(WebResponse& response) {
 
 // ---- Datapoints -------------------------------------------------------------------------------
 
-void WebApi::write_datapoint(JsonWriter& json, const Datapoint& dp) {
+Role WebApi::minimum_role(HttpMethod method, const char* path) {
+	// The endpoints of the anonymous pages (spec/api.md "Roles"); their handlers restrict the answer
+	// to what the pages list (role_). Everything else, an unknown path included, is the
+	// administrator's: an endpoint added later stays closed to anonymous until it is named here.
+	if (method == HttpMethod::get) {
+		if (std::strcmp(path, "/api/pages") == 0 || std::strcmp(path, "/api/model") == 0 ||
+			std::strcmp(path, "/api/history") == 0 || std::strcmp(path, "/api/datapoints") == 0 ||
+			(starts_with(path, "/api/datapoints/") && path[16] != '\0')) {
+			return Role::anonymous;
+		}
+	} else if (method == HttpMethod::post) {
+		constexpr size_t kSuffix = sizeof("/command") - 1;
+		size_t length = std::strlen(path);
+		if (starts_with(path, "/api/datapoints/") && length > 16 + kSuffix &&
+			std::strcmp(path + length - kSuffix, "/command") == 0) {
+			return Role::anonymous;
+		}
+	} else if (method == HttpMethod::put && starts_with(path, "/api/rules/")) {
+		const char* slash = std::strchr(path + 11, '/');
+		if (slash != nullptr && slash != path + 11 && starts_with(slash, "/parameters/") && slash[12] != '\0' &&
+			std::strchr(slash + 12, '/') == nullptr) {
+			return Role::anonymous;
+		}
+	}
+	return Role::administrator;
+}
+
+bool WebApi::anonymous_pages() const {
+	size_t length = 0;
+	return auth_.has_password() && image_ != nullptr && image_->loaded() &&
+		image_->image().ui_anonymous(length) != nullptr;
+}
+
+bool WebApi::datapoint_visible(Role role, size_t id, bool& operate) const {
+	operate = true;
+	if (role != Role::anonymous) {
+		return id < model_.size();
+	}
+	// Only the image's own datapoints can be listed (the providers' dynamic ones follow them).
+	return image_ != nullptr && image_->loaded() && id < image_->image().count(image::bin::kDatapoints) &&
+		image_->image().anonymous_datapoint(id, operate);
+}
+
+void WebApi::write_datapoint(JsonWriter& json, const Datapoint& dp, bool operable) {
+	uint32_t flags = dp.flags();
+	if (!operable) {
+		flags &= ~static_cast<uint32_t>(DatapointFlags::kWritable);
+	}
 	json.begin_object()
 		.member("id", static_cast<uint32_t>(dp.id()))
 		.member("name", dp.name())
 		.member("type", value_type_name(dp.type()))
-		.member("flags", static_cast<uint32_t>(dp.flags()))
-		.member("writable", dp.writable());
+		.member("flags", flags)
+		.member("writable", operable && dp.writable());
 	json.key("technology");
 	if (dp.technology() != nullptr) {
 		json.string(dp.technology()->name());
@@ -999,23 +1056,36 @@ void WebApi::write_datapoint(JsonWriter& json, const Datapoint& dp) {
 void WebApi::datapoints(const WebRequest& request, WebResponse& response) {
 	uint32_t from = 0;
 	query_uint(request.query, "from", from);
+	// `anonymous` gets the datapoints its pages list (spec/api.md "Roles"): `count` is their number,
+	// `from` and `next` stay datapoint ids.
+	bool operate = true;
+	size_t count = 0;
+	for (size_t id = 0; id < model_.size(); ++id) {
+		count += datapoint_visible(role_, id, operate) ? 1 : 0;
+	}
 	JsonWriter json(response.body, response.capacity);
 	json.reserve(kClosingReserve);
 	json.begin_object()
 		.member("now_ms", controller_.clock().monotonic_ms())
-		.member("count", static_cast<uint32_t>(model_.size()))
+		.member("count", static_cast<uint32_t>(count))
 		.member("from", from);
 	json.key("datapoints").begin_array();
 	size_t id = from;
 	size_t written = 0;
 	for (; id < model_.size() && written < kPageSize; ++id) {
+		if (!datapoint_visible(role_, id, operate)) {
+			continue;
+		}
 		JsonWriter::Mark mark = json.mark();
-		write_datapoint(json, *model_.get(static_cast<uint16_t>(id)));
+		write_datapoint(json, *model_.get(static_cast<uint16_t>(id)), operate);
 		if (json.overflowed()) {
 			json.reset(mark);
 			break;
 		}
 		++written;
+	}
+	while (id < model_.size() && !datapoint_visible(role_, id, operate)) {
+		++id; // no page that holds nothing
 	}
 	if (written == 0 && id < model_.size()) {
 		refuse(response, 500, "api.response_too_large", "a datapoint does not fit the server's buffer");
@@ -1034,8 +1104,13 @@ void WebApi::datapoints(const WebRequest& request, WebResponse& response) {
 }
 
 void WebApi::datapoint(const Datapoint& dp, WebResponse& response) {
+	bool operate = true;
+	if (!datapoint_visible(role_, dp.id(), operate)) {
+		refuse(response, 404, "dp.unknown_id", "no datapoint with this id or name");
+		return;
+	}
 	JsonWriter json(response.body, response.capacity);
-	write_datapoint(json, dp);
+	write_datapoint(json, dp, operate);
 	finish(response, json);
 }
 
@@ -1084,6 +1159,12 @@ const char* datapoint_command_reason(DatapointStatus status) {
 
 void WebApi::command(const Datapoint& target, const WebRequest& request, WebResponse& response) {
 	const Datapoint* dp = &target;
+	// `anonymous` commands what its pages operate; a datapoint they do not list is unknown to it.
+	bool operate = true;
+	if (!datapoint_visible(role_, dp->id(), operate)) {
+		refuse(response, 404, "dp.unknown_id", "no datapoint with this id or name");
+		return;
+	}
 	JsonSpan body;
 	JsonSpan member;
 	const char* error = nullptr;
@@ -1095,7 +1176,7 @@ void WebApi::command(const Datapoint& target, const WebRequest& request, WebResp
 		refuse(response, 400, "dp.value_missing", "the body needs {\"value\": ...}");
 		return;
 	}
-	if (!dp->writable()) {
+	if (!dp->writable() || !operate) {
 		refuse(response, 409, "dp.not_writable", "the datapoint is not writable");
 		return;
 	}
@@ -1106,7 +1187,8 @@ void WebApi::command(const Datapoint& target, const WebRequest& request, WebResp
 	}
 	MonitorOrigin origin(feed_ != nullptr ? &feed_->monitor() : nullptr, MonitorEvent::CommandOrigin::api,
 		request.ehome ? MonitorEvent::Via::ehome
-		: request.authorization != nullptr ? MonitorEvent::Via::token : MonitorEvent::Via::session);
+		: request.authorization != nullptr ? MonitorEvent::Via::token
+		: role_ == Role::anonymous ? MonitorEvent::Via::anonymous : MonitorEvent::Via::session);
 	DatapointStatus status = model_.command(dp->id(), *value);
 	if (status != DatapointStatus::ok) {
 		refuse(response, command_http_status(status), datapoint_status_code(status), datapoint_command_reason(status));
@@ -1114,7 +1196,7 @@ void WebApi::command(const Datapoint& target, const WebRequest& request, WebResp
 	}
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object().member("ok", true).key("datapoint");
-	write_datapoint(json, *model_.get(dp->id()));
+	write_datapoint(json, *model_.get(dp->id()), operate);
 	json.end_object();
 	finish(response, json);
 }
@@ -1578,9 +1660,12 @@ const char* WebApi::body_too_long(HttpMethod method, const char* path, size_t by
 namespace {
 
 /// Streamed documents: the core dump with this bit set; else the loaded image (GET /api/image) or its
-/// pages (GET /api/pages, kPagesStream), the image's token shifted left by one.
+/// pages (GET /api/pages, kPagesStream; the anonymous pages with kAnonymousStream too), the image's
+/// token shifted left by two.
 constexpr uint32_t kCoreDumpStream = 0x80000000u;
 constexpr uint32_t kPagesStream = 0x1u;
+constexpr uint32_t kAnonymousStream = 0x2u;
+constexpr uint32_t kImageTokenMask = 0x1FFFFFFFu;
 
 } // namespace
 
@@ -1598,12 +1683,14 @@ bool WebApi::read_stream(uint32_t token, size_t offset, char* buffer, size_t siz
 		length = piece;
 		return true;
 	}
-	if (image_ == nullptr || !image_->loaded() || (token >> 1) != (image_->token() & 0x3FFFFFFFu)) {
+	if (image_ == nullptr || !image_->loaded() || (token >> 2) != (image_->token() & kImageTokenMask)) {
 		return false; // the image changed since the response began
 	}
 	const char* bytes = nullptr;
 	size_t total = 0;
-	if ((token & kPagesStream) != 0) {
+	if ((token & kAnonymousStream) != 0) {
+		bytes = image_->image().ui_anonymous(total);
+	} else if ((token & kPagesStream) != 0) {
 		bytes = image_->image().ui(total);
 	} else {
 		bytes = reinterpret_cast<const char*>(image_->image().bytes());
@@ -1644,7 +1731,7 @@ void WebApi::image(const WebRequest& request, WebResponse& response) {
 		response.content_type = "application/octet-stream";
 		response.stream = true;
 		response.stream_length = image_->info().bytes;
-		response.stream_token = (image_->token() & 0x3FFFFFFFu) << 1;
+		response.stream_token = (image_->token() & kImageTokenMask) << 2;
 		response.length = 0;
 		return;
 	}
@@ -1941,9 +2028,30 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 	size_t index = from;
 	size_t written = 0;
 	bool full = false;
+	// `anonymous` gets what its pages show (spec/api.md "Roles"): the listed functions, the rooms
+	// they are in, the listed datapoints; the index space stays the whole model's.
+	const image::bin::View& image = image_->image();
+	bool anonymous = role_ == Role::anonymous;
+	auto location_shown = [&](size_t location) {
+		if (!anonymous) {
+			return true;
+		}
+		const image::bin::Table& listed = image.table(image::bin::kUiAnonymousFunctions);
+		for (size_t k = 0; k < listed.count; ++k) {
+			uint16_t f = *reinterpret_cast<const uint16_t*>(listed.base + static_cast<size_t>(listed.stride) * k);
+			if (image.at<image::bin::FunctionRec>(image::bin::kFunctions, f).room == location) {
+				return true;
+			}
+		}
+		return false;
+	};
+	bool operate = true;
 	// The three lists share one index space: locations, then functions, then datapoints.
 	json.key("locations").begin_array();
 	for (; !full && index < locations; ++index) {
+		if (!location_shown(index)) {
+			continue;
+		}
 		JsonWriter::Mark mark = json.mark();
 		view.write_location(json, index);
 		if (json.overflowed()) {
@@ -1956,6 +2064,9 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 	json.end_array();
 	json.key("functions").begin_array();
 	for (; !full && index >= locations && index < locations + functions; ++index) {
+		if (anonymous && !image.anonymous_function(index - locations)) {
+			continue;
+		}
 		JsonWriter::Mark mark = json.mark();
 		view.write_function(json, index - locations);
 		if (json.overflowed()) {
@@ -1968,14 +2079,17 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 	json.end_array();
 	json.key("datapoints").begin_array();
 	for (; !full && index >= locations + functions && index < total; ++index) {
-		JsonWriter::Mark mark = json.mark();
 		size_t id = index - locations - functions;
+		if (!datapoint_visible(role_, id, operate)) {
+			continue;
+		}
+		JsonWriter::Mark mark = json.mark();
 		uint32_t label = view.datapoint_label(id);
 		const char* unit = view.datapoint_unit(id);
 		const Datapoint* dp = model_.get(static_cast<uint16_t>(id));
 		json.begin_object().member("id", static_cast<uint32_t>(id)).member("name", dp != nullptr ? dp->name() : "");
 		if (dp != nullptr) {
-			json.member("type", value_type_name(dp->type())).member("writable", dp->writable());
+			json.member("type", value_type_name(dp->type())).member("writable", operate && dp->writable());
 		}
 		// A rule parameter's datapoint (spec/rules.md 8.6) takes the parameter's label and unit; the
 		// enable switch the rule's name.
@@ -2106,7 +2220,9 @@ void WebApi::ui_pages(const WebRequest& request, WebResponse& response) {
 		return;
 	}
 	size_t length = 0;
-	const char* pages = image_->image().ui(length);
+	// `anonymous` gets the body of its pages (ui.anonymous, spec/runtime-image.md 9.16), unchanged.
+	bool anonymous = role_ == Role::anonymous;
+	const char* pages = anonymous ? image_->image().ui_anonymous(length) : image_->image().ui(length);
 	if (pages == nullptr) {
 		// No control pages: the generated overview (spec/api.md "GET /api/pages").
 		static const char kNone[] = "{\"pages\":[],\"sections\":[],\"elements\":[],\"series\":[],\"references\":[]}";
@@ -2122,7 +2238,7 @@ void WebApi::ui_pages(const WebRequest& request, WebResponse& response) {
 	// The section as it is (spec/runtime-image.md 9.16), in pieces of the platform's buffer.
 	response.stream = true;
 	response.stream_length = length;
-	response.stream_token = ((image_->token() & 0x3FFFFFFFu) << 1) | kPagesStream;
+	response.stream_token = ((image_->token() & kImageTokenMask) << 2) | kPagesStream | (anonymous ? kAnonymousStream : 0u);
 	response.length = 0;
 }
 
@@ -2132,6 +2248,13 @@ void WebApi::history(const WebRequest& request, WebResponse& response) {
 	if (!parse_ids(request.query, ids, kMaxHistoryIds, count)) {
 		refuse(response, 400, "history.bad_query", "ids=<datapoint id>[,<id>...] is missing or malformed (at most 8)");
 		return;
+	}
+	for (size_t i = 0; i < count; ++i) {
+		bool operate = true;
+		if (role_ == Role::anonymous && !datapoint_visible(role_, ids[i], operate)) {
+			refuse(response, 404, "dp.unknown_id", "no datapoint with this id or name");
+			return;
+		}
 	}
 	WallTime wall = controller_.clock().wall_time();
 	int64_t to = 0;
@@ -2586,6 +2709,33 @@ void WebApi::rule_parameter(const char* rule, const char* parameter, const WebRe
 	WebResponse& response) {
 	rules::Engine& engine = image_->engine();
 	int index = engine.loaded() ? engine.rules().find_rule(rule) : -1;
+	// `anonymous` sets the parameters its pages operate, by their datapoints (spec/api.md "Roles"): a
+	// rule none of whose parameters is listed is unknown to it, as is an unlisted parameter.
+	const Datapoint* parameter_dp = nullptr;
+	if (index >= 0 && role_ == Role::anonymous) {
+		const rules::RuleSet& set = engine.rules();
+		const rules::Rule& r = set.rule(static_cast<size_t>(index));
+		bool any = false;
+		bool operate = true;
+		for (size_t p = 0; p < r.parameter_count; ++p) {
+			const rules::Parameter& decl = set.parameter(r.first_parameter + p);
+			bool listed = datapoint_visible(role_, decl.datapoint, operate);
+			any = any || listed;
+			if (std::strcmp(set.str(decl.id), parameter) == 0 && listed) {
+				parameter_dp = model_.get(decl.datapoint);
+				if (!operate) {
+					refuse(response, 403, "rule.not_adjustable", "the parameter is not adjustable here");
+					return;
+				}
+			}
+		}
+		if (!any) {
+			index = -1;
+		} else if (parameter_dp == nullptr) {
+			refuse(response, 404, "rule.unknown_parameter", "the rule has no parameter with this id");
+			return;
+		}
+	}
 	if (index < 0) {
 		refuse(response, 404, "rule.unknown", "no rule with this id");
 		return;
@@ -2615,10 +2765,18 @@ void WebApi::rule_parameter(const char* rule, const char* parameter, const WebRe
 			reason != nullptr ? reason : rules::parameter_status_name(status));
 		return;
 	}
-	Log::info(kTag, "parameter %s/%s %s from the API", rule, parameter, reset ? "reset" : "set");
+	Log::info(kTag, "parameter %s/%s %s from the API%s", rule, parameter, reset ? "reset" : "set",
+		role_ == Role::anonymous ? " without sign-in" : "");
 	JsonWriter json(response.body, response.capacity);
-	json.begin_object().member("ok", true).member("now_ms", controller_.clock().monotonic_ms()).key("rule");
-	write_rule(json, static_cast<size_t>(index));
+	json.begin_object().member("ok", true).member("now_ms", controller_.clock().monotonic_ms());
+	if (parameter_dp != nullptr) {
+		// `anonymous` sees the parameter's datapoint, not the rule (its other parameters, its texts).
+		json.key("datapoint");
+		write_datapoint(json, *parameter_dp, true);
+	} else {
+		json.key("rule");
+		write_rule(json, static_cast<size_t>(index));
+	}
 	json.end_object();
 	finish(response, json);
 }

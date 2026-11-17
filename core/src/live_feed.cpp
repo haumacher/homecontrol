@@ -115,6 +115,16 @@ size_t LiveFeed::subscribed(Client** targets) {
 	return n;
 }
 
+size_t LiveFeed::subscribed(Client** targets, bool anonymous) {
+	size_t n = 0;
+	for (Client& c : clients_) {
+		if (c.used && c.subscribed && (c.principal == Principal::anonymous) == anonymous) {
+			targets[n++] = &c;
+		}
+	}
+	return n;
+}
+
 LiveFeed::LiveFeed(WebApi& api, EventLoop& loop, WsTransport& transport)
 	: api_(api), loop_(loop), transport_(transport), monitor_(api.controller().clock(), api.model()) {}
 
@@ -262,19 +272,28 @@ bool LiveFeed::open(uint32_t handle, const char* cookie, const char* origin, con
 		slot->session = auth.session_from_cookie(cookie);
 		if (slot->session.valid()) {
 			slot->principal = Principal::session;
+		} else if (api_.anonymous_pages()) {
+			slot->principal = Principal::anonymous; // the image's anonymous pages (spec/api.md "Roles")
 		}
 	}
 	Log::info(kTag, "WebSocket client %u connected (%s, %u of %u)", static_cast<unsigned>(handle),
-		authenticated(*slot) ? "session" : "awaiting a token", static_cast<unsigned>(client_count()),
-		static_cast<unsigned>(kMaxClients));
+		slot->principal == Principal::session ? "session"
+		: slot->principal == Principal::anonymous ? "anonymous" : "awaiting a token",
+		static_cast<unsigned>(client_count()), static_cast<unsigned>(kMaxClients));
 	deliver_to(*slot, [&](JsonWriter& json) {
 		json.begin_object()
 			.member("type", "hello")
-			.member("authenticated", authenticated(*slot))
+			.member("authenticated", slot->principal == Principal::session)
 			.member("onboarded", auth.has_password())
 			.member("device", api_.host().device_name())
-			.member("version", kVersion)
-			.end_object();
+			.member("version", kVersion);
+		json.key("role");
+		if (authenticated(*slot)) {
+			json.string(role_name(role_of(*slot)));
+		} else {
+			json.null();
+		}
+		json.end_object();
 		return true;
 	});
 	return true;
@@ -362,6 +381,10 @@ void LiveFeed::handle_message(Client& client, const char* text, size_t length) {
 	} else if (json_string_equals(type, "command")) {
 		command(*c, body);
 	} else if (json_string_equals(type, "monitor")) {
+		if (c->principal == Principal::anonymous) {
+			send_error(*c, "auth.required", "the monitor needs a sign-in");
+			return;
+		}
 		monitor_message(*c, body);
 	} else {
 		send_error(*c, "ws.unknown_type", "unknown message type");
@@ -384,6 +407,10 @@ void LiveFeed::authenticate_token(Client& client, const JsonSpan& message) {
 	if (slot < 0) {
 		refuse_and_close(client, websocket::kClosePolicy, "auth.token_invalid", "the token is unknown or revoked");
 		return;
+	}
+	if (client.principal == Principal::anonymous && client.subscribed) {
+		client.snapshot_next = 0; // everything the token sees, from the start
+		schedule_pump();
 	}
 	client.principal = Principal::token;
 	client.token_slot = slot;
@@ -417,13 +444,17 @@ void LiveFeed::command(Client& client, const JsonSpan& message) {
 		id_number == std::floor(id_number)) {
 		dp = model.get(static_cast<uint16_t>(id_number));
 	}
+	bool operate = true;
+	if (dp != nullptr && !api_.datapoint_visible(role_of(client), dp->id(), operate)) {
+		dp = nullptr; // not on the anonymous pages: unknown to the client
+	}
 	if (dp == nullptr) {
 		code = "dp.unknown_id";
 		reason = "no datapoint with this id or name";
 	} else if (!json_member(message, "value", value_span)) {
 		code = "dp.value_missing";
 		reason = "the command needs a \"value\"";
-	} else if (!dp->writable()) {
+	} else if (!dp->writable() || !operate) {
 		code = "dp.not_writable";
 		reason = "the datapoint is not writable";
 	} else {
@@ -433,7 +464,8 @@ void LiveFeed::command(Client& client, const JsonSpan& message) {
 		} else {
 			MonitorOrigin origin(&monitor_, MonitorEvent::CommandOrigin::ws,
 				client.principal == Principal::ehome ? MonitorEvent::Via::ehome
-				: client.principal == Principal::token ? MonitorEvent::Via::token : MonitorEvent::Via::session);
+				: client.principal == Principal::token ? MonitorEvent::Via::token
+				: client.principal == Principal::anonymous ? MonitorEvent::Via::anonymous : MonitorEvent::Via::session);
 			status = model.command(dp->id(), *value);
 			if (status != DatapointStatus::ok) {
 				code = datapoint_status_code(status);
@@ -487,7 +519,7 @@ LiveFeed::StatusSignature LiveFeed::signature() {
 
 void LiveFeed::zigbee_event(const zigbee::ZigbeeEvent& event) {
 	Client* targets[kMaxClients + 1];
-	deliver(targets, subscribed(targets), false, [&](JsonWriter& json) {
+	deliver(targets, subscribed(targets, false), false, [&](JsonWriter& json) {
 		json.begin_object().member("type", "zigbee").member("event", zigbee::zigbee_event_name(event.kind));
 		if (event.ieee != 0) {
 			char ieee[zigbee::kIeeeText];
@@ -505,15 +537,31 @@ void LiveFeed::zigbee_event(const zigbee::ZigbeeEvent& event) {
 
 void LiveFeed::send_status(Client* only) {
 	Client* targets[kMaxClients + 1];
-	size_t count = 0;
 	if (only != nullptr) {
-		targets[count++] = only;
+		targets[0] = only;
+		send_status_to(targets, 1, only->principal == Principal::anonymous);
 	} else {
-		count = subscribed(targets);
+		send_status_to(targets, subscribed(targets, false), false);
+		send_status_to(targets, subscribed(targets, true), true);
+		last_status_ms_ = api_.controller().clock().monotonic_ms();
 	}
-	deliver(targets, count, false, [this](JsonWriter& json) {
+}
+
+void LiveFeed::send_status_to(Client* const* targets, size_t count, bool anonymous) {
+	deliver(targets, count, false, [this, anonymous](JsonWriter& json) {
 		json.begin_object().member("type", "status");
-		api_.write_status(json);
+		if (anonymous) {
+			// The image's identity only: it tells the UI that other pages run (spec/api.md "WebSocket").
+			const image::ImageService* image = api_.image();
+			bool loaded = image != nullptr && image->loaded();
+			json.key("image").begin_object().member("loaded", loaded);
+			if (loaded) {
+				json.member("project", image->info().project_id).member("revision", image->info().revision);
+			}
+			json.end_object();
+		} else {
+			api_.write_status(json);
+		}
 		json.end_object();
 		if (json.overflowed()) {
 			Log::error(kTag, "status message larger than %u bytes: not sent", static_cast<unsigned>(kMessageSize));
@@ -521,14 +569,14 @@ void LiveFeed::send_status(Client* only) {
 		}
 		return true;
 	});
-	if (only == nullptr) {
-		last_status_ms_ = api_.controller().clock().monotonic_ms();
-	}
 }
 
 bool LiveFeed::still_authorized(Client& client) {
 	if (client.principal == Principal::ehome) {
 		return true; // the E-Home link closes its socket itself
+	}
+	if (client.principal == Principal::anonymous) {
+		return api_.anonymous_pages(); // as long as the image grants the anonymous pages
 	}
 	Auth& auth = api_.auth();
 	if (client.principal == Principal::session) {
@@ -554,8 +602,13 @@ void LiveFeed::tick() {
 			continue;
 		}
 		if (!still_authorized(c)) {
-			refuse_and_close(c, websocket::kClosePolicy, "auth.session_ended",
-				"the session ended (logout, expiry, password reset) or the token was revoked");
+			if (c.principal == Principal::anonymous) {
+				refuse_and_close(c, websocket::kClosePolicy, "auth.required",
+					"the image no longer grants pages without sign-in: log in");
+			} else {
+				refuse_and_close(c, websocket::kClosePolicy, "auth.session_ended",
+					"the session ended (logout, expiry, password reset) or the token was revoked");
+			}
 		}
 	}
 	StatusSignature now_signature = signature();
@@ -604,42 +657,48 @@ void LiveFeed::flush() {
 	DatapointModel& model = api_.model();
 	uint64_t now = api_.controller().clock().monotonic_ms();
 	Client* targets[kMaxClients + 1];
-	size_t count = subscribed(targets);
-	size_t index = 0;
-	while (index < pending_count_ && count > 0) {
-		size_t start = index;
-		bool reached = deliver(targets, count, false, [&](JsonWriter& json) {
-			json.reserve(kClosingReserve);
-			json.begin_object().member("type", "datapoints").member("now_ms", now).key("updates").begin_array();
-			size_t in_message = 0;
-			for (; index < pending_count_; ++index) {
-				const Datapoint* dp = model.get(pending_[index]);
-				if (dp == nullptr) {
-					continue; // the model was replaced meanwhile
+	// Once for the clients that see everything, once for the anonymous ones, who get only the
+	// datapoints their pages list (a message without any is not sent).
+	for (int group = 0; group < 2; ++group) {
+		bool anonymous = group == 1;
+		size_t count = subscribed(targets, anonymous);
+		size_t index = 0;
+		while (index < pending_count_ && count > 0) {
+			size_t start = index;
+			bool reached = deliver(targets, count, false, [&](JsonWriter& json) {
+				json.reserve(kClosingReserve);
+				json.begin_object().member("type", "datapoints").member("now_ms", now).key("updates").begin_array();
+				size_t in_message = 0;
+				for (; index < pending_count_; ++index) {
+					const Datapoint* dp = model.get(pending_[index]);
+					bool operate = true;
+					if (dp == nullptr || (anonymous && !api_.datapoint_visible(Role::anonymous, dp->id(), operate))) {
+						continue; // the model was replaced meanwhile, or not on the anonymous pages
+					}
+					JsonWriter::Mark mark = json.mark();
+					json.begin_object().member("id", static_cast<uint32_t>(dp->id()));
+					json.key("value");
+					write_value_json(json, dp->value());
+					json.member("quality", quality_name(dp->quality()))
+						.member("updated_ms", dp->updated_ms())
+						.member("pending", dp->pending())
+						.end_object();
+					if (json.overflowed()) {
+						json.reset(mark);
+						break;
+					}
+					++in_message;
 				}
-				JsonWriter::Mark mark = json.mark();
-				json.begin_object().member("id", static_cast<uint32_t>(dp->id()));
-				json.key("value");
-				write_value_json(json, dp->value());
-				json.member("quality", quality_name(dp->quality()))
-					.member("updated_ms", dp->updated_ms())
-					.member("pending", dp->pending())
-					.end_object();
-				if (json.overflowed()) {
-					json.reset(mark);
-					break;
+				json.release();
+				json.end_array().end_object();
+				if (in_message == 0 && index < pending_count_) {
+					++index; // cannot happen with a 1400-byte buffer; never loop forever
 				}
-				++in_message;
+				return in_message > 0;
+			});
+			if (!reached && index == start) {
+				break; // no transport had room: every target resynchronizes with a snapshot
 			}
-			json.release();
-			json.end_array().end_object();
-			if (in_message == 0 && index < pending_count_) {
-				++index; // cannot happen with a 1400-byte buffer; never loop forever
-			}
-			return in_message > 0;
-		});
-		if (!reached && index == start) {
-			break; // no transport had room: every target resynchronizes with a snapshot
 		}
 	}
 	pending_count_ = 0;
@@ -684,6 +743,13 @@ void LiveFeed::pump() {
 		}
 		bool blocked = false;
 		Client* target = &c;
+		// An anonymous client's snapshot holds the datapoints its pages list (`count` their number).
+		Role role = role_of(c);
+		bool operate = true;
+		size_t visible = 0;
+		for (size_t id = 0; id < model.size(); ++id) {
+			visible += api_.datapoint_visible(role, id, operate) ? 1 : 0;
+		}
 		for (size_t chunk = 0; chunk < kChunksPerPump && c.snapshot_next != kNoSnapshot; ++chunk) {
 			size_t start = c.snapshot_next;
 			size_t id = start;
@@ -694,19 +760,24 @@ void LiveFeed::pump() {
 						.member("type", "datapoints")
 						.member("snapshot", true)
 						.member("now_ms", now)
-						.member("count", static_cast<uint32_t>(model.size()))
+						.member("count", static_cast<uint32_t>(visible))
 						.member("from", static_cast<uint32_t>(start))
 						.key("updates")
 						.begin_array();
+					bool any = false;
 					for (; id < model.size(); ++id) {
+						if (!api_.datapoint_visible(role, id, operate)) {
+							continue;
+						}
 						JsonWriter::Mark mark = json.mark();
-						WebApi::write_datapoint(json, *model.get(static_cast<uint16_t>(id)));
+						WebApi::write_datapoint(json, *model.get(static_cast<uint16_t>(id)), operate);
 						if (json.overflowed()) {
 							json.reset(mark);
 							break;
 						}
+						any = true;
 					}
-					if (id == start && id < model.size()) {
+					if (!any && id < model.size()) {
 						Log::error(kTag, "datapoint %u does not fit a WebSocket message: skipped in the snapshot",
 							static_cast<unsigned>(id));
 						++id;

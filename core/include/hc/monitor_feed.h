@@ -49,8 +49,9 @@ struct MonitorEvent {
 	enum class KnxDirection : uint8_t { rx, tx };
 	enum class ZigbeeEvent : uint8_t { report, action, command };
 	enum class CommandOrigin : uint8_t { app, ws, api };
-	/// Who authenticated a `ws` or `api` command: a session, a token, the E-Home connection.
-	enum class Via : uint8_t { session, token, ehome };
+	/// Who authenticated a `ws` or `api` command: a session, a token, the E-Home connection, nobody
+	/// (the role `anonymous`, homecontrol #91).
+	enum class Via : uint8_t { session, token, ehome, anonymous };
 	enum class RuleAction : uint8_t { command, read };
 	enum class ImageEvent : uint8_t { load, reload, unload };
 
@@ -62,6 +63,7 @@ struct MonitorEvent {
 		kFromMonitor = 16, ///< KNX tx: a telegram a monitor client sent.
 		kViaToken = 32,  ///< command from the WebSocket: the client authenticated with a token.
 		kViaEhome = 64,  ///< command over the E-Home connection (doc/ehome.md).
+		kViaAnonymous = 128, ///< command without sign-in (the role `anonymous`, spec/api.md "Roles").
 	};
 
 	struct Knx {

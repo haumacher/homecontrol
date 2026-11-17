@@ -144,6 +144,42 @@ off cross-site requests in current browsers, and the header covers older ones (a
 it, a script cannot without a preflight the device never grants). The WebSocket checks that the
 `Origin` of the handshake names the `Host` it was sent to.
 
+### Roles: the anonymous pages (homecontrol #91)
+
+The controller offers roughly what the switches in the house offer, so some of it may be used
+without signing in. Three roles, ascending (`spec/api.md` "Roles"): `anonymous` (no session, no
+token), `operator` (operating; its own sign-in comes with homecontrol #77, until then nobody holds
+it) and `administrator` (the password session, a token, the E-Home connection: everything, as
+before). What `anonymous` may is configuration and comes from E-Home: a control page has a minimum
+role, and the image carries the pages of minimum role `anonymous` as a second finished body of
+`GET /api/pages` plus the tables of the datapoints (each with "operate" or read-only) and functions
+those pages show (`spec/runtime-image.md` I12, 9.16). The device never reads page JSON; it checks
+each anonymous request against the tables (a binary search over the slot, no RAM).
+
+- **The check** is `WebApi::minimum_role()`, before any routing: the anonymous endpoints (the pages,
+  the model, the history, the datapoints and their commands, the rule parameters) need `anonymous`,
+  every other path and method `administrator`, so an endpoint added later is closed to `anonymous`
+  until it is named there. A request without session and token gets 401 `auth.required` unless its
+  endpoint is opened and the image grants the pages (`WebApi::anonymous_pages()`); an invalid token
+  is never taken for `anonymous`; its POST and PUT need the CSRF header like a cookie's. The handlers
+  then restrict what they answer (`WebApi::datapoint_visible()`): an unlisted datapoint or
+  parameter is unknown, a listed one that is not operated reads `writable: false` and refuses a
+  command with `dp.not_writable`. The test `core/test/anonymous_test.cpp` holds the endpoint matrix
+  as a table and fails when `spec/api.md` documents an endpoint the table has no row for.
+- **The live feed** takes a handshake without a cookie as `anonymous` while the image grants the
+  pages: no token timeout, a snapshot and updates of the listed datapoints only (a broadcast is
+  formatted once for the anonymous clients and once for the others), commands checked like the
+  REST ones, a status of the image's identity only, no monitor and no Zigbee events. When another
+  image takes the grant away, the tick closes those connections with 1008 `auth.required`.
+- **The UI** (`access.js`, pure and tested with node as `WebUi.Access`): without sign-in and with
+  anonymous pages it shows those pages without a login wall, hides the other entries of the
+  navigation and shows **Sign in** in the top bar (the login page); without them the login page as
+  before. After the sign-in the pages are read again and the live connection is opened anew, now
+  seeing everything; after a logout the anonymous pages come back.
+- **Rejected**: a flag per page or per function (the minimum role is the lowest rung of a ladder
+  #77 builds on, and the page already is the selection); a switch on the device (configuration is
+  E-Home's); the device filtering the page JSON (breaks I10).
+
 ### The API
 
 REST under `/api/` for everything that is a request (status, datapoints, commands, log, settings,

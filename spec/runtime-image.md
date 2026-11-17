@@ -45,11 +45,11 @@ in `doc/image.md`); transported by `PUT /api/image` (`spec/api.md`). Fixtures:
   the flash for a case E-Home handles by sending the last valid deployment again, I9); a staging
   area beside the stored image (the scheme until firmware 1.2).
 - **I4. Two versions.** The source form is versioned by `image.schemaVersion` (`<major>.<minor>`,
-  this document 1.7, section 8): it is E-Home's and the corpus's; E-Home's compiler reads every
-  schema 1.0 to 1.7 and compiles each with the meaning its version gives it (an image of 1.6 whose
+  this document 1.8, section 8): it is E-Home's and the corpus's; E-Home's compiler reads every
+  schema 1.0 to 1.8 and compiles each with the meaning its version gives it (an image of 1.6 whose
   rule with states declares a parameter `state` keeps that parameter's datapoint and gets no state
   datapoint, section 8). The binary image is versioned by its **format version** `<major>.<minor>`
-  in the header (section 11; this document is format 1.0). The device reports the format it reads
+  in the header (section 11; this document is format 1.1). The device reports the format it reads
   and the size of its slot (`GET /api/status` `device.format` and `image.slot`, the E-Home
   connection's `auth`, `spec/api.md`); E-Home compiles for that format and refuses, before sending,
   an image larger than the slot ("Das Abbild hat N Bytes, der Controller fasst M") or one that needs
@@ -102,6 +102,19 @@ in `doc/image.md`); transported by `PUT /api/image` (`spec/api.md`). Fixtures:
   the detached signature of `spec/api.md` until firmware 1.2 (a header or socket member, a `.sig`
   file); a check at every boot (an image signed with a rotated-out key would be dropped at a restart
   although nothing about it changed).
+
+- **I12. The image says what may be used without sign-in** (homecontrol #91, E-Home's side
+  haumacher/ehome#184). The device has three roles, `anonymous` < `operator` < `administrator`
+  (`spec/api.md` "Authentication"); what `anonymous` may is configuration and belongs to E-Home: a
+  control page has a minimum role (3.9), and the compiler writes the pages of minimum role
+  `anonymous` as a second finished body of `GET /api/pages` (`ui.anonymous`) together with the
+  tables of the datapoints and functions those pages show (9.16). The device serves that body
+  unchanged (I10 holds: it never reads page JSON) and checks every anonymous request against the
+  tables by binary search. The sections are optional: an older firmware skips them and keeps
+  everything behind the sign-in, as does an image without them. *Alternatives:* a flag "operable
+  without sign-in" per page (it is the lowest role of a ladder that the operator's sign-in, #77,
+  builds on); a flag per function (the page already is the selection); a switch on the device
+  (configuration belongs to E-Home); the device filtering the page JSON itself (breaks I10).
 
 ## 2. The source document
 
@@ -480,7 +493,28 @@ A **page**:
 | `id` | 1..32 characters of `A-Z a-z 0-9 _ . -`, unique among the pages | yes | The page's address in the UI (`/page/<id>`). |
 | `label` | label | no | The navigation entry and the title (default: the id). |
 | `icon` | 1..31 characters of `A-Z a-z 0-9 _ . -` | no | A name of the UI's icon set (`moon`, `sun`, `home`, `bulb`, `chart`, `energy`, `thermometer`, `blind`, `power`, `play`, `calendar`, ...); an unknown name shows the default icon. |
+| `minimumRole` | `"anonymous"` or `"operator"` | no, `"operator"` | The lowest role that sees and operates the page (schema 1.8, I12): `"anonymous"` without sign-in, `"operator"` signed in (an administrator sees every page). |
 | `sections` | array of sections | no (none) | |
+
+**Anonymous pages** (schema 1.8, I12). A page with `"minimumRole": "anonymous"` is shown and operated
+without sign-in. Everything such a page shows may be used, of whatever kind: the compiler derives
+from the anonymous pages, in their order,
+
+- the body of `GET /api/pages` for `anonymous`: the five lists of 9.16 built from the anonymous
+  pages alone (their sections, elements, series and reference lines, the indices counted within
+  this body), byte for byte what the same compiler writes as `ui` for a source whose `ui.pages` are
+  just those pages;
+- the **datapoints** they show, each once, with whether it is **operated**: a datapoint element's
+  datapoint (operated unless `readOnly` is true), every datapoint of a function element's function
+  (all its roles, operated: the tile is the function's control), a chart series' and a reference
+  line's datapoint (read only). A datapoint shown both ways is operated. A rule parameter is shown
+  by its datapoint (`rule/<ruleId>/<parameterId>`, `rule/<ruleId>/enabled`), so the same entry says
+  whether it may be set;
+- the **functions** of their function elements, each once.
+
+Without a page of minimum role `anonymous` none of this is written, and the device lets nobody in
+without sign-in (`spec/api.md` "Authentication"). The member is refused when it is not one of the
+two values (`ui.pages[0].minimumRole`).
 
 A **section**: `label` (label, optional: the section's title; none, no title) and `elements` (array,
 optional). An **element** has exactly one of `function`, `datapoint` or `chart`, and an optional
@@ -812,6 +846,15 @@ no image is loaded it answers 404 `image.none`, also when the slot holds bytes t
   is flashed with a firmware that reads format 1.0, which carries everything of schema 1.7. The
   history of the JSON on the device (the paragraphs above that speak of a firmware refusing or
   ignoring a member) describes firmware up to 1.2.
+- 1.8 and **format 1.1** (homecontrol #91, haumacher/ehome#184): the page member `minimumRole`
+  (3.9, I12) and the three optional sections `ui.anonymous`, `ui.anonymous.datapoints` and
+  `ui.anonymous.functions` (9.16) that the compiler derives from it. E-Home writes the header's
+  minor 1 for an image with these sections and minor 0 for one without them (an image without an
+  anonymous page is the format 1.0 image it was). A firmware that reads format 1.0 skips the three
+  sections (they are not `required`, section 11) and lets nobody in without sign-in; so does a
+  firmware of 1.1 with an image without them. E-Home writes them only for a controller that reports
+  format 1.1 or newer (I4), and says otherwise that the anonymous pages need a firmware update.
+  Corpus: the image `anonymous-pages.json` (13.1).
 
 ## 9. The binary image
 
@@ -853,7 +896,7 @@ The image starts with a header of 32 bytes; the section table follows it.
 |---|---|---|---|
 | 0 | `u8[4]` | `magic` | `48 43 49 4D` ("HCIM") |
 | 4 | `u16` | `major` | The format's major version: 1. |
-| 6 | `u16` | `minor` | The format's minor version the image is written in: 0 (format 1.0). |
+| 6 | `u16` | `minor` | The format's minor version the image is written in: 0 (format 1.0), 1 for an image with a section of format 1.1 (section 8). |
 | 8 | `u32` | `length` | The image's size in bytes, the signature included; a multiple of 8. |
 | 12 | `u32` | `crc` | CRC-32 (the IEEE polynomial as zlib's `crc32()`: reflected `0xEDB88320`, initial and final XOR `0xFFFFFFFF`) over the bytes `[0, signedEnd)` with this field taken as 0. |
 | 16 | `u32` | `flags` | Bit 0 `signed`: the image ends with a 64-byte Ed25519 signature (9.17). Other bits: none in 1.0. |
@@ -931,8 +974,12 @@ table section.
 | `0x52` | `blocks.bound` | datapoint index | 2 | the datapoints of the ports |
 | `0x53` | `blocks.parameters` | parameter value | 16 | `blocks[].parameters` |
 | `0x60` | `ui` | bytes | — | `ui` (3.9), as the body of `GET /api/pages` |
+| `0x62` | `ui.anonymous` | bytes | — | the pages of minimum role `anonymous` (3.9), as the body of `GET /api/pages` for `anonymous` (format 1.1) |
+| `0x63` | `ui.anonymous.datapoints` | anonymous datapoint | 4 | the datapoints the anonymous pages show (format 1.1) |
+| `0x64` | `ui.anonymous.functions` | function index | 2 | the functions the anonymous pages show (format 1.1) |
 
-`image` and `strings` are required in every image; every other section may be absent.
+`image` and `strings` are required in every image; every other section may be absent. The id `0x61`
+is left free: the mutation corpus (13) uses it as the section a firmware does not know.
 
 ### 9.5 Strings and labels
 
@@ -1492,6 +1539,27 @@ A byte section: the control pages (3.9) as the UTF-8 JSON text of the body of `G
 The device serves it unchanged and does not read it; E-Home validated it (3.9, the limits of
 section 5). Absent: no control pages (the device UI shows its generated overview).
 
+**The anonymous pages** (format 1.1, I12; written only when a page has the minimum role
+`anonymous`, then `ui.anonymous` always, the two tables when they are not empty):
+
+- **`ui.anonymous`** (`0x62`), a byte section: the body of `GET /api/pages` for `anonymous`, in the
+  form of `ui` and built from the anonymous pages alone (3.9). Served unchanged, never read, like
+  `ui`.
+- **`ui.anonymous.datapoints`** (`0x63`), records of 4 bytes in strictly ascending order of
+  `datapoint`, so the device finds an entry by binary search:
+
+  | Offset | Type | Field | Meaning |
+  |---|---|---|---|
+  | 0 | `u16` | `datapoint` | Datapoint index (9.7). |
+  | 2 | `u8` | `flags` | Bit 0 `operate`: `anonymous` may command it (a rule parameter's datapoint: set the parameter). Without it the datapoint is only read. |
+  | 3 | `u8` | reserved | |
+
+- **`ui.anonymous.functions`** (`0x64`), records of a `u16` function index (9.8), strictly
+  ascending.
+
+`anonymous` reads and operates nothing that is not listed (`spec/api.md` "Authentication"). Absent
+`ui.anonymous`: nobody gets in without sign-in, whatever else the image holds.
+
 ### 9.17 The signature
 
 A signed image (header flag `signed`) ends with 64 bytes: the Ed25519 signature (RFC 8032 section
@@ -1546,8 +1614,8 @@ kinds and codes; the paths name the header (`header.<field>`), an entry of the s
 `i` the record's index) or a whole section (`strings`).
 
 **The hint.** A refusal of an unknown code, flag bit or required section adds, when the image's
-minor version is newer than the firmware's: ` (the image's format 1.1 is newer than this firmware
-reads, up to 1.0: update the firmware)`.
+minor version is newer than the firmware's: ` (the image's format 1.2 is newer than this firmware
+reads, up to 1.1: update the firmware)`.
 
 ### 10.1 The header, before the slot is erased
 
@@ -1555,7 +1623,7 @@ reads, up to 1.0: update the firmware)`.
 |---|---|---|---|
 | The body announced or received has at least 32 bytes. | `header` | `image.format` | `not a runtime image: 20 bytes, the header alone has 32` |
 | `magic` is `48 43 49 4D`. | `header.magic` | `image.format` | `not a runtime image: the magic is 7B 0A 09 22, not 48 43 49 4D ("HCIM")`; when the first byte is `{` it adds `: a JSON text (E-Home compiles the image; send the binary form)` |
-| `major` is 1. | `header.major` | `image.version` | `format 2.0: this firmware reads format 1 (up to 1.0)` |
+| `major` is 1. | `header.major` | `image.version` | `format 2.0: this firmware reads format 1 (up to 1.1)` |
 | `flags` has no bits but `signed`. | `header.flags` | `image.version` | `unknown flags 0x2` with the hint |
 | `length` equals the bytes of the body (at boot: is at most the slot's size). | `header.length` | `image.format` | `the header says 112 bytes, the body has 100` (at boot: `the header says 600000 bytes, the slot holds 524288`) |
 | `length` is a multiple of 8 and at least `headerSize`, plus 64 when `signed`. | `header.length` | `image.format` | `length 113 is not a multiple of 8`; `length 64 leaves no room for the signature` |
@@ -1583,7 +1651,7 @@ FF` (erased) holds no image: no refusal is reported.
 | An unknown id is not `required` (an unknown one that is not is skipped, section 11). | `sections[k].id` | `malformed: section 0x61 is required, but this firmware does not know it` with the hint |
 | `offset` is a multiple of 8, not before the table's end, not before the previous section's end. | `sections[k].offset` | `malformed: offset 0x41 is not a multiple of 8`; `offset 0x30 lies inside the section table (it ends at 0x40)`; `offset 0x50 lies inside section 0x01 (0x40..0x5f)` |
 | `offset + length` is at most `signedEnd`. | `sections[k].length` | `malformed: the section ends at 0x80, beyond the signed bytes (0x70)` |
-| A byte section (`strings`, `ui`): `entrySize` 0. A known table section: `entrySize` at least its record's size of 9.4 and a multiple of the record's alignment (8 with a 64-bit field, 4 with a 32-bit field, else 2); `length` a multiple of `entrySize`. | `sections[k].entrySize` | `malformed: entry size 20 for datapoints, which need at least 24`; `entry size 26 is not a multiple of 4`; `a byte section has entry size 0`; `length 50 is not a multiple of the entry size 24` |
+| A byte section (`strings`, `ui`, `ui.anonymous`): `entrySize` 0. A known table section: `entrySize` at least its record's size of 9.4 and a multiple of the record's alignment (8 with a 64-bit field, 4 with a 32-bit field, else 2); `length` a multiple of `entrySize`. | `sections[k].entrySize` | `malformed: entry size 20 for datapoints, which need at least 24`; `entry size 26 is not a multiple of 4`; `a byte section has entry size 0`; `length 50 is not a multiple of the entry size 24` |
 | `image`, `settings`, `knx.timeMaster`, `mqtt` hold exactly one record. | `sections[k].length` | `malformed: the section image holds 2 records, it has one` |
 | A table referenced by `u16` indices has at most 65 535 records, `labels` at most 16 777 215. | `sections[k].length` | `limitExceeded: 70000 records, at most 65535` |
 | `image` and `strings` are present. | `sections` | `malformed: the section image (0x01) is missing` |
@@ -1596,6 +1664,7 @@ FF` (erased) holds no image: no refusal is reported.
 | `strings` is valid UTF-8 (no overlong form, no surrogate, nothing above U+10FFFF, no sequence across a NUL). | `strings` | `malformed: invalid UTF-8 at offset 0x1a` |
 | Every string has at most 511 bytes. | `strings` | `limitExceeded: the string at offset 0x40 has 600 bytes, at most 511` |
 | `ui` is valid UTF-8 without a NUL. | `ui` | `malformed: invalid UTF-8 at offset 0x1a`; `malformed: a NUL at offset 0x200` |
+| `ui.anonymous` likewise (format 1.1). | `ui.anonymous` | the same reasons |
 
 Every reference field of a record is then checked by its kind; each kind has one reason (the field's
 path names where):
@@ -1655,6 +1724,12 @@ The fields not listed here are reserved (not checked) or plain numbers the runti
 | `blocks.ports` | `id`; bound; `aggregation`; `mirror` | id string; run in `blocks.bound` (its count is checked by the type's `multiple`, 10.8); code 0..5; datapoint index or `kNone` |
 | `blocks.bound` | each entry | datapoint index |
 | `blocks.parameters` | `id`; `datapoint`; `flags`; `value` | id string; datapoint index or `kNone`; flags 0; finite |
+| `ui.anonymous.datapoints` | `datapoint`; `flags` | datapoint index, strictly ascending (`malformed: the anonymous datapoints do not ascend strictly`); flags 0 |
+| `ui.anonymous.functions` | each entry | function index, strictly ascending (`malformed: the anonymous functions do not ascend strictly`) |
+
+A table of the anonymous pages without `ui.anonymous` is refused at the table's first record
+(`ui.anonymous.datapoints[0]`, `ui.anonymous.functions[0]`: `malformed: a table of the anonymous
+pages without the section ui.anonymous`): it would let `anonymous` in without a page to show.
 
 ### 10.6 Expressions
 
@@ -1723,7 +1798,7 @@ listeners do not name it`; `malformed: 18 listeners, the bindings use addresses 
 
 ## 11. Versioning of the binary image
 
-The header's `major.minor` (I4). This document is format **1.0**; the firmware reads exactly one
+The header's `major.minor` (I4). This document is format **1.1**; the firmware reads exactly one
 major version and every minor version up to its own.
 
 - **Another major version** is refused from the header, before the slot is erased (`image.version`,
@@ -1864,7 +1939,7 @@ each with the CRC recomputed unless the row is about the CRC):
 |---|---|---|---|
 | Cut to 100 bytes | `image.format` | `header.length` | `the header says 112 bytes, the body has 100` |
 | The source text `minimal.json` itself | `image.format` | `header.magic` | `not a runtime image: the magic is 7B 22 69 6D, not 48 43 49 4D ("HCIM"): a JSON text (E-Home compiles the image; send the binary form)` |
-| `header.major` 2 | `image.version` | `header.major` | `format 2.0: this firmware reads format 1 (up to 1.0)` |
+| `header.major` 2 | `image.version` | `header.major` | `format 2.0: this firmware reads format 1 (up to 1.1)` |
 | Byte 0x66 changed, CRC kept | `image.damaged` | `header.crc` | `the CRC-32 is 59772c42, the bytes give …: the image was damaged on the way or in the slot` |
 | Sent to a device that holds the installation key | `image.unsigned` | `header.flags` | `the image is not signed; …` |
 | `minimal.signed.bin` to a device holding the "rotated" key | `image.bad_signature` | `signature` | `the signature does not verify under the installation key 90ae 3702 f3a9 63ab` |
@@ -1895,7 +1970,10 @@ commit with the change.
 "path": "<path>", "reason": "<reason>"}` (`"code": null` for an image that must load), the table
 above its first entries; a mutation whose outcome depends on the device's key has the member
 `"deviceKey": "installation"` (the device holds the test installation key) or `"rotated"` (it holds
-another key). `images/test-system.template.json` is a template, not an image: it gets no `.bin`.
+another key). `images/test-system.template.json` is a template, not an image: it gets no `.bin`. `images/anonymous-pages.json`
+(format 1.1, homecontrol #91) has the anonymous pages of 3.9: its `.bin` was first written by the
+device's test compiler (`core/test/image_compiler.cpp`), until E-Home's compiler writes the
+sections (haumacher/ehome#184) and the two are compared byte for byte as for every other image.
 
 Readings fixed while writing the compiler (haumacher/ehome#176):
 - A node without a value type (a timer node) carries type code 0 (10.6).

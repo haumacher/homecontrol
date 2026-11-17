@@ -26,6 +26,7 @@
 	"auth.login.title": "Log in",
 	"auth.login.text": "Enter the device password of {device}.",
 	"auth.login.submit": "Log in",
+	"auth.sign_in": "Sign in",
 	"auth.login.working": "Checking…",
 	"auth.login.attempts": "{left} more attempts before a pause.",
 	"auth.login.wait": "Try again in {seconds} s.",

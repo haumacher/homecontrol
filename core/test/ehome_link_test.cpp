@@ -963,7 +963,7 @@ TEST_CASE("E-Home: the auth message names what runs: project, revision and CRC")
 	REQUIRE(hc_test::deploy_bytes(f.service, bytes));
 	f.handshake();
 	Json auth = f.client.sent("auth").back();
-	CHECK(auth["format"].text == "1.0");
+	CHECK(auth["format"].text == "1.1");
 	CHECK(auth["slot"].number == 524288);
 	CHECK(auth["image"]["loaded"].boolean);
 	CHECK(auth["image"]["project"].text == "example-house");

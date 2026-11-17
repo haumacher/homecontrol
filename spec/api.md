@@ -45,19 +45,64 @@ Once onboarded, every endpoint except the four open ones under `/api/auth/` (`se
   `POST /api/tokens` (see "System") or on the serial console with `web token create <name>` (shown
   once; doc/web.md).
 
-Without either: 401 `auth.required`; with an unknown or revoked token: 401 `auth.token_invalid`.
+Without either the request is `anonymous` (below); with an unknown or revoked token: 401
+`auth.token_invalid` (an invalid token is never taken for `anonymous`).
 
-**CSRF**: a POST, PUT or DELETE authenticated by the cookie must carry the header
-`X-Requested-With: HomeControl` (403 `auth.csrf` otherwise). A cross-site form cannot set it, and a
-cross-site script cannot send it without a CORS preflight, which the device never grants. Requests
-with a bearer token need no such header.
+**CSRF**: a POST, PUT or DELETE authenticated by the cookie, and every one of `anonymous`, must
+carry the header `X-Requested-With: HomeControl` (403 `auth.csrf` otherwise). A cross-site form
+cannot set it, and a cross-site script cannot send it without a CORS preflight, which the device
+never grants. Requests with a bearer token need no such header.
+
+### Roles (homecontrol #91, firmware from 2026-11)
+
+Three roles, ascending; each may do everything the roles below it may:
+
+| Role | Who | May |
+|---|---|---|
+| `anonymous` | a request without session cookie and token | what the image's anonymous pages show (`spec/runtime-image.md` I12, 3.9, 9.16), nothing else |
+| `operator` | nobody yet: the operator's sign-in comes with homecontrol #77 | the endpoints of `anonymous` over the whole image (every page, datapoint, function and rule parameter) |
+| `administrator` | a password session, a bearer token, the E-Home connection | everything |
+
+What `anonymous` may is configuration and comes with the runtime image: its sections `ui.anonymous`,
+`ui.anonymous.datapoints` and `ui.anonymous.functions` (format 1.1), which E-Home writes from the
+control pages of minimum role `anonymous`. Without them (no image, an image without an anonymous
+page, an image compiled for format 1.0, a firmware before 2026-11) `anonymous` gets 401
+`auth.required` everywhere but the open endpoints, as before. A datapoint or function is **listed**
+when the table holds it; a listed datapoint is **operated** when its entry has the flag `operate`.
+
+The endpoints of `anonymous`, with the image's anonymous pages (every other endpoint and method, a
+path the device does not know included, is 401 `auth.required`; the check comes before the routing,
+so a new endpoint is closed to `anonymous` until it is added here):
+
+| Endpoint | What `anonymous` gets |
+|---|---|
+| `GET /api/auth/session`, `POST /api/auth/onboard`, `/login`, `/logout` | open, as for everybody |
+| `GET /api/pages` | the section `ui.anonymous`, unchanged (streamed like `ui`) |
+| `GET /api/model` | the listed functions, the locations that are their `room`, the listed datapoints; `total`, `from` and `next` keep the index space of the whole model (a page may hold fewer entries) |
+| `GET /api/datapoints` | the listed datapoints; `count` is their number, `from` and `next` are datapoint ids |
+| `GET /api/datapoints/<id>` | a listed datapoint; another one is 404 `dp.unknown_id`, as an unknown one |
+| `POST /api/datapoints/<id>/command` | an operated datapoint; a listed one that is not operated is 409 `dp.not_writable`, an unlisted one 404 `dp.unknown_id` |
+| `GET /api/history` | the history of listed datapoints; any id that is not listed: 404 `dp.unknown_id` (the whole request) |
+| `PUT /api/rules/<rule>/parameters/<parameter>` | a parameter whose datapoint is operated; listed but not operated: 403 `rule.not_adjustable`; not listed: 404 `rule.unknown_parameter`, or 404 `rule.unknown` when no parameter of the rule is listed. The answer is `{"ok": true, "now_ms", "datapoint": {...}}`, the parameter's datapoint (not the rule) |
+| `/ws` | the live feed restricted to the listed datapoints (see "WebSocket") |
+
+For `anonymous` a datapoint's `writable` (and the flag 2 of `flags`) is true only when it is
+operated: the UI offers a control exactly where a command would be taken. The open endpoints and
+everything an administrator does are unchanged; an administrator sees every page (`ui`), every
+datapoint and every endpoint as before.
 
 ### `GET /api/auth/session` (open)
 
 ```json
-{"onboarded": true, "authenticated": true, "via": "session", "device": "homecontrol-a1b2c3",
- "version": "0.1.0-dev", "build": "g1a2b3c4", "ws_port": 0, "min_password": 8, "lang": "de"}
+{"onboarded": true, "authenticated": true, "via": "session", "role": "administrator",
+ "anonymous_pages": true, "device": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "g1a2b3c4",
+ "ws_port": 0, "min_password": 8, "lang": "de"}
 ```
+
+`role` (firmware from 2026-11) is the caller's role: `"anonymous"`, `"operator"` or
+`"administrator"`. `anonymous_pages` says whether the image grants `anonymous` its pages (the
+section `ui.anonymous`, above): the UI shows them without sign-in when it is true, and the login
+page when it is false.
 
 `build` is the build id (`git describe`) of the running firmware; with `version` it tells a page that
 waits for a restart (a firmware upload) which firmware came back.
@@ -755,8 +800,10 @@ All three: 404 `image.unavailable` in a build without the image service (POSIX `
 ## Dashboard
 
 What the device UI reads of the runtime image to build its pages: the model of rooms and functions,
-the control pages, the history, the rules and the schedules. Authenticated like every endpoint; the
-`PUT`s and `DELETE`s with the CSRF header when the cookie is used. All of them: 404 `image.unavailable` in a build without the
+the control pages, the history, the rules and the schedules. Authenticated like every endpoint
+(`anonymous` reads the model, the pages and the history restricted to its pages and sets the
+parameters listed there, "Roles"); the `PUT`s and `DELETE`s with the CSRF header when the cookie is
+used. All of them: 404 `image.unavailable` in a build without the
 image service (POSIX `--demo`), 405 `api.method_not_allowed` for other methods.
 
 ### `GET /api/model[?from=<n>]`
@@ -1527,11 +1574,23 @@ from an unauthenticated client closes it with 1008 `auth.required`; a wrong toke
 `auth.token_invalid`. The feed re-checks every second: a logout, an expired session or a revoked
 token closes the connection with 1008 `auth.session_ended`.
 
+**Anonymous** (homecontrol #91, "Roles"): while the image grants `anonymous` its pages, a handshake
+without a session cookie is the role `anonymous` at once (`hello` with `"authenticated": false,
+"role": "anonymous"`; no timeout; an `auth` message with a token still makes it a token client).
+It may `subscribe`, `ping` and `command`, restricted to the listed datapoints: the snapshot and the
+updates hold only those (`count` is their number), a command to a datapoint that is not listed is
+`dp.unknown_id`, to one that is not operated `dp.not_writable`. Its `status` messages carry only
+`{"image": {"loaded", "project", "revision"}}` (what tells the UI that another image runs). A
+`monitor` message is answered with an `error` `auth.required` (the connection stays). When an image
+without the grant is applied (or the image is removed), the feed closes the anonymous connections
+with 1008 `auth.required` within a second. Without the grant a handshake without a cookie behaves
+as before (a token within 10 s, else 1008).
+
 Server to client:
 
 | type | content |
 | --- | --- |
-| `hello` | on connect: `authenticated`, `onboarded`, `device`, `version` |
+| `hello` | on connect: `authenticated`, `onboarded`, `device`, `version`, `role` (firmware from 2026-11; `null` while a token is awaited) |
 | `status` | the members of `GET /api/status`; when one of its discrete fields changes (network state, address, LED, time sync, Improv, mDNS, sessions, clients, datapoint count) and every 10 s |
 | `datapoints` | `now_ms`, `updates`: `[{"id", "value", "quality", "updated_ms", "pending"}]` (also when only `pending` changed: the held value was sent). After `subscribe`: a snapshot in chunks with `snapshot: true`, `count`, `from`, `done` and the full datapoints (as in the REST API); then the changes, batched per event-loop turn (each datapoint once, with its latest value) |
 | `result` | answer to `command`: `id` (echoed as sent: the number or the name), `ref` (echoed), `ok`, and on refusal `error` and `code` (the `dp.*` codes of the REST command) |
@@ -1613,7 +1672,8 @@ change (an image load or a reload of the providers' datapoints) the older events
   telegram follows as its own event, and no `value` is given.
 - `command`: a datapoint was commanded from outside the rules; `origin` `ws` (a WebSocket client's
   `command`), `api` (`POST /api/datapoints/<id>/command`) or `app` (the controller itself: the
-  console, a component); `via` `session` or `token` for `ws` and `api`. A command reaches the
+  console, a component); `via` `session`, `token` or `anonymous` (without sign-in, "Roles") for `ws`
+  and `api`. A command reaches the
   technology first: a Zigbee `command` event precedes the `command` event that caused it.
 - `image`: `event` `load` (an image was applied), `reload` (the model was rebuilt for the providers'
   datapoints, e.g. a Zigbee device joined) or `unload`; `project`, `revision`, `source` (as in

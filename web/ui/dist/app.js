@@ -3,7 +3,8 @@
 // pages (history API; the device serves index.html for every path without an extension) and holds
 // the live connection. The control pages of the image (GET /api/pages) come first in the navigation,
 // the first one as the start page "/", the others at /page/<id>; without them the generated overview
-// is the start page.
+// is the start page. Without sign-in the image's anonymous pages are shown with a "Sign in" button
+// when the device grants them (spec/api.md "Roles", homecontrol #91), else the login page.
 
 import { api, onAuthProblem, errorText } from "/api.js";
 import { h, icon, icons, replace } from "/dom.js";
@@ -20,6 +21,7 @@ import { renderRules } from "/rules.js";
 import { renderSchedules } from "/schedules.js";
 import { renderZigbee } from "/zigbee.js";
 import { applyTheme } from "/theme.js";
+import { accessMode, routeAllowed, homeOf, liveRuns } from "/access.js";
 
 const routes = {
 	"/": { render: renderOverview, title: "overview.title" },
@@ -51,7 +53,8 @@ const ctx = {
 
 let cleanup = null;
 let pageList = [];
-let pagesLoaded = false;
+let pagesMode = null; // the access mode the pages were read for (anonymous: the anonymous pages)
+let liveMode = null; // the access mode the live connection was opened for
 let pagesKey = null; // project/revision the pages were read for
 
 /// Reads the control pages again (after the login and whenever another image runs).
@@ -61,7 +64,6 @@ async function refreshPages() {
 	} catch (error) {
 		pageList = []; // the overview stays; its own load shows the reason
 	}
-	pagesLoaded = true;
 }
 
 function pagePath(index) {
@@ -75,7 +77,13 @@ function buildNav() {
 	for (const link of nav.querySelectorAll(".nav-page")) {
 		link.remove();
 	}
-	overview.hidden = pageList.length > 0;
+	// Without sign-in only the anonymous pages, and the way to sign in.
+	const anonymous = accessMode(ctx.session) === "anonymous";
+	for (const link of nav.querySelectorAll("[data-full]")) {
+		link.hidden = anonymous;
+	}
+	document.getElementById("sign-in").hidden = !anonymous;
+	overview.hidden = pageList.length > 0 || anonymous;
 	pageList.forEach((page, index) => {
 		const path = pagePath(index);
 		nav.insertBefore(h("a", { href: path, "data-route": path, class: "nav-item nav-page" },
@@ -134,7 +142,10 @@ function navigate(path, replaceState = false) {
 function render() {
 	setDrawer(false);
 	const session = ctx.session;
-	if (session && session.authenticated && !pagesLoaded) {
+	const mode = accessMode(session);
+	if (liveRuns(mode) && pagesMode !== mode) {
+		// The pages of this access (signed in all of them, without sign-in the anonymous ones).
+		pagesMode = mode;
 		refreshPages().then(render);
 		return;
 	}
@@ -144,14 +155,8 @@ function render() {
 		path = "/";
 		history.replaceState(null, "", "/");
 	}
-	if (session && !session.onboarded && path !== "/onboarding") {
-		return navigate("/onboarding", true);
-	}
-	if (session && session.onboarded && !session.authenticated && path !== "/login") {
-		return navigate("/login", true);
-	}
-	if (session && session.authenticated && (path === "/login" || path === "/onboarding")) {
-		return navigate("/", true);
+	if (mode && !routeAllowed(mode, path, pageList.length)) {
+		return navigate(homeOf(mode, pageList.length), true);
 	}
 	const route = resolve(path);
 	app.classList.toggle("bare", !!route.bare);
@@ -166,14 +171,19 @@ function render() {
 		cleanup = null;
 	}
 	content.textContent = "";
-	if (session && session.authenticated && ctx.live.stopped !== false) {
+	if (liveRuns(mode) && (ctx.live.stopped !== false || liveMode !== mode)) {
+		// Signed in after the anonymous pages: a new connection, which sees everything.
+		if (ctx.live.stopped === false) {
+			ctx.live.stop();
+		}
+		liveMode = mode;
 		ctx.live.start(session.ws_port);
 	}
 	cleanup = route.render(content, ctx) || null;
 }
 
 function showLive(state, reason) {
-	liveBadge.hidden = !(ctx.session && ctx.session.authenticated);
+	liveBadge.hidden = !liveRuns(accessMode(ctx.session));
 	liveBadge.classList.toggle("connected", state === "connected");
 	if (state === "connected") {
 		liveBadge.textContent = t("live.connected");
@@ -211,6 +221,7 @@ async function start() {
 	});
 	ctx.live.addEventListener("unauthorized", async () => {
 		ctx.live.stop();
+		pagesMode = null;
 		try {
 			await refreshSession();
 		} catch (e) {
@@ -221,7 +232,7 @@ async function start() {
 	onAuthProblem(
 		async () => {
 			ctx.live.stop();
-			pagesLoaded = false;
+			pagesMode = null;
 			await refreshSession().catch(() => {});
 			render();
 		},

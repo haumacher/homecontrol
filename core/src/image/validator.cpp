@@ -223,6 +223,7 @@ private:
 	void rules();
 	void constants();
 	void blocks();
+	void anonymous();
 	void expressions();
 	bool expression(uint16_t root, const RuleContext& rule, const char* where);
 	void owners();
@@ -556,15 +557,19 @@ bool Checker::strings() {
 			start = i + 1;
 		}
 	}
-	size_t length = 0;
-	const char* ui = view_.ui(length);
-	if (ui != nullptr && !utf8_valid(reinterpret_cast<const uint8_t*>(ui), length, false, bad)) {
-		if (ui[bad] == '\0') {
-			refuse("ui", "malformed: a NUL at offset 0x%x", static_cast<unsigned>(bad));
-		} else {
-			refuse("ui", "malformed: invalid UTF-8 at offset 0x%x", static_cast<unsigned>(bad));
+	// The two finished bodies of GET /api/pages (9.16): served as they are, so they must be text.
+	for (int which = 0; which < 2; ++which) {
+		size_t length = 0;
+		const char* ui = which == 0 ? view_.ui(length) : view_.ui_anonymous(length);
+		const char* where = which == 0 ? "ui" : "ui.anonymous";
+		if (ui != nullptr && !utf8_valid(reinterpret_cast<const uint8_t*>(ui), length, false, bad)) {
+			if (ui[bad] == '\0') {
+				refuse(where, "malformed: a NUL at offset 0x%x", static_cast<unsigned>(bad));
+			} else {
+				refuse(where, "malformed: invalid UTF-8 at offset 0x%x", static_cast<unsigned>(bad));
+			}
+			return false;
 		}
-		return false;
 	}
 	return true;
 }
@@ -1875,8 +1880,40 @@ void Checker::records() {
 	rules();
 	expressions();
 	blocks();
+	anonymous();
 	owners();
 	limits();
+}
+
+void Checker::anonymous() {
+	// The tables of the anonymous pages (9.16, format 1.1): what `anonymous` may read and operate,
+	// found by binary search, so strictly ascending; without the pages they would let it in.
+	size_t pages = 0;
+	bool has_pages = view_.ui_anonymous(pages) != nullptr;
+	for (uint16_t table : {kUiAnonymousDatapoints, kUiAnonymousFunctions}) {
+		if (count(table) > 0 && !has_pages) {
+			at(table, 0);
+			refuse(prefix_, "malformed: a table of the anonymous pages without the section ui.anonymous");
+		}
+	}
+	uint32_t previous = 0;
+	for (size_t i = 0; i < count(kUiAnonymousDatapoints) && !full(); ++i) {
+		const AnonymousDatapointRec& r = rec<AnonymousDatapointRec>(kUiAnonymousDatapoints, i);
+		at(kUiAnonymousDatapoints, i);
+		if (index("datapoint", kDatapoints, r.datapoint, false) && i > 0 && r.datapoint <= previous) {
+			refuse(path("datapoint"), "malformed: the anonymous datapoints do not ascend strictly");
+		}
+		flags("flags", r.flags, kAnonymousOperate);
+		previous = r.datapoint;
+	}
+	for (size_t i = 0; i < count(kUiAnonymousFunctions) && !full(); ++i) {
+		uint16_t f = rec<uint16_t>(kUiAnonymousFunctions, i);
+		at(kUiAnonymousFunctions, i);
+		if (index("function", kFunctions, f, false) && i > 0 && f <= previous) {
+			refuse(path("function"), "malformed: the anonymous functions do not ascend strictly");
+		}
+		previous = f;
+	}
 }
 
 void Checker::blocks() {

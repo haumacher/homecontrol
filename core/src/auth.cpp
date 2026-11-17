@@ -37,6 +37,15 @@ const char* auth_status_code(AuthStatus status) {
 	return "auth.unknown";
 }
 
+const char* role_name(Role role) {
+	switch (role) {
+	case Role::anonymous: return "anonymous";
+	case Role::operator_: return "operator";
+	case Role::administrator: return "administrator";
+	}
+	return "anonymous";
+}
+
 const char* auth_status_text(AuthStatus status) {
 	switch (status) {
 	case AuthStatus::ok: return "ok";

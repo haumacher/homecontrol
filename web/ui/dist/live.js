@@ -156,7 +156,8 @@ export class Live extends EventTarget {
 		}
 		switch (message.type) {
 			case "hello":
-				if (message.authenticated) {
+				// Signed in, or the image's anonymous pages (spec/api.md "WebSocket": role anonymous).
+				if (message.authenticated || message.role === "anonymous") {
 					this.send({ type: "subscribe" });
 				} else {
 					this.dispatchEvent(new CustomEvent("unauthorized", { detail: "" }));

@@ -17,10 +17,11 @@ class JsonWriter;
 /// record at `offset + i * entrySize` of its section, so a later minor version may lengthen records.
 namespace hc::image::bin {
 
-/// The format this firmware reads (section 11): major 1, every minor up to 0.
+/// The format this firmware reads (section 11): major 1, every minor up to 1 (1.1: the anonymous
+/// pages, homecontrol #91).
 constexpr uint16_t kFormatMajor = 1;
-constexpr uint16_t kFormatMinor = 0;
-/// "1.0".
+constexpr uint16_t kFormatMinor = 1;
+/// "1.1".
 const char* format_text();
 
 constexpr uint16_t kNone = 0xFFFF;
@@ -105,6 +106,9 @@ enum Section : uint16_t {
 	kBlockBound = 0x52,
 	kBlockParameters = 0x53,
 	kUi = 0x60,
+	kUiAnonymous = 0x62,
+	kUiAnonymousDatapoints = 0x63,
+	kUiAnonymousFunctions = 0x64,
 };
 
 /// What this firmware knows of a section: its name (the paths of section 10), its record's size
@@ -397,6 +401,16 @@ struct BlockParameterRec {
 };
 static_assert(sizeof(BlockParameterRec) == 16, "block parameter");
 
+/// An entry of `ui.anonymous.datapoints` (9.16, format 1.1): a datapoint the anonymous pages show.
+struct AnonymousDatapointRec {
+	uint16_t datapoint;
+	uint8_t flags; ///< kAnonymousOperate
+	uint8_t reserved;
+};
+static_assert(sizeof(AnonymousDatapointRec) == 4, "anonymous datapoint");
+/// AnonymousDatapointRec::flags: `anonymous` may command the datapoint (set the rule parameter).
+constexpr uint8_t kAnonymousOperate = 0x01;
+
 /// CRC-32 (zlib's) of the bytes [0, signed_end) with the header's `crc` field taken as 0.
 uint32_t image_crc(const uint8_t* bytes, size_t signed_end);
 
@@ -455,12 +469,19 @@ public:
 	const ImageRec& image() const { return at<ImageRec>(kImage, 0); }
 	/// The `ui` section's bytes (nullptr, 0 without).
 	const char* ui(size_t& length) const;
+	/// The `ui.anonymous` section's bytes (nullptr, 0 without: the image grants `anonymous` nothing).
+	const char* ui_anonymous(size_t& length) const;
+	/// Whether the anonymous pages show datapoint `id` (binary search in `ui.anonymous.datapoints`);
+	/// `operate` tells whether `anonymous` may command it. False without `ui.anonymous`.
+	bool anonymous_datapoint(size_t id, bool& operate) const;
+	/// Whether the anonymous pages show function `index` (`ui.anonymous.functions`).
+	bool anonymous_function(size_t index) const;
 
 private:
 	const uint8_t* bytes_ = nullptr;
 	const char* strings_ = "";
 	/// The known sections (indexed by their position in sections()).
-	static constexpr size_t kKnown = 42;
+	static constexpr size_t kKnown = 45;
 	Table tables_[kKnown] = {};
 };
 

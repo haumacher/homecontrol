@@ -1248,6 +1248,10 @@ input.number {
 	font-size: 13px;
 }
 
+a.button {
+	text-decoration: none;
+}
+
 .button.danger {
 	background: var(--error);
 	color: #ffffff;

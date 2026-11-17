@@ -37,6 +37,19 @@ const char* auth_status_code(AuthStatus status);
 /// English reason.
 const char* auth_status_text(AuthStatus status);
 
+/// The roles of the API (spec/api.md "Roles", homecontrol #91), ascending: each may do what the ones
+/// below it may. Without session and token a request is `anonymous`; a password session, a bearer
+/// token and the E-Home connection are `administrator`; nobody is `operator` until its own sign-in
+/// (homecontrol #77).
+enum class Role : uint8_t {
+	anonymous,
+	operator_,
+	administrator,
+};
+
+/// "anonymous", "operator", "administrator".
+const char* role_name(Role role);
+
 /// A session as the API refers to it: the slot and its generation (a logged-out or expired slot
 /// gets a new generation, so an old reference never matches the next session in that slot).
 struct SessionRef {

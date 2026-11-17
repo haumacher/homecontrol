@@ -135,6 +135,9 @@ find_program(HC_NODE node)
 if(HC_NODE)
 	add_test(NAME WebUi.FunctionState
 		COMMAND "${HC_NODE}" --test "${HC_REPO_DIR}/web/ui/test/function_state.test.mjs")
+	# What the UI offers without sign-in (web/ui/dist/access.js, homecontrol #91).
+	add_test(NAME WebUi.Access
+		COMMAND "${HC_NODE}" --test "${HC_REPO_DIR}/web/ui/test/access.test.mjs")
 else()
 	message(STATUS "node not found: the test WebUi.FunctionState is not registered")
 endif()
@@ -192,6 +195,8 @@ target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_probe_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/storage_stats_test.cpp")
 # The control pages of the image (issue #54, schema 1.1).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/pages_test.cpp")
+# The roles and the anonymous pages (homecontrol #91, spec/api.md "Roles", spec/runtime-image.md 9.16).
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/anonymous_test.cpp")
 # The BlobStore on files (issue #21, doc/persistence.md).
 target_sources(hc_posix PRIVATE src/file_blob_store.cpp)
 # The image slot in a file (issue #87, spec/runtime-image.md 7).

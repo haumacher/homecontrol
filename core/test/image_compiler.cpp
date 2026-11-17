@@ -82,6 +82,9 @@ enum Section : uint16_t {
 	kBound = 0x52,
 	kBlockParameters = 0x53,
 	kUi = 0x60,
+	kUiAnonymous = 0x62,
+	kUiAnonymousDatapoints = 0x63,
+	kUiAnonymousFunctions = 0x64,
 };
 
 uint16_t entry_size(uint16_t id) {
@@ -126,7 +129,9 @@ uint16_t entry_size(uint16_t id) {
 		case kPorts: return 12;
 		case kBound: return 2;
 		case kBlockParameters: return 16;
-		default: return 0; // strings, ui: byte sections
+		case kUiAnonymousDatapoints: return 4;
+		case kUiAnonymousFunctions: return 2;
+		default: return 0; // strings, ui, ui.anonymous: byte sections
 	}
 }
 
@@ -501,6 +506,10 @@ private:
 	bool timeline(const JsonSpan& json, RuleScope& scope, uint16_t& index);
 	bool blocks(const JsonSpan& root);
 	bool ui(const JsonSpan& root);
+	/// The body of GET /api/pages for `pages` into the byte section `section` (`ui`, `ui.anonymous`).
+	bool pages_body(const std::vector<JsonSpan>& pages, uint16_t section);
+	/// The tables of the anonymous pages (9.16): what `pages` show.
+	bool anonymous_tables(const std::vector<JsonSpan>& pages);
 	void image_and_settings(const JsonSpan& root);
 	void datapoint_table();
 	bool assemble(std::vector<uint8_t>& out, const uint8_t* seed);
@@ -2515,6 +2524,90 @@ bool Compiler::ui(const JsonSpan& root) {
 	if (pages.empty()) {
 		return true; // no control pages: no section (the device shows its overview)
 	}
+	if (!pages_body(pages, kUi)) {
+		return false;
+	}
+	// The pages of minimum role anonymous (3.9, 9.16, format 1.1): their own body and what they show.
+	std::vector<JsonSpan> anonymous;
+	for (size_t p = 0; p < pages.size(); ++p) {
+		std::string role = member_text(pages[p], "minimumRole");
+		if (role == "anonymous") {
+			anonymous.push_back(pages[p]);
+		} else if (!role.empty() && role != "operator") {
+			return fail("ui.pages[%u].minimumRole: '%s' is neither anonymous nor operator", static_cast<unsigned>(p),
+				role.c_str());
+		}
+	}
+	if (anonymous.empty()) {
+		return true;
+	}
+	return pages_body(anonymous, kUiAnonymous) && anonymous_tables(anonymous);
+}
+
+bool Compiler::anonymous_tables(const std::vector<JsonSpan>& pages) {
+	std::map<uint16_t, uint8_t> datapoints; // index -> flags (bit 0 operate)
+	std::set<uint16_t> functions;
+	std::string failure;
+	auto show = [&](const JsonSpan& object, bool operate) {
+		int dp = datapoint(member_text(object, "datapoint"));
+		if (dp < 0) {
+			failure = member_text(object, "datapoint");
+			return;
+		}
+		datapoints[static_cast<uint16_t>(dp)] |= operate ? 1 : 0;
+	};
+	for (const JsonSpan& page : pages) {
+		for (const JsonSpan& section : member_items(page, "sections")) {
+			for (const JsonSpan& element : member_items(section, "elements")) {
+				JsonSpan chart;
+				if (has_member(element, "function")) {
+					std::string id = member_text(element, "function");
+					auto it = std::find(function_ids_.begin(), function_ids_.end(), id);
+					if (it == function_ids_.end()) {
+						return fail("ui: no function '%s'", id.c_str());
+					}
+					uint16_t f = static_cast<uint16_t>(it - function_ids_.begin());
+					functions.insert(f);
+					// Every role of the function, operated: the tile is the function's control.
+					Table& t = table(kFunctions);
+					Table& roles = table(kRoles);
+					size_t first = t.get16(f, 14);
+					size_t count = t.get8(f, 18);
+					for (size_t k = first; k < first + count; ++k) {
+						datapoints[roles.get16(k, 4)] |= 1;
+					}
+				} else if (has_member(element, "datapoint")) {
+					show(element, !member_flag(element, "readOnly", false));
+				} else if (member(element, "chart", chart)) {
+					for (const JsonSpan& series : member_items(chart, "series")) {
+						show(series, false);
+					}
+					for (const JsonSpan& reference : member_items(chart, "references")) {
+						if (has_member(reference, "datapoint")) {
+							show(reference, false);
+						}
+					}
+				}
+			}
+		}
+	}
+	if (!failure.empty()) {
+		return fail("ui: no datapoint '%s'", failure.c_str());
+	}
+	Table& t = table(kUiAnonymousDatapoints);
+	for (const auto& entry : datapoints) {
+		size_t r = t.add();
+		t.u16(r, 0, entry.first);
+		t.u8(r, 2, entry.second);
+	}
+	Table& f = table(kUiAnonymousFunctions);
+	for (uint16_t index : functions) {
+		f.u16(f.add(), 0, index);
+	}
+	return true;
+}
+
+bool Compiler::pages_body(const std::vector<JsonSpan>& pages, uint16_t section) {
 	static const char* const kRanges[] = {"1h", "24h", "7d", "30d", "1y"};
 	auto parse_label = [](const JsonSpan& object, Label& out) {
 		out.clear();
@@ -2536,7 +2629,7 @@ bool Compiler::ui(const JsonSpan& root) {
 		JsonWriter counter = JsonWriter::counter();
 		JsonWriter real(nullptr, 0);
 		if (pass == 1) {
-			buffer.resize(table(kUi).bytes.size() + 1);
+			buffer.resize(table(section).bytes.size() + 1);
 			real = JsonWriter(buffer.data(), buffer.size());
 		}
 		JsonWriter& json = pass == 0 ? counter : real;
@@ -2699,12 +2792,12 @@ bool Compiler::ui(const JsonSpan& root) {
 			return fail("ui: no datapoint '%s'", failure.c_str());
 		}
 		if (pass == 0) {
-			table(kUi).bytes.resize(json.length());
+			table(section).bytes.resize(json.length());
 		} else {
 			if (json.overflowed()) {
 				return fail("ui: the text did not fit");
 			}
-			std::memcpy(table(kUi).bytes.data(), buffer.data(), json.length());
+			std::memcpy(table(section).bytes.data(), buffer.data(), json.length());
 		}
 	}
 	return true;
@@ -2852,7 +2945,8 @@ bool Compiler::assemble(std::vector<uint8_t>& out, const uint8_t* seed) {
 	const uint8_t magic[4] = {0x48, 0x43, 0x49, 0x4D};
 	std::memcpy(out.data(), magic, 4);
 	put16(out, 4, 1);
-	put16(out, 6, 0);
+	// Format 1.1 only for an image with its sections (spec/runtime-image.md 8): the anonymous pages.
+	put16(out, 6, tables_.count(kUiAnonymous) != 0 && !tables_[kUiAnonymous].bytes.empty() ? 1 : 0);
 	put32(out, 8, static_cast<uint32_t>(length));
 	put32(out, 16, seed != nullptr ? 1 : 0);
 	put16(out, 20, static_cast<uint16_t>(header));

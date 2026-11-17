@@ -123,11 +123,14 @@ struct WebResponse {
 /// {"error": "<English reason>", "code": "<key>"} with a 4xx/5xx status.
 ///
 /// Access: GET /api/auth/session, POST /api/auth/onboard, /login and /logout are open
-/// (POST /api/auth/sessions/clear is not: it needs a principal like the rest); everything
-/// else needs a session cookie or a bearer token (401 otherwise; 403 with
-/// "auth.onboarding_required" while the device has no password). State-changing requests (POST,
-/// PUT, DELETE) without a bearer token must carry `X-Requested-With: HomeControl` (CSRF: a
-/// cross-site form cannot set it).
+/// (POST /api/auth/sessions/clear is not: it needs a principal like the rest); 403 with
+/// "auth.onboarding_required" for everything else while the device has no password. A session
+/// cookie or a bearer token is the role `administrator`; a request without either is `anonymous`
+/// (spec/api.md "Roles", homecontrol #91), which reaches only the endpoints minimum_role() opens to
+/// it, and only while the image grants it its pages (anonymous_pages()), restricted to what those
+/// pages show; everything else is 401 "auth.required" before any routing (default deny).
+/// State-changing requests (POST, PUT, DELETE) without a bearer token must carry
+/// `X-Requested-With: HomeControl` (CSRF: a cross-site form cannot set it).
 class WebApi : public zigbee::ZigbeeEventListener {
 public:
 	/// Datapoints per page of GET /api/datapoints.
@@ -255,8 +258,23 @@ public:
 	void zigbee_event(const zigbee::ZigbeeEvent& event) override;
 
 	/// One datapoint with its metadata ({"id","name","type","flags","writable","value","quality",
-	/// "updated_ms"}).
-	static void write_datapoint(JsonWriter& json, const Datapoint& datapoint);
+	/// "updated_ms"}). `operable` false: `writable` and the flag 2 are false (the role `anonymous`
+	/// on a datapoint its pages show but do not operate).
+	static void write_datapoint(JsonWriter& json, const Datapoint& datapoint, bool operable = true);
+
+	/// The lowest role that may make a request of `method` to `path` (spec/api.md "Roles"):
+	/// `anonymous` for the endpoints of the anonymous pages (the pages, the model, the history, the
+	/// datapoints and their commands, the rule parameters), `administrator` for every other one,
+	/// a path the API does not know included (default deny).
+	static Role minimum_role(HttpMethod method, const char* path);
+
+	/// Whether the loaded image grants `anonymous` its pages (the section ui.anonymous,
+	/// spec/runtime-image.md 9.16); false without an image or before onboarding.
+	bool anonymous_pages() const;
+
+	/// Whether `role` sees datapoint `id` of the model, and whether it may command it (`operate`):
+	/// `anonymous` the datapoints its pages list (ui.anonymous.datapoints), every other role all.
+	bool datapoint_visible(Role role, size_t id, bool& operate) const;
 
 	/// Writes {"error": text, "code": code} and the status.
 	static void refuse(WebResponse& response, int status, const char* code, const char* text);
@@ -364,6 +382,9 @@ private:
 	enum class Pending : uint8_t { none, restart, factory_reset, wifi, upload };
 	Pending pending_ = Pending::none;
 	TimerHandle action_timer_;
+	/// The role of the request handle() is serving (set at its start, on the event loop's thread):
+	/// the handlers of the anonymous endpoints restrict what they answer by it.
+	Role role_ = Role::administrator;
 };
 
 /// The API's error code of a datapoint refusal ("dp.not_writable", ...).

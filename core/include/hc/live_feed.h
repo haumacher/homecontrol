@@ -69,6 +69,13 @@ protected:
 /// Messages are formatted straight into a claim of the transport's send queue (ws_claim()), so the
 /// feed holds no message buffer of its own; a message to several clients is formatted once.
 ///
+/// The role `anonymous` (spec/api.md "Roles", homecontrol #91): while the image grants it its pages
+/// (WebApi::anonymous_pages()), a client without a session cookie is anonymous at once. It gets the
+/// snapshot and the updates of the datapoints its pages list (WebApi::datapoint_visible()), commands
+/// what they operate, gets a status of the image's identity only and no monitor or Zigbee events; a
+/// message to several clients is formatted once per group (the anonymous ones, the others). When
+/// the grant goes (another image), its connections close with 1008 "auth.required".
+///
 /// Threading: the event loop's thread; the platform calls open/message/closed/writable there.
 class LiveFeed : public DatapointListener {
 public:
@@ -140,7 +147,7 @@ public:
 	static bool same_origin(const char* origin, const char* host);
 
 private:
-	enum class Principal : uint8_t { none, session, token, ehome };
+	enum class Principal : uint8_t { none, session, token, ehome, anonymous };
 	/// The slot of the E-Home socket, after the browsers'.
 	static constexpr size_t kEhomeSlot = kMaxClients;
 
@@ -173,8 +180,14 @@ private:
 		Client* target = &client;
 		return deliver(&target, 1, false, format);
 	}
-	/// Every subscribed client (the broadcast's targets); returns their count.
+	/// Every subscribed client (the broadcast's targets); returns their count. `anonymous`: only the
+	/// anonymous ones (true) or only the others (false).
 	size_t subscribed(Client** targets);
+	size_t subscribed(Client** targets, bool anonymous);
+	/// The client's role (spec/api.md "Roles").
+	Role role_of(const Client& client) const {
+		return client.principal == Principal::anonymous ? Role::anonymous : Role::administrator;
+	}
 	void missed(Client& client);
 	void send_error(Client& client, const char* code, const char* text);
 	void refuse_and_close(Client& client, uint16_t ws_code, const char* code, const char* text);
@@ -186,6 +199,8 @@ private:
 	void schedule_monitor_flush();
 	void attach_monitor();
 	void send_status(Client* only);
+	/// Sends `targets` (all anonymous or none) the status their role sees.
+	void send_status_to(Client* const* targets, size_t count, bool anonymous);
 	void tick();
 	void flush();
 	/// Queues the datapoint `id` for the next flush (datapoint_updated(), datapoint_pending()).

@@ -56,6 +56,9 @@ constexpr SectionInfo kSections[] = {
 	{kBlockBound, "blocks.bound", 2, 2, false},
 	{kBlockParameters, "blocks.parameters", 16, 8, false},
 	{kUi, "ui", 0, 1, false},
+	{kUiAnonymous, "ui.anonymous", 0, 1, false},
+	{kUiAnonymousDatapoints, "ui.anonymous.datapoints", 4, 2, false},
+	{kUiAnonymousFunctions, "ui.anonymous.functions", 2, 2, false},
 };
 constexpr size_t kSectionCount = sizeof(kSections) / sizeof(kSections[0]);
 
@@ -94,7 +97,7 @@ bool tag_matches(const char* tag, const char* language, size_t length) {
 } // namespace
 
 const char* format_text() {
-	return "1.0";
+	return "1.1";
 }
 
 const SectionInfo* section_info(uint16_t id) {
@@ -219,6 +222,56 @@ const char* View::ui(size_t& length) const {
 	const Table& t = table(kUi);
 	length = t.count;
 	return t.count != 0 ? reinterpret_cast<const char*>(t.base) : nullptr;
+}
+
+const char* View::ui_anonymous(size_t& length) const {
+	const Table& t = table(kUiAnonymous);
+	length = t.count;
+	return t.count != 0 ? reinterpret_cast<const char*>(t.base) : nullptr;
+}
+
+bool View::anonymous_datapoint(size_t id, bool& operate) const {
+	operate = false;
+	if (table(kUiAnonymous).count == 0) {
+		return false;
+	}
+	const Table& t = table(kUiAnonymousDatapoints);
+	size_t lo = 0, hi = t.count;
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		const auto& r = *reinterpret_cast<const AnonymousDatapointRec*>(t.base + static_cast<size_t>(t.stride) * mid);
+		if (r.datapoint == id) {
+			operate = (r.flags & kAnonymousOperate) != 0;
+			return true;
+		}
+		if (r.datapoint < id) {
+			lo = mid + 1;
+		} else {
+			hi = mid;
+		}
+	}
+	return false;
+}
+
+bool View::anonymous_function(size_t index) const {
+	if (table(kUiAnonymous).count == 0) {
+		return false;
+	}
+	const Table& t = table(kUiAnonymousFunctions);
+	size_t lo = 0, hi = t.count;
+	while (lo < hi) {
+		size_t mid = (lo + hi) / 2;
+		uint16_t f = *reinterpret_cast<const uint16_t*>(t.base + static_cast<size_t>(t.stride) * mid);
+		if (f == index) {
+			return true;
+		}
+		if (f < index) {
+			lo = mid + 1;
+		} else {
+			hi = mid;
+		}
+	}
+	return false;
 }
 
 void write_label(JsonWriter& json, const View& view, uint32_t ref) {

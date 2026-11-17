@@ -1053,7 +1053,7 @@ TEST_CASE("WebApi.Blocks: list, types, changes applied whole or refused whole, r
 	f.controller.run_once();
 	auto status = f.get("/api/status", f.cookie);
 	REQUIRE(status.status == 200);
-	CHECK(status.json["device"]["format"].text == "1.0");
+	CHECK(status.json["device"]["format"].text == "1.1");
 	CHECK(status.json["image"]["blocks"].number == 1);
 	auto r = f.get("/api/blocks", f.cookie);
 	REQUIRE(r.status == 200);

@@ -6,6 +6,7 @@
 // passes a structural self-check of section 9.
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -77,7 +78,8 @@ const std::map<uint16_t, uint16_t> kSizes = {{0x01, 32}, {0x02, 0}, {0x03, 8}, {
 	{0x12, 28}, {0x13, 8}, {0x14, 16}, {0x15, 8}, {0x20, 8}, {0x21, 12}, {0x22, 2}, {0x23, 2}, {0x24, 12}, {0x28, 32},
 	{0x2C, 20}, {0x2D, 32}, {0x2E, 20}, {0x30, 64}, {0x31, 4}, {0x32, 32}, {0x40, 28}, {0x41, 28}, {0x42, 8},
 	{0x43, 8}, {0x44, 16}, {0x45, 16}, {0x46, 8}, {0x47, 8}, {0x48, 8}, {0x49, 8}, {0x4A, 12}, {0x4B, 16},
-	{0x4C, 2}, {0x4D, 16}, {0x4E, 40}, {0x50, 28}, {0x51, 12}, {0x52, 2}, {0x53, 16}, {0x60, 0}};
+	{0x4C, 2}, {0x4D, 16}, {0x4E, 40}, {0x50, 28}, {0x51, 12}, {0x52, 2}, {0x53, 16}, {0x60, 0},
+	{0x62, 0}, {0x63, 4}, {0x64, 2}};
 
 class Checker {
 public:
@@ -177,7 +179,7 @@ std::string Checker::run() {
 	if (b_.size() < 32 || std::memcmp(b_.data(), "HCIM", 4) != 0) {
 		return "no header";
 	}
-	if (u16(4) != 1 || u16(6) != 0 || u32(8) != b_.size() || b_.size() % 8 != 0 || u16(20) != 32 || (u32(16) & ~1u) != 0) {
+	if (u16(4) != 1 || u16(6) > 1 || u32(8) != b_.size() || b_.size() % 8 != 0 || u16(20) != 32 || (u32(16) & ~1u) != 0) {
 		return "a bad header";
 	}
 	size_t signed_end = b_.size() - ((u32(16) & 1) != 0 ? 64 : 0);
@@ -222,6 +224,13 @@ std::string Checker::run() {
 	// The padding up to the signed end is zero, the bytes between sections too.
 	if (sections_.count(0x01) == 0 || sections_.count(0x02) == 0) {
 		return "image or strings missing";
+	}
+	// Format 1.1 exactly for an image with its sections, the anonymous pages (spec 8, 9.16).
+	if ((u16(6) == 1) != (sections_.count(0x62) == 1)) {
+		return "minor " + std::to_string(u16(6)) + " with" + (sections_.count(0x62) == 1 ? "" : "out") + " ui.anonymous";
+	}
+	if ((sections_.count(0x63) == 1 || sections_.count(0x64) == 1) && sections_.count(0x62) == 0) {
+		return "a table of the anonymous pages without ui.anonymous";
 	}
 	// Strings: NUL at 0 and at the end, sorted and unique.
 	const Section& strings = sections_[0x02];
@@ -750,6 +759,19 @@ TEST_CASE("Image compiler: every image of spec/fixtures/images compiles into a c
 		++n;
 	}
 	CHECK(n >= 15);
+}
+
+TEST_CASE("Image compiler: anonymous-pages.json, the format 1.1 fixture of the anonymous pages") {
+	// Its `.bin` is the test compiler's until E-Home's compiler writes the sections (haumacher/ehome#184,
+	// spec/runtime-image.md 13.1); HC_WRITE_FIXTURES=1 writes it again.
+	std::string path = HC_SPEC_DIR "/fixtures/images/anonymous-pages.json";
+	std::vector<uint8_t> out;
+	compile_and_check(path, read_file(path), out);
+	CHECK(out[6] == 1);
+	if (std::getenv("HC_WRITE_FIXTURES") != nullptr) {
+		std::ofstream file(HC_SPEC_DIR "/fixtures/images/anonymous-pages.bin", std::ios::binary);
+		file.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+	}
 }
 
 TEST_CASE("Image compiler: every rule case and each of its image steps compiles into a checked image") {
