@@ -198,6 +198,33 @@ TEST_CASE("NetworkName.ATakenNameMakesItHomecontrol2WhichStaysAfterARestartWithT
 	CHECK(g.stored() == "homecontrol-2");
 }
 
+TEST_CASE("NetworkName.ARouterEchoingTheControllersOwnDhcpNameDoesNotTakeIt") {
+	// On the desk (2026-11-18): the FRITZ!Box answers mDNS for the host names of its DHCP clients, so
+	// "homecontrol.local" came back with the controller's own address (the DHCP host name it sent
+	// before the pick) and the controller stored homecontrol-2 with no other host on the LAN.
+	Fixture f;
+	f.service.echoes = {{"homecontrol", "192.0.2.10"}};
+	NetworkName name(f.loop, f.clock, f.settings, f.service);
+	name.start(f.connectivity);
+	f.connectivity.link_up("192.0.2.10");
+	f.run_for(NetworkName::kSettleMs + 1000);
+	CHECK(f.service.lookups == std::vector<std::string>{"homecontrol"});
+	CHECK(f.service.own_addresses == std::vector<std::string>{"192.0.2.10"});
+	CHECK(f.service.applied == std::vector<std::string>{"homecontrol"});
+	CHECK(f.stored() == "homecontrol");
+}
+
+TEST_CASE("NetworkName.ARouterAnsweringWithAnotherAddressTakesTheName") {
+	Fixture f;
+	f.service.echoes = {{"homecontrol", "192.0.2.77"}};
+	NetworkName name(f.loop, f.clock, f.settings, f.service);
+	name.start(f.connectivity);
+	f.connectivity.link_up("192.0.2.10");
+	f.run_for(NetworkName::kSettleMs + 1000);
+	CHECK(f.service.lookups == std::vector<std::string>{"homecontrol", "homecontrol-2"});
+	CHECK(f.stored() == "homecontrol-2");
+}
+
 TEST_CASE("NetworkName.TheNameProbingEndsUpWithIsStored") {
 	// Two controllers picking at the same moment: both found homecontrol free, the responder of one
 	// renamed it while probing.
@@ -368,6 +395,22 @@ TEST_CASE("NetworkName.ANameAnotherHostAnswersForIsRefusedAndNothingChanges") {
 	CHECK(f.service.applied.empty());
 	CHECK(std::string(f.name.name()) == "homecontrol");
 	CHECK(f.capture.sink.contains("W hc.name: network name printer refused: printer is already in use on this network"));
+}
+
+TEST_CASE("NetworkName.ARenameToANameAnsweredWithTheOwnAddressIsTaken") {
+	// The router still answers with the controller's address for the DHCP host name it carried
+	// before: that name is the controller's own, not another host's.
+	Renamed f;
+	f.service.echoes = {{"homecontrol-test", "192.0.2.10"}, {"printer", "192.0.2.99"}};
+	bool ok = false;
+	std::string code, error;
+	f.rename("homecontrol-test", ok, code, error);
+	CHECK(ok);
+	CHECK(f.stored() == "homecontrol-test");
+	f.rename("printer", ok, code, error);
+	CHECK_FALSE(ok);
+	CHECK(code == "settings.name_taken");
+	CHECK(f.stored() == "homecontrol-test");
 }
 
 TEST_CASE("NetworkName.InvalidAndEmptyNamesAreRefusedWithoutALookup") {

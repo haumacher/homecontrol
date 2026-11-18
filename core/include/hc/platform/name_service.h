@@ -12,7 +12,7 @@ namespace hc {
 enum class NameLookup : uint8_t {
 	running, ///< No answer yet and the time is not up.
 	free,    ///< Nobody answered for the name within the time.
-	taken,   ///< Another host answered for the name.
+	taken,   ///< Another host answered for the name (with an address that is not the controller's own).
 	failed,  ///< The lookup broke off (the platform logged why).
 };
 
@@ -22,9 +22,13 @@ enum class NameLookup : uint8_t {
 class NameService {
 public:
 	/// Starts asking the LAN whether a host answers for `<name>.local`, for at most `timeout_ms`.
-	/// One lookup at a time. False with `reason` if it cannot start (mDNS cannot run, a lookup is
-	/// still running).
-	virtual bool start_lookup(const char* name, uint32_t timeout_ms, const char** reason) = 0;
+	/// An answer that carries `own_address` (the controller's address, "" while unknown) is the
+	/// controller itself and does not take the name: a router that answers mDNS for the host names
+	/// of its DHCP clients (the FRITZ!Box does) echoes the DHCP host name the controller sent before
+	/// the name was picked. One lookup at a time. False with `reason` if it cannot start (mDNS cannot
+	/// run, a lookup is still running).
+	virtual bool start_lookup(const char* name, const char* own_address, uint32_t timeout_ms,
+		const char** reason) = 0;
 
 	/// The state of the lookup start_lookup() began. Once it answers free, taken or failed the lookup
 	/// is over (its resources freed); without a lookup it answers failed.

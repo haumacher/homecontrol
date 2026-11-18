@@ -116,6 +116,8 @@ private:
 	const Clock& clock_;
 	Settings& settings_;
 	NameService& service_;
+	/// The connectivity of start(): its address is the controller's own in a lookup's answers.
+	const Connectivity* connectivity_ = nullptr;
 	char name_[setting::kMaxNetHostnameLength + 1] = {};
 	/// The name of a rename being checked.
 	char target_[setting::kMaxNetHostnameLength + 1] = {};

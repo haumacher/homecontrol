@@ -42,6 +42,7 @@ bool NetworkName::start(Connectivity& connectivity) {
 		Log::info(kTag, "no network name stored: one is picked when the network first comes up (%s unless taken)",
 			name_);
 	}
+	connectivity_ = &connectivity;
 	if (!connectivity.add_listener(this)) {
 		Log::error(kTag, "cannot follow the network: the network name is not announced");
 		return false;
@@ -88,7 +89,8 @@ void NetworkName::start_pick_lookup() {
 }
 
 bool NetworkName::start_lookup(const char* name, Lookup kind, const char** reason) {
-	if (!service_.start_lookup(name, kLookupMs, reason)) {
+	const char* own = connectivity_ != nullptr ? connectivity_->ip() : "";
+	if (!service_.start_lookup(name, own, kLookupMs, reason)) {
 		return false;
 	}
 	lookup_ = kind;

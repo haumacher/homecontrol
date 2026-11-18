@@ -19,7 +19,7 @@ class FakeNameService : public hc::NameService {
 public:
 	explicit FakeNameService(const FakeClock& clock) : clock_(clock) {}
 
-	bool start_lookup(const char* name, uint32_t timeout_ms, const char** reason) override {
+	bool start_lookup(const char* name, const char* own_address, uint32_t timeout_ms, const char** reason) override {
 		if (!lookups_start) {
 			*reason = "mDNS is not running";
 			return false;
@@ -32,6 +32,8 @@ public:
 		timeouts.push_back(timeout_ms);
 		running_ = true;
 		name_ = name;
+		own_ = own_address != nullptr ? own_address : "";
+		own_addresses.push_back(own_);
 		started_ms_ = clock_.monotonic_ms();
 		return true;
 	}
@@ -47,7 +49,14 @@ public:
 		if (fail) {
 			return hc::NameLookup::failed;
 		}
-		return taken.count(name_) != 0 ? hc::NameLookup::taken : hc::NameLookup::free;
+		if (taken.count(name_) != 0) {
+			return hc::NameLookup::taken;
+		}
+		auto echo = echoes.find(name_);
+		if (echo != echoes.end() && echo->second != own_) {
+			return hc::NameLookup::taken;
+		}
+		return hc::NameLookup::free;
 	}
 
 	void cancel_lookup() override {
@@ -69,6 +78,11 @@ public:
 	const char* announced_name() const override { return announced.c_str(); }
 
 	std::set<std::string> taken;
+	/// Names a router answers for with the given address (its DHCP clients' host names): taken
+	/// unless the address is the one the lookup names as the controller's own.
+	std::map<std::string, std::string> echoes;
+	/// The own address of each lookup.
+	std::vector<std::string> own_addresses;
 	/// apply_name(key) ends up announcing the value (another host defended the name while probing).
 	std::map<std::string, std::string> probe_renames;
 	bool lookups_start = true;
@@ -86,6 +100,7 @@ private:
 	const FakeClock& clock_;
 	bool running_ = false;
 	std::string name_;
+	std::string own_;
 	uint64_t started_ms_ = 0;
 };
 

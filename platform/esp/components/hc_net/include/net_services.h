@@ -38,6 +38,8 @@ public:
 	static constexpr uint16_t kServicePort = 80;
 	/// The responder's name buffer (MDNS_NAME_BUF_LEN of the mDNS component).
 	static constexpr size_t kMaxAnnounced = 65;
+	/// The answers a lookup collects (the controller's own echo and another host's).
+	static constexpr size_t kMaxLookupAnswers = 4;
 
 	NetServices(Settings& settings, EspClock& clock);
 
@@ -48,7 +50,7 @@ public:
 	void connectivity_changed(const Connectivity& connectivity, LinkState previous) override;
 
 	// NameService
-	bool start_lookup(const char* name, uint32_t timeout_ms, const char** reason) override;
+	bool start_lookup(const char* name, const char* own_address, uint32_t timeout_ms, const char** reason) override;
 	NameLookup poll_lookup() override;
 	void cancel_lookup() override;
 	bool apply_name(const char* name, const char** reason) override;
@@ -76,9 +78,13 @@ private:
 	WifiDriver* wifi_ = nullptr;
 	char ntp_server_[Settings::kMaxStringLength + 1] = {};
 	mutable char announced_[kMaxAnnounced] = {};
+	/// The name of the last apply_name(): the rename callback tells its own change from probing's.
+	char requested_[kMaxAnnounced] = {};
 	/// The running (or abandoned, not yet finished) lookup.
 	mdns_search_once_s* search_ = nullptr;
 	char lookup_name_[setting::kMaxNetHostnameLength + 1] = {};
+	/// The controller's own address of the running lookup: an answer with it is the controller itself.
+	char lookup_own_[16] = {};
 	bool abandoned_ = false;
 	bool mdns_initialized_ = false;
 	bool mdns_running_ = false;

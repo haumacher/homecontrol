@@ -237,6 +237,13 @@ first start with it, so their address changes once (from `homecontrol-<mac>.loca
 The pick asks before it announces because the ESP responder settles a probe conflict by comparing
 the two IPv4 addresses: a host with a lower address than the controller's would not make it rename.
 
+An answer that carries the controller's own address is the controller itself and leaves the name
+free (in the pick and in a change by the user): a router that answers mDNS for the host names of its
+DHCP clients (the FRITZ!Box does) echoes the DHCP host name the controller sent before the name was
+picked (`homecontrol`) or before it was changed. The lookup collects up to 4 answers, so that such
+an echo cannot hide another host's (`mDNS: homecontrol.local is answered only with this
+controller's address 192.168.178.83: free`).
+
 **Changed by the user**: the System section of the Settings page (card "Network name"), or
 `PUT /api/settings/net.hostname` (`spec/api.md`). The rules are the phoneblock dongle's: the input is
 trimmed and lower-cased, then it must be one RFC 1123 label of 1 to 32 characters from `[a-z0-9-]`,

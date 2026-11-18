@@ -6,6 +6,7 @@
 #include <sys/time.h>
 
 #include <cstdio>
+#include <cstring>
 
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -63,8 +64,13 @@ bool NetServices::ensure_mdns(const char** reason) {
 	return true;
 }
 
-void NetServices::on_hostname_changed(const char* hostname, void*) {
-	// The mDNS task, during probing (no mDNS calls here): another host defended the name.
+void NetServices::on_hostname_changed(const char* hostname, void* context) {
+	// The mDNS task (no mDNS calls here). It reports every change, apply_name()'s own as well; only
+	// a name other than the one set is probing's rename: another host defended the name.
+	const auto* self = static_cast<const NetServices*>(context);
+	if (hostname != nullptr && std::strcmp(hostname, self->requested_) == 0) {
+		return;
+	}
 	ESP_LOGW(kTag, "mDNS: the name was taken on the network, the responder announces %s.local now",
 		hostname != nullptr ? hostname : "(none)");
 }
@@ -96,6 +102,7 @@ bool NetServices::apply_name(const char* name, const char** reason) {
 	if (!ensure_mdns(reason)) {
 		return false;
 	}
+	std::snprintf(requested_, sizeof(requested_), "%s", name);
 	esp_err_t err = mdns_hostname_set(name);
 	if (err == ESP_OK) {
 		// The instance name is the network name as well: E-Home's controller search lists the
@@ -148,7 +155,7 @@ bool NetServices::collect_abandoned() {
 	return true;
 }
 
-bool NetServices::start_lookup(const char* name, uint32_t timeout_ms, const char** reason) {
+bool NetServices::start_lookup(const char* name, const char* own_address, uint32_t timeout_ms, const char** reason) {
 	if (!collect_abandoned()) {
 		*reason = "a lookup is still running";
 		return false;
@@ -156,13 +163,16 @@ bool NetServices::start_lookup(const char* name, uint32_t timeout_ms, const char
 	if (!ensure_mdns(reason)) {
 		return false;
 	}
-	// The A record of <name>.local: a host that uses the name answers for it. One answer is enough.
-	search_ = mdns_query_async_new(name, nullptr, nullptr, MDNS_TYPE_A, timeout_ms, 1, nullptr);
+	// The A record of <name>.local: a host that uses the name answers for it. Several answers are
+	// collected: a router that answers for its DHCP clients (the FRITZ!Box) may answer first with the
+	// controller's own address, which does not take the name (NameService::start_lookup()).
+	search_ = mdns_query_async_new(name, nullptr, nullptr, MDNS_TYPE_A, timeout_ms, kMaxLookupAnswers, nullptr);
 	if (search_ == nullptr) {
 		*reason = "the mDNS query cannot start (out of memory?)";
 		return false;
 	}
 	std::snprintf(lookup_name_, sizeof(lookup_name_), "%s", name);
+	std::snprintf(lookup_own_, sizeof(lookup_own_), "%s", own_address != nullptr ? own_address : "");
 	ESP_LOGI(kTag, "mDNS: asking whether a host answers for %s.local (%u ms)", name, static_cast<unsigned>(timeout_ms));
 	return true;
 }
@@ -176,16 +186,36 @@ NameLookup NetServices::poll_lookup() {
 	if (!mdns_query_async_get_results(search_, 0, &results, &count)) {
 		return NameLookup::running;
 	}
-	bool taken = results != nullptr;
-	if (taken) {
-		char address[16] = "?";
-		for (const mdns_ip_addr_t* a = results->addr; a != nullptr; a = a->next) {
-			if (a->addr.type == ESP_IPADDR_TYPE_V4) {
-				esp_ip4addr_ntoa(&a->addr.u_addr.ip4, address, sizeof(address));
-				break;
+	// Taken when an answer carries an address that is not the controller's own (or no IPv4 address
+	// at all: another host's, as far as can be told).
+	bool taken = false;
+	bool own = false;
+	char other[16] = "?";
+	for (const mdns_result_t* r = results; r != nullptr && !taken; r = r->next) {
+		bool v4 = false;
+		for (const mdns_ip_addr_t* a = r->addr; a != nullptr && !taken; a = a->next) {
+			if (a->addr.type != ESP_IPADDR_TYPE_V4) {
+				continue;
+			}
+			v4 = true;
+			char address[16];
+			esp_ip4addr_ntoa(&a->addr.u_addr.ip4, address, sizeof(address));
+			if (lookup_own_[0] != '\0' && std::strcmp(address, lookup_own_) == 0) {
+				own = true;
+			} else {
+				taken = true;
+				std::snprintf(other, sizeof(other), "%s", address);
 			}
 		}
-		ESP_LOGI(kTag, "mDNS: %s.local is answered by %s", lookup_name_, address);
+		if (!v4) {
+			taken = true;
+		}
+	}
+	if (taken) {
+		ESP_LOGI(kTag, "mDNS: %s.local is answered by %s", lookup_name_, other);
+	} else if (own) {
+		ESP_LOGI(kTag, "mDNS: %s.local is answered only with this controller's address %s: free", lookup_name_,
+			lookup_own_);
 	} else {
 		ESP_LOGI(kTag, "mDNS: no host answers for %s.local", lookup_name_);
 	}
