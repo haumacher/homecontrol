@@ -57,6 +57,7 @@ function statusCards(s) {
 			[t("status.ui"), device.ui || "—"],
 		])),
 		h("section", { class: "card" }, h("h2", null, t("settings.system")), rows([
+			[t("status.device_id"), device.name || "—"],
 			[t("status.uptime"), formatDuration(s.uptime_s || 0)],
 			[t("status.heap"), t("status.heap.value", { free: formatBytes(memory.free), min: formatBytes(memory.min_free) })],
 			[t("status.improv"), improv.active ? t("status.improv.active", { seconds: improv.ends_in_s }) : t("status.improv.ended")],

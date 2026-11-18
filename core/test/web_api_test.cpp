@@ -1566,3 +1566,52 @@ TEST_CASE("WebApi addresses a datapoint by its number or by its name (homecontro
 	CHECK(f.get("/api/datapoints/x%2Fcommand", cookie).json["id"].number == 4);
 	CHECK(f.post("/api/datapoints/kueche.licht", "{\"value\": true}", cookie).status == 405);
 }
+
+// ---- The installation the browser tab names (homecontrol #94) ---------------------------------
+
+#include "fake_name_service.h"
+#include "hc/network_name.h"
+
+TEST_CASE("WebApi session names the installation: without an image the network name (homecontrol #94)") {
+	WebFixture plain; // no image service, no network name service (the POSIX build)
+	auto r = plain.get("/api/auth/session");
+	REQUIRE(r.status == 200);
+	REQUIRE(r.json.has("installation"));
+	CHECK(r.json["installation"].kind == hc_test::Json::Kind::null);
+	CHECK(r.json["network_name"].text == "homecontrol"); // nothing stored: the first candidate
+	CHECK(r.json["device"].text == "homecontrol-a1b2c3"); // the device ID stays its own member
+	REQUIRE(plain.fake.settings.set_string("net.hostname", "keller") == hc::SettingsStatus::ok);
+	CHECK(plain.get("/api/auth/session").json["network_name"].text == "keller");
+
+	DashboardFixture f; // the image service without an image
+	r = f.get("/api/auth/session"); // open: anonymous as well
+	CHECK(r.json["authenticated"].boolean == false);
+	CHECK(r.json["installation"].kind == hc_test::Json::Kind::null);
+	CHECK(r.json["network_name"].text == "homecontrol");
+}
+
+TEST_CASE("WebApi session names the installation: the loaded image's name (homecontrol #94)") {
+	DashboardFixture f;
+	hc_test::FakeNameService names{f.fake.clock};
+	REQUIRE(f.fake.settings.set_string("net.hostname", "dachboden") == hc::SettingsStatus::ok);
+	hc::NetworkName name{f.controller.loop(), f.fake.clock, f.fake.settings, names};
+	REQUIRE(name.start(f.controller.connectivity()));
+	f.api.set_network_name(&name);
+	f.load(image_fixture("example.json"));
+
+	auto anonymous = f.get("/api/auth/session");
+	CHECK(anonymous.json["authenticated"].boolean == false);
+	CHECK(anonymous.json["installation"].text == "Example house");
+	CHECK(anonymous.json["network_name"].text == "dachboden");
+	auto signed_in = f.get("/api/auth/session", f.cookie);
+	CHECK(signed_in.json["authenticated"].boolean == true);
+	CHECK(signed_in.json["installation"].text == "Example house");
+	CHECK(f.get("/api/status", f.cookie).json["image"]["name"].text == "Example house");
+
+	// Unloaded: the network name again.
+	REQUIRE(f.request(HttpMethod::del, "/api/image", "", f.cookie).status == 200);
+	auto after = f.get("/api/auth/session");
+	CHECK(after.json["installation"].kind == hc_test::Json::Kind::null);
+	CHECK(after.json["network_name"].text == "dachboden");
+	f.api.set_network_name(nullptr);
+}

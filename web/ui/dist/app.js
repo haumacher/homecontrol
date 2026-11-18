@@ -56,6 +56,8 @@ let pageList = [];
 let pagesMode = null; // the access mode the pages were read for (anonymous: the anonymous pages)
 let liveMode = null; // the access mode the live connection was opened for
 let pagesKey = null; // project/revision the pages were read for
+let routeTitle = ""; // the name of the page shown
+let installationKey = null; // what names the installation in the live status (image, network name)
 
 /// Reads the control pages again (after the login and whenever another image runs).
 async function refreshPages() {
@@ -128,6 +130,15 @@ async function changeLanguage(lang) {
 	return found;
 }
 
+/// The header names the page shown; the browser tab the page and the installation: the loaded
+/// image's name, without an image the network name (homecontrol #94).
+function showTitles() {
+	const session = ctx.session || {};
+	const installation = session.installation || session.network_name || "";
+	title.textContent = routeTitle || t("app.title");
+	document.title = routeTitle && installation ? `${routeTitle} – ${installation}` : routeTitle || installation || t("app.title");
+}
+
 function navigate(path, replaceState = false) {
 	if (location.pathname !== path) {
 		if (replaceState) {
@@ -163,9 +174,8 @@ function render() {
 	for (const link of document.querySelectorAll("[data-route]")) {
 		link.classList.toggle("active", link.dataset.route === path);
 	}
-	title.textContent = ctx.deviceName || t("app.title");
-	const routeTitle = route.text || (route.title ? t(route.title) : "");
-	document.title = routeTitle ? `${routeTitle} – ${ctx.deviceName || t("app.title")}` : t("app.title");
+	routeTitle = route.text || (route.title ? t(route.title) : "");
+	showTitles();
 	if (cleanup) {
 		cleanup();
 		cleanup = null;
@@ -202,6 +212,13 @@ async function start() {
 	ctx.live.addEventListener("status", async (e) => {
 		const image = e.detail.image;
 		const key = image && image.loaded ? `${image.project}/${image.revision}` : "";
+		const network = e.detail.network;
+		const named = `${key}/${(image && image.name) || ""}/${(network && network.mdns) || ""}`;
+		if (installationKey !== null && named !== installationKey) {
+			// Another image or a renamed network: the browser tab names the installation again.
+			refreshSession().then(showTitles, () => {});
+		}
+		installationKey = named;
 		if (pagesKey === null) {
 			pagesKey = key;
 			return;

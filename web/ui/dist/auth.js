@@ -156,7 +156,7 @@ export function renderLogin(content, ctx) {
 		submit,
 	);
 	content.appendChild(card(h("h2", null, t("auth.login.title")),
-		h("p", null, t("auth.login.text", { device: ctx.deviceName })), form));
+		h("p", null, t("auth.login.text", { device: (ctx.session && (ctx.session.installation || ctx.session.network_name)) || ctx.deviceName })), form));
 	password.focus();
 	return () => clearInterval(countdown);
 }

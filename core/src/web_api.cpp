@@ -720,6 +720,18 @@ void WebApi::auth_session(const WebRequest& request, WebResponse& response) {
 	// The role (spec/api.md "Roles"); an invalid token is no role, but the UI reads it as anonymous.
 	json.member("role", role_name(via != nullptr ? Role::administrator : Role::anonymous))
 		.member("anonymous_pages", anonymous_pages());
+	// The installation the browser tab names (homecontrol #94): the loaded image's name, else null; and
+	// the network name, the fallback without an image.
+	json.key("installation");
+	if (image_ != nullptr && image_->loaded() && image_->info().name[0] != '\0') {
+		json.string(image_->info().name);
+	} else {
+		json.null();
+	}
+	char stored[setting::kMaxNetHostnameLength + 1];
+	const char* network = network_name_ != nullptr ? network_name_->announced()
+		: read_network_name(controller_.settings(), stored, kTag) ? stored : setting::kDefaultNetHostname;
+	json.member("network_name", network);
 	json.member("device", host_.device_name())
 		.member("version", kVersion)
 		.member("build", build_id())

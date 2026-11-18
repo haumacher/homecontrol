@@ -336,6 +336,7 @@
 	"status.firmware": "Firmware",
 	"status.build": "Build",
 	"status.ui": "Weboberfläche",
+	"status.device_id": "Geräte-ID",
 	"status.uptime": "Laufzeit",
 	"status.heap": "Freier Speicher",
 	"status.heap.value": "{free} (niedrigster Stand {min})",

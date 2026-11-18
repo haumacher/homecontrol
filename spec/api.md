@@ -95,9 +95,17 @@ datapoint and every endpoint as before.
 
 ```json
 {"onboarded": true, "authenticated": true, "via": "session", "role": "administrator",
- "anonymous_pages": true, "device": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "g1a2b3c4",
+ "anonymous_pages": true, "installation": "Example house", "network_name": "homecontrol",
+ "device": "homecontrol-a1b2c3", "version": "0.1.0-dev", "build": "g1a2b3c4",
  "ws_port": 0, "min_password": 8, "lang": "de"}
 ```
+
+`installation` and `network_name` (firmware from 2026-11, homecontrol #94) name the installation in
+the browser tab: `installation` is the name of the loaded runtime image (`image.name` of
+`GET /api/status`), `null` without an image or when the image has no name; `network_name` is the
+network name the controller announces (`net.hostname`; the stored setting or `homecontrol` on a
+build without mDNS). The UI shows `<page> – <installation>`, and the network name without an
+image. `device` is the fixed device ID `homecontrol-<MAC>`.
 
 `role` (firmware from 2026-11) is the caller's role: `"anonymous"`, `"operator"` or
 `"administrator"`. `anonymous_pages` says whether the image grants `anonymous` its pages (the
