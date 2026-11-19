@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+# Purge removes the controller's state; remove keeps it. The system user stays, as
+# Debian policy recommends, so no stale file can end up owned by a reused UID.
+if [ "$1" = purge ]; then
+    rm -rf /var/lib/homecontrol
+fi
+
+exit 0

@@ -46,8 +46,10 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   source list of both builds; the event loop model is in `doc/core.md`, the network bring-up in
   `doc/network.md`.
 - `platform/posix/` — the Linux build: implements the platform interfaces with POSIX (settings in a
-  text file), builds the controller as an ordinary executable (the simulator and the SBC fallback)
-  and the test runner (core tests plus `platform/posix/test/`).
+  text file), builds the controller as an ordinary executable (the simulator, the SBC fallback and
+  the Linux package, `doc/linux.md`; options and environment in `options.h`) and the test runner
+  (core tests plus `platform/posix/test/`, and `service_test.py`, the executable as the package runs
+  it).
 - `platform/esp/` — the ESP-IDF project: `main/` (boots NVS, the controller, the network and the
   console; `idf_component.yml` lists the managed components `mdns`, `led_strip` and
   `esp_websocket_client`, and `esp-zigbee-lib`/`esp-zboss-lib` for the esp32c6 and esp32h2, pinned
@@ -109,8 +111,12 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
 - `third_party/` — vendored code with its license (doctest, the unit test framework; cpp-httplib,
   the POSIX build's HTTP server; Monocypher 4.0.2, the core's Ed25519 for signed runtime images and
   update manifests, compiled as C into both builds).
+- `debian/` — the Debian package `homecontrol` (the controller as a Linux service: systemd unit,
+  `/etc/default/homecontrol`, data in `/var/lib/homecontrol`, the UI in `/usr/share/homecontrol/www`;
+  `build-deb.sh`, `ci-build.sh`, `hc-version`, the apt repository script `apt-repo.sh` and its page
+  `apt-index.html`; `doc/linux.md`).
 - `.github/workflows/ci.yml` — host build with tests; the esp32c6 firmware build (partition table
-  check, application, updater).
+  check, application, updater); the Debian package for trixie amd64.
 
 ## Build, run, verify
 
@@ -135,10 +141,19 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   the saved state; `@app-flash_args` writes only the application). Watch with
   `idf.py -B build-esp32c6 -p <the C6's node> monitor` (exit with Ctrl-]). OTA updates during
   development: `scripts/update-server.py` and the console's `update now` (`doc/ota.md`).
-- **Run on the host**: `build/homecontrol [--settings <file>] [--http <port>] [--demo]` (default
-  `homecontrol.settings` in the working directory; format in `doc/network.md`); the web UI and API
-  on http://localhost:8080/ (WebSocket on port 8081), `--demo` loads simulated datapoints; stop
-  with Ctrl-C.
+- **Run on the host**: `build/homecontrol [--settings <file>] [--http <port>] [--bind <address>] [--demo]`
+  (default `homecontrol.settings` in the working directory; the image, the blobs and the run marker
+  live beside it; format in `doc/network.md`); the web UI and API on http://localhost:8081/
+  (WebSocket on port 8082; `HOMECONTROL_HTTP_PORT`/`HOMECONTROL_HTTP_BIND` set both too), `--demo`
+  loads simulated datapoints; stop with Ctrl-C.
+- **Linux package** (`debian/`, `doc/linux.md`): `docker run --rm -v "$PWD":/src -w /src debian:trixie
+  debian/ci-build.sh` (or `debian:bookworm`; `--nocheck` skips the tests) builds
+  `dist/homecontrol_<version>_<codename>_<arch>.deb` with the distribution's hardened `-O2` flags,
+  which find warnings the Debug host build does not; the release workflow builds Bookworm and Trixie
+  for amd64, arm64 and armhf, and pages.yml publishes the signed apt repository under `/apt`
+  (`debian/apt-repo.sh`). A systemd container for tests must mask `systemd-binfmt`,
+  `systemd-sysctl` and `systemd-modules-load`: privileged, they change the host's binfmt and sysctl
+  settings.
 - **Provisioning the device**: from the browser with the web flasher (`web/flasher/`, ESP Web Tools
   flashes and then sends the credentials over Improv Wi-Fi serial; offered for 5 minutes after
   boot, until 60 s after the link first came up); or a board without WiFi credentials listens for

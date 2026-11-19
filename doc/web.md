@@ -471,7 +471,9 @@ is not, and how to add a language are in `doc/i18n.md`.
 
 ### POSIX: the same API, the WebSocket on its own port
 
-`homecontrol --http <port>` (default 8080, 0 = off) serves the API and `web/ui/dist` with
+`homecontrol --http <port>` (default 8081, 0 = off; `--bind <address>`, default 0.0.0.0; both also
+from the environment of the Linux package's unit, doc/linux.md) serves the API and `web/ui/dist` (the
+package's `/usr/share/homecontrol/www`, `--www <dir>`) with
 cpp-httplib (vendored in `third_party/cpp-httplib`, MIT), and `--demo` loads the demo datapoints.
 cpp-httplib 0.61 has a WebSocket of its own, but its handler API does not let the core's feed own
 the connection, and the raw socket cannot be taken over from a request handler. The POSIX build

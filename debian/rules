@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+# The Debian package of the controller (doc/linux.md): the POSIX build of platform/posix with the
+# distribution's hardened flags, OpenSSL required (HTTPS for external values, wss:// for E-Home), the
+# web UI and its language packs installed under /usr/share/homecontrol/www, where the executable looks
+# for them by default. debian/build-deb.sh writes debian/changelog with the version hc::kVersion.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+BUILD := build-deb
+WWW := debian/homecontrol/usr/share/homecontrol/www
+
+%:
+	dh $@ --buildsystem=cmake+ninja --sourcedirectory=platform/posix --builddirectory=$(BUILD)
+
+override_dh_auto_configure:
+	dh_auto_configure -- -DHC_WEB_UI_DIR=/usr/share/homecontrol/www -DHC_REQUIRE_TLS=ON
+
+# The host tests (ctest), unless DEB_BUILD_OPTIONS has nocheck (the emulated armhf build).
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	cd $(BUILD) && ctest --output-on-failure
+endif
+
+# The project has no install rules: the executable, the UI files and the committed language packs.
+override_dh_auto_install:
+	install -D -m 0755 $(BUILD)/homecontrol debian/homecontrol/usr/bin/homecontrol
+	install -d $(WWW)/lang
+	find web/ui/dist -maxdepth 1 -type f -exec install -m 0644 {} $(WWW)/ \;
+	install -m 0644 web/ui/dist/lang/en.json web/ui/lang/*.json $(WWW)/lang/
+
+override_dh_auto_clean:
+	rm -rf $(BUILD)
+
+# The service is enabled and started on installation, restarted on an upgrade (the default of
+# dh_installsystemd), and stopped on removal.

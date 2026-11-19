@@ -24,7 +24,7 @@ add_compile_options(-Wall -Wextra -Werror "$<$<COMPILE_LANGUAGE:CXX>:-fno-except
 
 add_subdirectory("${HC_REPO_DIR}/core" core)
 
-add_library(hc_posix STATIC src/platform.cpp src/file_settings.cpp)
+add_library(hc_posix STATIC src/platform.cpp src/file_settings.cpp src/options.cpp)
 target_include_directories(hc_posix PUBLIC include)
 target_link_libraries(hc_posix PUBLIC hc_core)
 
@@ -38,8 +38,10 @@ target_compile_definitions(hc_posix_web PRIVATE CPPHTTPLIB_NO_EXCEPTIONS)
 
 add_executable(homecontrol src/main.cpp)
 target_link_libraries(homecontrol PRIVATE hc_posix hc_posix_web)
-# The UI files served by default (homecontrol --www <dir> overrides).
-target_compile_definitions(homecontrol PRIVATE HC_WEB_UI_DIR="${HC_REPO_DIR}/web/ui/dist")
+# The UI files served by default (homecontrol --www <dir> overrides): the checkout's, or where a package
+# installs them (debian/rules: /usr/share/homecontrol/www, doc/linux.md).
+set(HC_WEB_UI_DIR "${HC_REPO_DIR}/web/ui/dist" CACHE PATH "The web UI files the controller serves by default")
+target_compile_definitions(homecontrol PRIVATE HC_WEB_UI_DIR="${HC_WEB_UI_DIR}")
 
 # Unit tests: doctest, vendored. The core's tests (core/test) and the POSIX platform's
 # (platform/posix/test) share one runner. One CTest entry per test case (discovered after each build), so
@@ -100,6 +102,7 @@ add_executable(hc_tests
 	"${HC_REPO_DIR}/core/test/scheduler_adjust_probe_test.cpp"
 	test/file_settings_test.cpp
 	test/posix_platform_test.cpp
+	test/posix_options_test.cpp
 )
 target_include_directories(hc_tests SYSTEM PRIVATE "${HC_REPO_DIR}/third_party/doctest")
 target_include_directories(hc_tests PRIVATE "${HC_REPO_DIR}/core/test")
@@ -212,11 +215,14 @@ target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/fetch_queue_test.cpp")
 target_sources(hc_posix_web PRIVATE src/httplib_fetcher.cpp)
 find_package(OpenSSL 3.0 QUIET)
 if(OPENSSL_FOUND)
-	target_compile_definitions(hc_posix_web PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+	# HTTPS of the fetcher, and wss:// of the E-Home connection (src/websocket_client.cpp).
+	target_compile_definitions(hc_posix_web PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT HC_POSIX_TLS)
 	target_link_libraries(hc_posix_web PUBLIC OpenSSL::SSL OpenSSL::Crypto)
-	message(STATUS "External values: HTTPS through OpenSSL ${OPENSSL_VERSION}")
+	message(STATUS "External values and E-Home: HTTPS and wss:// through OpenSSL ${OPENSSL_VERSION}")
+elseif(HC_REQUIRE_TLS)
+	message(FATAL_ERROR "HC_REQUIRE_TLS: the OpenSSL development files (libssl-dev) are not found")
 else()
-	message(STATUS "External values: OpenSSL development files not found: the POSIX fetcher speaks HTTP only")
+	message(STATUS "External values and E-Home: OpenSSL development files not found: HTTP and ws:// only")
 endif()
 # The Zigbee coordinator's core (issue #15, doc/zigbee.md): database, mapping, adapter under the fake clock.
 target_sources(hc_tests PRIVATE
@@ -278,6 +284,9 @@ target_include_directories(hc_posix_mqtt_tests SYSTEM PRIVATE "${HC_REPO_DIR}/th
 target_include_directories(hc_posix_mqtt_tests PRIVATE "${HC_REPO_DIR}/core/test")
 target_link_libraries(hc_posix_mqtt_tests PRIVATE hc_posix_web)
 target_compile_definitions(hc_posix_mqtt_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
+if(OPENSSL_FOUND)
+	target_compile_definitions(hc_posix_mqtt_tests PRIVATE HC_POSIX_TLS) # the wss:// test's TLS server
+endif()
 doctest_discover_tests(hc_posix_mqtt_tests)
 # The System page's facts of the host (issue #42): threads, resident memory, thermal zone, CPU.
 target_sources(hc_posix PRIVATE src/posix_system_info.cpp)
@@ -288,3 +297,17 @@ target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/memory_probe_test.cpp"
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/swap_memory_test.cpp")
 target_sources(hc_tests PRIVATE test/posix_system_info_test.cpp)
 
+
+# The executable as the Linux package runs it (homecontrol #95, doc/linux.md): the environment of the
+# systemd unit, the data beside the settings, no update channel and no language pack download,
+# restart and factory reset ending the process for systemd, an image with Zigbee bindings.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+	foreach(hc_case environment linux restart zigbee)
+		add_test(NAME Service.${hc_case}
+			COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test/service_test.py"
+				"$<TARGET_FILE:homecontrol>" "${HC_REPO_DIR}/spec" "${HC_REPO_DIR}/web/ui/dist" ${hc_case})
+	endforeach()
+else()
+	message(STATUS "python3 not found: the Service.* tests of the executable are not registered")
+endif()

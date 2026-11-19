@@ -91,6 +91,10 @@ public:
 	WebServer(Controller& controller, DatapointModel& model, LoopExecutor& executor, uint16_t port, std::string www_dir);
 	~WebServer();
 
+	/// The numeric IPv4 or IPv6 address both listeners bind to (default every IPv4 address,
+	/// 0.0.0.0; options.h). Call before start().
+	void set_bind_address(std::string address) { bind_address_ = std::move(address); }
+
 	/// Call on the loop thread before the loop runs: starts the authentication, the feed and the
 	/// listener threads. Logs and returns false if a port cannot be bound.
 	bool start();
@@ -131,6 +135,8 @@ public:
 	const char* ntp_server() const override { return ""; }
 	void ntp_server_changed() override;
 	void write_update_state(JsonWriter& json) const override;
+	/// The system's package manager updates the POSIX build (doc/linux.md): no update.channel.
+	bool has_update_channel() const override { return false; }
 	const char* ui_version() const override { return ui_version_; }
 	uint16_t websocket_port() const override { return static_cast<uint16_t>(port_ + 1); }
 	HostResult system_action_possible(SystemAction action, const char** reason) const override;
@@ -161,6 +167,7 @@ private:
 	WebApi api_;
 	LiveFeed feed_;
 	uint16_t port_;
+	std::string bind_address_ = "0.0.0.0";
 	std::string www_dir_;
 	const BlobStore* packs_store_ = nullptr;
 	std::function<void(SystemAction)> system_handler_;

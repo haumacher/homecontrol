@@ -1685,7 +1685,9 @@ std::string upper_hex(const Bytes& octets) {
 Bytes gateway_request(uint8_t sequence, const Bytes& cemi) {
 	size_t total = 10 + cemi.size();
 	Bytes result{0x06, 0x10, 0x04, 0x20, static_cast<uint8_t>(total >> 8), static_cast<uint8_t>(total), 0x04, 7, sequence, 0};
-	result.insert(result.end(), cemi.begin(), cemi.end());
+	for (uint8_t octet : cemi) { // not a range insert: GCC 12's -Warray-bounds false positive (Bookworm)
+		result.push_back(octet);
+	}
 	return result;
 }
 

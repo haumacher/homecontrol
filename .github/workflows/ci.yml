@@ -47,3 +47,21 @@ jobs:
           path: platform/esp/updater
       - name: The updater keeps a margin of 16 KB in its partition
         run: python3 platform/esp/tools/gen_partitions.py --check-updater platform/esp/updater/build/hc_updater.bin
+
+  deb:
+    name: Debian package (trixie amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The release workflow's build (doc/linux.md), one distribution and architecture: the package
+      # builds with the distribution's hardened -O2 flags and its tests pass there.
+      - name: Build in debian:trixie
+        run: docker run --rm -v "$PWD":/src -w /src debian:trixie debian/ci-build.sh
+      - name: Install it
+        run: >
+          docker run --rm -v "$PWD":/src -w /src debian:trixie sh -c
+          'apt-get update -qq && apt-get install -y -qq ./dist/homecontrol_*_trixie_amd64.deb >/dev/null &&
+          dpkg-query -W homecontrol && test -x /usr/bin/homecontrol && test -f /usr/share/homecontrol/www/lang/de.json &&
+          homecontrol --version'

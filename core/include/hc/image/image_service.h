@@ -28,6 +28,7 @@
 #include "hc/platform/blob_store.h"
 #include "hc/platform/image_slot.h"
 #include "hc/storage_stats.h"
+#include "hc/technology.h"
 #include "hc/rules/engine.h"
 #include "hc/scheduler.h"
 #include "hc/value_store.h"
@@ -191,6 +192,16 @@ public:
 	uint64_t loaded_ms() const { return loaded_ms_; }
 
 private:
+	/// The owner of the image's Zigbee-bound datapoints that no provider took (a platform without a
+	/// Zigbee adapter: the Linux package, homecontrol #95): they keep no value from a device, and a
+	/// command or a read is refused with that reason in the log (the API answers 409 dp.refused).
+	class NoZigbee : public Technology {
+	public:
+		const char* name() const override { return "zigbee"; }
+		bool command(const Datapoint& datapoint, const Value& value) override;
+		bool read(const Datapoint& datapoint) override;
+	};
+
 	/// The composed specs of a model load: the image's (`image_count`) and the providers'.
 	struct Composed;
 	struct SwapTable;
@@ -276,6 +287,7 @@ private:
 	ModelView model_view_;
 	DynamicSpecProvider* providers_[kMaxProviders] = {};
 	size_t provider_count_ = 0;
+	NoZigbee no_zigbee_;
 	size_t dynamic_count_ = 0;
 	uint32_t dynamic_reloads_ = 0;
 	bool reload_pending_ = false;

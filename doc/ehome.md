@@ -180,10 +180,14 @@ after the TLS handshake and the heap at that moment.
   after a boot, a deploy's frames stopped right after the announcement: the client task delivered
   nothing more, pongs included, while the loop ran on; the cause is not known. The library's own
   ping and reconnect are off: the core pings and backs off.
-- **POSIX** (`platform/posix`): `PosixWebSocketClient` on the core's WebSocket codec (client role)
-  over a TCP socket with a reader thread, plain `ws://` only (there is no TLS in the host build;
-  `wss://` is refused with that reason), enough to run against an E-Home on the developer's
-  machine; the enrollment's POST through cpp-httplib (`HttplibFetcher::post`).
+- **POSIX** (`platform/posix`, the Linux package, doc/linux.md): `PosixWebSocketClient` on the
+  core's WebSocket codec (client role) over a TCP socket with a reader thread; `wss://` through
+  OpenSSL (homecontrol #95: TLS 1.2 or newer, the server's certificate checked against the system's
+  trust store, OpenSSL's default paths, and its name), `ws://` as before. A build without OpenSSL's
+  development files refuses `wss://` with that reason; the package requires them. A development CA
+  (E-Home's `bin/dev-tls.sh`) is trusted on Linux by adding it to the system's store
+  (`/usr/local/share/ca-certificates/`, `update-ca-certificates`). The enrollment's POST through
+  cpp-httplib (`HttplibFetcher::post`), which checks the certificate against the same store.
 
 ## Memory on the device
 

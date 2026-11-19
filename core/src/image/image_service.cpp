@@ -795,6 +795,19 @@ bool ImageService::compose(const Plan* plan, Composed& out, Report& report) {
 	return ok;
 }
 
+bool ImageService::NoZigbee::command(const Datapoint& datapoint, const Value& value) {
+	(void)value;
+	Log::warn(kTag, "command to '%s' refused: it is bound to Zigbee, and this platform has no Zigbee adapter",
+		datapoint.name());
+	return false;
+}
+
+bool ImageService::NoZigbee::read(const Datapoint& datapoint) {
+	Log::warn(kTag, "read of '%s' refused: it is bound to Zigbee, and this platform has no Zigbee adapter",
+		datapoint.name());
+	return false;
+}
+
 void ImageService::bind_providers(const Plan* plan, const Composed& composed) {
 	for (size_t p = 0; p < composed.part_count; ++p) {
 		const Composed::Part& part = composed.parts[p];
@@ -811,6 +824,18 @@ void ImageService::bind_providers(const Plan* plan, const Composed& composed) {
 	ImageBindings bindings = bindings_of(plan);
 	for (size_t i = 0; i < provider_count_; ++i) {
 		providers_[i]->model_loaded(bindings);
+	}
+	// What no provider took (no Zigbee adapter on this platform): absent, refusing commands.
+	size_t orphans = 0;
+	for (size_t i = 0; i < bindings.zigbee_count; ++i) {
+		const Datapoint* dp = model_.find(bindings.zigbee[i].name);
+		if (dp != nullptr && dp->technology() == nullptr && model_.bind(dp->id(), no_zigbee_) == DatapointStatus::ok) {
+			++orphans;
+		}
+	}
+	if (orphans > 0) {
+		Log::warn(kTag, "%u Zigbee-bound datapoint(s) without a Zigbee adapter on this platform: no device values, "
+			"commands refused", static_cast<unsigned>(orphans));
 	}
 	last_model_load_ms_ = controller_.clock().monotonic_ms();
 	model_loaded_once_ = true;

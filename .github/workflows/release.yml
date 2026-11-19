@@ -9,10 +9,16 @@
 # The release key is the secret HC_RELEASE_KEY of the environment `release`, which admits only tags
 # v*; only the job `sign` uses it, written to a mode 600 temporary file and shredded after use.
 #
+# The Linux package (doc/linux.md, homecontrol #95): the job `deb` builds homecontrol_<version>_<codename>_
+# <arch>.deb for Debian Bookworm and Trixie on amd64, arm64 (native runners, with the host tests) and
+# armhf (emulated, without them) in clean Debian containers (debian/ci-build.sh); the packages are
+# assets of the release, and pages.yml publishes them in the signed apt repository on the site
+# (/apt, suites per distribution, components stable and beta like the update channels).
+#
 # Run by hand (workflow_dispatch) it is a dry run of the current branch: everything up to the
 # signature, but signed with a key generated in the job (the environment refuses a branch) and
-# verified against that key; no release, no site. The assets and the site preview are the run's
-# artifacts.
+# verified against that key; no release, no site. The assets, the packages, the site preview and an
+# apt repository preview (signed with a key of the run) are the run's artifacts.
 #
 # The site: a release created with GITHUB_TOKEN starts no other workflow, so the job `pages` calls
 # pages.yml as a reusable workflow in this run.
@@ -102,6 +108,81 @@ jobs:
           path: ${{ runner.temp }}/assets
           retention-days: 7
 
+  deb:
+    needs: build
+    name: deb ${{ matrix.suite }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [bookworm, trixie]
+        arch: [amd64, arm64, armhf]
+        include:
+          - {arch: amd64, runner: ubuntu-24.04, platform: linux/amd64, check: ''}
+          - {arch: arm64, runner: ubuntu-24.04-arm, platform: linux/arm64, check: ''}
+          # The arm64 runners cannot execute 32-bit ARM code: armhf is emulated, its tests left out.
+          - {arch: armhf, runner: ubuntu-24.04, platform: linux/arm/v7, check: --nocheck}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe for the build id
+
+      - if: matrix.arch == 'armhf'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Build in debian:${{ matrix.suite }}
+        run: >
+          docker run --rm --platform ${{ matrix.platform }} -v "$PWD":/src -w /src debian:${{ matrix.suite }}
+          debian/ci-build.sh ${{ matrix.check }}
+
+      - name: The package is hc::kVersion
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          deb="dist/homecontrol_$(debian/hc-version to-debian "$VERSION")_${{ matrix.suite }}_${{ matrix.arch }}.deb"
+          ls -l "$deb"
+          dpkg-deb -f "$deb" Package Version Architecture Depends
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.suite }}-${{ matrix.arch }}
+          path: dist/homecontrol_*_${{ matrix.suite }}_${{ matrix.arch }}.deb
+          if-no-files-found: error
+          retention-days: 30
+
+  # The dry run's apt repository, as pages.yml builds it, signed with a key of this run.
+  apt-preview:
+    needs: [build, deb]
+    if: needs.build.outputs.dry_run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/debs
+
+      - name: Build the repository
+        run: |
+          sudo apt-get install -y -qq apt-utils >/dev/null
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          gpg --batch --pinentry-mode loopback --passphrase '' --quick-gen-key "HomeControl dry run <dry-run@invalid>" ed25519 sign 1d
+          debian/apt-repo.sh "$RUNNER_TEMP/apt" "$RUNNER_TEMP/debs"
+          echo "dry run: signed with a key of this run, not the repository's key"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apt-preview
+          path: ${{ runner.temp }}/apt
+          retention-days: 7
+
   sign:
     needs: build
     runs-on: ubuntu-24.04
@@ -153,7 +234,7 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: [build, sign]
+    needs: [build, sign, deb]
     if: needs.build.outputs.dry_run != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -163,6 +244,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-signed
+          path: assets
+
+      # The Linux packages: assets of the release, from which pages.yml builds the apt repository.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          merge-multiple: true
           path: assets
 
       - name: Create the release
@@ -177,6 +265,7 @@ jobs:
           - Install it on a new controller from the browser: https://haumacher.github.io/homecontrol/
           - Update an installed controller over the air: by itself, on the update channel Stable or Beta (Settings, Update channel)
           - Or upload \`homecontrol.bin\` on the controller's Settings page (Install firmware file).
+          - On a Linux server (Debian Bookworm or Trixie, amd64, arm64, armhf): the package \`homecontrol\` from the apt repository https://haumacher.github.io/homecontrol/apt/, everything but Zigbee (doc/linux.md).
 
           Built and signed by this workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. The update manifest is signed with the release key \`platform/esp/release-key.pub\`."
           gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --verify-tag $PRE \
@@ -216,4 +305,19 @@ jobs:
             sleep 15
           done
           echo "::error::stable/manifest.json announces '$got', expected $want"
+          exit 1
+      - name: Check the apt repository
+        env:
+          VERSION: ${{ github.ref_name }}
+          HAS_APT_KEY: ${{ secrets.APT_SIGNING_KEY != '' }}
+        run: |
+          # Without the signing key pages.yml publishes the site without /apt (its warning): nothing to check.
+          if [ "$HAS_APT_KEY" != "true" ]; then echo "::warning::the secret APT_SIGNING_KEY is not set: no apt repository to check"; exit 0; fi
+          want="$(printf '%s' "${VERSION#v}" | sed 's/-/~/g')" # debian/hc-version
+          url=https://haumacher.github.io/homecontrol/apt/dists/trixie/beta/binary-amd64/Packages
+          for i in $(seq 1 40); do
+            if curl -fsS "$url?n=$i$RANDOM" | grep -qx "Version: $want"; then echo "the apt suite trixie/beta has $want"; exit 0; fi
+            sleep 15
+          done
+          echo "::error::$url does not list $want (is the secret APT_SIGNING_KEY set? pages.yml says)"
           exit 1

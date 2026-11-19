@@ -18,8 +18,9 @@ that breaks a client needs a new path or field, not a changed meaning.
   for logs and humans and may change. Some refusals add fields (listed below).
 - Times: `*_ms` are milliseconds of the controller's monotonic clock (since boot; compare with
   `now_ms` of the same response), `*_s` are seconds, `unix` is seconds since the epoch.
-- The ESP device serves everything on port 80. The POSIX build serves HTTP on `--http <port>`
-  (default 8080) and the WebSocket on the port above it; `GET /api/auth/session` says which
+- The ESP device serves everything on port 80. The POSIX build (the Linux package, doc/linux.md)
+  serves HTTP on `--http <port>` (default 8081, `HOMECONTROL_HTTP_PORT`) and the WebSocket on the
+  port above it; `GET /api/auth/session` says which
   (`ws_port`, 0 = the page's port).
 - What a platform cannot do (restart, update itself, keep a core dump, run a Zigbee coordinator)
   is refused with 501 `system.unavailable` and the reason, never with a silent success.
@@ -242,7 +243,8 @@ Each appears when the build has the service.
 build adds `partition`, `confirmed`, `checking`, `source` (the update source in use: `https://haumacher.github.io/homecontrol/<update.channel>`, or the development server of the console's update.url; `""` when the channel is `off`), `last`,
 `last_ago_s`, with a source `next_check_s`, and `release_key`: the fingerprint of the release key
 the firmware accepts manifests from (doc/ota.md "Manifest signature"; an unsigned or mis-signed
-manifest shows in `last` as `manifest refused: <reason>`).
+manifest shows in `last` as `manifest refused: <reason>`). The POSIX build (the Linux package) has
+`available: false` and `last` only: the system's package manager updates it (doc/linux.md).
 
 ## Datapoints
 
@@ -358,6 +360,10 @@ controller has not picked its network name yet); `ui.lang` and `tz` always
 show the value in use, as do the on/off settings (`knx.nat`, `led.quiet`). Secrets (`wifi.psk`, the password and token hashes `web.*`) never appear;
 the write-only `mqtt.password` (doc/mqtt.md) is listed with `secret: true` and `stored` saying
 whether one is kept, its `value` always `null`.
+`update.channel` is listed only where the controller updates itself: the POSIX build (the Linux
+package, whose apt suite takes the channel's place, doc/linux.md) leaves it out and refuses a `PUT` of
+it with 403 `settings.not_editable` ("this controller is updated by the system's package manager:
+there is no update channel").
 `i18n` (only on a device that downloads language packs, i.e. not the POSIX build) is the state of
 the language pack of `ui.lang` (doc/i18n.md): `state` one of `builtin` (English, nothing to
 download), `waiting` (a condition is missing, `detail` says which), `fetching`, `installed`,

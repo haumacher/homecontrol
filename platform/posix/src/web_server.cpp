@@ -10,6 +10,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -264,11 +265,9 @@ void WebServer::system_action(SystemAction action) {
 }
 
 void WebServer::write_update_state(JsonWriter& json) const {
-	char url[Settings::kMaxStringLength + 1] = {};
-	update_source(controller_.settings(), url, sizeof(url));
 	json.member("available", false)
-		.member("source", url, status_text::kUrl)
-		.member("last", "the POSIX build does not update itself", status_text::kText);
+		.member("last", "the POSIX build does not update itself: the system's package manager updates it",
+			status_text::kText);
 }
 
 bool WebServer::start() {
@@ -473,22 +472,34 @@ bool WebServer::start() {
 		res.set_content(content, content_type_of(path));
 	});
 
-	if (!http.bind_to_port("0.0.0.0", port_)) {
-		Log::error(kTag, "web server not started: cannot bind port %u", static_cast<unsigned>(port_));
+	if (!http.bind_to_port(bind_address_, port_)) {
+		Log::error(kTag, "web server not started: cannot bind %s port %u (%s)", bind_address_.c_str(),
+			static_cast<unsigned>(port_), std::strerror(errno));
 		return false;
 	}
 
-	ws_listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
-	int one = 1;
-	setsockopt(ws_listener_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-	sockaddr_in addr = {};
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port = htons(websocket_port());
-	if (ws_listener_ < 0 || ::bind(ws_listener_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
-		::listen(ws_listener_, 8) != 0) {
-		Log::error(kTag, "WebSocket listener not started: cannot bind port %u (%s)",
-			static_cast<unsigned>(websocket_port()), std::strerror(errno));
+	// The WebSocket on the same address, the port above (numeric only: options.h validated it).
+	char ws_port[8];
+	std::snprintf(ws_port, sizeof(ws_port), "%u", static_cast<unsigned>(websocket_port()));
+	addrinfo hints = {};
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV | AI_PASSIVE;
+	addrinfo* address = nullptr;
+	int rc = ::getaddrinfo(bind_address_.c_str(), ws_port, &hints, &address);
+	const char* why = rc != 0 ? gai_strerror(rc) : nullptr;
+	if (why == nullptr) {
+		ws_listener_ = ::socket(address->ai_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
+		int one = 1;
+		if (ws_listener_ < 0 || setsockopt(ws_listener_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0 ||
+			::bind(ws_listener_, address->ai_addr, address->ai_addrlen) != 0 || ::listen(ws_listener_, 8) != 0) {
+			why = std::strerror(errno);
+		}
+		::freeaddrinfo(address);
+	}
+	if (why != nullptr) {
+		Log::error(kTag, "WebSocket listener not started: cannot bind %s port %u (%s)", bind_address_.c_str(),
+			static_cast<unsigned>(websocket_port()), why);
 		if (ws_listener_ >= 0) {
 			::close(ws_listener_);
 			ws_listener_ = -1;
@@ -498,8 +509,8 @@ bool WebServer::start() {
 	}
 	http_thread_ = std::thread([this] { http_thread(); });
 	ws_thread_ = std::thread([this] { ws_accept_thread(); });
-	Log::info(kTag, "web UI at http://localhost:%u/ (files from %s), WebSocket on port %u", static_cast<unsigned>(port_),
-		www_dir_.c_str(), static_cast<unsigned>(websocket_port()));
+	Log::info(kTag, "web UI on %s port %u (files from %s), WebSocket on port %u", bind_address_.c_str(),
+		static_cast<unsigned>(port_), www_dir_.c_str(), static_cast<unsigned>(websocket_port()));
 	return true;
 }
 
@@ -574,7 +585,7 @@ void WebServer::ws_close(uint32_t client, uint16_t code, const char* reason) {
 
 void WebServer::ws_accept_thread() {
 	while (!stopping_.load()) {
-		sockaddr_in peer = {};
+		sockaddr_storage peer = {};
 		socklen_t peer_length = sizeof(peer);
 		int fd = ::accept(ws_listener_, reinterpret_cast<sockaddr*>(&peer), &peer_length);
 		if (fd < 0) {

@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -22,13 +23,21 @@
 
 #include "hc/websocket.h"
 
+#ifdef HC_POSIX_TLS
+#include <arpa/inet.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
+#endif
+
 namespace hc {
 namespace posix {
 
 namespace {
 
-/// The parts of `ws://host[:port][/path]`.
+/// The parts of `ws[s]://host[:port][/path]`.
 struct WsUrl {
+	bool tls = false;
 	std::string host;
 	std::string port = "80";
 	std::string host_header;
@@ -36,16 +45,23 @@ struct WsUrl {
 };
 
 bool parse_url(const char* url, WsUrl& out, const char** error) {
+	size_t scheme = 0;
 	if (std::strncmp(url, "wss://", 6) == 0) {
-		*error = "wss:// needs TLS, which the POSIX WebSocket client does not have (use ws:// for development; "
-			"the device speaks TLS)";
+		if (!PosixWebSocketClient::tls_supported()) {
+			*error = "wss:// needs TLS, which this POSIX build does not have (install the OpenSSL development files "
+				"and reconfigure, or use ws:// for development)";
+			return false;
+		}
+		out.tls = true;
+		out.port = "443";
+		scheme = 6;
+	} else if (std::strncmp(url, "ws://", 5) == 0) {
+		scheme = 5;
+	} else {
+		*error = "not a ws:// or wss:// URL";
 		return false;
 	}
-	if (std::strncmp(url, "ws://", 5) != 0) {
-		*error = "not a ws:// URL";
-		return false;
-	}
-	std::string rest(url + 5);
+	std::string rest(url + scheme);
 	size_t slash = rest.find('/');
 	std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
 	if (slash != std::string::npos) {
@@ -62,6 +78,9 @@ bool parse_url(const char* url, WsUrl& out, const char** error) {
 		out.port = authority.substr(colon + 1);
 	} else {
 		out.host = authority;
+	}
+	if (out.host.size() > 2 && out.host.front() == '[' && out.host.back() == ']') {
+		out.host = out.host.substr(1, out.host.size() - 2); // [::1]
 	}
 	return true;
 }
@@ -156,6 +175,185 @@ struct PosixWebSocketClient::Session {
 	bool open = false;   ///< The handshake completed.
 	std::atomic<bool> done{false};
 	std::mt19937 masks{std::random_device{}()};
+#ifdef HC_POSIX_TLS
+	/// The TLS session over `fd` (wss://, nullptr for ws://); used under `mutex` only: the reader and
+	/// the loop's writes share it. The socket is non-blocking then.
+	SSL_CTX* tls_context = nullptr;
+	SSL* tls = nullptr;
+#endif
+
+	/// Writes all of `data`; the caller holds `mutex` (or is the reader before the session opened).
+	bool write_all(const uint8_t* data, size_t total) {
+		size_t sent = 0;
+		while (sent < total) {
+#ifdef HC_POSIX_TLS
+			if (tls != nullptr) {
+				int n = SSL_write(tls, data + sent, static_cast<int>(total - sent));
+				if (n > 0) {
+					sent += static_cast<size_t>(n);
+					continue;
+				}
+				int err = SSL_get_error(tls, n);
+				short events = err == SSL_ERROR_WANT_READ ? POLLIN : err == SSL_ERROR_WANT_WRITE ? POLLOUT : 0;
+				pollfd p{fd, events, 0};
+				if (events == 0 || ::poll(&p, 1, PosixWebSocketClient::kSendTimeoutS * 1000) != 1) {
+					return false;
+				}
+				continue;
+			}
+#endif
+			ssize_t n = ::send(fd, data + sent, total - sent, MSG_NOSIGNAL);
+			if (n < 0 && errno == EINTR) {
+				continue;
+			}
+			if (n <= 0) {
+				return false;
+			}
+			sent += static_cast<size_t>(n);
+		}
+		return true;
+	}
+
+	/// Reads what arrives within `timeout_ms`: the byte count, 0 if nothing came (a timeout, a
+	/// signal, a TLS record not complete yet), -1 when the connection ended (`reason` says how).
+	/// Called by the reader thread only.
+	ssize_t read_some(uint8_t* buffer, size_t size, int timeout_ms, std::string& reason) {
+#ifdef HC_POSIX_TLS
+		if (tls != nullptr) {
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				if (SSL_pending(tls) > 0) {
+					return tls_read(buffer, size, reason);
+				}
+			}
+			pollfd p{fd, POLLIN, 0};
+			int r = ::poll(&p, 1, timeout_ms);
+			if (r <= 0) {
+				return r < 0 && errno != EINTR ? (reason = std::string("poll: ") + std::strerror(errno), -1) : 0;
+			}
+			std::lock_guard<std::mutex> lock(mutex);
+			return tls_read(buffer, size, reason);
+		}
+#endif
+		pollfd p{fd, POLLIN, 0};
+		int r = ::poll(&p, 1, timeout_ms);
+		if (r <= 0) {
+			return r < 0 && errno != EINTR ? (reason = std::string("poll: ") + std::strerror(errno), -1) : 0;
+		}
+		ssize_t got = ::recv(fd, buffer, size, 0);
+		if (got < 0 && errno == EINTR) {
+			return 0;
+		}
+		if (got <= 0) {
+			reason = got == 0 ? "connection closed by the server" : std::string("recv: ") + std::strerror(errno);
+			return -1;
+		}
+		return got;
+	}
+
+#ifdef HC_POSIX_TLS
+	/// SSL_read under `mutex`.
+	ssize_t tls_read(uint8_t* buffer, size_t size, std::string& reason) {
+		int n = SSL_read(tls, buffer, static_cast<int>(size));
+		if (n > 0) {
+			return n;
+		}
+		int err = SSL_get_error(tls, n);
+		if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+			return 0;
+		}
+		reason = err == SSL_ERROR_ZERO_RETURN || err == SSL_ERROR_SYSCALL ? std::string("connection closed by the server")
+			: "TLS: " + tls_error();
+		return -1;
+	}
+
+	static std::string tls_error() {
+		unsigned long code = ERR_get_error();
+		char text[160] = "unknown error";
+		if (code != 0) {
+			ERR_error_string_n(code, text, sizeof(text));
+		}
+		ERR_clear_error();
+		return text;
+	}
+
+	/// The TLS handshake on the connected socket `fd` (made non-blocking): the system's trust store
+	/// (OpenSSL's default paths, which honour SSL_CERT_FILE and SSL_CERT_DIR), the server name for
+	/// SNI and the certificate check. False with `reason` filled.
+	bool tls_connect(std::string& reason) {
+		tls_context = SSL_CTX_new(TLS_client_method());
+		if (tls_context == nullptr) {
+			reason = "TLS: " + tls_error();
+			return false;
+		}
+		SSL_CTX_set_min_proto_version(tls_context, TLS1_2_VERSION);
+		SSL_CTX_set_verify(tls_context, SSL_VERIFY_PEER, nullptr);
+		if (SSL_CTX_set_default_verify_paths(tls_context) != 1) {
+			reason = "TLS: no trust store: " + tls_error();
+			return false;
+		}
+		tls = SSL_new(tls_context);
+		if (tls == nullptr) {
+			reason = "TLS: " + tls_error();
+			return false;
+		}
+		SSL_set_mode(tls, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+		unsigned char ip[16];
+		bool numeric = inet_pton(AF_INET, url.host.c_str(), ip) == 1 || inet_pton(AF_INET6, url.host.c_str(), ip) == 1;
+		X509_VERIFY_PARAM* param = SSL_get0_param(tls);
+		if (numeric) {
+			X509_VERIFY_PARAM_set1_ip_asc(param, url.host.c_str());
+		} else {
+			SSL_set_tlsext_host_name(tls, url.host.c_str());
+			X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+			X509_VERIFY_PARAM_set1_host(param, url.host.c_str(), 0);
+		}
+		int flags = ::fcntl(fd, F_GETFL, 0);
+		::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+		SSL_set_fd(tls, fd);
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(PosixWebSocketClient::kConnectTimeoutS);
+		for (;;) {
+			int r = SSL_connect(tls);
+			if (r == 1) {
+				return true;
+			}
+			int err = SSL_get_error(tls, r);
+			if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+				long verify = SSL_get_verify_result(tls);
+				reason = verify != X509_V_OK
+					? std::string("TLS: the certificate of ") + url.host + " is not trusted: " +
+						X509_verify_cert_error_string(verify)
+					: "TLS handshake with " + url.host + " failed: " + tls_error();
+				ERR_clear_error();
+				return false;
+			}
+			auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+			pollfd p{fd, static_cast<short>(err == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT), 0};
+			if (left.count() <= 0 || ::poll(&p, 1, static_cast<int>(left.count())) == 0) {
+				reason = "TLS handshake with " + url.host + ": no answer";
+				return false;
+			}
+		}
+	}
+#endif
+
+	/// Closes the socket (and the TLS session); the caller holds `mutex`.
+	void close_locked() {
+#ifdef HC_POSIX_TLS
+		if (tls != nullptr) {
+			SSL_free(tls);
+			tls = nullptr;
+		}
+		if (tls_context != nullptr) {
+			SSL_CTX_free(tls_context);
+			tls_context = nullptr;
+		}
+#endif
+		if (fd >= 0) {
+			::close(fd);
+		}
+		fd = -1;
+	}
 
 	/// Sends one masked frame; the caller holds `mutex`. False (and the socket shut down) on failure.
 	bool send_locked(uint8_t opcode, const uint8_t* data, size_t length) {
@@ -171,22 +369,21 @@ struct PosixWebSocketClient::Session {
 			std::memcpy(frame.data() + header, data, length);
 			websocket::apply_mask(frame.data() + header, length, mask);
 		}
-		size_t total = header + length;
-		size_t sent = 0;
-		while (sent < total) {
-			ssize_t n = ::send(fd, frame.data() + sent, total - sent, MSG_NOSIGNAL);
-			if (n < 0 && errno == EINTR) {
-				continue;
-			}
-			if (n <= 0) {
-				::shutdown(fd, SHUT_RDWR);
-				return false;
-			}
-			sent += static_cast<size_t>(n);
+		if (!write_all(frame.data(), header + length)) {
+			::shutdown(fd, SHUT_RDWR);
+			return false;
 		}
 		return true;
 	}
 };
+
+bool PosixWebSocketClient::tls_supported() {
+#ifdef HC_POSIX_TLS
+	return true;
+#else
+	return false;
+#endif
+}
 
 PosixWebSocketClient::PosixWebSocketClient(LoopExecutor& executor)
 	: executor_(executor), shared_(std::make_shared<Shared>()) {
@@ -304,6 +501,11 @@ void PosixWebSocketClient::reader(std::shared_ptr<Session> s, std::shared_ptr<Sh
 		s->fd = fd;
 	}
 	std::vector<uint8_t> rx;
+#ifdef HC_POSIX_TLS
+	if (fd >= 0 && s->url.tls && !s->tls_connect(reason)) {
+		fd = -1; // closed below with the session's socket
+	}
+#endif
 	if (fd >= 0) {
 		// The upgrade (RFC 6455 section 4.1).
 		uint8_t nonce[16];
@@ -314,24 +516,34 @@ void PosixWebSocketClient::reader(std::shared_ptr<Session> s, std::shared_ptr<Sh
 		std::string request = "GET " + s->url.path + " HTTP/1.1\r\nHost: " + s->url.host_header +
 			"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key +
 			"\r\nSec-WebSocket-Version: 13\r\nUser-Agent: HomeControl\r\n\r\n";
-		if (::send(fd, request.data(), request.size(), MSG_NOSIGNAL) != static_cast<ssize_t>(request.size())) {
+		bool sent;
+		{
+			std::lock_guard<std::mutex> lock(s->mutex);
+			sent = s->write_all(reinterpret_cast<const uint8_t*>(request.data()), request.size());
+		}
+		if (!sent) {
 			reason = "cannot send the upgrade request";
 		}
 		std::string head;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kConnectTimeoutS);
 		while (reason.empty()) {
-			pollfd p{fd, POLLIN, 0};
-			int r = ::poll(&p, 1, kConnectTimeoutS * 1000);
-			if (r <= 0) {
-				reason = r == 0 ? "no answer to the upgrade request" : std::string("poll: ") + std::strerror(errno);
+			auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+			if (left.count() <= 0) {
+				reason = "no answer to the upgrade request";
 				break;
 			}
-			char chunk[1024];
-			ssize_t got = ::recv(fd, chunk, sizeof(chunk), 0);
-			if (got <= 0) {
-				reason = "the server closed the connection during the upgrade";
+			uint8_t chunk[1024];
+			std::string ended;
+			ssize_t got = s->read_some(chunk, sizeof(chunk), static_cast<int>(left.count()), ended);
+			if (got < 0) {
+				reason = ended.rfind("connection closed", 0) == 0 ? "the server closed the connection during the upgrade"
+					: ended;
 				break;
 			}
-			head.append(chunk, static_cast<size_t>(got));
+			if (got == 0) {
+				continue;
+			}
+			head.append(reinterpret_cast<const char*>(chunk), static_cast<size_t>(got));
 			size_t end = head.find("\r\n\r\n");
 			if (end == std::string::npos) {
 				if (head.size() > 8192) {
@@ -375,10 +587,7 @@ void PosixWebSocketClient::reader(std::shared_ptr<Session> s, std::shared_ptr<Sh
 		{
 			std::lock_guard<std::mutex> lock(s->mutex);
 			ours = s->closed;
-			if (s->fd >= 0) {
-				::close(s->fd);
-			}
-			s->fd = -1;
+			s->close_locked();
 		}
 		if (!ours) {
 			std::string text = "cannot connect: " + reason;
@@ -401,29 +610,16 @@ void PosixWebSocketClient::reader(std::shared_ptr<Session> s, std::shared_ptr<Sh
 		if (offset >= rx.size()) {
 			rx.clear();
 			offset = 0;
-			pollfd p{fd, POLLIN, 0};
-			int r = ::poll(&p, 1, 200);
-			if (r < 0 && errno == EINTR) {
-				continue;
-			}
-			if (r < 0) {
-				reason = std::string("poll: ") + std::strerror(errno);
+			ssize_t got = s->read_some(chunk, sizeof(chunk), 200, reason);
+			if (got < 0) {
 				break;
 			}
-			if (r == 0) {
+			if (got == 0) {
 				std::lock_guard<std::mutex> lock(s->mutex);
 				if (s->closed) {
 					break;
 				}
 				continue;
-			}
-			ssize_t got = ::recv(fd, chunk, sizeof(chunk), 0);
-			if (got < 0 && errno == EINTR) {
-				continue;
-			}
-			if (got <= 0) {
-				reason = got == 0 ? "connection closed by the server" : std::string("recv: ") + std::strerror(errno);
-				break;
 			}
 			rx.assign(chunk, chunk + got);
 		}
@@ -477,8 +673,7 @@ void PosixWebSocketClient::reader(std::shared_ptr<Session> s, std::shared_ptr<Sh
 		std::lock_guard<std::mutex> lock(s->mutex);
 		ours = s->closed;
 		s->open = false;
-		::close(s->fd);
-		s->fd = -1;
+		s->close_locked();
 	}
 	if (!ours) {
 		deliver(shared, generation, [&reason](WebSocketClientListener& l) { l.ws_client_closed(reason.c_str()); });

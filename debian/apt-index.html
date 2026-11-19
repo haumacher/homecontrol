@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HomeControl apt repository</title>
+<style>
+:root { color-scheme: light dark; --fg: #222; --muted: #555; --bg: #fff; --code: #f4f4f4; --line: #ddd; }
+@media (prefers-color-scheme: dark) { :root { --fg: #e6e6e6; --muted: #aaa; --bg: #161616; --code: #262626; --line: #3a3a3a; } }
+body { font-family: system-ui, sans-serif; line-height: 1.5; margin: 0 auto; max-width: 46rem; padding: 2rem 1rem; color: var(--fg); background: var(--bg); }
+h1 { margin-bottom: 0.2rem; }
+p.lead { color: var(--muted); margin-top: 0; }
+pre { background: var(--code); padding: 0.8rem; overflow-x: auto; border-radius: 4px; }
+code { font-family: ui-monospace, monospace; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--line); }
+footer { margin-top: 3rem; color: var(--muted); font-size: 0.9rem; }
+a { color: inherit; }
+</style>
+</head>
+<body>
+<h1>HomeControl for Linux</h1>
+<p class="lead">The HomeControl smart-home controller as a service on a Debian, Raspberry Pi OS or
+Ubuntu machine: the same controller, web UI and version as the ESP32-C6 firmware, everything but
+Zigbee. This page is the apt repository of the package <code>homecontrol</code>.</p>
+
+<h2>Installation</h2>
+<p>The distribution follows the system:</p>
+<table>
+<tr><th>System</th><th>Distribution</th></tr>
+<tr><td>Debian 12, Raspberry Pi OS (Bookworm), Ubuntu 22.04</td><td><code>bookworm</code></td></tr>
+<tr><td>Debian 13, Raspberry Pi OS (Trixie), Ubuntu 24.04 and newer</td><td><code>trixie</code></td></tr>
+</table>
+<p>The channel <code>stable</code> holds the releases, <code>beta</code> the pre-releases as well
+(the update channels of the firmware). For Trixie and <code>@CHANNEL@</code>:</p>
+<pre><code>sudo curl -fsSLo /usr/share/keyrings/homecontrol-archive-keyring.gpg \
+  @SITE_URL@/homecontrol-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/homecontrol-archive-keyring.gpg] @SITE_URL@ trixie @CHANNEL@" \
+  | sudo tee /etc/apt/sources.list.d/homecontrol.list
+sudo apt update
+sudo apt install homecontrol</code></pre>
+<p>apt picks the architecture (amd64, arm64 and armhf are published). The service starts at once:
+open <code>http://&lt;host&gt;:8081/</code> and set the controller's password.</p>
+
+<h2>Setup and updates</h2>
+<p>Port, data, logs and what Linux does not offer:
+<a href="https://github.com/haumacher/homecontrol/blob/master/doc/linux.md">doc/linux.md</a>.
+Updates come with <code>sudo apt update &amp;&amp; sudo apt upgrade</code>; the settings and the
+runtime image stay.</p>
+
+<h2>Published versions</h2>
+<table>
+<tr><th>Distribution</th><th>Channel</th><th>Version</th><th>Architectures</th></tr>
+@PACKAGES@
+</table>
+
+<footer>
+Signing key <code>@FINGERPRINT@</code>:
+<a href="homecontrol-archive-keyring.gpg">homecontrol-archive-keyring.gpg</a> (binary) &middot;
+<a href="homecontrol-archive-keyring.asc">homecontrol-archive-keyring.asc</a> (ASCII) &middot;
+<a href="../">firmware and web flasher</a> &middot;
+<a href="https://github.com/haumacher/homecontrol">source on GitHub</a>
+</footer>
+</body>
+</html>

@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = configure ]; then
+    if ! getent group homecontrol >/dev/null; then
+        addgroup --system homecontrol
+    fi
+    if ! getent passwd homecontrol >/dev/null; then
+        adduser --system --ingroup homecontrol --home /var/lib/homecontrol \
+            --no-create-home --disabled-login --disabled-password homecontrol
+    fi
+    # The controller's state (settings, runtime image, stored values, history) is
+    # written by the service; it is not configuration under /etc.
+    install -d -o homecontrol -g homecontrol -m 0750 /var/lib/homecontrol
+fi
+
+#DEBHELPER#
+
+exit 0

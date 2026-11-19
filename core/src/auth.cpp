@@ -68,12 +68,14 @@ const char* auth_status_text(AuthStatus status) {
 Auth::Auth(Settings& settings, const Clock& clock, Crypto& crypto)
 	: settings_(settings), clock_(clock), crypto_(crypto) {}
 
+// The slots are few (kMaxTokens, kMaxRemembered): as a byte the number visibly fits the 16-byte keys
+// of the callers (GCC 12's -Wformat-truncation of a release build checks it).
 void Auth::token_key(size_t slot, char* out, size_t size) {
-	std::snprintf(out, size, "%s%u", kTokenKeyPrefix, static_cast<unsigned>(slot));
+	std::snprintf(out, size, "%s%u", kTokenKeyPrefix, static_cast<unsigned>(static_cast<uint8_t>(slot)));
 }
 
 void Auth::remembered_key(size_t slot, char* out, size_t size) {
-	std::snprintf(out, size, "%s%u", kRememberedKeyPrefix, static_cast<unsigned>(slot));
+	std::snprintf(out, size, "%s%u", kRememberedKeyPrefix, static_cast<unsigned>(static_cast<uint8_t>(slot)));
 }
 
 void Auth::start() {

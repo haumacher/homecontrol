@@ -44,6 +44,11 @@ public:
 	/// "source", "last" and "next_check_s".
 	virtual void write_update_state(JsonWriter& json) const = 0;
 
+	/// Whether the platform updates itself from an update channel and so offers the setting
+	/// update.channel. False where the system's package manager updates the controller (the Linux
+	/// package, doc/linux.md): GET /api/settings leaves the setting out and PUT refuses it.
+	virtual bool has_update_channel() const { return true; }
+
 	/// The content hash of the web UI image ("" if none is mounted).
 	virtual const char* ui_version() const = 0;
 

@@ -1325,6 +1325,9 @@ void WebApi::settings(WebResponse& response) {
 	json.begin_object().key("settings").begin_array();
 	Settings& store = controller_.settings();
 	for (const SettingInfo& info : kShownSettings) {
+		if (!offered(info.key)) {
+			continue;
+		}
 		char value[Settings::kMaxStringLength + 1] = {};
 		SettingsStatus status = store.get_string(info.key, value, sizeof(value));
 		const char* fallback = "";
@@ -1558,10 +1561,19 @@ bool WebApi::apply_setting(const char* key, const char* value, const char** code
 	return false;
 }
 
+bool WebApi::offered(const char* key) const {
+	return host_.has_update_channel() || std::strcmp(key, setting::kUpdateChannel) != 0;
+}
+
 void WebApi::put_setting(const char* key, const WebRequest& request, WebResponse& response) {
 	const SettingInfo* info = find_setting(key);
 	if (info == nullptr) {
 		refuse(response, 404, "settings.unknown", "no such setting");
+		return;
+	}
+	if (!offered(key)) {
+		refuse(response, 403, "settings.not_editable",
+			"this controller is updated by the system's package manager: there is no update channel");
 		return;
 	}
 	if (!info->editable) {

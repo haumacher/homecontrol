@@ -19,6 +19,16 @@
 #include "hc/posix/websocket_client.h"
 #include "hc/websocket.h"
 
+#ifdef HC_POSIX_TLS
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
+
+#include <cstdio>
+#include <cstdlib>
+#endif
+
 // The E-Home client of the POSIX build (doc/ehome.md) against an in-process server that speaks the
 // core's codec (the server role) over a real TCP socket.
 
@@ -26,9 +36,66 @@ namespace {
 
 namespace ws = hc::websocket;
 
-/// A listening socket on 127.0.0.1 that accepts one connection, answers the upgrade and speaks frames.
+#ifdef HC_POSIX_TLS
+/// A self-signed server certificate for `ip` (its IP address, the CN "localhost"), its key, and the
+/// certificate as a PEM file the client may trust (SSL_CERT_FILE).
+struct TestCertificate {
+	explicit TestCertificate(const char* ip) {
+		key = EVP_EC_gen("P-256");
+		REQUIRE(key != nullptr);
+		cert = X509_new();
+		ASN1_INTEGER_set(X509_get_serialNumber(cert), 1);
+		X509_gmtime_adj(X509_getm_notBefore(cert), -60);
+		X509_gmtime_adj(X509_getm_notAfter(cert), 3600);
+		X509_set_pubkey(cert, key);
+		X509_NAME* name = X509_get_subject_name(cert);
+		X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("localhost"), -1, -1, 0);
+		X509_set_issuer_name(cert, name);
+		X509V3_CTX ctx;
+		X509V3_set_ctx_nodb(&ctx);
+		X509V3_set_ctx(&ctx, cert, cert, nullptr, nullptr, 0);
+		std::string san = std::string("IP:") + ip + ",DNS:localhost";
+		X509_EXTENSION* ext = X509V3_EXT_conf_nid(nullptr, &ctx, NID_subject_alt_name, san.c_str());
+		REQUIRE(ext != nullptr);
+		X509_add_ext(cert, ext, -1);
+		X509_EXTENSION_free(ext);
+		REQUIRE(X509_sign(cert, key, EVP_sha256()) > 0);
+		char path[] = "/tmp/hc-ws-ca-XXXXXX";
+		int fd = ::mkstemp(path);
+		REQUIRE(fd >= 0);
+		std::FILE* file = ::fdopen(fd, "w");
+		PEM_write_X509(file, cert);
+		std::fclose(file);
+		pem = path;
+	}
+	~TestCertificate() {
+		::unlink(pem.c_str());
+		X509_free(cert);
+		EVP_PKEY_free(key);
+	}
+	EVP_PKEY* key = nullptr;
+	X509* cert = nullptr;
+	std::string pem;
+};
+
+/// Sets SSL_CERT_FILE (the client's trust store) for one scope.
+struct TrustOnly {
+	explicit TrustOnly(const std::string& pem) { ::setenv("SSL_CERT_FILE", pem.c_str(), 1); }
+	~TrustOnly() { ::unsetenv("SSL_CERT_FILE"); }
+};
+#endif
+
+/// A listening socket on 127.0.0.1 that accepts one connection, answers the upgrade and speaks
+/// frames; with a certificate it speaks TLS (wss://).
 class TestServer {
 public:
+#ifdef HC_POSIX_TLS
+	explicit TestServer(const TestCertificate& certificate) : TestServer() {
+		tls_context_ = SSL_CTX_new(TLS_server_method());
+		REQUIRE(SSL_CTX_use_certificate(tls_context_, certificate.cert) == 1);
+		REQUIRE(SSL_CTX_use_PrivateKey(tls_context_, certificate.key) == 1);
+	}
+#endif
 	TestServer() {
 		listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
 		REQUIRE(listen_fd_ >= 0);
@@ -44,26 +111,56 @@ public:
 		port = ntohs(addr.sin_port);
 	}
 	~TestServer() {
+#ifdef HC_POSIX_TLS
+		if (tls_ != nullptr) {
+			SSL_free(tls_);
+		}
+		if (tls_context_ != nullptr) {
+			SSL_CTX_free(tls_context_);
+		}
+#endif
 		if (fd_ >= 0) {
 			::close(fd_);
 		}
 		::close(listen_fd_);
 	}
 
-	std::string url(const char* path) const { return "ws://127.0.0.1:" + std::to_string(port) + path; }
+	std::string url(const char* path) const {
+		return std::string(secure() ? "wss" : "ws") + "://127.0.0.1:" + std::to_string(port) + path;
+	}
 
-	/// Accepts and answers the upgrade; returns the request head.
-	std::string accept_upgrade() {
+	bool secure() const {
+#ifdef HC_POSIX_TLS
+		return tls_context_ != nullptr;
+#else
+		return false;
+#endif
+	}
+
+	/// Accepts the connection (and the TLS handshake); false if the handshake failed (the client
+	/// refused the certificate).
+	bool accept_connection() {
 		pollfd p{listen_fd_, POLLIN, 0};
 		REQUIRE(::poll(&p, 1, 3000) == 1);
 		fd_ = ::accept(listen_fd_, nullptr, nullptr);
 		REQUIRE(fd_ >= 0);
+#ifdef HC_POSIX_TLS
+		if (tls_context_ != nullptr) {
+			tls_ = SSL_new(tls_context_);
+			SSL_set_fd(tls_, fd_);
+			return SSL_accept(tls_) == 1;
+		}
+#endif
+		return true;
+	}
+
+	/// Accepts and answers the upgrade; returns the request head.
+	std::string accept_upgrade() {
+		REQUIRE(accept_connection());
 		std::string head;
 		while (head.find("\r\n\r\n") == std::string::npos) {
 			char chunk[512];
-			pollfd q{fd_, POLLIN, 0};
-			REQUIRE(::poll(&q, 1, 3000) == 1);
-			ssize_t n = ::recv(fd_, chunk, sizeof(chunk), 0);
+			ssize_t n = receive(chunk, sizeof(chunk));
 			REQUIRE(n > 0);
 			head.append(chunk, static_cast<size_t>(n));
 		}
@@ -74,7 +171,7 @@ public:
 		REQUIRE(ws::accept_key(key.c_str(), accept));
 		std::string answer = std::string("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
 			"Sec-WebSocket-Accept: ") + accept + "\r\n\r\n";
-		REQUIRE(::send(fd_, answer.data(), answer.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(answer.size()));
+		REQUIRE(transmit(answer.data(), answer.size()));
 		return head;
 	}
 
@@ -83,7 +180,7 @@ public:
 		size_t n = ws::encode_header(header, opcode, true, payload.size());
 		std::string frame(reinterpret_cast<char*>(header), n);
 		frame += payload;
-		REQUIRE(::send(fd_, frame.data(), frame.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(frame.size()));
+		REQUIRE(transmit(frame.data(), frame.size()));
 	}
 
 	/// The next message or control frame from the client: its opcode and payload.
@@ -102,12 +199,8 @@ public:
 					return false;
 				}
 			}
-			pollfd p{fd_, POLLIN, 0};
-			if (::poll(&p, 1, 3000) != 1) {
-				return false;
-			}
 			uint8_t chunk[4096];
-			ssize_t n = ::recv(fd_, chunk, sizeof(chunk), 0);
+			ssize_t n = receive(chunk, sizeof(chunk));
 			if (n <= 0) {
 				return false;
 			}
@@ -119,6 +212,38 @@ public:
 	uint16_t port = 0;
 
 private:
+	/// The next bytes within 3 s (-1 on a timeout or the end).
+	ssize_t receive(void* buffer, size_t size) {
+#ifdef HC_POSIX_TLS
+		if (tls_ != nullptr && SSL_pending(tls_) > 0) {
+			return SSL_read(tls_, buffer, static_cast<int>(size));
+		}
+#endif
+		pollfd p{fd_, POLLIN, 0};
+		if (::poll(&p, 1, 3000) != 1) {
+			return -1;
+		}
+#ifdef HC_POSIX_TLS
+		if (tls_ != nullptr) {
+			return SSL_read(tls_, buffer, static_cast<int>(size));
+		}
+#endif
+		return ::recv(fd_, buffer, size, 0);
+	}
+
+	bool transmit(const char* data, size_t size) {
+#ifdef HC_POSIX_TLS
+		if (tls_ != nullptr) {
+			return SSL_write(tls_, data, static_cast<int>(size)) == static_cast<int>(size);
+		}
+#endif
+		return ::send(fd_, data, size, MSG_NOSIGNAL) == static_cast<ssize_t>(size);
+	}
+
+#ifdef HC_POSIX_TLS
+	SSL_CTX* tls_context_ = nullptr;
+	SSL* tls_ = nullptr;
+#endif
 	int listen_fd_ = -1;
 	int fd_ = -1;
 	std::vector<uint8_t> rx_;
@@ -154,10 +279,10 @@ bool pump(hc::posix::LoopExecutor& executor, const std::function<bool()>& done, 
 	return true;
 }
 
-} // namespace
 
-TEST_CASE("PosixWebSocketClient: upgrade, text both ways, binary, ping and pong, the server's close") {
-	TestServer server;
+/// The exchange of the first test over `server`: upgrade, text both ways, binary, ping and pong, the
+/// server's close.
+void full_exchange(TestServer& server) {
 	std::atomic<bool> server_ok{false};
 	std::string head;
 	std::string client_text;
@@ -205,13 +330,59 @@ TEST_CASE("PosixWebSocketClient: upgrade, text both ways, binary, ping and pong,
 	}
 }
 
-TEST_CASE("PosixWebSocketClient: wss:// is refused with the reason, a refused connection is reported") {
+} // namespace
+
+TEST_CASE("PosixWebSocketClient: upgrade, text both ways, binary, ping and pong, the server's close") {
+	TestServer server;
+	full_exchange(server);
+}
+
+#ifdef HC_POSIX_TLS
+TEST_CASE("PosixWebSocketClient: wss:// speaks TLS and checks the certificate against the trust store") {
+	// The Linux package's E-Home connection (homecontrol #95): the same exchange over TLS, the
+	// certificate trusted through SSL_CERT_FILE as a local CA would be through /etc/ssl/certs.
+	CHECK(hc::posix::PosixWebSocketClient::tls_supported());
+	TestCertificate certificate("127.0.0.1");
+	TrustOnly trust(certificate.pem);
+	TestServer server(certificate);
+	full_exchange(server);
+}
+
+TEST_CASE("PosixWebSocketClient: wss:// refuses a server whose certificate is not trusted or not its own") {
+	TestCertificate trusted("127.0.0.1");
+	TestCertificate stranger("127.0.0.1");
+	TestCertificate elsewhere("192.0.2.7"); // trusted, but issued for another address
+	for (int round = 0; round < 2; ++round) {
+		const TestCertificate& presented = round == 0 ? stranger : elsewhere;
+		TrustOnly trust(round == 0 ? trusted.pem : elsewhere.pem);
+		TestServer server(presented);
+		std::thread script([&] { CHECK_FALSE(server.accept_connection()); });
+		hc::posix::LoopExecutor executor;
+		Recorder rec;
+		hc::posix::PosixWebSocketClient client(executor);
+		const char* error = nullptr;
+		REQUIRE(client.connect(server.url("/socket").c_str(), rec, &error));
+		REQUIRE(pump(executor, [&] { return !rec.reasons.empty(); }));
+		script.join();
+		CHECK(rec.opened == 0);
+		INFO(rec.reasons[0]);
+		CHECK(rec.reasons[0].find("cannot connect: TLS: the certificate of 127.0.0.1 is not trusted: ") == 0);
+		CHECK(rec.reasons[0].find(round == 0 ? "self-signed certificate" : "IP address mismatch") != std::string::npos);
+	}
+}
+#endif
+
+TEST_CASE("PosixWebSocketClient: a refused connection is reported") {
 	hc::posix::LoopExecutor executor;
 	Recorder rec;
 	hc::posix::PosixWebSocketClient client(executor);
 	const char* error = nullptr;
-	CHECK_FALSE(client.connect("wss://ehome.example/socket", rec, &error));
-	CHECK(std::string(error).find("wss:// needs TLS") == 0);
+	if (!hc::posix::PosixWebSocketClient::tls_supported()) {
+		CHECK_FALSE(client.connect("wss://ehome.example/socket", rec, &error));
+		CHECK(std::string(error).find("wss:// needs TLS") == 0);
+	}
+	CHECK_FALSE(client.connect("http://ehome.example/socket", rec, &error));
+	CHECK(std::string(error) == "not a ws:// or wss:// URL");
 	int port = 0;
 	{
 		TestServer closed; // bound and closed again: nobody listens on its port

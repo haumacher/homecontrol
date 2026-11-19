@@ -258,6 +258,35 @@ TEST_CASE("WebApi settings show the non-secret values and validate changes like 
 	CHECK(f.request(HttpMethod::put, "/api/settings/tz", "{\"value\":1}", cookie).status == 400);
 }
 
+TEST_CASE("WebApi offers no update channel on a platform the package manager updates") {
+	// The Linux package (homecontrol #95, doc/linux.md): apt's suite takes the place of the channel.
+	WebFixture f;
+	std::string cookie = f.onboard();
+	f.fake.settings.set_string("update.channel", "beta");
+	auto listed = [&f, &cookie]() {
+		auto r = f.get("/api/settings", cookie);
+		REQUIRE(r.status == 200);
+		bool channel = false;
+		bool lang = false;
+		for (const auto& s : r.json["settings"].items) {
+			channel = channel || s["key"].text == "update.channel";
+			lang = lang || s["key"].text == "ui.lang";
+		}
+		CHECK(lang); // the other settings stay
+		return channel;
+	};
+	CHECK(listed()); // the device's default
+	f.host.update_channel = false;
+	CHECK_FALSE(listed());
+	auto put = f.request(HttpMethod::put, "/api/settings/update.channel", "{\"value\":\"stable\"}", cookie);
+	CHECK(put.status == 403);
+	CHECK(put.json["code"].text == "settings.not_editable");
+	CHECK(put.json["error"].text == "this controller is updated by the system's package manager: there is no update channel");
+	CHECK(f.fake.settings.entries["update.channel"].text == "beta"); // nothing changed
+	// Another setting is still changed as before.
+	CHECK(f.request(HttpMethod::put, "/api/settings/ui.lang", "{\"value\":\"de\"}", cookie).status == 200);
+}
+
 TEST_CASE("WebApi query parameters parse strictly") {
 	uint32_t v = 0;
 	CHECK(hc::query_uint("from=12&x=1", "from", v));

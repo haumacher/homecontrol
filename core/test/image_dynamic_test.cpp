@@ -816,6 +816,63 @@ TEST_CASE("Image.ZigbeeBindingsWithoutReportingLoadAsBefore") {
 	CHECK(f.dp("bath.temperature")->technology() == &f.zigbee);
 }
 
+TEST_CASE("Image.ZigbeeBindingsWithoutAZigbeeAdapterLoadAndTheirDatapointsRefuse") {
+	// The Linux package (homecontrol #95): no Zigbee adapter. An image with Zigbee bindings loads,
+	// the KNX part runs, the Zigbee-bound datapoints are absent: no value, commands refused (logged).
+	hc_test::FakePlatform p;
+	hc::Controller controller{p.platform()};
+	hc_test::ScopedCapture capture; // after the controller, which installs the platform's sink
+	hc::DatapointModel model{p.clock};
+	hc_test::FakeUdpSocket socket{p.clock};
+	hc::knx::KnxTunnel tunnel{controller.loop(), p.clock, controller.connectivity(), socket};
+	hc::knx::KnxAdapter knx{controller.loop(), p.clock, model, tunnel};
+	hc_test::FakeBlobStore blobs;
+	MemoryImageSlot slot;
+	ImageService service{controller, model, blobs, slot, knx, &tunnel};
+	controller.start();
+	knx.start();
+	service.start();
+	std::string text = fixture("zigbee-bindings.json");
+	// One KNX datapoint and a rule that switches the Zigbee light with it.
+	size_t at = text.find("\"datapoints\": [");
+	REQUIRE(at != std::string::npos);
+	text.insert(at + 15, R"({"id": "hall.light", "type": "boolean", "writable": true, "transmit": true,
+		"knx": {"dpt": "1.001", "send": "1/1/1"}},
+	)");
+	text.insert(text.rfind('}'), R"(, "rules": [{"id": "follow", "reactions": [{"triggers": [{"kind": "datapoint",
+		"datapoint": "hall.light"}], "actions": [{"kind": "write", "datapoint": "living.ceiling",
+		"value": {"kind": "datapoint", "name": "hall.light"}}]}]}])");
+	REQUIRE_MESSAGE(hc_test::deploy(service, text), describe(service.report()));
+	CHECK(capture.sink.count("4 Zigbee-bound datapoint(s) without a Zigbee adapter on this platform") == 1);
+
+	const hc::Datapoint* light = model.find("hall.light");
+	REQUIRE(light != nullptr);
+	CHECK(light->technology() == &knx);
+	for (const char* name : {"bath.temperature", "bath.humidity", "living.ceiling", "hall.button"}) {
+		const hc::Datapoint* dp = model.find(name);
+		REQUIRE_MESSAGE(dp != nullptr, name);
+		REQUIRE(dp->technology() != nullptr);
+		CHECK(std::string(dp->technology()->name()) == "zigbee");
+		CHECK(dp->quality() == hc::Quality::unknown);
+	}
+	const hc::Datapoint* ceiling = model.find("living.ceiling");
+	CHECK(model.command(ceiling->id(), hc::Value::of_bool(true)) == hc::DatapointStatus::refused);
+	CHECK(capture.sink.count("command to 'living.ceiling' refused: it is bound to Zigbee") == 1);
+	CHECK(ceiling->quality() == hc::Quality::unknown);
+	// The KNX datapoint takes its command; the rule's write to the Zigbee light is refused alike.
+	CHECK(model.command(light->id(), hc::Value::of_bool(true)) == hc::DatapointStatus::ok);
+	for (int i = 0; i < 5; ++i) {
+		controller.run_once();
+	}
+	CHECK(capture.sink.count("command to 'living.ceiling' refused") >= 1);
+	CHECK(light->value() == hc::Value::of_bool(true));
+
+	// A second load (the same image again) binds them again, once each.
+	REQUIRE_MESSAGE(hc_test::deploy(service, text), describe(service.report()));
+	CHECK(capture.sink.count("4 Zigbee-bound datapoint(s) without a Zigbee adapter on this platform") == 2);
+	CHECK(std::string(model.find("bath.temperature")->technology()->name()) == "zigbee");
+}
+
 TEST_CASE("Image.ZigbeeReportingOverrideReachesTheDeviceAndTheExport") {
 	Built built;
 	REQUIRE_MESSAGE(build(sensor_image(1, ", \"reporting\": {\"min\": 30, \"max\": 900, \"change\": 0.5}"), built),

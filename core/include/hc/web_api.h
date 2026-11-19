@@ -319,6 +319,8 @@ private:
 	void log(const WebRequest& request, WebResponse& response);
 	void settings(WebResponse& response);
 	void put_setting(const char* key, const WebRequest& request, WebResponse& response);
+	/// Whether the platform offers the setting `key` (update.channel only where it updates itself).
+	bool offered(const char* key) const;
 	void coredump(WebResponse& response);
 	void image(const WebRequest& request, WebResponse& response);
 	void ui_model(const WebRequest& request, WebResponse& response);

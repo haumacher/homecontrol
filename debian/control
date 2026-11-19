@@ -1,0 +1,20 @@
+Source: homecontrol
+Section: net
+Priority: optional
+Maintainer: Bernhard Haumacher <haui@haumacher.de>
+Build-Depends: debhelper-compat (= 13), cmake, ninja-build, git, libssl-dev, python3
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://github.com/haumacher/homecontrol
+
+Package: homecontrol
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser, ca-certificates
+Description: HomeControl smart-home controller as a Linux service
+ The runtime of a smart home that E-Home engineers: KNX over KNXnet/IP, rules,
+ schedules, the web UI for the inhabitants, MQTT, external values and the
+ E-Home connection, the same controller as the ESP32-C6 firmware. Zigbee needs
+ the controller's radio and is not available on Linux.
+ .
+ The service listens on port 8081 (the WebSocket on 8082); its data lives in
+ /var/lib/homecontrol.

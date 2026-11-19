@@ -18,9 +18,11 @@ namespace posix {
 
 /// The POSIX WebSocketClient (doc/ehome.md): the client side of RFC 6455 over a TCP socket, on the
 /// core's codec (hc/websocket.h: masked frames out, the client role of the FrameDecoder in).
-/// Plain `ws://` only: `wss://` is refused with that reason (no TLS on the host build; the device
-/// speaks TLS through esp_websocket_client). Enough to run the controller against an E-Home on
-/// the developer's machine.
+/// `ws://` and, where the build has OpenSSL (tls_supported()), `wss://`: TLS 1.2 or newer, the
+/// server's certificate checked against the system's trust store (OpenSSL's default paths:
+/// /etc/ssl/certs of the package ca-certificates, or SSL_CERT_FILE / SSL_CERT_DIR) and its name (SNI
+/// and the host name check, an IP address against the certificate's IP addresses). Without
+/// OpenSSL `wss://` is refused with that reason.
 ///
 /// A reader thread per session connects, makes the upgrade handshake, reads and answers pings;
 /// it hands every event to the event loop through the LoopExecutor (blocking until the loop ran
@@ -39,6 +41,9 @@ public:
 
 	PosixWebSocketClient(const PosixWebSocketClient&) = delete;
 	PosixWebSocketClient& operator=(const PosixWebSocketClient&) = delete;
+
+	/// Whether wss:// works (the build found OpenSSL).
+	static bool tls_supported();
 
 	bool connect(const char* url, WebSocketClientListener& listener, const char** error) override;
 	bool send_text(const char* text, size_t length) override;

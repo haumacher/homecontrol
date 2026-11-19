@@ -540,7 +540,7 @@ void LiveFeed::zigbee_event(const zigbee::ZigbeeEvent& event) {
 }
 
 void LiveFeed::send_status(Client* only) {
-	Client* targets[kMaxClients + 1];
+	Client* targets[kMaxClients + 1] = {};
 	if (only != nullptr) {
 		targets[0] = only;
 		send_status_to(targets, 1, only->principal == Principal::anonymous);

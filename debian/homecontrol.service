@@ -1,0 +1,45 @@
+[Unit]
+Description=HomeControl smart-home controller
+Documentation=https://github.com/haumacher/homecontrol/blob/master/doc/linux.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=homecontrol
+Group=homecontrol
+WorkingDirectory=/var/lib/homecontrol
+# HOMECONTROL_HTTP_PORT, HOMECONTROL_HTTP_BIND (the web UI's port and address).
+EnvironmentFile=-/etc/default/homecontrol
+# The settings file names the data directory: the image, the stored values and history and the run
+# marker live beside it. The web UI and its language packs come from /usr/share/homecontrol/www.
+ExecStart=/usr/bin/homecontrol --settings /var/lib/homecontrol/homecontrol.settings
+# A restart or factory reset over the API ends the process; systemd starts it again.
+Restart=always
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=yes
+# No capability at all: the ports are above 1024.
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# AF_NETLINK: getifaddrs() (the addresses of the network status).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+ReadWritePaths=/var/lib/homecontrol
+
+[Install]
+WantedBy=multi-user.target

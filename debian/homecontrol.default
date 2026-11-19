@@ -1,0 +1,10 @@
+# Settings of the homecontrol service, read by its systemd unit.
+# After a change: sudo systemctl restart homecontrol
+#
+# Port of the web UI (default 8081; 0 switches the web server off). The WebSocket of
+# the live values listens on the port above (default 8082).
+#HOMECONTROL_HTTP_PORT=8081
+#
+# Address the web UI and the WebSocket listen on (default: every IPv4 address,
+# 0.0.0.0), a numeric IPv4 or IPv6 address, e.g. 127.0.0.1 behind a reverse proxy.
+#HOMECONTROL_HTTP_BIND=0.0.0.0

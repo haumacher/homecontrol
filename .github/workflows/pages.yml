@@ -7,6 +7,11 @@
 # release made with GITHUB_TOKEN starts no workflow by itself); it also runs when a release is
 # published by hand, when the flasher pages change, and by hand; by hand with `stable` set, the
 # stable channel points at an older release on the site (rollback).
+#
+# The apt repository of the Linux package (doc/linux.md) lives under /apt: debian/apt-repo.sh builds it
+# from the .deb assets of the same newest five releases, signed with the key of the repository secrets
+# APT_SIGNING_KEY (the armored secret key) and APT_SIGNING_PASSPHRASE. Without the secret the site is
+# deployed without /apt, with a warning (the OTA channels never wait for the apt repository).
 name: Pages
 
 on:
@@ -17,6 +22,8 @@ on:
     paths:
       - web/flasher/**
       - scripts/pages-site.py
+      - debian/apt-repo.sh
+      - debian/apt-index.html
       - .github/workflows/pages.yml
   workflow_call:
     inputs:
@@ -54,6 +61,7 @@ jobs:
       - name: Download the releases
         id: releases
         env:
+          DEBS: ${{ runner.temp }}/debs
           GH_TOKEN: ${{ github.token }}
           STABLE: ${{ inputs.stable }}
         run: |
@@ -79,7 +87,7 @@ jobs:
             dir="$RUNNER_TEMP/releases/$tag"
             if [ "$n" -le 5 ]; then
               gh release download "$tag" -R "$GITHUB_REPOSITORY" -D "$dir" --pattern '*.bin' --pattern '*.json' \
-                --pattern 'manifest.sig' --pattern 'SHA256SUMS' --pattern 'lang-*.json.gz'
+                --pattern 'manifest.sig' --pattern 'SHA256SUMS' --pattern 'lang-*.json.gz' --pattern 'homecontrol_*.deb'
               ARGS+=(--release "$dir")
             else
               gh release download "$tag" -R "$GITHUB_REPOSITORY" -D "$dir" --pattern 'i18n-manifest.json' \
@@ -91,8 +99,38 @@ jobs:
             ARGS+=(--stable "$STABLE")
           fi
           python3 scripts/pages-site.py --out "$RUNNER_TEMP/site" "${ARGS[@]}"
+          mkdir -p "$DEBS"
+          find "$RUNNER_TEMP/releases" -name 'homecontrol_*.deb' -exec mv {} "$DEBS/" \;
+          echo "debs=$(find "$DEBS" -name '*.deb' | wc -l)" >> "$GITHUB_OUTPUT"
           du -sh "$RUNNER_TEMP/site"
           echo "count=$n" >> "$GITHUB_OUTPUT"
+
+      - name: The apt repository
+        if: steps.releases.outputs.count != '0'
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          APT_SIGNING_PASSPHRASE: ${{ secrets.APT_SIGNING_PASSPHRASE }}
+          DEBS_FOUND: ${{ steps.releases.outputs.debs }}
+        run: |
+          if [ "$DEBS_FOUND" = 0 ]; then
+            echo "no release carries Linux packages yet: no /apt"
+            exit 0
+          fi
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::warning::the secret APT_SIGNING_KEY is not set: the site goes out without the apt repository (doc/linux.md)"
+            exit 0
+          fi
+          sudo apt-get install -y -qq apt-utils >/dev/null
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          case "$APT_SIGNING_KEY" in
+            -----BEGIN*) printf '%s\n' "$APT_SIGNING_KEY" > "$GNUPGHOME/key" ;;
+            *) printf '%s' "$APT_SIGNING_KEY" | base64 -d > "$GNUPGHOME/key" ;;
+          esac
+          printf '%s' "$APT_SIGNING_PASSPHRASE" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+            --import "$GNUPGHOME/key"
+          rm -f "$GNUPGHOME/key"
+          debian/apt-repo.sh "$RUNNER_TEMP/site/apt" "$RUNNER_TEMP/debs"
 
       - uses: actions/upload-pages-artifact@v3
         if: steps.releases.outputs.count != '0'

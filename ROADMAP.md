@@ -324,3 +324,16 @@ outside world (weather, external services).
   (2 688 KB on 4 MB, 4 160 and 6 208 KB on 8 and 16 MB); `image`, `otadata` and `storage` keep their
   offsets. CI fails when the updater exceeds its partition less 16 KB. Every controller is flashed
   over USB once anyway for the new table.
+- **2026-11-19 — The controller ships as a Debian package, everything but Zigbee (homecontrol #95,
+  agreed with the owner).** The POSIX build becomes a product: the package `homecontrol` for Debian
+  Bookworm and Trixie on amd64, arm64 and armhf, version hc::kVersion, built from the release tag
+  and published in a signed apt repository on the Pages site (`/apt`; distributions by codename,
+  components `stable` and `beta` like the update channels). A hardened systemd unit without
+  privileges, enabled on installation, `Restart=always` (restart and factory reset over the API end
+  the process); data in `/var/lib/homecontrol`, the UI and its language packs from
+  `/usr/share/homecontrol/www`; default port 8081 and the WebSocket on 8082 (8080 is E-Home's
+  Tomcat; below 1024 needs privileges), set in `/etc/default/homecontrol`. Updates are the package
+  manager's: no update channel, no language pack download. No mDNS (a server keeps its name).
+  An image with Zigbee bindings loads: its Zigbee datapoints keep no value and refuse commands.
+  The E-Home connection speaks `wss://` through OpenSSL. Rejected: mDNS, port 8080 or 80, packs
+  from the update server, a service not enabled on installation; a Docker image is put off.

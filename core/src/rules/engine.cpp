@@ -3488,7 +3488,7 @@ void Engine::keep_timeline_override(size_t rule, const Timeline* image, const ch
 	const char* rule_id = next.str(next.rule(rule).id);
 	RuleRuntime& nr = rt.rules[rule];
 	auto reset = [&](const char* why) {
-		char message[176];
+		char message[192]; // the longest reason fits (a release build checks with -Wformat-truncation)
 		std::snprintf(message, sizeof(message), "the inhabitant's timeline is dropped: %s; the image's applies", why);
 		log_code(rule_id, &nr, LogCode::timeline_reset, LogLevel::warn, "inhabitant's timeline dropped", message);
 		dirty = true;

@@ -3,17 +3,22 @@
  */
 // The controller as a host executable: the simulator and the single-board-computer fallback.
 //
-//   homecontrol [--settings <file>] [--image <file>] [--http <port>] [--www <dir>] [--demo] [--version]
+//   homecontrol [--settings <file>] [--image <file>] [--http <port>] [--bind <address>] [--www <dir>] [--demo]
+//               [--version]
 //
 // Runs the controller until SIGINT or SIGTERM. The settings (time zone, ...) live in a text file,
 // by default homecontrol.settings in the working directory (format in doc/network.md). The web
-// server (doc/web.md) serves the API and the UI files of web/ui/dist on port 8080 (--http 0: off),
-// the WebSocket on the port above; --demo loads simulated datapoints for UI development. With the
+// server (doc/web.md) serves the API and the UI files of web/ui/dist (the package's
+// /usr/share/homecontrol/www) on port 8081 (--http 0: off), the WebSocket on the port above, both on
+// every IPv4 address (--bind); the environment variables HOMECONTROL_HTTP_PORT and
+// HOMECONTROL_HTTP_BIND set both for the systemd unit (doc/linux.md), the command line wins. --demo
+// loads simulated datapoints for UI development. With the
 // setting knx.gateway it keeps a KNXnet/IP tunnel to that gateway (doc/knx.md). --image loads a
 // binary runtime image (spec/runtime-image.md 9, compiled by E-Home, its signature inside) at
 // start; PUT /api/image replaces it. The image slot is the file `<settings stem>.image.bin`.
-// The blobs (the stored image, persisted values, history rings, the UI's language pack) live in a
-// directory beside the settings file (doc/persistence.md).
+// The blobs (the stored image, persisted values, history rings) live in a directory beside the
+// settings file (doc/persistence.md). The language packs are the UI's own (www/lang): nothing is
+// fetched from the update server, and the package manager updates the controller (doc/linux.md).
 
 #include <cerrno>
 #include <csignal>
@@ -36,10 +41,8 @@
 #include "hc/image/image_service.h"
 #include "hc/posix/file_image_slot.h"
 #include "hc/posix/thread_worker.h"
-#include "hc/language_packs.h"
 #include "hc/mqtt.h"
 #include "hc/signature.h"
-#include "hc/update_check.h"
 #include "hc/posix/mqtt_client.h"
 #include "hc/version.h"
 #include "hc/posix/file_blob_store.h"
@@ -53,6 +56,7 @@
 #include "hc/knx/tunnel.h"
 #include "hc/log.h"
 #include "hc/posix/diagnostics.h"
+#include "hc/posix/options.h"
 #include "hc/posix/file_settings.h"
 #include "hc/posix/platform.h"
 #include "hc/posix/udp_socket.h"
@@ -61,13 +65,6 @@
 namespace {
 
 constexpr const char* kTag = "hc.main";
-
-constexpr const char* kDefaultSettingsFile = "homecontrol.settings";
-
-constexpr unsigned kDefaultHttpPort = 8080;
-
-/// The RAM blob store's capacity (the stand-in for the file store): the image and its persisted
-/// state with room to spare.
 
 #ifndef HC_WEB_UI_DIR
 #define HC_WEB_UI_DIR "web/ui/dist"
@@ -141,11 +138,6 @@ void mqtt_node_id(char* out, size_t size) {
 	std::snprintf(out, size, "homecontrol-%s", host);
 }
 
-void print_usage(const char* program) {
-	std::fprintf(stderr, "usage: %s [--settings <file>] [--image <file>] [--http <port>] [--www <dir>] [--demo] [--version]\n",
-		program);
-}
-
 } // namespace
 
 /// The UDP sockets the main loop polls: the KNX tunnel's and the gateway search's.
@@ -207,74 +199,31 @@ int main(int argc, char** argv) {
 	hc::posix::PosixSystemInfo system;
 	hc::posix::PosixTimeZone time_zone;
 	hc::posix::PosixNetworkDriver network;
-	const char* settings_path = kDefaultSettingsFile;
-	unsigned http_port = kDefaultHttpPort;
-	const char* www_dir = HC_WEB_UI_DIR;
-	bool demo = false;
-	const char* image_path = nullptr;
 
 	// Log through the sink while the arguments are parsed (the Controller installs it for good).
 	hc::Log::set_sink(&sink);
-	for (int i = 1; i < argc; ++i) {
-		if (std::strcmp(argv[i], "--settings") == 0) {
-			if (i + 1 >= argc) {
-				hc::Log::error(kTag, "--settings needs a file argument");
-				print_usage(argv[0]);
-				return 2;
-			}
-			settings_path = argv[++i];
-			continue;
-		}
-		if (std::strcmp(argv[i], "--image") == 0) {
-			if (i + 1 >= argc) {
-				hc::Log::error(kTag, "--image needs a file argument");
-				print_usage(argv[0]);
-				return 2;
-			}
-			image_path = argv[++i];
-			continue;
-		}
-		if (std::strcmp(argv[i], "--http") == 0 || std::strcmp(argv[i], "--www") == 0) {
-			if (i + 1 >= argc) {
-				hc::Log::error(kTag, "%s needs an argument", argv[i]);
-				print_usage(argv[0]);
-				return 2;
-			}
-			if (argv[i][2] == 'w') {
-				www_dir = argv[++i];
-				continue;
-			}
-			char* end = nullptr;
-			unsigned long port = std::strtoul(argv[++i], &end, 10);
-			if (*end != '\0' || port > 65534) {
-				hc::Log::error(kTag, "--http takes a port 0..65534 (0: no web server; the WebSocket uses the next port)");
-				return 2;
-			}
-			http_port = static_cast<unsigned>(port);
-			continue;
-		}
-		if (std::strcmp(argv[i], "--demo") == 0) {
-			demo = true;
-			continue;
-		}
-		if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
-			print_usage(argv[0]);
-			return 0;
-		}
-		if (std::strcmp(argv[i], "--version") == 0) {
-			// The same words as the controller's first log line and the device's /api/status.
-			std::printf("homecontrol %s (build %s)\n", hc::kVersion, hc::build_id());
-			return 0;
-		}
-		hc::Log::error(kTag, "unknown argument: %s", argv[i]);
-		print_usage(argv[0]);
+	hc::posix::Options options;
+	std::string error;
+	if (!hc::posix::parse_options(argc, argv, [](const char* name) -> const char* { return std::getenv(name); },
+			options, error)) {
+		hc::Log::error(kTag, "%s", error.c_str());
+		std::fprintf(stderr, "%s\n", hc::posix::usage(argv[0]).c_str());
 		return 2;
 	}
-
-	if (demo && image_path != nullptr) {
-		hc::Log::error(kTag, "--demo and --image both fill the datapoint model: choose one");
-		return 2;
+	if (options.action == hc::posix::Options::Action::help) {
+		std::fprintf(stderr, "%s\n", hc::posix::usage(argv[0]).c_str());
+		return 0;
 	}
+	if (options.action == hc::posix::Options::Action::version) {
+		// The same words as the controller's first log line and the device's /api/status.
+		std::printf("homecontrol %s (build %s)\n", hc::kVersion, hc::build_id());
+		return 0;
+	}
+	const std::string& settings_path = options.settings_path;
+	const char* image_path = options.image_path.empty() ? nullptr : options.image_path.c_str();
+	const bool demo = options.demo;
+	const unsigned http_port = options.http_port;
+	const std::string www_dir = options.www_dir.empty() ? std::string(HC_WEB_UI_DIR) : options.www_dir;
 
 	hc::posix::FileSettings settings(settings_path);
 	settings.load();
@@ -318,13 +267,9 @@ int main(int argc, char** argv) {
 	hc::FetchQueue fetches(controller.loop(), clock, fetcher);
 	hc::FetchQueue::Lane enrollment_lane(fetches, "enrollment", 2);
 	hc::FetchQueue::Lane external_lane(fetches, "external", 3);
-	hc::FetchQueue::Lane language_lane(fetches, "language", 4);
 	hc::ExternalValues external(controller.loop(), controller.time(), settings, controller.connectivity(), model,
 		external_lane);
 	image.set_external(&external);
-	// The web UI's language pack for ui.lang, fetched from the update server (doc/i18n.md).
-	hc::LanguagePacks packs(controller.loop(), controller.time(), settings, controller.connectivity(), language_lane, blobs,
-		hc::kVersion);
 	// MQTT (doc/mqtt.md): the node id is "homecontrol-<host name>" as the device's is "homecontrol-<MAC>".
 	char node_id[hc::Mqtt::kMaxNodeId + 1];
 	mqtt_node_id(node_id, sizeof(node_id));
@@ -357,7 +302,6 @@ int main(int argc, char** argv) {
 		blobs.start();
 		storage.measure_now();
 		image.start();
-		packs.start();
 		if (image_path != nullptr) {
 			// A binary image (spec/runtime-image.md 9), compiled by E-Home; the signature is inside.
 			std::string bytes;
@@ -372,9 +316,9 @@ int main(int argc, char** argv) {
 	}
 	if (http_port != 0) {
 		web.reset(new hc::posix::WebServer(controller, model, executor, static_cast<uint16_t>(http_port), www_dir));
+		web->set_bind_address(options.bind_address);
 		if (!demo) {
 			web->set_image(&image);
-			web->set_language_packs(&packs, &blobs);
 			web->set_mqtt(&mqtt);
 			web->set_external(&external);
 			web->set_storage_stats(&storage);

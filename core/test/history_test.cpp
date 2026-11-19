@@ -123,7 +123,11 @@ std::vector<uint8_t> make_blob(const char* name, ValueType type, const std::vect
 	put_u32(fields, static_cast<uint32_t>(samples.size()));
 	std::vector<uint8_t> blob = {'H', 'H', version, static_cast<uint8_t>(fields.size()),
 		static_cast<uint8_t>(fields.size() >> 8)};
-	blob.insert(blob.end(), fields.begin(), fields.end());
+	// Byte by byte: GCC 12's -Warray-bounds takes the vector's range insert after the 5-byte
+	// initializer for an overflow (a false positive; Debian Bookworm's -O2 package build).
+	for (uint8_t byte : fields) {
+		blob.push_back(byte);
+	}
 	for (const hc::HistorySample& s : samples) {
 		put_u32(blob, s.t);
 		put_u32(blob, s.bits);

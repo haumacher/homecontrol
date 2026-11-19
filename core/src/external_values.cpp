@@ -1248,7 +1248,7 @@ void ExternalValues::fetch_end(const FetchResult& result) {
 void ExternalValues::process(Source& source, const char* body, size_t length) {
 	JsonSpan root;
 	const char* error = nullptr;
-	char reason[112];
+	char reason[176]; // the path twice and the parser's reason fit (-Wformat-truncation of a release build)
 	if (body == nullptr || !json_parse(body, length, root, &error)) {
 		std::snprintf(reason, sizeof(reason), "the response is not JSON: %s", error != nullptr ? error : "empty");
 		fail(source, reason, true);

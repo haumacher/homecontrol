@@ -106,8 +106,11 @@ public:
 		return true;
 	}
 	bool has_platform_log() const override { return platform_log; }
+	bool has_update_channel() const override { return update_channel; }
 
 	bool mdns = true;
+	/// false: the platform is updated by a package manager (the Linux package): no update.channel.
+	bool update_channel = true;
 	int ntp_changes = 0;
 	std::string update_url;
 	/// Writes the update state instead of the default (a platform's own members).

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Copyright (c) 2026 Bernhard Haumacher
+#
+# The package version of hc::kVersion (core/include/hc/version.h) in Debian syntax: a native package
+# has no "-", and "~" sorts a pre-release before its release (1.5.0-beta.1 -> 1.5.0~beta.1 < 1.5.0).
+#
+#   debian/hc-version             the version of the checkout's version.h
+#   debian/hc-version to-debian 1.5.0-beta.1
+set -eu
+
+case "${1:-}" in
+to-debian)
+    printf '%s\n' "$2" | sed -e 's/-/~/g'
+    ;;
+"")
+    dir=$(cd "$(dirname "$0")/.." && pwd)
+    version=$(sed -n 's/.*constexpr const char\* kVersion = "\([^"]*\)".*/\1/p' "$dir/core/include/hc/version.h")
+    [ -n "$version" ] || { echo "no kVersion in core/include/hc/version.h" >&2; exit 1; }
+    "$0" to-debian "$version"
+    ;;
+*)
+    echo "usage: $0 [to-debian VERSION]" >&2
+    exit 2
+    ;;
+esac

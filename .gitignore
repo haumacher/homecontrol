@@ -38,3 +38,5 @@ homecontrol.settings
 /spike/blocks-wasm/blocks/rust/target/
 /spike/blocks-wasm/blocks/c/bulk.c
 /spike/blocks-wasm/java/target/
+# The Debian packages of debian/build-deb.sh (doc/linux.md)
+/dist/
