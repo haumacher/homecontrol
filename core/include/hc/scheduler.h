@@ -375,6 +375,10 @@ public:
 	static constexpr size_t kRecordKeySize = 13;
 	static void record_key(const char* id, char* buffer);
 
+	/// The record writes and deletions in the settings since construction (GET
+	/// /api/system/diagnostics `storage.writes`).
+	uint32_t writes() const { return writes_; }
+
 private:
 	struct Entry;
 
@@ -415,6 +419,7 @@ private:
 	ScheduleListener* listeners_[kListenerCapacity] = {};
 	size_t listener_count_ = 0;
 	TimerHandle timer_;
+	uint32_t writes_ = 0;
 	bool notifying_ = false;
 	bool firing_ = false;
 	bool waiting_logged_ = false;

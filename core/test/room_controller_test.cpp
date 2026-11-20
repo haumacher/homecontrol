@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <memory>
 #include <string>
@@ -18,6 +19,7 @@
 #include "hc/value_store.h"
 #include "fake_blob_store.h"
 #include "hc/blocks/block_runtime.h"
+#include "hc/blocks/house_mode.h"
 #include "hc/blocks/room_controller.h"
 #include "hc/event_loop.h"
 #include "hc/json.h"
@@ -275,18 +277,20 @@ TEST_CASE("RoomController: valve protection opens fully once on its weekday") {
 	CHECK(rig.number("block/wz/state") == RoomController::summer); // once per day
 }
 
-TEST_CASE("RoomController: the integral survives a restart") {
+TEST_CASE("RoomController: a day of operation writes no record; after a reboot the integral starts at 0") {
 	hc_test::FakeBlobStore blobs;
 	Rig rig(room_block(R"("system": "radiator")"), &blobs);
 	Room room = room_of(RoomController::radiator);
-	close_loop(rig, room, 4 * 3600, 60, 7, false, [](uint64_t) {});
-	double integral = rig.field(RoomController::kIntegral);
-	CHECK(integral > 0);
+	close_loop(rig, room, 24 * 3600, 60, 7, false, [](uint64_t) {});
+	CHECK(rig.field(RoomController::kIntegral) > 0);
+	CHECK(blobs.writes == 0); // nothing of the type is managed state (spec/blocks.md 14.1)
+	CHECK(rig.blocks().writes() == 0);
 	rig.reboot();
-	CHECK(rig.field(RoomController::kIntegral) == integral);
+	CHECK(blobs.writes == 0);
+	CHECK(rig.field(RoomController::kIntegral) == 0);
 	hc::blocks::BlockDiagnostics d;
 	REQUIRE(rig.blocks().diagnostics(0, d));
-	CHECK(d.restored);
+	CHECK_FALSE(d.restored);
 }
 
 TEST_CASE("BlockRuntime: no allocation in steady state; the cost of a room controller") {
@@ -307,7 +311,7 @@ TEST_CASE("BlockRuntime: no allocation in steady state; the cost of a room contr
 		}
 		// The fake store allocates for each record it keeps (the platform's writes to the flash do not).
 		size_t allocations = scope.count() - static_cast<size_t>(rig.blobs().writes - writes);
-		CHECK(rig.blobs().writes - writes == 3); // the record every 10 minutes (persistEvery)
+		CHECK(rig.blobs().writes - writes == 0); // no managed state: no record
 		CHECK(refused == 0);
 		CHECK(allocations == 0);
 	}
@@ -321,31 +325,80 @@ TEST_CASE("BlockRuntime: no allocation in steady state; the cost of a room contr
 	CHECK(mirrors == 1 + 4 + 10 + 1); // enabled, 4 setpoints, 10 outputs, the aggregated temperature
 }
 
-TEST_CASE("BlockRuntime: each record is paced by max(persistEvery of its type, n x 120 s) (spec/blocks.md B13)") {
-	// Two instances with persistent state: n x 120 s = 240 s. The conformance type's persistEvery is
-	// 60 s, the room controller's 600 s: the conformance record is written every 240 s, not at the
-	// room controller's 600 s (a global interval wrote it three times less often).
+TEST_CASE("BlockRuntime: at the first start, records of older firmware are deleted or reduced to the managed state") {
+	// Records as firmware before homecontrol #102 wrote them: a room controller's integral and
+	// protectedOn, a heating curve's filter, a house mode's mode and since with a field that is not
+	// managed state, and the record of a block no longer in the image.
+	hc_test::ScopedCapture capture(hc::LogLevel::info);
 	hc_test::FakeBlobStore blobs;
-	Rig rig(R"([{"id": "c", "type": "org.homecontrol.conformance", "version": "1.1", "label": "C",
-		"inputs": {"x": "temp"}},
-		{"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Room",
-		"inputs": {"temperature": "temp2"}, "outputs": {"valve": "valve"}}])", &blobs);
-	char c_name[hc::persist::kBlobNameSize];
-	hc::persist::blob_name(BlockRuntime::kBlobPrefix, "c", c_name);
-	char wz_name[hc::persist::kBlobNameSize];
-	hc::persist::blob_name(BlockRuntime::kBlobPrefix, "wz", wz_name);
-	rig.report("temp", 1.0);
-	rig.report("temp2", 19.0);
-	int c_before = blobs.writes_of[c_name];
-	int wz_before = blobs.writes_of[wz_name];
-	// The conformance block's period (10 s) changes its persisted count every call.
-	for (int s = 10; s <= 2400; s += 10) {
-		rig.report("temp2", 19.0 + (s % 600 == 0 ? 0.5 : 0.0));
-		rig.run(static_cast<uint64_t>(s) * 1000);
-	}
-	int c_writes = blobs.writes_of[c_name] - c_before;
-	int wz_writes = blobs.writes_of[wz_name] - wz_before;
-	CHECK(c_writes >= 9);  // 2400 s / 240 s
-	CHECK(c_writes <= 10);
-	CHECK(wz_writes <= 4); // 2400 s / 600 s
+	auto put = [&](const char* id, const char* type, std::vector<std::pair<std::string, double>> fields) {
+		std::vector<uint8_t> b = {'H', 'C', 'B', 'S', 1, static_cast<uint8_t>(std::strlen(type))};
+		b.insert(b.end(), type, type + std::strlen(type));
+		b.push_back(1);
+		b.push_back(0);
+		b.push_back(static_cast<uint8_t>(std::strlen(id)));
+		b.insert(b.end(), id, id + std::strlen(id));
+		b.push_back(static_cast<uint8_t>(fields.size()));
+		for (const auto& f : fields) {
+			b.push_back(static_cast<uint8_t>(f.first.size()));
+			b.insert(b.end(), f.first.begin(), f.first.end());
+			uint64_t bits = 0;
+			std::memcpy(&bits, &f.second, 8);
+			for (int i = 0; i < 8; ++i) {
+				b.push_back(static_cast<uint8_t>(bits >> (8 * i)));
+			}
+		}
+		uint32_t crc = hc::persist::crc32(0, b.data(), b.size());
+		for (int i = 0; i < 4; ++i) {
+			b.push_back(static_cast<uint8_t>(crc >> (8 * i)));
+		}
+		char name[hc::persist::kBlobNameSize];
+		hc::persist::blob_name(BlockRuntime::kBlobPrefix, id, name);
+		hc::BlobChunk chunk{b.data(), b.size()};
+		REQUIRE(blobs.write(name, &chunk, 1) == hc::BlobStatus::ok);
+	};
+	put("wz", "org.homecontrol.room-controller", {{"integral", 24.8}, {"protectedOn", 20412}});
+	put("hk", "org.homecontrol.heating-curve", {{"filtered", 4.5}, {"hasFiltered", 1}, {"aboveFor", 0}, {"derivedSummer", 0}});
+	put("hm", "org.homecontrol.house-mode", {{"mode", 1}, {"since", 29919360}, {"armed", 0}});
+	put("gone", "org.homecontrol.room-controller", {{"integral", 3}});
+	int writes = blobs.writes;
+	std::vector<std::pair<std::string, hc::ValueType>> points = Rig::room_datapoints();
+	points.emplace_back("out", hc::ValueType::real);
+	Rig rig(R"([{"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Room",
+			"inputs": {"temperature": "temp"}},
+		{"id": "hk", "type": "org.homecontrol.heating-curve", "version": "1.0", "label": "Curve",
+			"inputs": {"outside": "out"}},
+		{"id": "hm", "type": "org.homecontrol.house-mode", "version": "1.0", "label": "House",
+			"inputs": {"presence": "on"}}])", &blobs, points);
+	auto stored = [&](const char* id) {
+		char name[hc::persist::kBlobNameSize];
+		hc::persist::blob_name(BlockRuntime::kBlobPrefix, id, name);
+		return blobs.blobs.count(name) > 0;
+	};
+	CHECK_FALSE(stored("wz"));
+	CHECK_FALSE(stored("hk"));
+	CHECK_FALSE(stored("gone"));
+	REQUIRE(stored("hm"));
+	CHECK(capture.sink.count("its block type keeps no managed state") == 2);
+	CHECK(capture.sink.contains("no longer in the image"));
+	CHECK(capture.sink.contains("hm: 1 fields of the state record are not managed state"));
+	CHECK(capture.sink.count("stateReset") == 0);
+	// The house mode's record was written again with mode and since alone; its mode came back.
+	char name[hc::persist::kBlobNameSize];
+	hc::persist::blob_name(BlockRuntime::kBlobPrefix, "hm", name);
+	const std::vector<uint8_t>& record = blobs.blobs[name];
+	size_t unmanaged = 99;
+	const char* reason = "";
+	std::vector<double> values(hc::blocks::HouseMode::kFieldCount, -7);
+	CHECK(BlockRuntime::decode_record(hc::blocks::HouseMode::instance().manifest(), "hm", record.data(), record.size(),
+		values.data(), &reason, &unmanaged));
+	CHECK(unmanaged == 0);
+	CHECK(values[hc::blocks::HouseMode::kModeField] == 1);
+	CHECK(rig.number("block/hm/mode") == 1);
+	CHECK(blobs.writes - writes == 1);   // the one rewrite
+	CHECK(rig.blocks().writes() == 4);   // it and the three deletions
+	// The next start finds nothing more to do.
+	rig.reboot();
+	CHECK(blobs.writes - writes == 1);
+	CHECK(rig.blocks().writes() == 0);
 }

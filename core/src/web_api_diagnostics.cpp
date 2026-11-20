@@ -11,6 +11,7 @@
 
 #include "hc/diagnostics.h"
 #include "hc/image/image.h"
+#include "hc/image/image_service.h"
 #include "hc/knx/telegram_log.h"
 #include "hc/knx/tunnel.h"
 #include "hc/version.h"
@@ -258,6 +259,19 @@ void WebApi::diagnostics(const WebRequest& request, WebResponse& response) {
 					.member("free", storage->total > storage->used ? storage->total - storage->used : 0);
 			}
 			json.member("files", storage->files).member("bytes", storage->bytes);
+		}
+		// The writes since boot per writer (homecontrol #102): who wears the flash.
+		if (image_ != nullptr) {
+			image::ImageService& image = *image_;
+			json.key("writes").begin_object()
+				.member("values", image.value_store().writes())
+				.member("history", image.history().writes())
+				.member("archives", image.history().archive_writes())
+				.member("block_records", image.blocks().writes())
+				.member("block_overrides", image.blocks().override_writes())
+				.member("rules", image.engine().writes())
+				.member("schedules", image.scheduler().writes())
+				.end_object();
 		}
 		json.key("nvs").begin_object();
 		const char* reason = nullptr;

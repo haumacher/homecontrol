@@ -253,21 +253,74 @@ TEST_CASE("HouseMode: a reboot with unknown presence keeps each persisted mode; 
 	CHECK(mode(rig) == HouseMode::away);
 }
 
-TEST_CASE("HouseMode: the record is written at once after a boot, then paced by B13") {
+TEST_CASE("HouseMode: the record is written 10 s after a change of the mode, and only then (spec/blocks.md B4)") {
 	Rig rig = rig_of();
 	rig.run(kMinute);
-	size_t base = rig.blobs().writes; // none: a fresh start changes no persisted field
+	size_t base = rig.blobs().writes; // none: a fresh start changes no managed field (no wall clock: since -1)
 	CHECK(base == 0);
 	press(rig, "awayB");
-	CHECK(rig.blobs().writes == base + 1); // the first write after the boot: at once
+	uint64_t changed = rig.now();
+	rig.run(changed + 9000);
+	CHECK(rig.blobs().writes == base); // coalesced like a rule state: 10 s after the change
+	rig.run(changed + hc::blocks::BlockRuntime::kRecordDelayMs);
+	CHECK(rig.blobs().writes == base + 1);
+
+	// Home and away again within the delay: the record would be the stored one, so nothing is written.
 	press(rig, "homeB");
+	CHECK(mode(rig) == HouseMode::home);
+	press(rig, "awayB");
+	CHECK(mode(rig) == HouseMode::away);
+	rig.run(rig.now() + kMinute);
 	CHECK(rig.blobs().writes == base + 1);
-	rig.run(rig.now() + 30 * 1000);
-	CHECK(rig.blobs().writes == base + 1);
-	rig.run(rig.now() + 2 * kMinute); // max(persistEvery 60 s, 1 x 120 s) after the previous
+
+	// Absence arms the return; presence returns home: one change, one write.
+	flag(rig, "pres", false);
+	flag(rig, "pres", true);
+	CHECK(mode(rig) == HouseMode::home);
+	rig.run(rig.now() + kMinute);
 	CHECK(rig.blobs().writes == base + 2);
-	rig.run(rig.now() + kHour); // nothing changed: nothing written
-	CHECK(rig.blobs().writes == base + 2);
+	// A day of periods and presence reports without a change of the mode: nothing is written.
+	size_t before = rig.blobs().writes;
+	for (int h = 0; h < 24; ++h) {
+		flag(rig, "pres", true);
+		rig.run(rig.now() + kHour);
+	}
+	CHECK(mode(rig) == HouseMode::home);
+	CHECK(rig.blobs().writes == before);
+
+	// The record holds the last mode: a reboot restores it.
+	press(rig, "nightB");
+	rig.run(rig.now() + hc::blocks::BlockRuntime::kRecordDelayMs);
+	CHECK(rig.blobs().writes == before + 1);
+	rig.reboot();
+	check_outputs(rig, HouseMode::night, 3);
+	hc::blocks::BlockDiagnostics d;
+	REQUIRE(rig.blocks().diagnostics(0, d));
+	CHECK(d.restored);
+	CHECK(rig.blocks().writes() == 0); // the start of a restored mode writes nothing
+}
+
+TEST_CASE("BlockRuntime: the guard of B13 holds a record that changes all the time to 30 writes an hour, logged once") {
+	hc_test::ScopedCapture capture(hc::LogLevel::info);
+	Rig rig = rig_of(R"("awayDelay": 600000, "returnDetection": false)");
+	rig.run(kMinute);
+	size_t base = rig.blobs().writes;
+	// A mode change every 20 s for 40 min: 121 changes, each due 10 s later, the last one away.
+	for (int i = 0; i < 121; ++i) {
+		press(rig, i % 2 == 0 ? "awayB" : "homeB");
+		rig.run(rig.now() + 19000);
+	}
+	uint64_t first = rig.now();
+	CHECK(rig.blobs().writes - base == hc::blocks::BlockLimits::kRecordWritesPerHour);
+	CHECK(capture.sink.count("written 30 times within the hour") == 1);
+	// The held write goes when the hour of the earliest of the 30 has passed: the last state, once.
+	rig.run(first + kHour);
+	CHECK(rig.blobs().writes - base == hc::blocks::BlockLimits::kRecordWritesPerHour + 1);
+	rig.run(rig.now() + 2 * kHour);
+	CHECK(rig.blobs().writes - base == hc::blocks::BlockLimits::kRecordWritesPerHour + 1);
+	CHECK(capture.sink.count("written 30 times within the hour") == 1);
+	rig.reboot();
+	CHECK(mode(rig) == HouseMode::away); // the last change (the 121st press: away) is the stored one
 }
 
 TEST_CASE("HouseMode: the HVAC mapping is a parameter per mode; the failsafe is home with the rooms on auto") {

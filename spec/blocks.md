@@ -55,12 +55,18 @@ language it would need helper datapoints and subexpressions beyond the limits of
   input gets none. Every instance has `block/<id>/enabled`; the id `enabled` is reserved.
 - **B3. Aggregation is chosen per instance** in the image (`"aggregation": {"temperature": "min"}`)
   from the set the port allows; it is not a parameter.
-- **B4. Persistence: one record per instance**, written at most every `persistEvery` of the type
-  (the room controller: 10 minutes) and at an orderly reboot; an unorderly reset loses at most that
-  interval. A change of the type's major version starts the state fresh; a change of the minor
-  version keeps it. Parameter overrides use the store of the rule parameters; an override survives
-  a new image only while its parameter exists with a compatible type and its value is within the
-  new bounds, otherwise it is dropped and logged, never clamped.
+- **B4. Persistence: only managed state, when it changes** (homecontrol #102, which replaced the
+  `persistEvery` of the first version). Only what the controller manages and a restart would lose
+  goes to the flash. A state field marked `persist` is *managed state*, kept like a rule's state
+  (`spec/rules.md` 8.5): written when it changes (10 s after the change, coalesced), restored at the
+  boot; there is no write interval. A type marks only what the inputs do not give back, such as the
+  house mode's mode (19); internal, recomputable state (an integral, a filter, a counter) is not
+  marked and starts at its initial value after a reboot. One record per instance holds its managed
+  fields; an unorderly reset loses at most the last 10 s. A change of the type's major version starts
+  the state fresh; a change of the minor version keeps it. Parameter overrides use the store of the
+  rule parameters; an override survives a new image only while its parameter exists with a
+  compatible type and its value is within the new bounds, otherwise it is dropped and logged, never
+  clamped.
 - **B5. The corpus** `spec/fixtures/blocks/` uses the format of the rules corpus, with `blocks`
   beside `rules` and an expected `final.blocks` (state, status); the device and E-Home's simulation
   run it.
@@ -97,17 +103,21 @@ Each names its alternatives; the sections state the decision as fact.
   nothing. Diagnostic outputs have no failsafe and keep their last value. *Alternative:* the
   outputs keep their last values (a valve stays where a faulty controller left it).
 - **B11. A restart is a boot for the instance.** `restart` after a fault restores the persisted
-  record (section 8) as at boot, because the state in RAM may be what faulted; a faulted instance
-  is not persisted any more. A non-finite state field or output value is a fault.
+  record (section 8) as at boot, because the state in RAM may be what faulted: the managed state
+  from flash, every other field initial; a faulted instance is not persisted any more. A non-finite state field or output value is a fault.
 - **B12. The state is a record of numbered numeric fields.** The manifest declares the fields by id
-  (each a double, persisted or not); the record is kept by field id across minor versions.
+  (each a double, managed state or not); the record is kept by field id across minor versions.
   Fields that are not persisted start at their initial value whenever the record comes from flash.
   *Alternative:* opaque bytes (the spike's `hc_state`): no diagnostics by name, no minor-version
   compatibility.
-- **B13. The flash budget paces the records.** The runtime writes at most 30 records an hour in
-  all: an instance's record is written at most every `max(persistEvery, n × 120 s)`, where `n` is
-  the number of instances with persistent state, and only when it changed (`doc/persistence.md`
-  "The flash wear budget").
+- **B13. A guard of 30 record writes an hour.** A record is written only when its managed state
+  changed (B4), which for the built-in types is a few times a day. As a guard against a type that
+  marks a field which changes all the time, the runtime writes at most 30 records in any hour in all;
+  a write beyond waits until the hour of the earliest of the last 30 has passed (the latest state is
+  then written once) and is logged (a warning, at most once an hour). An orderly reboot writes what is
+  due regardless (`doc/persistence.md` "The flash wear budget"). *Alternative:* a write interval per
+  type (`persistEvery`, the first version): it wrote internal state that a restart recomputes anyway,
+  every few minutes, for ever.
 - **B14. One writer per output datapoint.** An output may bind a datapoint the application may
   command (`writable`): a KNX, Zigbee or virtual datapoint. Refused: one that another output (of any
   block) binds, a schedule entry's output, the time master's, and the implied datapoints of rules,
@@ -202,7 +212,9 @@ returns them), a loaded module as its custom section `hc.manifest`.
 | `state` | array of state fields | no | At most 32. |
 | `timers` | array of identifiers | no | At most 4; the ids of the type's own one-shot timers. |
 | `period` | integer ms, 1000..86 400 000, or 0 | no, 0 | The interval of `period()` calls; 0: none. |
-| `persistEvery` | integer ms, 60 000..86 400 000 | with persistent state | The shortest interval between two writes of the record (section 8). |
+
+A manifest that still carries `persistEvery` (an older loaded type, before homecontrol #102) is
+accepted and the member ignored: the managed state is written when it changes (B4).
 
 Ids of ports, parameters, state fields and timers are identifiers of `spec/rules.md` 2.1. Ports and
 parameters share one namespace (they become `block/<id>/<x>`, section 6), which also excludes
@@ -231,7 +243,8 @@ and the image may name a choice by its `id` or its `value`; `adjustable` (defaul
 whether the inhabitant may change it (section 8.2). A `timeOfDay` is written in the image as
 `{"hour", "minute", "second"}` and reaches the block as seconds since midnight.
 
-**A state field:** `id`, `persist` (boolean, default false) and `initial` (number, default 0).
+**A state field:** `id`, `persist` (boolean, default false: the field is managed state, B4) and
+`initial` (number, default 0).
 
 ### 3.1 The calls
 
@@ -462,7 +475,8 @@ stops all of them (`doc/blocks-wasm.md`).
 ### 8.1 The state record
 
 A record holds the type's state fields as doubles, by manifest order, initialized to `initial`. The
-runtime keeps it in RAM, shows it in the diagnostics and persists the fields with `persist`:
+runtime keeps it in RAM, shows it in the diagnostics and persists the fields with `persist`, the
+managed state (B4); a type without such a field has no record in flash:
 
 - **Image swap:** an instance whose id, type and major version are unchanged keeps its record in RAM
   (all fields) and starts with `restored`; fields a new minor version adds start at their initial
@@ -475,11 +489,18 @@ runtime keeps it in RAM, shows it in the diagnostics and persists the fields wit
   every other field starts at its initial value, and the call is `start(boot|restart, true)`;
   without a record, `start(boot|restart, false)` with every field initial. A record of another type
   or major version, or one that does not read, logs `stateReset`, is deleted, and the instance
-  starts fresh.
-- **Writing:** after a call that changed a persisted field the record is due; the first write after
-  a boot happens at once, every later one when `max(persistEvery, n × 120 s)` (B13; `n` the instances
-  whose type persists) have passed since the previous, and at an orderly reboot (`flush`). A record
-  equal to the stored one is not written.
+  starts fresh. An instance whose type has no managed state reads no record: `start(boot|restart,
+  false)`.
+- **Records of an older firmware** (before homecontrol #102, which persisted internal state too):
+  at the load, the record of an instance whose type has no managed state is deleted without
+  `stateReset` (logged as an info line, like an orphan), and a record that holds fields the manifest
+  does not mark `persist` (or does not know) is read for its managed fields and written again at once
+  without the others. Both happen once: the next start finds nothing to do.
+- **Writing:** after a call that changed a persisted field the record is due 10 s later, as a rule
+  state (`spec/rules.md` 8.4); further changes meanwhile are written with it (the latest values). A
+  record that is then equal to the stored one is not written (a change and its reversal within the
+  10 s). An orderly reboot (`flush`) writes every due record at once. Nothing else is written: no
+  interval, no period. The guard of B13 holds the writes beyond 30 in any hour.
 
 The record's format (frozen, `doc/blocks.md`): blob `b.<8 lower-case hex digits of the 32-bit
 FNV-1a hash of the block id>` in the BlobStore: `HCBS`, format 1, the type id, its major version,
@@ -563,7 +584,7 @@ failure of an instance refuses the image with the path and one of the reasons of
 | Ports / parameters / state fields / timers per type | 24 / 32 / 32 / 4 |
 | Timer duration | 1 ms .. 30 d |
 | Persisted record | 512 bytes |
-| Record writes | 30 per hour in all (B13) |
+| Record writes | at most 30 in any hour in all (the guard of B13) |
 
 ## 12. API and UI
 
@@ -692,7 +713,7 @@ switching actuator with thermal drives (PWM) or a two-point heater.
 
 ### 14.1 Manifest
 
-Period 60 000 ms, `persistEvery` 600 000 ms, timers `window` and `pwm`.
+Period 60 000 ms, timers `window` and `pwm`.
 
 | Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
 |---|---|---|---|---|---|---|
@@ -743,9 +764,12 @@ Period 60 000 ms, `persistEvery` 600 000 ms, timers `window` and `pwm`.
 | `protectionTime` | timeOfDay | 10:00:00 | | | From when on that day. |
 | `protectionDuration` | duration | 300 000 | 60 000..1 800 000 | | How long the valve is opened fully. |
 
-State: `integral` and `protectedOn` (the day of the last protection run) persisted, and not persisted `filtered`, `hasFiltered`, `lastStep`, `lastSetpoint`,
-`hasLastSetpoint`, `lastKp`, `hasLastKp`, `windowActive`, `boostUntil`, `protectionUntil`, `cycleStart`, `hasCycle`, `lastState`, `sentValve`, `hasSent`,
-`sentAt`, `switchOn`, `demandOn`.
+State (nothing persisted, B4): `integral`, `filtered`, `hasFiltered`, `lastStep`, `lastSetpoint`,
+`hasLastSetpoint`, `lastKp`, `hasLastKp`, `windowActive`, `boostUntil`, `protectionUntil`, `protectedOn`
+(the day of the last protection run), `cycleStart`, `hasCycle`, `lastState`, `sentValve`, `hasSent`,
+`sentAt`, `switchOn`, `demandOn`. After a reboot the integral starts at 0 and the filter from the first
+report; the PI step winds the integral up again within its reset time (`tn`). A protection run done
+before a reboot on the same day may run once more.
 
 ### 14.2 Presets
 
@@ -877,12 +901,13 @@ setpoint step settles within the band with an overshoot of at most 0.3 K; a 2 h 
 nothing up; a stale or silent sensor leads to the fallback after `sensorTimeout`; doubling every
 report gives the same bits and reporting three times as often moves the trajectory by less than
 0.1 K; the PWM's on-time over a cycle equals the continuous output; the two-point output respects
-its hysteresis; boost and valve protection; the integral survives a restart. The corpus has the
+its hysteresis; boost and valve protection; a day of operation that writes no record, and the
+integral at 0 after a reboot. The corpus has the
 contract cases of these behaviors (`spec/fixtures/blocks/README.md`).
 
 ## 15. The conformance type `org.homecontrol.conformance` (test harnesses only, B18)
 
-Versions 1.1 and 2.0, the same behavior. Period 10 000 ms, `persistEvery` 60 000 ms, timer `t`.
+Versions 1.1 and 2.0, the same behavior. Period 10 000 ms, timer `t`.
 
 | Port | Direction, type | Details |
 |---|---|---|
@@ -902,7 +927,8 @@ Versions 1.1 and 2.0, the same behavior. Period 10 000 ms, `persistEvery` 60 000
 | `delay` | duration, default 5000, 100..60 000, adjustable | (none) |
 | `level` | — | integer, default 0, 0..9, adjustable |
 
-State: `count` (persisted), `ticks` (persisted), `pulseOn`.
+State (nothing persisted, B4): `count`, `ticks`, `pulseOn`. The corpus pins managed state with the
+house mode (19).
 
 Every call first adds 1 to `count`. Then:
 
@@ -926,7 +952,7 @@ that raises the flow while the demand stays high. It reads what room controllers
 
 ### 16.1 Manifest
 
-Period 60 000 ms, `persistEvery` 600 000 ms, timer `wake`.
+Period 60 000 ms, timer `wake`.
 
 | Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
 |---|---|---|---|---|---|---|
@@ -958,7 +984,7 @@ Period 60 000 ms, `persistEvery` 600 000 ms, timer `wake`.
 | `maxOffset` | real, K | 5 | 0..20 | | The highest offset. |
 | `staleInput` | enumeration | `ignore` (0) | `ignore` 0, `full` 1 | | An input that is not good: left out, or counted as fully open (100 %, a true demand). |
 
-State: `offset` persisted, and not persisted `lastStep`, `lastLevel`, `heat`, `switchedAt`,
+State (nothing persisted, B4): `offset`, `lastStep`, `lastLevel`, `heat`, `switchedAt`,
 `hasSwitched`, `hasSent`, `sentRequest`, `sentPump`, `sentLevel`, `sentOffset`.
 
 ### 16.2 Decisions
@@ -990,8 +1016,8 @@ State: `offset` persisted, and not persisted `lastStep`, `lastLevel`, `heat`, `s
   it; while the request is off the level counts as 0 (no flow, the offset winds down). It stays in
   0..`maxOffset`. The level of an interval is the one at its start (the step integrates over the time
   since the previous step with the level and request that held during it), so the result does not
-  depend on how often the inputs report. The offset is persisted: a reboot during a cold spell does
-  not drop the raised flow.
+  depend on how often the inputs report. The offset is not persisted (B4): after a reboot it starts
+  at 0 and rises again while the demand stays high (`offsetGain` K per % and hour).
 - **D6. Failsafe: the heat source on its own control.** A fault or a disabled instance writes
   `request` true, `pump` true, `level` 100 and the offset 0: with an external request, a boiler or
   heat pump runs on its own controller, which keeps the house from freezing; a pump never stays off
@@ -1093,8 +1119,8 @@ bytes per bound datapoint. The C6's 32-bit pointers make it slightly smaller.
 The host tests (`core/test/heating_test.cpp`) drive the block with a fluctuating demand and check
 the hysteresis and the minimum times (no switching closer than `minOn`/`minOff`, held switchings
 happen when they expire), a stale valve per `staleInput`, the mean of the highest, the pump's
-run-on, the offset rising under a sustained high demand and falling again, its persistence over a
-reboot, and no allocation in steady state. The corpus has the contract cases
+run-on, the offset rising under a sustained high demand and falling again, a day of operation that
+writes no record and the offset at 0 after a reboot, and no allocation in steady state. The corpus has the contract cases
 (`spec/fixtures/blocks/README.md`).
 
 ## 17. The heating curve `org.homecontrol.heating-curve` 1.0
@@ -1106,7 +1132,7 @@ summer/winter switch derived from the filtered outside temperature and frost pro
 
 ### 17.1 Manifest
 
-Period 60 000 ms, `persistEvery` 1 800 000 ms, no timers.
+Period 60 000 ms, no timers.
 
 | Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
 |---|---|---|---|---|---|---|
@@ -1152,8 +1178,8 @@ order: `minFlow` < `maxFlow` (blamed: `minFlow`); `summerOff` < `summerOn` (`sum
 `roomTemperature` (`designFlow`); with `points`: `outside<i+1>` > `outside<i>` for the first
 `pointCount` points (`outside<i+1>`).
 
-State: `filtered`, `hasFiltered`, `aboveFor` and `derivedSummer` persisted, and not persisted
-`lastStep`, `frostOn`, `hasSent`, `sentFlow`, `sentSummer`.
+State (nothing persisted, B4): `filtered`, `hasFiltered`, `aboveFor`, `derivedSummer`, `lastStep`,
+`frostOn`, `hasSent`, `sentFlow`, `sentSummer`.
 
 ### 17.2 Decisions
 
@@ -1167,23 +1193,27 @@ State: `filtered`, `hasFiltered`, `aboveFor` and `derivedSummer` persisted, and 
   linear forms this is the same as putting the room setpoint into the formula; it holds for the
   points the same way.
 - **D3. The filter is the room controller's** (14.4, backward Euler over the monotonic dt), fed only
-  by good values that are not older than `sensorTimeout`, and persisted: a reboot does not restart a
-  12 h filter from the momentary temperature.
+  by good values that are not older than `sensorTimeout`. It is not persisted (B4): after a reboot
+  it starts again from the first report, so a 12 h filter starts from the momentary temperature; the
+  flow follows the outside more closely for the hours after a reboot. *Alternative:* the filter in
+  flash (written every 30 min for ever, internal state the inputs give back).
 - **D4. The summer switch counts time, not calendar days.** `aboveFor` adds up the time the filtered
   temperature is above `summerOn` and is reset when it is not; summer begins when it reaches
   `summerDays` × 24 h. The filter already smooths the day and the night, so a run of warm days is a
   run of time above; no wall clock is needed, and a clock that is not synchronized changes nothing.
   An interval counts by the filtered value at its end (the step's new value), and one step at or
   below `summerOn` resets the count. `summerDays` 0 switches at the first step above.
-  Winter begins as soon as the filtered temperature falls below `summerOff`. Both are persisted.
+  Winter begins as soon as the filtered temperature falls below `summerOff`. Neither is persisted: a
+  reboot starts the count again (winter until `summerDays` have passed above), which delays summer
+  by the days counted before the reboot; a summerSwitch input decides while it is good.
 - **D5. Frost protection on the momentary outside temperature**, not the filtered one: frost is a
   matter of the hour. Below `frostOutside` the flow is at least `minFlow` also in summer and when off;
   it ends at `frostOutside` + 1 K. A stale value younger than `sensorTimeout` is the last known
   outside temperature and counts; without a fresh value the filtered one stands in.
 - **D6. A missing outside temperature holds the filter.** An outside temperature that is unknown
   (after a boot until its first report) or not updated for `sensorTimeout` (whether good or stale)
-  shows the state `fault`: the curve runs on the held filtered value (persisted, so a reboot keeps
-  it), the summer switch neither counts nor switches. A stale value younger than the timeout is not
+  shows the state `fault`: the curve runs on the held filtered value (after a reboot, until the
+  first report, its initial 0 °C), the summer switch neither counts nor switches. A stale value younger than the timeout is not
   fed but not a fault either. The state is diagnostic: the instance keeps running, this is no fault
   of section 7 and writes no failsafe. Without any value since the first start, the filtered value is
   its initial 0 °C (a moderate winter flow). The steps that do not feed the filter still advance
@@ -1263,7 +1293,8 @@ One instance with two outside sensors: about 2.2 KB of heap on the host (64-bit;
 
 The host tests (`core/test/heating_test.cpp`) check the curve's points and the interpolation between
 them and the linear forms, the filter's lag of 12 h on a ramp of the outside temperature, the summer
-switch (consecutive days, the hysteresis, a reboot in the middle of the count), frost protection in
+switch (consecutive days, the hysteresis, a reboot in the middle of the count starting it again, no
+record), frost protection in
 summer, a stale or silent outside temperature (the held value, `fault` after `sensorTimeout`), and no
 allocation in steady state. The corpus has the contract cases (`spec/fixtures/blocks/README.md`).
 
@@ -1610,7 +1641,7 @@ is re-evaluated from the inputs, never jumping to away because presence is still
 
 ### 19.1 Manifest
 
-Period 60 000 ms, `persistEvery` 60 000 ms, timer `away`.
+Period 60 000 ms, timer `away`.
 
 | Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
 |---|---|---|---|---|---|---|
@@ -1642,7 +1673,7 @@ Period 60 000 ms, `persistEvery` 60 000 ms, timer `away`.
 | `hvacNight` | enumeration | `night` (3) | the same | | ... at night. |
 | `hvacVacation` | enumeration | `protection` (4) | the same | | ... on vacation. |
 
-State: `mode` (initial 0) and `since` (initial -1) persisted; not persisted `changedAt` (-1),
+State: `mode` (initial 0) and `since` (initial -1) persisted (managed state, B4); not persisted `changedAt` (-1),
 `absentSince` (-1), `armed` (1), `awaySeen` (-1), `nightSeen` (-1), `homeSeen` (-1), `lastMorning`
 (-1), `lastEvening` (-1), `sentMode` (-1), `sentSince` (-1). A time field at -1 is none.
 
@@ -1727,11 +1758,10 @@ State: `mode` (initial 0) and `since` (initial -1) persisted; not persisted `cha
   lower the demand by themselves; switching the heat source off would leave the frost protection to
   valves without heat. *Alternative:* a `heating` output, false on vacation, for the demand's
   `enable` (rejected for that reason).
-- **D11. The mode is persisted, soon.** `mode` and `since` are persisted with `persistEvery` 60 s,
-  the shortest of 3, so that the pacing of B13 alone decides: the first change after a boot reaches
-  flash at once, a later one `n × 120 s` after the previous write at the latest (`n` the instances
-  with persistent state, at least this one), and every one at an orderly reboot. Changes are rare (a few a day), so the budget of B13 is not
-  strained. At a start the mode is re-evaluated from the inputs as they are (D2, D8): vacation by a
+- **D11. The mode is managed state.** `mode` and `since` are what the buttons and the inhabitant
+  set and no input gives back after a reboot, so they are persisted (B4): the record is written 10 s
+  after a change and only then, a few times a day, and at an orderly reboot. The other fields follow
+  from the inputs and start fresh. At a start the mode is re-evaluated from the inputs as they are (D2, D8): vacation by a
   good `vacation`, home by return detection, away only after `awayDelay` of good absence from the
   start. A restored `mode` outside 0..3 (the record of a later minor version with more modes, D1,
   after a firmware downgrade) starts as home.
@@ -1856,7 +1886,9 @@ return detection, armed by absence after the away button, and off; the night by 
 the evening only while home, no away by absence at night, the morning ending only the night and
 restarting the delay; vacation over every mode, the buttons ignored on vacation, its end by the
 input and by an image that no longer binds it; a restart with unknown presence keeping each
-persisted mode, a restored mode of a later minor version, and the record's pacing; the HVAC mapping and the failsafe; `since` with and
+persisted mode, a restored mode of a later minor version, and the record written 10 s after a change
+of the mode and never in between, the guard of B13 for a record that changes all the time; the HVAC
+mapping and the failsafe; `since` with and
 without a wall clock; the chain to a room controller's setpoint; the cost; and no allocation in
 steady state. The corpus has the contract cases (`spec/fixtures/blocks/README.md`).
 
@@ -1873,7 +1905,7 @@ two loads take a chain of instances (20.3).
 
 ### 20.1 Manifest
 
-Period 30 000 ms, `persistEvery` 600 000 ms, no timers. Every input has the trigger `none`: the block
+Period 30 000 ms, no timers. Every input has the trigger `none`: the block
 reads them at its period (D4).
 
 | Input | Type | Unit | | Multiple, aggregations | Trigger | Meaning |
@@ -1928,8 +1960,8 @@ order of the table (`power1`, `minPower1`, ..., `mustRunFor1`, `power2`, ..., `m
 (B17 at the load); an override of the adjustable `mustRunFor<k>` is checked against its range only
 (8.2), and one above `maxPerDay<k>` ends the forced run at `maxPerDay<k>` (the load is blocked).
 
-State: `day` (initial -1), `run1`, `energy1`, `run2`, `energy2` persisted, and not persisted
-`lastStep`, `filtered`, `hasFiltered`, `dayStart`, `hasSent`, `sentLoadPower`, and per load `level<k>`,
+State (nothing persisted, B4): `day` (initial -1), `run1`, `energy1`, `run2`, `energy2`, `lastStep`,
+`filtered`, `hasFiltered`, `dayStart`, `hasSent`, `sentLoadPower`, and per load `level<k>`,
 `switchedAt<k>` (initial -1); the others initial 0. In the manifest the fields come in the order
 `lastStep`, `filtered`, `hasFiltered`, `day`, `dayStart`, `hasSent`, `sentLoadPower`, then per load
 `level<k>`, `switchedAt<k>`, `run<k>`, `energy<k>` (15 fields). `run<k>` is milliseconds, `energy<k>`
@@ -2060,10 +2092,10 @@ Wh, `level<k>` the allocated power in W (0: off).
   compared). While the wall clock is not synchronized a day ends 24 h of monotonic time after it began
   (`dayStart`), so `maxPerDay<k>` does not block a load forever on a device without time; the date of
   such a day is not known (`day` -1), and the first period with a wall clock takes its date without a
-  new start. The counters and `day` are persisted: a reboot neither restarts `maxPerDay<k>` nor loses
-  what a must-run has done (an unorderly reset loses at most the pacing of B13; an orderly one the
-  last period's interval). The monotonic times are not: a boot or a restart without a wall clock starts
-  the 24 h again, with the counters as they were. An image swap and an enabling keep `lastStep` and
+  new start. The counters and `day` are not persisted (B4): they change at every period while a load
+  runs, so keeping them would write the flash every few minutes; a reboot starts the day's counters
+  again, so `maxPerDay<k>` counts from the reboot and a must-run may run its `mustRunFor<k>` again.
+  A boot or a restart without a wall clock starts the 24 h again. An image swap and an enabling keep `lastStep` and
   `dayStart` (the record in RAM): after a swap the first period counts the interval since the last one
   before it, so a deploy does not shorten a must-run.
 - **D12. Failsafe: every load off.** A fault or a disabled instance writes `switch<k>` false,
@@ -2229,8 +2261,7 @@ One instance with every input bound and both loads' switch and setpoint bound: a
 on the host (64-bit; 3201 B), against 3.3 KB (3271 B) of a room controller measured the same way: 15
 state fields, 24 parameters, 16 mirror datapoints (enabled, `batteryPriority`, `mustRunBy<k>` and
 `mustRunFor<k>` of both loads, 10 outputs). An image swap stays within the swap's budget, its largest
-allocation 2.3 KB (`core/test/swap_memory_test.cpp`). The record (five fields) is written at most every
-`persistEvery` while a load runs. A period reads eight inputs and computes a few dozen operations; the
+allocation 2.3 KB (`core/test/swap_memory_test.cpp`). No record is written. A period reads eight inputs and computes a few dozen operations; the
 type takes 10.5 KB of the C6's flash (10 736 B: 0x25540 B of ota_0 are left).
 
 ### 20.7 Tests
@@ -2242,7 +2273,7 @@ reverse order, a higher load that takes the place of a lower one, the hysteresis
 `allowedImport`, the minimum times under a cloud flicker and the filter, a modulated load that follows
 the surplus in steps (in W and in %), `mustRunBy` forcing the run in time from the grid and a late
 start that runs past the deadline, surplus runs counted and forced loads first, `maxPerDay`, the day's
-counters at midnight, across a reboot and without a wall clock, no forced run without a wall clock,
+counters at midnight, without a wall clock and again from 0 after a reboot (no record), no forced run without a wall clock,
 the battery's priority by its state of charge and both signs, the pv and house meters, a stale meter
 that holds and a lost one that releases the loads after `meterTimeout` while a forced run goes on, a
 chain of two instances, the failsafe, `enable` and `ready`, a load that draws less than its power, the

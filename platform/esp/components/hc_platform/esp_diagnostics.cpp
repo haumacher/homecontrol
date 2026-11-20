@@ -15,7 +15,6 @@
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
-#include "esp_timer.h"
 #include "hc/log.h"
 #include "nvs.h"
 #include "sdkconfig.h"
@@ -31,11 +30,9 @@ constexpr const char* kTag = "hc.diag";
 constexpr const char* kNamespace = "diag";
 constexpr const char* kBoots = "boots";
 constexpr const char* kReason = "reason";
-constexpr const char* kUptime = "uptime";
 constexpr const char* kBrownouts = "brownouts";
-
-/// How often the uptime of the current run is written.
-constexpr uint32_t kUptimePeriodMs = 60000;
+/// The uptime that firmware before homecontrol #102 wrote every minute; erased at the first start.
+constexpr const char* kFormerUptime = "uptime";
 
 #if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
 constexpr bool kCoreDumpToFlash = true;
@@ -62,10 +59,6 @@ ResetReason map_reset_reason(esp_reset_reason_t reason) {
 	case ESP_RST_CPU_LOCKUP: return ResetReason::cpu_lockup;
 	default: return ResetReason::unknown;
 	}
-}
-
-uint32_t uptime_s() {
-	return static_cast<uint32_t>(esp_timer_get_time() / 1000000);
 }
 
 /// Reads a u32 of the record; a missing key is 0.
@@ -98,13 +91,9 @@ void EspDiagnostics::read_record() {
 	g_handle_open = true;
 	uint32_t boots = 0;
 	uint32_t brownouts = 0;
-	uint32_t uptime = 0;
 	err = get_u32(g_handle, kBoots, boots);
 	if (err == ESP_OK) {
 		err = get_u32(g_handle, kBrownouts, brownouts);
-	}
-	if (err == ESP_OK) {
-		err = get_u32(g_handle, kUptime, uptime);
 	}
 	if (err != ESP_OK) {
 		record_error_ = esp_err_to_name(err);
@@ -112,9 +101,8 @@ void EspDiagnostics::read_record() {
 	}
 	boots_ = boots + 1;
 	brownouts_ = brownouts + (reason_ == ResetReason::brownout ? 1 : 0);
-	previous_uptime_s_ = uptime;
-	// One commit for the whole update; the uptime starts again from 0, so a run that dies within
-	// its first minute does not report the run before it.
+	// The record is written once per start, in one commit (homecontrol #102: no periodic uptime
+	// record; the entry of the firmware before goes with the first commit of this one).
 	err = nvs_set_u32(g_handle, kBoots, boots_);
 	if (err == ESP_OK) {
 		err = nvs_set_u32(g_handle, kBrownouts, brownouts_);
@@ -123,7 +111,10 @@ void EspDiagnostics::read_record() {
 		err = nvs_set_u32(g_handle, kReason, static_cast<uint32_t>(reason_));
 	}
 	if (err == ESP_OK) {
-		err = nvs_set_u32(g_handle, kUptime, 0);
+		err = nvs_erase_key(g_handle, kFormerUptime);
+		if (err == ESP_ERR_NVS_NOT_FOUND) {
+			err = ESP_OK; // erased at an earlier start (or never written)
+		}
 	}
 	if (err == ESP_OK) {
 		err = nvs_commit(g_handle);
@@ -132,7 +123,6 @@ void EspDiagnostics::read_record() {
 		record_error_ = esp_err_to_name(err);
 		return;
 	}
-	last_written_uptime_s_ = 0;
 	record_ok_ = true;
 }
 
@@ -171,7 +161,7 @@ void EspDiagnostics::check_coredump() {
 
 void EspDiagnostics::report() {
 	if (!record_ok_) {
-		Log::warn(kTag, "boot record (NVS namespace %s) unavailable: %s; boot count and previous uptime unknown",
+		Log::warn(kTag, "boot record (NVS namespace %s) unavailable: %s; boot count and brownouts unknown",
 			kNamespace, record_error_ != nullptr ? record_error_ : "not initialized");
 	}
 	if (!partition_) {
@@ -191,35 +181,6 @@ void EspDiagnostics::report() {
 	} else if (reset_reason_is_crash(reason_)) {
 		Log::warn(kTag, "the %s left no valid core dump", reset_reason_name(reason_));
 	}
-}
-
-void EspDiagnostics::start(EventLoop& loop, const Clock& clock) {
-	if (!record_ok_) {
-		return; // report() said why
-	}
-	uptime_timer_ = loop.schedule_periodic(clock.monotonic_ms() + kUptimePeriodMs, kUptimePeriodMs,
-		Callback::member<EspDiagnostics, &EspDiagnostics::write_uptime>(this));
-	if (!uptime_timer_.valid()) {
-		Log::error(kTag, "refusing the uptime record: no timer slot left; the previous uptime will be missing");
-	}
-}
-
-void EspDiagnostics::write_uptime() {
-	// One u32 entry (32 bytes of NVS) and a commit per minute; a late loop that missed periods
-	// writes once (the periodic timer coalesces them). Unchanged values are not written.
-	uint32_t now = uptime_s();
-	if (!g_handle_open || now == last_written_uptime_s_) {
-		return;
-	}
-	esp_err_t err = nvs_set_u32(g_handle, kUptime, now);
-	if (err == ESP_OK) {
-		err = nvs_commit(g_handle);
-	}
-	if (err != ESP_OK) {
-		Log::warn(kTag, "cannot store the uptime in the boot record: %s", esp_err_to_name(err));
-		return;
-	}
-	last_written_uptime_s_ = now;
 }
 
 void EspDiagnostics::watch_loop() {
@@ -251,7 +212,6 @@ void EspDiagnostics::visit_boot(DiagnosticsVisitor& visitor) const {
 	if (record_ok_) {
 		visitor.number("count", boots_);
 		visitor.number("brownouts", brownouts_);
-		visitor.number("previous_uptime_s", previous_uptime_s_);
 	}
 	visitor.flag("coredump", coredump_present());
 	if (coredump_present() && summary_ok_) {

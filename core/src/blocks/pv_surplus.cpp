@@ -110,10 +110,10 @@ constexpr ParamDecl kParams[] = {
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == PvSurplus::kParamCount, "parameters");
 
 #define HC_PV_LOAD_FIELDS(k) \
-	{"level" #k, false, 0}, {"switchedAt" #k, false, -1}, {"run" #k, true, 0}, {"energy" #k, true, 0}
+	{"level" #k, false, 0}, {"switchedAt" #k, false, -1}, {"run" #k, false, 0}, {"energy" #k, false, 0}
 
 constexpr StateField kFields[] = {
-	{"lastStep", false, 0}, {"filtered", false, 0}, {"hasFiltered", false, 0}, {"day", true, -1},
+	{"lastStep", false, 0}, {"filtered", false, 0}, {"hasFiltered", false, 0}, {"day", false, -1},
 	{"dayStart", false, 0}, {"hasSent", false, 0}, {"sentLoadPower", false, 0},
 	HC_PV_LOAD_FIELDS(1), HC_PV_LOAD_FIELDS(2),
 };
@@ -124,7 +124,7 @@ constexpr Manifest kManifest = {
 	"org.homecontrol.pv-surplus", 1, 0, "PV surplus control",
 	"Up to two loads in the order of their priority from the PV surplus, behind the battery; forced by a deadline",
 	kPorts, PvSurplus::kPortCount, kParams, PvSurplus::kParamCount, kFields, PvSurplus::kFieldCount, nullptr, 0,
-	30000, 600000};
+	30000};
 
 // min and max as spec/blocks.md 13 defines them (std::min/std::max: the first argument on a tie).
 inline double min_of(double a, double b) { return std::min(a, b); }
@@ -198,7 +198,7 @@ void PvSurplus::start(BlockContext& cx, StartReason reason, bool restored) const
 	double* s = cx.state(); // a fresh record holds the initial values already
 	const double now = static_cast<double>(cx.now());
 	if (!(restored && (reason == StartReason::image || reason == StartReason::enable))) {
-		s[kLastStep] = now; // a record from flash: its monotonic times are gone (D11)
+		s[kLastStep] = now; // a boot or a restart: the record starts fresh (D11)
 		s[kDayStart] = now;
 	}
 	s[kHasSent] = 0;

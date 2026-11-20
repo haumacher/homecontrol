@@ -387,14 +387,7 @@
 					}
 				}
 			},
-			"records": {
-				"hk": {
-					"filtered": 14.9,
-					"hasFiltered": 1.0,
-					"aboveFor": 0.0,
-					"derivedSummer": 0.0
-				}
-			}
+			"records": {}
 		}
 	}
 }

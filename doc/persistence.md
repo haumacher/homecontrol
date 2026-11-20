@@ -493,6 +493,13 @@ window of 16 slots (512 bytes on the stack); a save writes from the slots in pla
 
 ## The flash wear budget
 
+Only settings and values the controller manages, which a restart would lose, go to the flash, and
+only when they change (homecontrol #102): the settings, the parameter and enable overrides of rules
+and blocks, the inhabitant's timelines and the schedules' records, the rule states, the datapoints
+with `persist` (this store), the blocks' managed state (`spec/blocks.md` B4: of the built-in types
+only the house mode's mode) and the history the image asks for. Nothing internal is written
+periodically: neither a block's recomputable state (an integral, a filter) nor an uptime record.
+
 The limits are chosen so that the flash outlives the device even when they are used to the full,
 all the time. Assumptions:
 
@@ -520,14 +527,16 @@ At the limits:
 |---|---|---|
 | Value records: 60 writes | 60 × 1/8 | 7.5 |
 | History: 64 KB of samples (e.g. five 24 h rings) | 16 + 5 | 21 |
-| Block state records (issue #60, `doc/blocks.md`): 30 writes | 30 × 1/8 | 3.75 |
-| **Total** | | **32.25** |
+| **Total** | | **28.5** |
 
-32.25 erases per hour × 87,600 hours = 2.8 million erases over 35 blocks = about **81,000 cycles
-per block, 81 % of the endurance** (71 % without the blocks' records, 52,000 over the 48 blocks before
-the core dump partition) after ten years of continuous worst case. The blocks' records are paced to
-30 an hour in all (`spec/blocks.md` B13): an instance writes at most every `max(persistEvery,
-n × 120 s)`.
+28.5 erases per hour × 87,600 hours = 2.5 million erases over 35 blocks = about **71,000 cycles per
+block, 71 % of the endurance** after ten years of continuous worst case. The blocks' records are no
+longer a writer of the budget: the house mode writes its record when its mode changes, a few times a
+day (well under 0.1 erases an hour). The guard of `spec/blocks.md` B13 (30 record writes in any hour)
+bounds a type that would mark a field that changes all the time; used to the full it would add 3.75
+erases an hour (81 %). Before homecontrol #102 the records were paced to that limit and written
+whenever an internal field changed, which the room controller's integral did at every step: the
+budget then was 32.25 an hour, 81 %.
 
 With archives at both caps (64 KB of rings, 16 archives of one segment each, so 128 KB to write):
 the rings are saved every 4 hours, the archives hourly.
@@ -537,15 +546,34 @@ the rings are saved every 4 hours, the archives hourly.
 | Value records: 60 writes | 60 × 1/8 | 7.5 |
 | History rings: 64 KB every 4 hours | (16 + 5) / 4 | 5.25 |
 | Archives: 16 patches | 16 × 1.125 | 18 |
-| Block state records: 30 writes | 30 × 1/8 | 3.75 |
-| **Total** | | **34.5** |
+| **Total** | | **30.75** |
 
-3.0 million erases over 35 blocks: about **86,000 cycles, 86 %** (77 % without the blocks' records) (with the rings' margin of a whole
-erase per commit 44.75 an hour, 112 % over 35 blocks and 98 % over the 40 measured free). An image as
+2.7 million erases over 35 blocks: about **77,000 cycles, 77 %** (86 % before homecontrol #102 with
+the blocks' records at their limit) (with the rings' margin of a whole erase per commit 41 an hour,
+103 % over 35 blocks and 90 % over the 40 measured free). An image as
 E-Home derives it for a few charts writes a small fraction: an hourly archive patches its block
 once per save while its slot changes. A real house writes far
 less: setpoints and states change a few times a day, and the history budget of a typical image is
 a fraction of the cap.
+
+What a real installation writes is far below these limits. The house controller (firmware 1.5.0,
+two room controllers, KNX, a handful of persisted datapoints; measured 2026-11-20 from its log over
+30 minutes, haumacher/homecontrol#101), and the same installation on this firmware by its design:
+
+| Writer | Firmware 1.5.0 (measured) | This firmware |
+|---|---|---|
+| Block state records (`BlockRuntime`, LittleFS) | about one write a minute (`on_persist` every 60 s, 26-44 ms each, 143-182 ms every 8-12 min) | none (the room controllers have no managed state); at the first start the two old records are deleted |
+| Uptime record (`EspDiagnostics`, NVS `diag`) | one entry and commit a minute (43 ms) | none; the boot record once per start, the old key erased with it |
+| Value records (`ValueStore`, LittleFS) | on change of the persisted datapoints, at most one per datapoint a minute (35-41 ms) | the same |
+| History, archives, rules, schedules | as the image asks (none seen in the half hour) | the same |
+
+The device counts its writes per writer since boot (`GET /api/system/diagnostics`,
+`storage.writes`, `spec/api.md`), so the right-hand column is checked on the installation: an hour of
+operation with the two room controllers shows `block_records` 0 (the acceptance of #102).
+
+The uptime record was the one periodic writer of the `nvs` partition: 1440 entries a day, about two
+erases of each of its six pages a day. NVS now changes only with the settings, the overrides, the
+rule states, the schedule records and the boot record (once per start).
 
 For comparison, the same budget on NVS (if a platform backed the store with NVS blobs): the
 24 KB `nvs` partition has 6 pages of 126 entries of 32 bytes, one page kept free for compaction; a

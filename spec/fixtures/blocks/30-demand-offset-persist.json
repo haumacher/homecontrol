@@ -1,6 +1,6 @@
 {
-	"title": "Heating demand: flowSetpointOffset integrates the level above targetLevel while the request is on (offsetGain K per % and hour), falls below it and while the request is off, stays in 0..maxOffset, is sent in steps of 0.1 K, and survives an orderly reboot (persisted).",
-	"note": "targetLevel 50, offsetGain 0.5, maxOffset 3. The level 80 from 60 s: +0.25 K per period, clamped at 3. The reboot at 900 s writes the due record; after it v1 is unknown (level 0, the request off): the offset falls by 50 * 0.5 / 60 K a minute until v1 reports again.",
+	"title": "Heating demand: flowSetpointOffset integrates the level above targetLevel while the request is on (offsetGain K per % and hour), falls below it and while the request is off, stays in 0..maxOffset, is sent in steps of 0.1 K, and starts again from 0 after an orderly reboot (not persisted).",
+	"note": "targetLevel 50, offsetGain 0.5, maxOffset 3. The level 80 from 60 s: +0.25 K per period, clamped at 3. After the reboot at 900 s the offset is 0 and v1 is unknown (level 0, the request off): it stays 0 until v1 reports again at 1050 s; then +0.125 K for the 30 s to the period at 1080 s and +0.25 K per period.",
 	"datapoints": [
 		{
 			"name": "v1",
@@ -100,7 +100,7 @@
 				"blocks": {
 					"hd": {
 						"state": {
-							"offset": 3.0,
+							"offset": 0.0,
 							"heat": 0.0
 						}
 					}
@@ -111,12 +111,12 @@
 			"at": 1030000,
 			"check": {
 				"datapoints": {
-					"ofs": 2.166666666666667
+					"ofs": 0.0
 				},
 				"blocks": {
 					"hd": {
 						"state": {
-							"offset": 2.166666666666667
+							"offset": 0.0
 						}
 					}
 				}
@@ -215,70 +215,48 @@
 				"at": 900000,
 				"block": "hd",
 				"datapoint": "ofs",
-				"value": 3.0
-			},
-			{
-				"at": 960000,
-				"block": "hd",
-				"datapoint": "ofs",
-				"value": 2.5833333333333335
-			},
-			{
-				"at": 1020000,
-				"block": "hd",
-				"datapoint": "ofs",
-				"value": 2.166666666666667
-			},
-			{
-				"at": 1050000,
-				"block": "hd",
-				"datapoint": "ofs",
-				"value": 1.9583333333333337
+				"value": 0.0
 			},
 			{
 				"at": 1080000,
 				"block": "hd",
 				"datapoint": "ofs",
-				"value": 2.083333333333334
+				"value": 0.125
 			},
 			{
 				"at": 1140000,
 				"block": "hd",
 				"datapoint": "ofs",
-				"value": 2.333333333333334
+				"value": 0.375
 			},
 			{
 				"at": 1200000,
 				"block": "hd",
 				"datapoint": "ofs",
-				"value": 2.583333333333334
+				"value": 0.625
 			},
 			{
 				"at": 1260000,
 				"block": "hd",
 				"datapoint": "ofs",
-				"value": 2.833333333333334
+				"value": 0.875
 			}
 		],
 		"logs": [],
 		"final": {
 			"datapoints": {
-				"ofs": 2.833333333333334,
-				"block/hd/flowSetpointOffset": 2.833333333333334
+				"ofs": 0.875,
+				"block/hd/flowSetpointOffset": 0.875
 			},
 			"blocks": {
 				"hd": {
 					"state": {
-						"offset": 2.833333333333334,
+						"offset": 0.875,
 						"heat": 1.0
 					}
 				}
 			},
-			"records": {
-				"hd": {
-					"offset": 2.833333333333334
-				}
-			}
+			"records": {}
 		}
 	}
 }

@@ -81,7 +81,7 @@ constexpr ParamDecl kParams[] = {
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == HeatingCurve::kParamCount, "parameters");
 
 constexpr StateField kFields[] = {
-	{"filtered", true, 0}, {"hasFiltered", true, 0}, {"aboveFor", true, 0}, {"derivedSummer", true, 0},
+	{"filtered", false, 0}, {"hasFiltered", false, 0}, {"aboveFor", false, 0}, {"derivedSummer", false, 0},
 	{"lastStep", false, 0}, {"frostOn", false, 0}, {"hasSent", false, 0}, {"sentFlow", false, 0},
 	{"sentSummer", false, 0},
 };
@@ -91,7 +91,7 @@ constexpr Manifest kManifest = {
 	"org.homecontrol.heating-curve", 1, 0, "Heating curve",
 	"Weather-compensated flow setpoint with the summer/winter switch and frost protection",
 	kPorts, HeatingCurve::kPortCount, kParams, HeatingCurve::kParamCount, kFields, HeatingCurve::kFieldCount,
-	nullptr, 0, 60000, 1800000};
+	nullptr, 0, 60000};
 
 constexpr size_t outside_of(size_t i) { return HeatingCurve::kOutside1 + 2 * i; }
 constexpr size_t flow_of(size_t i) { return HeatingCurve::kFlow1 + 2 * i; }

@@ -1,6 +1,6 @@
 {
-	"title": "A fault writes the failsafe values once, stops the block until a restart, and the restart starts from the persisted record.",
-	"note": "The restart at 7500 faults again (x is still 160); after x drops to 50 the restart runs. The record was written at once after the boot's start (spec/blocks.md 8.1).",
+	"title": "A fault writes the failsafe values once, stops the block until a restart, and the restart starts like a boot: the conformance type keeps no managed state, so every field starts at its initial value.",
+	"note": "The restart at 7500 faults again (x is still 160); after x drops to 50 the restart runs with count from 0 (calls 1). No record is written (spec/blocks.md 8.1, 15).",
 	"datapoints": [
 		{
 			"name": "a",
@@ -182,23 +182,18 @@
 				"out": 50.0,
 				"led": false,
 				"block/c/y": 50.0,
-				"block/c/calls": 2
+				"block/c/calls": 1
 			},
 			"blocks": {
 				"c": {
 					"status": "running",
 					"state": {
-						"count": 2.0,
+						"count": 1.0,
 						"ticks": 0.0
 					}
 				}
 			},
-			"records": {
-				"c": {
-					"count": 2.0,
-					"ticks": 0.0
-				}
-			}
+			"records": {}
 		}
 	}
 }

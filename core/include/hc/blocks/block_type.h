@@ -87,6 +87,8 @@ struct ParamDecl {
 /// A field of the state record (spec/blocks.md 8.1, B12).
 struct StateField {
 	const char* id;
+	/// Managed state (spec/blocks.md B4): kept in flash across a reboot, written when it changes.
+	/// Only what a restart would lose and the inputs do not give back (the house mode's mode).
 	bool persist;
 	double initial;
 };
@@ -108,14 +110,13 @@ struct Manifest {
 	const char* const* timers;
 	uint8_t timer_count;
 	uint32_t period_ms;          ///< 0: no period() calls.
-	uint32_t persist_every_ms;   ///< Shortest interval between two writes of the record.
 
 	/// Index of the port / parameter / state field / timer `id`; -1 if none.
 	int port(const char* id) const;
 	int param(const char* id) const;
 	int field(const char* id) const;
 	int timer(const char* id) const;
-	/// Whether any state field persists.
+	/// Whether any state field persists (the type has managed state).
 	bool persists() const;
 	/// The number of input ports (they come in any order among the outputs).
 	size_t inputs() const;
@@ -132,6 +133,7 @@ struct BlockLimits {
 	static constexpr int64_t kTimerMinMs = 1;
 	static constexpr int64_t kTimerMaxMs = 30LL * 86400000LL;
 	static constexpr size_t kRecordBytes = 512;
+	/// The guard of spec/blocks.md B13: at most this many record writes in any hour, in all.
 	static constexpr uint32_t kRecordWritesPerHour = 30;
 	static constexpr size_t kIdLength = 32;
 };
@@ -198,7 +200,8 @@ protected:
 /// built-in C++ type and, later, a WebAssembly module (its exports hc_start, hc_input, hc_timer,
 /// hc_period, hc_parameter with `self` selecting the instance's state record). A type keeps no
 /// per-instance data of its own: everything an instance needs between calls is in its state record,
-/// which the runtime owns, persists and shows in the diagnostics.
+/// which the runtime owns and shows in the diagnostics; it keeps the fields marked `persist` (managed
+/// state) in flash.
 ///
 /// Calls run on the event loop's thread, inside a cascade; they must take bounded time and must not
 /// allocate.

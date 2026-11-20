@@ -248,18 +248,23 @@ TEST_CASE("HeatingDemand: the offset rises under a sustained high demand and fal
 	CHECK(rig.number("ofs") == 0.0);
 }
 
-TEST_CASE("HeatingDemand: the offset survives a reboot") {
+TEST_CASE("HeatingDemand: a day of operation writes no record; after a reboot the offset starts at 0") {
 	hc_test::FakeBlobStore blobs;
 	Rig rig(demand_block(R"("offsetGain": 0.1)"), &blobs, heating_datapoints());
+	for (int h = 0; h < 24; ++h) { // the offset rises and falls with the demand
+		rig.report("v1", h % 6 < 3 ? 100.0 : 10.0);
+		rig.run(rig.now() + kHour);
+	}
 	rig.report("v1", 100.0);
 	rig.run(rig.now() + kHour);
-	double offset = rig.field(HeatingDemand::kOffset);
-	CHECK(offset == doctest::Approx(3.0));
+	CHECK(rig.field(HeatingDemand::kOffset) > 0);
+	CHECK(blobs.writes == 0); // nothing of the type is managed state (spec/blocks.md 16.1)
 	rig.reboot();
-	CHECK(rig.field(HeatingDemand::kOffset) == offset);
+	CHECK(blobs.writes == 0);
+	CHECK(rig.field(HeatingDemand::kOffset) == 0);
 	hc::blocks::BlockDiagnostics d;
 	REQUIRE(rig.blocks().diagnostics(0, d));
-	CHECK(d.restored);
+	CHECK_FALSE(d.restored);
 }
 
 TEST_CASE("HeatingDemand: room controllers feed it through their mirrors; it feeds a heating curve") {
@@ -367,7 +372,7 @@ TEST_CASE("HeatingCurve: the filter lags a ramp of the outside temperature by it
 	CHECK(lag_h < 12.2);
 }
 
-TEST_CASE("HeatingCurve: the summer switch needs consecutive days above, with hysteresis; it survives a reboot") {
+TEST_CASE("HeatingCurve: the summer switch needs consecutive days above, with hysteresis; a reboot starts the count again") {
 	hc_test::FakeBlobStore blobs;
 	Rig rig(curve_block(R"("outsideFilter": 0, "summerOn": 18, "summerOff": 15, "summerDays": 2)"), &blobs,
 		heating_datapoints());
@@ -384,9 +389,13 @@ TEST_CASE("HeatingCurve: the summer switch needs consecutive days above, with hy
 	CHECK(rig.field(HeatingCurve::kAboveFor) == 0);
 	hold(20, 47 * kHour);
 	CHECK(rig.number("csum") == 0);
-	rig.reboot(); // the count survives
 	CHECK(rig.field(HeatingCurve::kAboveFor) >= 46.5 * 3600);
+	CHECK(blobs.writes == 0); // the count is not managed state (spec/blocks.md 17.1): no record
+	rig.reboot(); // the count starts again
+	CHECK(rig.field(HeatingCurve::kAboveFor) == 0);
 	hold(20, 2 * kHour);
+	CHECK(rig.number("csum") == 0);
+	hold(20, 47 * kHour);
 	CHECK(rig.number("csum") == 1);
 	CHECK(rig.number("block/hk/state") == HeatingCurve::summer);
 	CHECK(rig.number("flow") == 0); // offFlow
@@ -461,7 +470,7 @@ TEST_CASE("Heating: no allocation in steady state; the cost of an instance is at
 	Rig room(R"([{"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Room",
 		"inputs": {"temperature": ["temp", "v1"], "window": "d1"}, "outputs": {"valve": "lvl", "switch": "req"}}])",
 		nullptr, heating_datapoints());
-	demand.report("v1", 100.0); // the offset rises: the record is stored before the measurement
+	demand.report("v1", 100.0); // the offset rises
 	curve.report("out1", 5.0);
 	curve.report("out2", 6.0);
 	demand.run(demand.now() + 10 * kMinute);
@@ -486,10 +495,9 @@ TEST_CASE("Heating: no allocation in steady state; the cost of an instance is at
 			demand.run(demand.now() + kMinute);
 			curve.run(curve.now() + kMinute);
 		}
-		size_t stored = static_cast<size_t>(demand.blobs().writes + curve.blobs().writes - writes);
 		CHECK(refused == 0);
-		CHECK(stored >= 1);
-		CHECK(scope.count() - stored == 0); // the fake store allocates for each record it keeps
+		CHECK(demand.blobs().writes + curve.blobs().writes == writes); // no managed state: no record
+		CHECK(scope.count() == 0);
 	}
 	size_t demand_heap = instance_heap(demand);
 	size_t curve_heap = instance_heap(curve);

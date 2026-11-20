@@ -401,6 +401,9 @@ public:
 	/// The store of the inhabitant's timelines (one blob per rule, doc/rules.md); without one they
 	/// live until the next restart.
 	void set_timeline_store(BlobStore* store) { timeline_store_ = store; }
+	/// The engine's writes to flash since construction: the parameter overrides and rule states in
+	/// the settings and the inhabitant's timelines (GET /api/system/diagnostics `storage.writes`).
+	uint32_t writes() const { return store_.writes() + timeline_writes_; }
 	/// The blob of `rule`'s timeline override: "tl." and 12 hex digits of the hash of
 	/// `<ruleId>/.timeline` (`out` at least kTimelineBlobName bytes).
 	static constexpr size_t kTimelineBlobName = 16;
@@ -574,6 +577,7 @@ private:
 	EngineObserver* observer_ = nullptr;
 	BlockHost* host_ = nullptr;
 	BlobStore* timeline_store_ = nullptr;
+	uint32_t timeline_writes_ = 0;
 	bool listening_ = false;
 	ParameterTechnology technology_{*this};
 	bool quiet_ = false;          ///< Publishing at load: no events.

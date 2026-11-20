@@ -58,7 +58,7 @@ void write_manifest(JsonWriter& json, const blocks::Manifest& m) {
 	char version[16];
 	std::snprintf(version, sizeof(version), "%u.%u", static_cast<unsigned>(m.major), static_cast<unsigned>(m.minor));
 	json.begin_object().member("type", m.type).member("version", version).member("label", m.label);
-	json.member("description", m.description).member("period", m.period_ms).member("persistEvery", m.persist_every_ms);
+	json.member("description", m.description).member("period", m.period_ms);
 	json.key("ports").begin_array();
 	for (size_t p = 0; p < m.port_count; ++p) {
 		const blocks::PortDecl& d = m.ports[p];

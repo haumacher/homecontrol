@@ -1,6 +1,6 @@
 {
 	"title": "Disabling writes the failsafe values and stops the calls; enabling starts with the reason enable; a disabled block at boot writes its failsafe values.",
-	"note": "The period does not run while disabled; enabling at 15000 re-bases its grid: one period at 25000 (the boot grid would give 20000).",
+	"note": "The period does not run while disabled; enabling at 15000 re-bases its grid: one period at 25000 (the boot grid would give 20000). After the reboot at 28000 the disabled block's state starts at its initial values (no managed state).",
 	"datapoints": [
 		{
 			"name": "a",
@@ -172,8 +172,8 @@
 				"c": {
 					"status": "disabled",
 					"state": {
-						"count": 4.0,
-						"ticks": 1.0
+						"count": 0.0,
+						"ticks": 0.0
 					}
 				}
 			},

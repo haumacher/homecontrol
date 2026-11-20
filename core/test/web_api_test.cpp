@@ -1452,6 +1452,58 @@ TEST_CASE("Blocks review probe: house mode drives a room controller; vacation en
 	CHECK(g.model.find("block/wz/activeSetpoint")->value().as_real() == 21);
 }
 
+TEST_CASE("WebApi.Diagnostics: the writes per writer since boot; an hour of a room controller and a house mode "
+		  "without a change writes no block record (homecontrol #102)") {
+	DashboardFixture f;
+	f.load(R"({"image": {"schemaVersion": "1.3", "projectId": "house", "revision": 1},
+		"datapoints": [{"id": "temp", "type": "real", "writable": true, "virtual": {}},
+		               {"id": "pres", "type": "boolean", "writable": true, "virtual": {}},
+		               {"id": "away", "type": "boolean", "writable": true, "virtual": {}}],
+		"blocks": [{"id": "hm", "type": "org.homecontrol.house-mode", "version": "1.0", "label": "House",
+		            "inputs": {"presence": "pres", "awayButton": "away"}},
+		           {"id": "wz", "type": "org.homecontrol.room-controller", "version": "1.0", "label": "Living",
+		            "inputs": {"temperature": "temp", "mode": "block/hm/hvacMode"}}]})");
+	auto writes = [&]() {
+		auto r = f.get("/api/system/diagnostics", f.cookie);
+		REQUIRE(r.status == 200);
+		return r.json["storage"]["writes"];
+	};
+	auto run = [&](uint64_t ms) {
+		for (uint64_t t = 0; t < ms; t += 5000) {
+			f.fake.clock.advance(5000);
+			f.controller.run_once();
+			f.controller.run_once();
+		}
+	};
+	auto w = writes();
+	for (const char* member : {"values", "history", "archives", "block_records", "block_overrides", "rules",
+		"schedules"}) {
+		CAPTURE(member);
+		CHECK(w[member].kind == hc_test::Json::Kind::number);
+	}
+	CHECK(w["block_records"].number == 0);
+	// The fresh house mode dates its start (`since`, the clock is synchronized): its first record.
+	run(15000);
+	CHECK(writes()["block_records"].number == 1);
+	// An hour of regulation, the temperature reported every minute: the integral changes all the
+	// time, nothing is written.
+	for (int m = 0; m < 60; ++m) {
+		REQUIRE(f.model.command(f.model.find("temp")->id(), hc::Value::of_real(19.0 + 0.01 * m)) ==
+			hc::DatapointStatus::ok);
+		REQUIRE(f.model.command(f.model.find("pres")->id(), hc::Value::of_bool(true)) == hc::DatapointStatus::ok);
+		run(60000);
+	}
+	CHECK(f.service.blocks().state(1)[0] != 0); // the room controller's integral moved
+	CHECK(writes()["block_records"].number == 1);
+	// The away button: the house mode's record, once, 10 s later.
+	REQUIRE(f.model.command(f.model.find("away")->id(), hc::Value::of_bool(true)) == hc::DatapointStatus::ok);
+	run(15000);
+	CHECK(f.model.find("block/hm/mode")->value().as_enum() == 1);
+	CHECK(writes()["block_records"].number == 2);
+	run(3600000);
+	CHECK(writes()["block_records"].number == 2);
+}
+
 TEST_CASE("Blocks review probe: a PV surplus chain through the controller; the second instance takes only what the "
 		  "first leaves; a lost meter releases both") {
 	DashboardFixture f;

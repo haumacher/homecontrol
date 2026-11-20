@@ -317,7 +317,7 @@ size_t delete_orphans(BlobStore& store, const char* prefix, const BlobKeeper& ke
 		for (size_t i = 0; i < collector.count(); ++i) {
 			BlobStatus status = store.remove(collector.name(i));
 			if (status == BlobStatus::ok) {
-				Log::info(tag, "deleted %s: no longer in the image", collector.name(i));
+				Log::info(tag, "deleted %s: %s", collector.name(i), keeper.reason(collector.name(i)));
 				++removed;
 			} else {
 				Log::error(tag, "cannot delete %s: %s", collector.name(i), blob_status_name(status));

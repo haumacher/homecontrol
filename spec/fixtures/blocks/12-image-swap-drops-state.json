@@ -159,12 +159,7 @@
 				}
 			},
 			"persisted": {},
-			"records": {
-				"c": {
-					"count": 2.0,
-					"ticks": 0.0
-				}
-			}
+			"records": {}
 		}
 	}
 }

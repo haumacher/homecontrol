@@ -1559,6 +1559,7 @@ void Engine::persist_now() {
 		timeline_blob_name(rule_id, name);
 		if (runtime_->overrides == nullptr || runtime_->overrides[r].empty()) {
 			timeline_store_->remove(name);
+			++timeline_writes_;
 			continue;
 		}
 		RuleSetStates states(set_, r);
@@ -1572,6 +1573,7 @@ void Engine::persist_now() {
 		int key_length = std::snprintf(key, sizeof(key), "%s/%s\n", rule_id, kTimelineKey);
 		BlobChunk chunks[2] = {{key, static_cast<size_t>(key_length)}, {text, length}};
 		BlobStatus status = timeline_store_->write(name, chunks, 2);
+		++timeline_writes_;
 		if (status != BlobStatus::ok) {
 			Log::error(kTag, "%s: the inhabitant's timeline was not written (%s); it is lost at the next restart", rule_id,
 				blob_status_name(status));

@@ -43,13 +43,13 @@ constexpr ParamDecl kParams2[] = {
 	{"level", ParamType::integer, "level", "", 0, true, 0, true, 9, 0, nullptr, 0, true},
 };
 
-constexpr StateField kFields[] = {{"count", true, 0}, {"ticks", true, 0}, {"pulseOn", false, 0}};
+constexpr StateField kFields[] = {{"count", false, 0}, {"ticks", false, 0}, {"pulseOn", false, 0}};
 constexpr const char* kTimers[] = {"t"};
 
 constexpr Manifest kManifest1 = {"org.homecontrol.conformance", 1, 1, "Conformance", "spec/blocks.md 15", kPorts, 7,
-	kParams1, 4, kFields, 3, kTimers, 1, 10000, 60000};
+	kParams1, 4, kFields, 3, kTimers, 1, 10000};
 constexpr Manifest kManifest2 = {"org.homecontrol.conformance", 2, 0, "Conformance", "spec/blocks.md 15", kPorts, 7,
-	kParams2, 4, kFields, 3, kTimers, 1, 10000, 60000};
+	kParams2, 4, kFields, 3, kTimers, 1, 10000};
 
 } // namespace
 

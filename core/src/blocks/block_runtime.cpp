@@ -195,9 +195,9 @@ struct BlockRuntime::Instance {
 	bool enabled = true;
 	bool enabled_overridden = false;
 	bool restored = false;         ///< The record comes from before (the next start's `restored`).
+	bool started_restored = false; ///< The last start's `restored` (the diagnostics).
 	bool was_fault = false;        ///< Faulted before this image: its outputs hold their failsafe values.
 	bool dirty = false;            ///< A persisted field differs from the stored record.
-	bool written_once = false;     ///< Written since the boot: the next write waits for the interval.
 	double* state = nullptr;       ///< One per manifest field.
 	double* stored = nullptr;      ///< The persisted fields as the store holds them.
 	double* params = nullptr;      ///< One per manifest parameter.
@@ -211,7 +211,7 @@ struct BlockRuntime::Instance {
 	uint8_t running = 0;           ///< Bit per timer.
 	uint64_t period_next = 0;
 	bool period_armed = false;
-	uint64_t last_write_ms = 0;
+	uint64_t due_ms = 0;           ///< While dirty: when the record is written (the change + kRecordDelayMs).
 	uint32_t cascade_calls = 0;
 	// Diagnostics.
 	uint32_t calls = 0;
@@ -474,8 +474,9 @@ bool BlockRuntime::encode_record(const Manifest& m, const char* block, const dou
 }
 
 bool BlockRuntime::decode_record(const Manifest& m, const char* block, const uint8_t* data, size_t length,
-	double* values, const char** reason) {
+	double* values, const char** reason, size_t* unmanaged) {
 	*reason = "damaged";
+	size_t others = 0;
 	if (length < 4 + 1 + 1 + 2 + 1 + 1 + 4 || std::memcmp(data, kMagic, 4) != 0) {
 		return false;
 	}
@@ -537,10 +538,15 @@ bool BlockRuntime::decode_record(const Manifest& m, const char* block, const uin
 		if (i >= 0 && m.state[i].persist) {
 			std::memcpy(&parsed[i], &bits, 8);
 			found[i] = std::isfinite(parsed[i]);
+		} else {
+			++others; // not managed state of this manifest (spec/blocks.md 8.1: dropped at the load)
 		}
 	}
 	if (p != end) {
 		return false;
+	}
+	if (unmanaged != nullptr) {
+		*unmanaged = others;
 	}
 	for (size_t i = 0; i < m.state_count; ++i) {
 		if (found[i]) {
@@ -567,8 +573,9 @@ bool BlockRuntime::load_record(size_t block, bool& mismatch) {
 		return false;
 	}
 	const char* reason = "unreadable";
+	size_t unmanaged = 0;
 	if (status != BlobStatus::ok || length > BlockLimits::kRecordBytes ||
-		!decode_record(m, spec.id, data, length, in.state, &reason)) {
+		!decode_record(m, spec.id, data, length, in.state, &reason, &unmanaged)) {
 		mismatch = true;
 		log(block, BlockLogCode::state_reset, LogLevel::warn, "the persisted state record is %s; the state starts fresh",
 			reason);
@@ -576,10 +583,18 @@ bool BlockRuntime::load_record(size_t block, bool& mismatch) {
 			in.state[i] = m.state[i].initial;
 		}
 		blobs_.remove(name);
+		++writes_;
 		return false;
 	}
 	for (size_t i = 0; i < m.state_count; ++i) {
 		in.stored[i] = in.state[i];
+	}
+	if (unmanaged > 0) {
+		// A record of an older firmware with fields that are not managed state (any more): written
+		// again with the managed fields alone, once (spec/blocks.md 8.1).
+		Log::info(kTag, "%s: %u fields of the state record are not managed state; the record is written without them",
+			spec.id, static_cast<unsigned>(unmanaged));
+		write_record(block);
 	}
 	return true;
 }
@@ -587,17 +602,23 @@ bool BlockRuntime::load_record(size_t block, bool& mismatch) {
 void BlockRuntime::record_changed(size_t block) {
 	Instance& in = runtime_->instances[block];
 	const Manifest& m = set_.at(block).type->manifest();
-	if (in.status == BlockStatus::fault || !m.persists()) {
-		return;
+	if (in.status == BlockStatus::fault || !m.persists() || in.dirty || !differs(block)) {
+		return; // a pending write takes the latest values: the first change fixes its time
 	}
-	for (size_t i = 0; i < m.state_count && !in.dirty; ++i) {
+	in.dirty = true;
+	in.due_ms = clock_.monotonic_ms() + kRecordDelayMs;
+	schedule_persist();
+}
+
+bool BlockRuntime::differs(size_t block) const {
+	const Instance& in = runtime_->instances[block];
+	const Manifest& m = set_.at(block).type->manifest();
+	for (size_t i = 0; i < m.state_count; ++i) {
 		if (m.state[i].persist && std::memcmp(&in.state[i], &in.stored[i], sizeof(double)) != 0) {
-			in.dirty = true;
+			return true;
 		}
 	}
-	if (in.dirty) {
-		schedule_persist();
-	}
+	return false;
 }
 
 void BlockRuntime::write_record(size_t block) {
@@ -605,8 +626,11 @@ void BlockRuntime::write_record(size_t block) {
 	const BlockSpec& spec = set_.at(block);
 	const Manifest& m = spec.type->manifest();
 	in.dirty = false;
-	in.last_write_ms = clock_.monotonic_ms();
-	in.written_once = true;
+	// The guard counts every attempt: a store that fails is not retried faster than it allows.
+	write_times_[write_next_] = clock_.monotonic_ms();
+	write_next_ = (write_next_ + 1) % BlockLimits::kRecordWritesPerHour;
+	write_ring_ += write_ring_ < BlockLimits::kRecordWritesPerHour ? 1 : 0;
+	++writes_;
 	uint8_t data[BlockLimits::kRecordBytes];
 	size_t length = 0;
 	if (!encode_record(m, spec.id, in.state, data, sizeof(data), length)) {
@@ -627,10 +651,13 @@ void BlockRuntime::write_record(size_t block) {
 	}
 }
 
-uint64_t BlockRuntime::persist_interval(size_t block) const {
-	// spec/blocks.md B13: max(persistEvery, n x 120 s) per instance, n the instances with persistent state.
-	uint64_t every = set_.at(block).type->manifest().persist_every_ms;
-	return every > persist_interval_ms_ ? every : persist_interval_ms_;
+uint64_t BlockRuntime::guard_free_at() const {
+	// spec/blocks.md B13: at most kRecordWritesPerHour writes in any hour. write_next_ is the oldest
+	// of the last kRecordWritesPerHour writes once that many were made.
+	if (write_ring_ < BlockLimits::kRecordWritesPerHour) {
+		return 0;
+	}
+	return write_times_[write_next_] + kGuardWindowMs;
 }
 
 void BlockRuntime::schedule_persist() {
@@ -638,8 +665,7 @@ void BlockRuntime::schedule_persist() {
 	for (size_t b = 0; runtime_ != nullptr && b < runtime_->count; ++b) {
 		const Instance& in = runtime_->instances[b];
 		if (in.dirty && in.status != BlockStatus::fault) {
-			uint64_t due = in.written_once ? in.last_write_ms + persist_interval(b) : 0;
-			earliest = due < earliest ? due : earliest;
+			earliest = in.due_ms < earliest ? in.due_ms : earliest;
 		}
 	}
 	if (earliest == EventLoop::kNever) {
@@ -648,6 +674,19 @@ void BlockRuntime::schedule_persist() {
 			persist_timer_ = TimerHandle();
 		}
 		return;
+	}
+	uint64_t free_at = guard_free_at();
+	if (free_at > earliest) {
+		uint64_t now = clock_.monotonic_ms();
+		if (!guard_logged_ || now - guard_logged_ms_ >= kGuardWindowMs) { // once an hour at most
+			guard_logged_ = true;
+			guard_logged_ms_ = now;
+			Log::warn(kTag, "the block state records were written %u times within the hour (spec/blocks.md B13): the "
+				"next write waits %llu s; a block type keeps a field as managed state that changes all the time",
+				static_cast<unsigned>(BlockLimits::kRecordWritesPerHour),
+				static_cast<unsigned long long>((free_at - (now > earliest ? now : earliest) + 999) / 1000));
+		}
+		earliest = free_at;
 	}
 	if (persist_timer_.valid() && persist_deadline_ == earliest) {
 		return;
@@ -667,10 +706,17 @@ void BlockRuntime::on_persist() {
 	uint64_t now = clock_.monotonic_ms();
 	for (size_t b = 0; runtime_ != nullptr && b < runtime_->count; ++b) {
 		Instance& in = runtime_->instances[b];
-		if (in.dirty && in.status != BlockStatus::fault &&
-			(!in.written_once || in.last_write_ms + persist_interval(b) <= now)) {
-			write_record(b);
+		if (!in.dirty || in.status == BlockStatus::fault || in.due_ms > now) {
+			continue;
 		}
+		if (!differs(b)) {
+			in.dirty = false; // changed back before the write: the store holds it already
+			continue;
+		}
+		if (guard_free_at() > now) {
+			break; // schedule_persist() waits for the guard (and says so)
+		}
+		write_record(b);
 	}
 	schedule_persist();
 }
@@ -679,7 +725,11 @@ void BlockRuntime::flush() {
 	for (size_t b = 0; runtime_ != nullptr && b < runtime_->count; ++b) {
 		Instance& in = runtime_->instances[b];
 		if (in.dirty && in.status != BlockStatus::fault) {
-			write_record(b);
+			if (differs(b)) {
+				write_record(b);
+			} else {
+				in.dirty = false;
+			}
 		}
 	}
 	schedule_persist();
@@ -723,20 +773,28 @@ struct OverrideKeeper : rules::ParameterStore::Visitor {
 	bool forget_all;
 };
 
+/// The records kept after a load: those of the current instances whose type has managed state.
+/// The record of an instance whose type keeps none (a record of an older firmware, spec/blocks.md
+/// 8.1) is deleted like an orphan.
 struct RecordKeeper : persist::BlobKeeper {
 	RecordKeeper(const BlockSet& s, bool all) : set(s), forget_all(all) {}
 	bool keep(const char* name) const override {
-		if (forget_all) {
-			return false;
-		}
+		int i = instance(name);
+		return !forget_all && i >= 0 && set.at(static_cast<size_t>(i)).type->manifest().persists();
+	}
+	const char* reason(const char* name) const override {
+		return !forget_all && instance(name) >= 0 ? "its block type keeps no managed state"
+			: persist::BlobKeeper::reason(name);
+	}
+	int instance(const char* name) const {
 		for (size_t i = 0; i < set.size(); ++i) {
 			char own[persist::kBlobNameSize];
 			persist::blob_name(BlockRuntime::kBlobPrefix, set.at(i).id, own);
-			if (std::strcmp(own, name) == 0 && set.at(i).type->manifest().persists()) {
-				return true;
+			if (std::strcmp(own, name) == 0) {
+				return static_cast<int>(i);
 			}
 		}
-		return false;
+		return -1;
 	}
 	const BlockSet& set;
 	bool forget_all;
@@ -839,7 +897,6 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 	bool boot = !booted_;
 	set_ = std::move(next);
 	runtime_ = rt;
-	size_t persisting = 0;
 
 	for (size_t i = 0; i < count; ++i) {
 		const BlockSpec& spec = set_.at(i);
@@ -853,7 +910,6 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 			in.params[p] = spec.defaults[p];
 		}
 		in.enabled = spec.enabled;
-		persisting += m.persists() ? 1 : 0;
 		int o = old != nullptr ? old_set.find(spec.id) : -1;
 		char key[BlockLimits::kIdLength + 2];
 		store_key(spec.id, key, sizeof(key));
@@ -876,8 +932,6 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 				// A faulted instance starts from its persisted record, as a restart (spec/blocks.md B11).
 				bool mismatch = false;
 				in.restored = load_record(i, mismatch);
-				in.written_once = oi.written_once;
-				in.last_write_ms = oi.last_write_ms;
 				in.was_fault = true;
 			} else if (std::strcmp(om.type, m.type) == 0 && om.major == m.major) {
 				// The same type and major version: the record in RAM, by field id (spec/blocks.md 8.1).
@@ -888,9 +942,8 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 						in.stored[f] = oi.stored[of];
 					}
 				}
-				in.dirty = oi.dirty;
-				in.last_write_ms = oi.last_write_ms;
-				in.written_once = oi.written_once;
+				in.dirty = oi.dirty && m.persists();
+				in.due_ms = oi.due_ms;
 				in.restored = true;
 			} else {
 				log(i, BlockLogCode::state_reset, LogLevel::warn, "the block type changed from %s %u.%u to %s %u.%u: the "
@@ -898,7 +951,7 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 					m.type, static_cast<unsigned>(m.major), static_cast<unsigned>(spec.minor));
 				char name[persist::kBlobNameSize];
 				persist::blob_name(kBlobPrefix, spec.id, name);
-				blobs_.remove(name);
+				writes_ += blobs_.remove(name) == BlobStatus::ok ? 1 : 0;
 			}
 			// Overrides from RAM, checked against the new manifest (spec/blocks.md 8.2).
 			for (size_t op = 0; op < om.param_count; ++op) {
@@ -990,8 +1043,6 @@ bool BlockRuntime::adopt(BlockSet&& next_set) {
 		release(old);
 	}
 	booted_ = true;
-	uint32_t paced = static_cast<uint32_t>(persisting * 3600000u / BlockLimits::kRecordWritesPerHour);
-	persist_interval_ms_ = paced;
 	prune(false);
 	bind();
 	schedule_persist();
@@ -1003,7 +1054,7 @@ void BlockRuntime::prune(bool forget_all) {
 	OverrideKeeper keeper(*this, forget_all);
 	store_.prune(keeper);
 	RecordKeeper records(set_, forget_all);
-	persist::delete_orphans(blobs_, kBlobPrefix, records, kTag);
+	writes_ += static_cast<uint32_t>(persist::delete_orphans(blobs_, kBlobPrefix, records, kTag));
 }
 
 void BlockRuntime::clear(bool forget) {
@@ -1230,6 +1281,7 @@ bool BlockRuntime::call(size_t block, CallKind kind, size_t arg, bool derived, S
 		case CallKind::start:
 			what = start_reason_name(reason);
 			in.started = true;
+			in.started_restored = restored;
 			type.start(cx, reason, restored);
 			break;
 		case CallKind::input:
@@ -1757,7 +1809,7 @@ bool BlockRuntime::diagnostics(size_t block, BlockDiagnostics& out) const {
 	out.last_error_code = in.last_error_code;
 	out.last_error = in.last_error;
 	out.last_error_ms = in.last_error_ms;
-	out.restored = in.restored;
+	out.restored = in.started_restored;
 	return true;
 }
 

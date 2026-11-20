@@ -929,6 +929,7 @@ void Scheduler::persist(Entry& entry) {
 		return;
 	}
 	SettingsStatus status = settings_.set_string(entry.key, value);
+	++writes_;
 	if (status != SettingsStatus::ok) {
 		Log::error(kTag, "schedule %s: cannot store record %s (%s)", entry.spec.id, entry.key,
 			settings_status_name(status));
@@ -978,6 +979,7 @@ void Scheduler::delete_orphan_records() {
 		settings_.visit(collector);
 		size_t erased = 0;
 		for (size_t i = 0; i < collector.found(); ++i) {
+			++writes_;
 			if (settings_.erase(collector.orphan(i)) == SettingsStatus::ok) {
 				++erased;
 				Log::info(kTag, "deleted record %s of a schedule no longer in the image", collector.orphan(i));

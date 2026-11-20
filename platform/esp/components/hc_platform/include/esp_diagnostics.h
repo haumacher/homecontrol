@@ -7,8 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "hc/event_loop.h"
-#include "hc/platform/clock.h"
 #include "hc/platform/diagnostics.h"
 
 namespace hc {
@@ -17,15 +15,14 @@ namespace esp {
 /// The device's diagnostics (doc/diagnostics.md): the reset reason (esp_reset_reason()), the boot
 /// record in the NVS namespace `diag` and the core dump in the `coredump` partition.
 ///
-/// The boot record (frozen keys, all u32): `boots` (starts since the record began), `reason` (this
-/// start's ResetReason), `uptime` (seconds of the current run, written every minute, so at the
-/// next start it is the previous run's uptime to within a minute), `brownouts` (starts after a
-/// brownout).
+/// The boot record (frozen keys, all u32), written once per start: `boots` (starts since the record
+/// began), `reason` (this start's ResetReason), `brownouts` (starts after a brownout). The key
+/// `uptime`, which firmware before homecontrol #102 wrote every minute, is erased at the start.
 ///
 /// Order: init() in app_main after nvs_flash_init() and before the Controller logs (it reads and
 /// updates the record, checks the core dump); report() on the event loop after Controller::start()
-/// (logs through hc::Log, so the lines reach the ring and GET /api/log); start() schedules the
-/// uptime writes; watch_loop() and feed() put the calling task under the task watchdog.
+/// (logs through hc::Log, so the lines reach the ring and GET /api/log); watch_loop() and feed()
+/// put the calling task under the task watchdog.
 class EspDiagnostics : public Diagnostics {
 public:
 	/// Longest panic reason kept from the core dump (characters).
@@ -33,7 +30,6 @@ public:
 
 	void init();
 	void report();
-	void start(EventLoop& loop, const Clock& clock);
 
 	/// Subscribes the calling task (the event loop) to the task watchdog; logs the result.
 	void watch_loop();
@@ -61,12 +57,10 @@ public:
 private:
 	void read_record();
 	void check_coredump();
-	void write_uptime();
 
 	ResetReason reason_ = ResetReason::unknown;
 	uint32_t boots_ = 0;
 	uint32_t brownouts_ = 0;
-	uint32_t previous_uptime_s_ = 0;
 	bool record_ok_ = false;
 	const char* record_error_ = nullptr;
 	bool partition_ = false;
@@ -76,8 +70,6 @@ private:
 	char coredump_task_[17] = {};
 	uint32_t coredump_pc_ = 0;
 	char panic_reason_[kMaxPanicReason + 1] = {};
-	uint32_t last_written_uptime_s_ = UINT32_MAX;
-	TimerHandle uptime_timer_;
 	bool watched_ = false;
 };
 

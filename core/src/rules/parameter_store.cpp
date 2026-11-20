@@ -219,6 +219,7 @@ bool ParameterStore::write(const char* rule, const char* parameter, const Val& v
 		Log::error(kTag, "%s override of '%s' not persisted: %s", rule, parameter, settings_status_name(status));
 		return false;
 	}
+	++writes_;
 	return true;
 }
 
@@ -241,6 +242,7 @@ void ParameterStore::erase(const char* rule, const char* parameter) {
 		char key[16];
 		key_for(rule, parameter, key);
 		settings_.erase(key);
+		++writes_;
 	}
 }
 
@@ -303,6 +305,7 @@ void ParameterStore::prune(Visitor& visitor) {
 	size_t n = collect.count < count_pass.count ? collect.count : count_pass.count;
 	for (size_t i = 0; i < n; ++i) {
 		settings_.erase(keys[i]);
+		++writes_;
 	}
 	delete[] keys;
 }

@@ -540,6 +540,8 @@ does not know is left out.
           "power_save": "min", "mac": "aa:bb:cc:dd:ee:ff", "gateway": "192.0.2.1", "netmask": "255.255.255.0",
           "dns": "192.0.2.1"},
  "storage": {"available": true, "total": 1048576, "used": 65536, "free": 983040, "files": 4, "bytes": 12000,
+             "writes": {"values": 12, "history": 3, "archives": 0, "block_records": 1, "block_overrides": 0,
+                        "rules": 2, "schedules": 4},
              "nvs": {"available": true, "used": 80, "free": 420, "usable": 294, "total": 500, "namespaces": 6}},
  "knx": {"available": true, "state": "up", "reason": "", "connections": 2, "reconnects": 1, "attempts": 3,
          "queued": 0, "channel": 7, "telegrams": 1234},
@@ -566,8 +568,15 @@ does not know is left out.
   since boot, `reconnects` (`link_ups` − 1), `up_for_s` while up. `wifi`: the driver's link facts
   (`rssi` in dBm while associated, `tx_power_dbm` the transmit power limit, `power_save` as the
   setting `wifi.ps` names it); POSIX has no radio.
-- `storage`: the blob store's partition and files as in `GET /api/status`, and `nvs`: the entries of
-  the `nvs` partition (`usable`: free entries outside the page NVS keeps in reserve), `namespaces`.
+- `storage`: the blob store's partition and files as in `GET /api/status`, `nvs`: the entries of
+  the `nvs` partition (`usable`: free entries outside the page NVS keeps in reserve), `namespaces`,
+  and `writes` (with the image service; homecontrol #102): the writes to the flash since boot per
+  writer, so a writer that wears it shows: `values` the persisted datapoints' records, `history` the
+  history rings, `archives` the archive segments' writes and patches, `block_records` the blocks'
+  state records written and deleted, `block_overrides` the blocks' parameter and enable overrides
+  written and erased, `rules` the rule engine's (parameter overrides, rule states, the inhabitant's
+  timelines), `schedules` the schedule records (settings). Not counted: the boot record (once per start, doc/
+  diagnostics.md) and the device's own settings the user changes (network, password, time zone).
 - `knx`: the tunnel's state, `connections` since start (`reconnects` one less), `attempts`, `queued`,
   `channel` while up, `telegrams` seen. `zigbee`: the network (`channel`, `pan_id` while up) and the
   device count; without a coordinator the reason.
@@ -1176,8 +1185,9 @@ in the type's manifest (`GET /api/blocks/types`). A room controller takes about 
 ### `GET /api/blocks/types[?from=<n>]`
 
 The block types this firmware has, as their manifests (`spec/blocks.md` 3): `{"count", "from",
-"next", "types": [{"type", "version", "label", "description", "period", "persistEvery", "ports":
-[...], "parameters": [...], "state": [{"id", "persist"}], "timers": [...]}]}`. The room controller's
+"next", "types": [{"type", "version", "label", "description", "period", "ports":
+[...], "parameters": [...], "state": [{"id", "persist"}], "timers": [...]}]}` (`persist`: the field is
+managed state, `spec/blocks.md` B4; firmware before homecontrol #102 also gave `persistEvery`). The room controller's
 manifest takes about 6.8 KB: it fits the device's 8 KB web answers, not the 4 KB of the E-Home
 connection (E-Home has the manifests of the built-in types itself).
 
@@ -1792,5 +1802,5 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST $DEV/api/system/restart
 
 ## Diagnostics
 
-- `GET /api/status` carries a `boot` member: `{"reason": "<reset reason in words>", "count": <boots>, "brownouts": <n>, "previous_uptime_s": <s>, "coredump": <bool>}` (doc/diagnostics.md; a POSIX build reports its PID, start time and the signal that stopped the previous run instead).
+- `GET /api/status` carries a `boot` member: `{"reason": "<reset reason in words>", "count": <boots>, "brownouts": <n>, "coredump": <bool>}` (doc/diagnostics.md; a POSIX build reports its PID, start time and the signal that stopped the previous run instead).
 - `GET /api/coredump` streams the stored core dump (`application/octet-stream`, the ELF the IDF wrote) for `esp-coredump info_corefile -c core.bin -t raw <homecontrol.elf>`; `404 coredump.none` without one. Session or token as for every route. `DELETE /api/coredump` erases it (see "System").

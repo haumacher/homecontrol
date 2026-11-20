@@ -161,9 +161,6 @@ const char* check_manifest(const Manifest& m) {
 	if (m.period_ms != 0 && (m.period_ms < 1000 || m.period_ms > 86400000)) {
 		return "the period is not 1 s .. 1 d";
 	}
-	if (m.persists() && (m.persist_every_ms < 60000 || m.persist_every_ms > 86400000)) {
-		return "persistEvery is not 1 min .. 1 d";
-	}
 	// Ports and parameters share the namespace of block/<id>/<x>, which also holds `enabled`.
 	for (size_t i = 0; i < m.port_count + m.param_count; ++i) {
 		const char* id = i < m.port_count ? m.ports[i].id : m.params[i - m.port_count].id;

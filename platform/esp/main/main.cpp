@@ -193,7 +193,6 @@ void loop_task(void*) {
 	// ---- diagnostics ----
 	uint64_t started_ms = g_clock.monotonic_ms();
 	g_diag.report();
-	g_diag.start(ctl.loop(), g_clock);
 	// ---- end diagnostics ----
 	knx().init();
 	zigbee().init(image()); // the adapter becomes a dynamic spec provider of the image service

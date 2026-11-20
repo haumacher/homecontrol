@@ -31,7 +31,6 @@ public:
 		}
 		visitor.number("count", 12);
 		visitor.number("brownouts", 3);
-		visitor.number("previous_uptime_s", 3600);
 		visitor.flag("coredump", true);
 		visitor.text("coredump_task", "hc_loop");
 	}
@@ -101,7 +100,7 @@ TEST_CASE("Diagnostics.ResetReasonNumbersAreFrozen") {
 TEST_CASE("Diagnostics.StatusWriterReportsReasonAndFacts") {
 	FakeDiagnostics diagnostics;
 	CHECK(boot_json(&diagnostics) ==
-		"{\"boot\":{\"reason\":\"brownout\",\"count\":12,\"brownouts\":3,\"previous_uptime_s\":3600,"
+		"{\"boot\":{\"reason\":\"brownout\",\"count\":12,\"brownouts\":3,"
 		"\"coredump\":true,\"coredump_task\":\"hc_loop\"}}");
 	diagnostics.facts = false;
 	diagnostics.reason = ResetReason::power_on;
@@ -114,7 +113,7 @@ TEST_CASE("Diagnostics.FormatsFactsAsText") {
 	char buffer[160];
 	size_t length = hc::format_boot_facts(diagnostics, buffer, sizeof(buffer));
 	CHECK(std::string(buffer) ==
-		"count 12, brownouts 3, previous_uptime_s 3600, coredump yes, coredump_task hc_loop");
+		"count 12, brownouts 3, coredump yes, coredump_task hc_loop");
 	CHECK(length == std::string(buffer).size());
 
 	char small[16];
@@ -140,7 +139,7 @@ TEST_CASE("Diagnostics.ControllerLogsReasonInFirstLineAndFacts") {
 	CHECK(p.sink.lines[0] ==
 		std::string("W hc.ctl: HomeControl ") + hc::kVersion + " (build " + hc::build_id() + ") starting, reset reason: brownout");
 	CHECK(p.sink.lines[1] ==
-		"I hc.ctl: boot: count 12, brownouts 3, previous_uptime_s 3600, coredump yes, coredump_task hc_loop");
+		"I hc.ctl: boot: count 12, brownouts 3, coredump yes, coredump_task hc_loop");
 	// The ring (GET /api/log) has the same first line.
 	Collector ring;
 	controller.log_ring().read(0, ring);

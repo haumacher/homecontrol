@@ -227,7 +227,8 @@
 				"block/takt/state": 0,
 				"pos": null,
 				"slat": null
-			}
+			},
+			"records": {}
 		}
 	}
 }

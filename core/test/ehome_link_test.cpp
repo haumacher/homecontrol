@@ -2301,7 +2301,6 @@ public:
 	void visit_boot(hc::DiagnosticsVisitor& visitor) const override {
 		visitor.number("count", 187);
 		visitor.number("brownouts", 0);
-		visitor.number("previous_uptime_s", 412377);
 		visitor.flag("coredump", false);
 	}
 };

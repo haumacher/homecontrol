@@ -885,26 +885,38 @@ private:
 	}
 
 
-	/// README "persisted": a state record `block/<id>` written as the device writes it.
+	/// README "persisted": a state record `block/<id>` in the device's format (doc/blocks.md "The
+	/// record") holding exactly the listed fields, as this or an older firmware wrote it.
 	void persist_record(const std::string& id, const Json& record) {
 		uint32_t major = 0, minor = 0;
 		REQUIRE(std::sscanf(record["version"].text.c_str(), "%u.%u", &major, &minor) == 2);
-		const hc::blocks::BlockType* type = hc_test::corpus_registry().find(record["type"].text.c_str(),
-			static_cast<uint16_t>(major));
-		REQUIRE_MESSAGE(type != nullptr, "no block type " << record["type"].text);
-		const hc::blocks::Manifest& m = type->manifest();
-		std::vector<double> values(m.state_count);
-		for (size_t f = 0; f < m.state_count; ++f) {
-			values[f] = m.state[f].initial;
-		}
+		std::vector<uint8_t> bytes = {'H', 'C', 'B', 'S', 1};
+		auto text = [&](const std::string& s) {
+			REQUIRE(s.size() <= 255);
+			bytes.push_back(static_cast<uint8_t>(s.size()));
+			bytes.insert(bytes.end(), s.begin(), s.end());
+		};
+		text(record["type"].text);
+		bytes.push_back(static_cast<uint8_t>(major));
+		bytes.push_back(static_cast<uint8_t>(major >> 8));
+		text(id);
+		bytes.push_back(static_cast<uint8_t>(record["fields"].members.size()));
 		for (const auto& field : record["fields"].members) {
-			int f = m.field(field.first.c_str());
-			REQUIRE_MESSAGE(f >= 0, "no state field " << field.first);
-			values[static_cast<size_t>(f)] = field.second.number;
+			text(field.first);
+			uint64_t bits = 0;
+			double value = field.second.number;
+			std::memcpy(&bits, &value, 8);
+			for (int b = 0; b < 8; ++b) {
+				bytes.push_back(static_cast<uint8_t>(bits >> (8 * b)));
+			}
 		}
-		uint8_t data[hc::blocks::BlockLimits::kRecordBytes];
-		size_t length = 0;
-		REQUIRE(hc::blocks::BlockRuntime::encode_record(m, id.c_str(), values.data(), data, sizeof(data), length));
+		uint32_t crc = hc::persist::crc32(0, bytes.data(), bytes.size());
+		for (int b = 0; b < 4; ++b) {
+			bytes.push_back(static_cast<uint8_t>(crc >> (8 * b)));
+		}
+		REQUIRE(bytes.size() <= hc::blocks::BlockLimits::kRecordBytes);
+		const uint8_t* data = bytes.data();
+		size_t length = bytes.size();
 		char name[hc::persist::kBlobNameSize];
 		hc::persist::blob_name(hc::blocks::BlockRuntime::kBlobPrefix, id.c_str(), name);
 		hc::BlobChunk chunk{data, length};
@@ -1005,7 +1017,7 @@ private:
 				REQUIRE_MESSAGE(f >= 0, "no state field " << field.first);
 				double have = blocks_->state(b)[f];
 				CHECK_MESSAGE(same_number(have, number_of(field.second)), where << ": " << entry.first << "." << field.first
-					<< " is " << have << ", expected " << field.second.text);
+					<< " is " << full(have) << ", expected " << field.second.text);
 			}
 			for (const auto& param : want["parameters"].members) {
 				int p = m.param(param.first.c_str());
@@ -1017,9 +1029,19 @@ private:
 		}
 	}
 
-	/// The complete set of persisted records (README "records"), after an orderly shutdown's writes.
-	void compare_records(const Json& expected, const std::string& where) {
-		blocks_->flush();
+	/// A double with every digit (the messages of a mismatch).
+	static std::string full(double value) {
+		char text[32];
+		std::snprintf(text, sizeof(text), "%.17g", value);
+		return text;
+	}
+
+	/// The complete set of persisted records (README "records"), after an orderly shutdown's writes;
+	/// with `flush` false as the store holds them now (README "stored").
+	void compare_records(const Json& expected, const std::string& where, bool flush = true) {
+		if (flush) {
+			blocks_->flush();
+		}
 		std::vector<std::string> expected_names;
 		for (const auto& entry : expected.members) {
 			char name[hc::persist::kBlobNameSize];
@@ -1038,8 +1060,11 @@ private:
 			const hc::blocks::Manifest& m = blocks_->set().at(b).type->manifest();
 			std::vector<double> values(m.state_count, std::nan(""));
 			const char* reason = "";
+			size_t unmanaged = 0;
 			CHECK_MESSAGE(hc::blocks::BlockRuntime::decode_record(m, entry.first.c_str(), it->second.data(), it->second.size(),
-				values.data(), &reason), where << ": the record of " << entry.first << " is " << reason);
+				values.data(), &reason, &unmanaged), where << ": the record of " << entry.first << " is " << reason);
+			CHECK_MESSAGE(unmanaged == 0, where << ": the record of " << entry.first << " holds " << unmanaged
+				<< " fields that are not managed state");
 			for (size_t f = 0; f < m.state_count; ++f) {
 				if (!m.state[f].persist) {
 					continue;
@@ -1049,7 +1074,7 @@ private:
 					<< m.state[f].id << " = " << values[f] << ", not expected");
 				if (entry.second.has(m.state[f].id)) {
 					CHECK_MESSAGE(same_number(values[f], number_of(field)), where << ": the record of " << entry.first << ": "
-						<< m.state[f].id << " is " << values[f] << ", expected " << field.text);
+						<< m.state[f].id << " is " << full(values[f]) << ", expected " << field.text);
 				}
 			}
 		}
@@ -1132,6 +1157,9 @@ private:
 		}
 		if (expected.has("records")) {
 			compare_records(expected["records"], where);
+		}
+		if (expected.has("stored")) {
+			compare_records(expected["stored"], where, false);
 		}
 		if (expected.has("timelines")) {
 			compare_timelines(expected["timelines"], where);
@@ -1659,9 +1687,10 @@ HC_BLOCK_CASE("71", "pv-failsafe-swap-reboot")
 HC_BLOCK_CASE("72", "pv-enable-ready-no-clock")
 HC_BLOCK_CASE("73", "load-refused-pv-min-power")
 HC_BLOCK_CASE("74", "load-refused-pv-must-run")
+HC_BLOCK_CASE("75", "house-reboot-managed-state")
 
 TEST_CASE("BlocksCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::corpus_files("blocks");
-	CHECK(files.size() == 74);
+	CHECK(files.size() == 75);
 	print_stats("BlocksCorpus", "blocks");
 }

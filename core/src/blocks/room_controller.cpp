@@ -109,9 +109,9 @@ constexpr ParamDecl kParams[] = {
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == RoomController::kParamCount, "parameters");
 
 constexpr StateField kFields[] = {
-	{"integral", true, 0}, {"filtered", false, 0}, {"hasFiltered", false, 0}, {"lastStep", false, 0},
+	{"integral", false, 0}, {"filtered", false, 0}, {"hasFiltered", false, 0}, {"lastStep", false, 0},
 	{"lastSetpoint", false, 0}, {"hasLastSetpoint", false, 0}, {"lastKp", false, 0}, {"hasLastKp", false, 0},
-	{"windowActive", false, 0}, {"boostUntil", false, 0}, {"protectionUntil", false, 0}, {"protectedOn", true, 0},
+	{"windowActive", false, 0}, {"boostUntil", false, 0}, {"protectionUntil", false, 0}, {"protectedOn", false, 0},
 	{"cycleStart", false, 0}, {"hasCycle", false, 0}, {"lastState", false, 0}, {"sentValve", false, 0},
 	{"hasSent", false, 0}, {"sentAt", false, 0}, {"switchOn", false, 0}, {"demandOn", false, 0},
 };
@@ -123,7 +123,7 @@ constexpr Manifest kManifest = {
 	"org.homecontrol.room-controller", 1, 0, "Room controller",
 	"PI(D) room temperature controller for a valve, a PWM-switched or a two-point heating",
 	kPorts, RoomController::kPortCount, kParams, RoomController::kParamCount, kFields, RoomController::kFieldCount,
-	kTimers, RoomController::kTimerCount, 60000, 600000};
+	kTimers, RoomController::kTimerCount, 60000};
 
 } // namespace
 

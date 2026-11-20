@@ -1,0 +1,289 @@
+{
+	"title": "House mode across a reboot (19.2 D11, spec/blocks.md 8.1): the mode is managed state, written 10 s after it changes and only then, restored at the boot; a record of an older firmware is written again without its fields that are not managed state, one of another type is deleted (stateReset) and the instance starts fresh.",
+	"note": "Munich time zone, 2026-11-20 18:00 CET at 0, the clock synchronized. The stored record of hm is away since 2026-11-20 08:00 (minute 29 919 360) with `armed` 0 and `absentSince` 5, fields an older firmware kept: hm starts away and armed (1), and its record holds mode and since alone. hm2's record is a room controller's: hm2 starts fresh, home since the start (minute 29 919 960, 18:00), written at 10 s. The home button at 90 s (18:01:30, minute 29 919 961) and the night button at 800 s after the reboot (18:13:20, minute 29 919 973) each write hm's record 10 s later; the periods in between write nothing.",
+	"clock": {
+		"start": "2026-11-20T18:00:00",
+		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
+	},
+	"datapoints": [
+		{
+			"name": "p",
+			"type": "boolean"
+		},
+		{
+			"name": "hb",
+			"type": "boolean"
+		},
+		{
+			"name": "nb",
+			"type": "boolean"
+		},
+		{
+			"name": "p2",
+			"type": "boolean"
+		},
+		{
+			"name": "hvac",
+			"type": "enumeration"
+		}
+	],
+	"persisted": {
+		"block/hm": {
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"fields": {
+				"mode": 1,
+				"since": 29919360,
+				"armed": 0,
+				"absentSince": 5
+			}
+		},
+		"block/hm2": {
+			"type": "org.homecontrol.room-controller",
+			"version": "1.0",
+			"fields": {
+				"integral": 12.5
+			}
+		}
+	},
+	"blocks": [
+		{
+			"id": "hm",
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"label": "House mode",
+			"inputs": {
+				"presence": "p",
+				"homeButton": "hb",
+				"nightButton": "nb"
+			},
+			"outputs": {
+				"hvacMode": "hvac"
+			}
+		},
+		{
+			"id": "hm2",
+			"type": "org.homecontrol.house-mode",
+			"version": "1.0",
+			"label": "Annex",
+			"inputs": {
+				"presence": "p2"
+			}
+		}
+	],
+	"timeline": [
+		{
+			"at": 1000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 1,
+					"block/hm/hvacMode": 2,
+					"hvac": 2,
+					"block/hm/since": 29919360,
+					"block/hm2/mode": 0
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"mode": 1.0,
+							"since": 29919360.0,
+							"armed": 1.0,
+							"absentSince": -1.0
+						}
+					},
+					"hm2": {
+						"state": {
+							"mode": 0.0
+						}
+					}
+				},
+				"stored": {
+					"hm": {
+						"mode": 1.0,
+						"since": 29919360.0
+					},
+					"hm2": null
+				}
+			}
+		},
+		{
+			"at": 11000,
+			"check": {
+				"stored": {
+					"hm": {
+						"mode": 1.0,
+						"since": 29919360.0
+					},
+					"hm2": {
+						"mode": 0.0,
+						"since": 29919960.0
+					}
+				}
+			}
+		},
+		{
+			"at": 90000,
+			"report": {
+				"datapoint": "hb",
+				"value": true
+			}
+		},
+		{
+			"at": 101000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"hvac": 1,
+					"block/hm/since": 29919961
+				},
+				"stored": {
+					"hm": {
+						"mode": 0.0,
+						"since": 29919961.0
+					},
+					"hm2": {
+						"mode": 0.0,
+						"since": 29919960.0
+					}
+				}
+			}
+		},
+		{
+			"at": 700000,
+			"reboot": true
+		},
+		{
+			"at": 701000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 0,
+					"hvac": 1,
+					"block/hm/since": 29919961,
+					"block/hm2/mode": 0,
+					"block/hm2/since": 29919960
+				},
+				"blocks": {
+					"hm": {
+						"state": {
+							"mode": 0.0,
+							"since": 29919961.0
+						}
+					},
+					"hm2": {
+						"state": {
+							"mode": 0.0,
+							"since": 29919960.0
+						}
+					}
+				},
+				"stored": {
+					"hm": {
+						"mode": 0.0,
+						"since": 29919961.0
+					},
+					"hm2": {
+						"mode": 0.0,
+						"since": 29919960.0
+					}
+				}
+			}
+		},
+		{
+			"at": 800000,
+			"report": {
+				"datapoint": "nb",
+				"value": true
+			}
+		},
+		{
+			"at": 811000,
+			"check": {
+				"datapoints": {
+					"block/hm/mode": 2,
+					"hvac": 3,
+					"block/hm/since": 29919973
+				},
+				"stored": {
+					"hm": {
+						"mode": 2.0,
+						"since": 29919973.0
+					},
+					"hm2": {
+						"mode": 0.0,
+						"since": 29919960.0
+					}
+				}
+			}
+		}
+	],
+	"end": 960000,
+	"expected": {
+		"commands": [
+			{
+				"at": 0,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 2
+			},
+			{
+				"at": 90000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 700000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 1
+			},
+			{
+				"at": 800000,
+				"block": "hm",
+				"datapoint": "hvac",
+				"value": 3
+			}
+		],
+		"logs": [
+			{
+				"at": 0,
+				"block": "hm2",
+				"code": "stateReset"
+			}
+		],
+		"final": {
+			"datapoints": {
+				"block/hm/mode": 2,
+				"hvac": 3,
+				"block/hm/since": 29919973,
+				"block/hm2/mode": 0
+			},
+			"blocks": {
+				"hm": {
+					"status": "running",
+					"state": {
+						"mode": 2.0,
+						"since": 29919973.0
+					}
+				},
+				"hm2": {
+					"status": "running",
+					"state": {
+						"mode": 0.0,
+						"since": 29919960.0
+					}
+				}
+			},
+			"records": {
+				"hm": {
+					"mode": 2.0,
+					"since": 29919973.0
+				},
+				"hm2": {
+					"mode": 0.0,
+					"since": 29919960.0
+				}
+			}
+		}
+	}
+}

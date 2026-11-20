@@ -16,7 +16,7 @@ timeline step defined there means the same here. The additions:
 | Member | Type | Meaning |
 |---|---|---|
 | `blocks` | array | The `blocks` member of the image (`spec/blocks.md` 4). `rules` may be absent (no rules). The block mirrors `block/<id>/<x>` (`spec/blocks.md` 6) are not listed in `datapoints`: the runner derives them, after the parameter datapoints of the rules. |
-| `persisted` | object | Also block parameter overrides, `"@<blockId>/<parameterId>": {"type": <parameter type>, "value": <JSON value>}`, and persisted state records, `"block/<id>": {"type": "<type id>", "version": "<major>.<minor>", "fields": {"<field>": <number>}}` (written as the device's record of `spec/blocks.md` 8.1). |
+| `persisted` | object | Also block parameter overrides, `"@<blockId>/<parameterId>": {"type": <parameter type>, "value": <JSON value>}`, and persisted state records, `"block/<id>": {"type": "<type id>", "version": "<major>.<minor>", "fields": {"<field>": <number>}}`: a record in the device's format (`spec/blocks.md` 8.1, `doc/blocks.md` "The record") holding exactly the listed fields, in their order, as this or an older firmware wrote it (one may hold fields that are not managed state, homecontrol #102). |
 | `location` | object | `{"lat", "lon"}`: the controller's location in degrees (north and east positive). With it and a synchronized `clock`, `sun()` (`spec/blocks.md` B21) gives the sun's position by `spec/blocks.md` 13.2 at the instant of the wall clock; without it, none. |
 | `expected.loadRefused` | string | As for rules, with the reasons of `spec/blocks.md` 11; `expected.path` (optional) is the refusal's path. |
 
@@ -32,6 +32,11 @@ All steps of the rules corpus, and:
 | `setBlock` | `{"block", "enabled"?, "parameters"?: {"<id>": <value>, ...}, "reset"?: ["<id>", ...], "restart"?: true}`: the change of `PUT /api/blocks/<id>` (`spec/api.md`). With `"refused": "<code>"` (`unknown`, `unknown_parameter`, `not_adjustable`, `invalid_value`, `not_faulted`) it must be refused with that code, and nothing changes. |
 | `image` | `{"rules"?: [...], "blocks"?: [...], "schedules"?: [...]}`: an image swap; an absent `rules` or `blocks` means the new image has none. |
 | `reboot` | As for rules; the block runtime writes its due records first (an orderly reboot, `spec/blocks.md` 8.1). |
+
+A `check` may also carry `stored`: the records as the store holds them at that moment, without the
+writes of an orderly shutdown, in the format of `final.records` (block id → `{<field>: <number>}` or
+`null` for no record; only the blocks listed are compared). It pins when a record is written: 10 s
+after the change of its managed state (`spec/blocks.md` 8.1), and only then.
 
 ## The compiled images
 
@@ -61,7 +66,7 @@ As in the rules corpus, with these additions:
 |---|---|
 | `commands` | Every successful `DatapointModel::command()` by a rule or a block, in order: `at`, `rule` or `block`, `datapoint`, `value`. Publishes of mirrors are not commands; they show in `final.datapoints`. |
 | `logs` | Every log entry of the rule engine and of the block runtime with a code (`spec/rules.md` 9.2, `spec/blocks.md` 9), in order: `at`, `rule` or `block`, `code`; for the code `log` also `message`. |
-| `final` | As for rules, and: `blocks` (block id → `{"status": "running" \| "disabled" \| "fault", "state": {<field>: <number>}, "parameters": {<id>: <value>}, "calls": <number>}`, each part optional, `state` and `parameters` comparing only the keys listed); `records` (the complete set of persisted state records after an orderly shutdown's writes: block id → `{<field>: <number>}`, the persisted fields only); `persisted` includes the block overrides `@<blockId>/<parameterId>`. |
+| `final` | As for rules, and: `blocks` (block id → `{"status": "running" \| "disabled" \| "fault", "state": {<field>: <number>}, "parameters": {<id>: <value>}, "calls": <number>}`, each part optional, `state` and `parameters` comparing only the keys listed); `records` (the complete set of persisted state records after an orderly shutdown's writes: block id → `{<field>: <number>}`, the persisted fields, and a stored record must hold no other field; `{}`: no record); `persisted` includes the block overrides `@<blockId>/<parameterId>`. |
 
 Reals compare with a relative tolerance of 1e-9 (and an absolute one of 1e-9 around 0); everything
 else compares exactly. State fields that hold monotonic times (the room controller's `lastStep`,
@@ -82,13 +87,13 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `06-load-refused-aggregation` | An aggregation the port does not allow refuses the image with forbidden. |
 | `07-load-refused-unknown-member` | An unknown member of a block refuses the image with malformed (blocks are strict, B1). |
 | `08-calls-inputs-outputs` | Start, input calls by change and by update, the aggregated mean and its mirror, quality, a timer and the period. |
-| `09-fault-failsafe-restart` | A fault writes the failsafe values once, stops the block until a restart, and the restart starts from the persisted record. |
+| `09-fault-failsafe-restart` | A fault writes the failsafe values once, stops the block until a restart, and the restart starts like a boot (the conformance type keeps no managed state: every field initial). |
 | `10-disable-enable-failsafe` | Disabling writes the failsafe values and stops the calls; enabling starts with the reason enable; a disabled block at boot writes its failsafe values. |
 | `11-image-swap-keeps-state` | A swap to a newer minor version of the same type keeps the state record and the overrides; the timers stop. |
 | `12-image-swap-drops-state` | A swap to another major version starts the state fresh (stateReset) and drops the overrides that no longer fit (parameterReset). |
 | `13-quiet-load` | The mirrors of the parameters, the enable switch and an aggregated input take their values at a load without an event; later changes are events. |
 | `14-loop-guard` | A block and a rule that feed each other are stopped by the loop guard after 32 derived firings and calls; the next external event runs normally again. |
-| `15-persistence-reboot` | The persisted fields survive an orderly reboot; a stored record of another type starts that block fresh (stateReset). |
+| `15-persistence-reboot` | Records of an older firmware: a record of a block whose type keeps no managed state is deleted at the first start without stateReset, one of another type too; the state starts fresh at every boot; overrides survive. |
 | `16-parameter-api` | Changes through the API and the parameter datapoints: validated, persisted as overrides, the default removes one, refusals name their reason. |
 | `17-room-pi-step` | Room controller, continuous, radiator preset: the PI(D) step over the monotonic dt with the D term on the filtered value, a setpoint change, minChange. |
 | `18-room-window-no-windup` | A window open for 2 h: after windowDelay the controller regulates to the frost setpoint, the output saturates at 0 and the integral does not wind up; closing returns at once. |
@@ -98,17 +103,17 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `22-room-boost` | A setpoint step of at least boostThreshold opens the valve fully until the error falls below half the threshold; the integral is frozen meanwhile. |
 | `23-room-valve-protection` | Valve protection on its weekday from protectionTime: the valve fully open for protectionDuration, before summer; once per day. |
 | `24-room-modes` | The setpoint from presence, the heating period, the HVAC mode and an external setpoint; frost mode, off, forced and summer. |
-| `25-room-integral-reboot` | The integral survives an orderly reboot (persisted at most every persistEvery and at the reboot); the filter starts again from the first report. |
+| `25-room-integral-reboot` | After an orderly reboot the room controller starts fresh: the integral at 0, the filter from the first report; no record. |
 | `26-fault-disabled-swap` | A block disabled while faulted is found disabled by the next image and writes nothing; its outputs hold the failsafe values of the fault (6.1). |
 | `27-demand-hysteresis-min-times` | Heating demand: the request's hysteresis; minOn and minOff hold a switching until they expire (the timer wake), also one asked by enable and summer. |
 | `28-demand-top-mean-stale` | Heating demand: the level over valves and demands read one by one (B20), the mean of the highest, a demand as 100 %, clamping; a datapoint that is not good ignored or counted as full; staleInputs; the ports' mirrors. |
 | `29-demand-pump-run-on` | Heating demand: the pump's run-on; the wake timer at the earlier of a held switching and the run-on's end; a switching off by enable runs the pump on. |
-| `30-demand-offset-persist` | Heating demand: the offset integrates the level above targetLevel, falls below it and while the request is off, stays in 0..maxOffset, is sent in steps of 0.1 K and survives an orderly reboot. |
+| `30-demand-offset-persist` | Heating demand: the offset integrates the level above targetLevel, falls below it and while the request is off, stays in 0..maxOffset, is sent in steps of 0.1 K and starts again from 0 after an orderly reboot. |
 | `31-demand-32-valves` | An input binds 32 datapoints (B20): the mean of all of them, one stale left out. |
 | `32-load-refused-multiple` | 33 datapoints for an input of multiple 32 refuse the image with forbidden. |
 | `33-load-refused-demand-thresholds` | The heating demand's check (B17): offThreshold not below onThreshold is invalidParameter on offThreshold. |
 | `34-curve-forms` | Heating curve: slope and level, the design point, points with interpolation and flat ends; the room setpoint along the diagonal, the offset, minFlow/maxFlow, minChange. |
-| `35-curve-filter-persist` | Heating curve: the outside filter over the monotonic dt, persisted over an orderly reboot; state fault until the outside reports again. |
+| `35-curve-filter-persist` | Heating curve: the outside filter over the monotonic dt; after an orderly reboot it starts again from the first report, state fault until then. |
 | `36-curve-summer-switch` | Heating curve: summer after summerDays above summerOn (reset when not above), winter below summerOff; the external summerSwitch decides while good. |
 | `37-curve-frost` | Heating curve: frost protection on the momentary outside temperature in summer and when off, with its 1 K hysteresis; offFlow otherwise. |
 | `38-curve-sensor-timeout` | Heating curve: a stale outside temperature is not fed; fault after sensorTimeout for a stale and for a silent one, on the held value; a report recovers. |
@@ -123,7 +128,7 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `47-shading-manual-duration-sun-change` | Sun shading: the locks `duration` (restarted by a second operation) and `sunChange`; a lock that ends in shading moves, one that ends in idle writes nothing. |
 | `48-shading-manual-midnight` | Sun shading: the lock `midnight` on the local date: an evening closing keeps the setting sun from retracting the blind; the lock ends at local midnight. |
 | `49-shading-heat-protection` | Sun shading: heat protection without a sun position, its 1 K hysteresis and releases; enable false switches the automatic off while the alarms work on. |
-| `50-shading-min-interval-reboot` | Sun shading: minMoveInterval holds moves and releases until the timer wake, with the target as it is then; a pointless held move is dropped; a reboot in idle writes nothing. |
+| `50-shading-min-interval-reboot` | Sun shading: minMoveInterval holds moves and releases until the timer wake, with the target as it is then; a pointless held move is dropped; a reboot in idle writes nothing; no record. |
 | `51-load-refused-own-output` | B22: an output bound to a datapoint an input of the same block binds refuses the image with forbidden. |
 | `52-load-refused-shading-horizon` | The sun shading's check (B17): the horizon points' directions must rise. |
 | `53-shading-failsafe-parameters` | Sun shading: the failsafe is retracted; enabled again it moves at once with all outputs; the adjustable shadePosition and its reset move the blind. |
@@ -132,7 +137,7 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `56-house-buttons-arming` | House mode: a press is a new true value of any of a button's datapoints (a release, a stale datapoint and the start value are none); the away button disarms return detection until absence; night from away, away from night, home ends the night; home while home restarts the delay. |
 | `57-house-night-morning-evening` | House mode: morning and evening as moments from a known false; the evening only while home, the morning only in the night, restarting the delay; no away by absence at night; unknown to true is no moment, stale false to true is one. |
 | `58-house-vacation` | House mode: vacation over home, away and night; buttons and presence ignored and not kept; its end by the input, stale keeps it; an image that no longer binds it ends it. |
-| `59-house-reboot-since` | House mode: a persisted away and night kept across reboots with presence unknown; home's away delay counts from the boot; `since` in local minutes, dated once the clock synchronizes; the records. |
+| `59-house-reboot-since` | House mode: a managed away and night kept across reboots with presence unknown; home's away delay counts from the boot; `since` in local minutes, dated once the clock synchronizes; the record written 10 s after each change of mode or `since`. |
 | `60-house-hvac-mapping-failsafe` | House mode: the HVAC mapping by id and by value, all mode outputs written together; the failsafe home with HVAC auto; enabled again from the record in RAM; a restored mode of a later minor version starts as home; the mapping is not adjustable. |
 | `61-house-room-chain` | The house mode's `hvacMode` mirror as a room controller's `mode`: comfort, standby, night and frost setpoints in the cascade of the change. |
 | `62-pv-priority-shedding` | PV surplus: the loads go on by priority as the surplus grows; a higher load takes a lower one's place; the lowest is shed first and fills in again; allowedImport keeps a running load; `surplus` is what the loads leave. |
@@ -144,10 +149,11 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `68-pv-battery-priority` | PV surplus: the battery first below batteryPriority, its charging power counted from it on, a running load keeps its power, a discharging battery is never a source, a stale state of charge; the pv and house meters with the battery discharging positive. |
 | `69-pv-stale-lost` | PV surplus: a stale meter holds, one older than meterTimeout is lost (released as minOn allows, the filter starts again); a forced run goes on without the meter; without a meter only forced loads run. |
 | `70-pv-chain` | PV surplus: a chain of two instances (20.3): the second reads the first one's `surplus` as its meter, the first counts the second one's `loadPower` back; the priorities hold across both and the second never takes what the first has just allocated. |
-| `71-pv-failsafe-swap-reboot` | PV surplus: the failsafe switches every load off, enabling does not hold the first switching; an image swap keeps the loads and counts the interval before it; the counters survive an orderly reboot, the levels do not; the grid meter export positive. |
+| `71-pv-failsafe-swap-reboot` | PV surplus: the failsafe switches every load off, enabling does not hold the first switching; an image swap keeps the loads and counts the interval before it; an orderly reboot starts the counters and the levels again (nothing persisted); the grid meter export positive. |
 | `72-pv-enable-ready-no-clock` | PV surplus: no forced run without a wall clock; enable false releases every load as minOn allows, a stale enable counts as unbound; a stale ready is not ready. |
 | `73-load-refused-pv-min-power` | The PV surplus control's check (B17): a modulated load needs 0 < minPower <= power; minPower2 is blamed; an unused load is not checked. |
 | `74-load-refused-pv-must-run` | The PV surplus control's check (B17): mustRunFor above maxPerDay refuses the image; mustRunFor1 is blamed. |
+| `75-house-reboot-managed-state` | House mode across a reboot: the mode is managed state, written 10 s after it changes and only then, restored at the boot; an older firmware's record is written again without its fields that are not managed state, one of another type is deleted (stateReset). |
 
 ## How the expected values were computed
 
@@ -251,3 +257,18 @@ by hand while the cases were designed and compared with the model's: the switchi
 loss of 69 (held at 90 and 120 s, lost at 150 s, released at 180 s, the filter at 2000 W at 210 s); the
 counters of 71 (run1 90 s after the swap, 120 s in the record of the reboot, 150 s at the end). The
 C++ runner passes every case unchanged.
+
+With homecontrol #102 (only managed state is persisted, `spec/blocks.md` B4, 8.1) cases 09, 10, 12, 15,
+25, 30, 35, 36, 50, 59 and 71 were adapted and 75 added. Their inputs are unchanged but for 15 and 59
+(`check` steps with `stored`, which needs no new image) and the new case's, written by hand. The
+outputs that changed are what follows from the state starting at its initial values after a reboot
+or restart; they were derived by hand and then compared with the C++ runner's, which filled the
+long series: 09 (the restart counts from 0: calls 1), 10 and 15 (count and ticks of each boot: 4 and
+2, then 3 and 1 for c, 3 and 2, then 2 and 1 for d; no stateReset for d), 25 (after the reboot the
+integral grows 0.5 a minute from 0: 31 not sent, 32 at 1 981 s, 34 at 2 221 s, 4.5 at the end), 30
+(the offset 0 until the report at 1 050 s, then 0.125, 0.375, 0.625, 0.875), 35 (the flow of 0 °C,
+44, until the period after the report, then 32 for 10 °C), 71 (run 0 after the reboot, 30 s and
+8.33 Wh at the end), 75 (the minutes 29 919 360, 29 919 960, 29 919 961, 29 919 973 from the local
+dates, the HVAC modes 2, 1, 1, 3); 12, 36 and 50 lost only their record. The independent check of
+these values is E-Home's runner (haumacher/ehome#210), which runs the same files. The new case 75
+has no `.bin` yet: the C++ runner compiles it with the test compiler until E-Home's is committed.

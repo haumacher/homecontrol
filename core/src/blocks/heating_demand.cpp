@@ -64,7 +64,7 @@ constexpr ParamDecl kParams[] = {
 static_assert(sizeof(kParams) / sizeof(kParams[0]) == HeatingDemand::kParamCount, "parameters");
 
 constexpr StateField kFields[] = {
-	{"offset", true, 0}, {"lastStep", false, 0}, {"lastLevel", false, 0}, {"heat", false, 0},
+	{"offset", false, 0}, {"lastStep", false, 0}, {"lastLevel", false, 0}, {"heat", false, 0},
 	{"switchedAt", false, 0}, {"hasSwitched", false, 0}, {"hasSent", false, 0}, {"sentRequest", false, 0},
 	{"sentPump", false, 0}, {"sentLevel", false, 0}, {"sentOffset", false, 0},
 };
@@ -76,7 +76,7 @@ constexpr Manifest kManifest = {
 	"org.homecontrol.heating-demand", 1, 0, "Heating demand",
 	"The rooms' valves and demands into the heat source's request, the demand level, the pump and a flow offset",
 	kPorts, HeatingDemand::kPortCount, kParams, HeatingDemand::kParamCount, kFields, HeatingDemand::kFieldCount,
-	kTimers, HeatingDemand::kTimerCount, 60000, 600000};
+	kTimers, HeatingDemand::kTimerCount, 60000};
 
 /// Keeps the `n` largest values seen, in descending order (spec/blocks.md 16.4).
 struct Highest {

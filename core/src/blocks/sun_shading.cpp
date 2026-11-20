@@ -125,7 +125,7 @@ constexpr Manifest kManifest = {
 	"Shading of a facade by the sun's position and the brightness, with slat tracking, heat protection, wind, "
 	"rain and frost alarms and a lock after manual operation",
 	kPorts, SunShading::kPortCount, kParams, SunShading::kParamCount, kFields, SunShading::kFieldCount,
-	kTimers, 1, 60000, 0};
+	kTimers, 1, 60000};
 
 constexpr size_t angle_of(size_t i) { return SunShading::kHorizonAngle1 + 2 * i; }
 constexpr size_t elevation_of(size_t i) { return SunShading::kHorizonElevation1 + 2 * i; }

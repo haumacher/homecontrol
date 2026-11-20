@@ -23,7 +23,8 @@ WebAssembly spike that the interface is shaped for is `doc/blocks-wasm.md`.
 the five calls `start(cx, reason, restored)`, `input(cx, port)`, `timer(cx, timer)`, `period(cx)`,
 `parameter(cx, index)`, plus `check(params, blamed)` for cross-parameter checks at load. A type keeps
 nothing per instance: everything an instance needs between calls is its *state record*, an array
-of doubles the runtime owns, persists by field id and shows in the diagnostics. The calls reach the
+of doubles the runtime owns and shows in the diagnostics; the fields the manifest marks `persist`
+are managed state, which the runtime keeps in flash by field id (spec B4). The calls reach the
 runtime through `BlockContext` (`now`, `wall`, `read`, `count`, `read_at`, `param`, `write`,
 `set_timer`, `cancel_timer`, `timer_running`, `state`, `log`, `fault`); every value is a double
 (spec B6). `count`/`read_at` give the datapoints of an input one by one (spec B20); the compiled
@@ -63,7 +64,8 @@ its writes enqueue derived events like a rule's. The mirrors' values at a load a
 
 ## The record (frozen format)
 
-One blob per block with persisted state, `b.` + the 8 lower-case hex digits of the 32-bit FNV-1a
+One blob per block whose type has managed state (spec B4: of the built-in types only the house
+mode, with `mode` and `since`), `b.` + the 8 lower-case hex digits of the 32-bit FNV-1a
 hash of the block id (`persist::blob_name`), in the BlobStore beside the value records:
 
 | Bytes | Content |
@@ -81,20 +83,36 @@ Fields are found by id, so a minor version that adds fields reads an older recor
 start at their initial value); a field the manifest no longer has is ignored. A record of another
 type or major version, a damaged one or one of another format logs `stateReset` and is deleted. The
 loader refuses an image whose block ids' blob names collide (`limitExceeded`). Orphaned records are
-deleted at every load (`persist::delete_orphans`).
+deleted at every load (`persist::delete_orphans`), and so are the records of instances whose type has
+no managed state ("deleted b.1a2b3c4d: its block type keeps no managed state"): firmware before
+homecontrol #102 persisted the room controller's integral, the heating demand's offset, the heating
+curve's filter and summer count and the PV surplus control's counters, and its records go at the first
+start of a newer one. A record that holds fields the manifest does not persist is written again at
+its load with the managed fields alone ("hm: 1 fields of the state record are not managed state; the
+record is written without them"). On the house controller of #101 (two room controllers) the first
+start deletes their two records: two LittleFS removals (a metadata commit each, a few milliseconds,
+tens if the directory's log compacts), once, inside the image load at boot.
 
 The parameter overrides are entries of the rules' `ParameterStore` under the logical key
 `@<blockId>/<parameterId>` (the enable switch `@<blockId>/enabled`): the rule engine keeps the `@`
 entries when it prunes, the block runtime prunes its own. Rule ids cannot start with `@`.
 
-## Persistence pacing
+## When a record is written
 
-An instance's record is due after a call that changed a persisted field and is written by the
-runtime's one loop timer: the first time after a load at once, later at most every
-`max(persistEvery, n × 120 s)` (`n` the instances whose type persists): at most 30 records an hour
-in all (`BlockLimits::kRecordWritesPerHour`), each an inline LittleFS file (under 100 bytes for the
-room controller). `ImageService::flush()` (an orderly reboot) writes every due record. A faulted
-instance is not written. The budget is in `doc/persistence.md` "The flash wear budget".
+An instance's record is due after a call that changed a managed field (an exact comparison with the
+stored values) and is written by the runtime's one loop timer `BlockRuntime::kRecordDelayMs` (10 s,
+the rule engine's `kStatePersistDelayMs`) after that first change; changes meanwhile go with it, and a
+record that is equal to the stored one by then is not written. Nothing is written periodically: a
+room controller, a heating demand, a heating curve, a sun shading and a PV surplus control write no
+record at all, the house mode one per change of its mode (a few a day), each an inline LittleFS file
+of about 80 bytes. The guard of spec B13 (`BlockLimits::kRecordWritesPerHour`, 30 in any hour, a ring
+of the last 30 write times) holds the writes of a type that marks a field which changes all the
+time; the held write waits on the same timer and the runtime logs "the block state records were
+written 30 times within the hour" at most once an hour. `ImageService::flush()` (an orderly reboot)
+writes every due record. A faulted instance is not written. `BlockRuntime::writes()` counts the
+record writes and deletions since boot, `override_writes()` the parameter overrides
+(`GET /api/system/diagnostics` `storage.writes`). The budget is in `doc/persistence.md` "The flash
+wear budget".
 
 ## Memory (ESP32-C6)
 
@@ -108,7 +126,7 @@ room controller's`; the C6's 32-bit pointers make the figures slightly smaller.
 | What | Size |
 |---|---|
 | Static: the `BlockRuntime` in the image service, the device registry, the type singletons | about 0.25 KB (144 B + 136 B on the host) |
-| Per room controller: the runtime (state record 20 fields, its stored copy, 26 parameters, the port tables) | about 1.2 KB |
+| Per room controller: the runtime (state record 20 fields, its stored copy, 26 parameters, the port tables; no record in flash) | about 1.2 KB |
 | Per room controller: the compiled spec (bindings with the pool of bound ids, the image's parameter values, the label) | about 0.65 KB on the host (649 B) |
 | Per room controller: 16 mirror datapoints (enabled, 4 setpoints, 10 outputs, an aggregated input) | about 1.3 KB in the model (64 B + the name each) |
 | Per room controller in all | about 3.3 KB on the host (3255 B) |
@@ -116,8 +134,8 @@ room controller's`; the C6's 32-bit pointers make the figures slightly smaller.
 | Per heating curve (2 outside sensors): 9 fields, 29 parameters, 8 mirrors | about 2.2 KB on the host (2170 B) |
 | Per sun shading (every input, `manual` on two datapoints): 20 fields, 31 parameters, 10 mirrors, no record | about 2.8 KB on the host (2760 B) |
 | Per house mode (every input, `presence` and `nightButton` on two datapoints): 12 fields, 6 parameters, 13 mirrors, a record of 2 fields | about 2.4 KB on the host (2438 B) |
-| Per PV surplus control (every input, both loads' switch and setpoint bound): 15 fields, 24 parameters, 16 mirrors, a record of 5 fields | about 3.2 KB on the host (3201 B) |
-| Steady state | no allocation (calls, writes, timers, periods; the record writes allocate nothing in the core) |
+| Per PV surplus control (every input, both loads' switch and setpoint bound): 15 fields, 24 parameters, 16 mirrors, no record | about 3.2 KB on the host (3201 B) |
+| Steady state | no allocation (calls, writes, timers, periods; the house mode's record writes allocate nothing in the core) |
 
 Ten rooms cost about 30 KB of heap. On the C6, whose heap minimum at a deploy is about 33 to 37 KB,
 that is the binding constraint: E-Home should warn above a handful of instances until the board

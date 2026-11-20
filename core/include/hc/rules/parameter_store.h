@@ -74,12 +74,17 @@ public:
 	/// Allocates a temporary list of the keys to erase (load time only).
 	void prune(Visitor& visitor);
 
+	/// The entries written and erased through this store since construction (the System page's
+	/// write counters, GET /api/system/diagnostics `storage.writes`).
+	uint32_t writes() const { return writes_; }
+
 	/// Encodes/decodes the stored text (exposed for the tests).
 	static bool encode(const char* rule, const char* parameter, const Val& value, char* out, size_t size);
 	static bool decode(const char* text, char* logical, size_t logical_size, Val& out);
 
 private:
 	Settings& settings_;
+	uint32_t writes_ = 0;
 };
 
 } // namespace hc::rules

@@ -674,7 +674,6 @@
 	"sys.ts.suspended": "angehalten",
 	"sys.omitted": "{n} weitere nicht aufgeführt.",
 	"sys.cpu.na": "Dieser Build misst keinen CPU-Anteil.",
-	"sys.prev": "Vorheriger Lauf",
 	"blocks.title": "Bausteine",
 	"blocks.status.running": "läuft",
 	"blocks.status.disabled": "aus",

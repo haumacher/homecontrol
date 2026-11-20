@@ -1,6 +1,6 @@
 {
-	"title": "PV surplus: the failsafe switches every load off, enabling starts without holding the first switching; an image swap keeps the loads and counts the interval before it; the counters survive an orderly reboot, the levels do not (D7, D11, D12).",
-	"note": "UTC, 2026-06-21 12:00 at 0; the grid meter counts export positive. Load 1 (1000 W, minOn and minOff 10 min) and load 2 (500..1500 W) on at 30 s; disabled at 90 s (the failsafe: off, 0, loadPower 0); enabled at 120 s: on at once (minOff counts the block's own switchings only); a swap at 150 s to load 2 up to 2000 W keeps both running and writes them again (run1 counts 120-150 s); an orderly reboot at 200 s writes the record of the period at 180 s and starts with the loads off; they go on again at 240 s.",
+	"title": "PV surplus: the failsafe switches every load off, enabling starts without holding the first switching; an image swap keeps the loads and counts the interval before it; an orderly reboot starts the counters and the levels again (nothing persisted, D7, D11, D12).",
+	"note": "UTC, 2026-06-21 12:00 at 0; the grid meter counts export positive. Load 1 (1000 W, minOn and minOff 10 min) and load 2 (500..1500 W) on at 30 s; disabled at 90 s (the failsafe: off, 0, loadPower 0); enabled at 120 s: on at once (minOff counts the block's own switchings only); a swap at 150 s to load 2 up to 2000 W keeps both running and writes them again (run1 counts 120-150 s); an orderly reboot at 200 s starts with the loads off and run1, run2 at 0 (the day's counters are not managed state); the loads go on again at 230 s and count 30 s to the end.",
 	"clock": {
 		"start": "2026-06-21T12:00:00"
 	},
@@ -278,8 +278,8 @@
 						"state": {
 							"level1": 0.0,
 							"level2": 0.0,
-							"run1": 120000.0,
-							"run2": 120000.0
+							"run1": 0.0,
+							"run2": 0.0
 						}
 					}
 				}
@@ -307,8 +307,8 @@
 						"state": {
 							"level1": 1000.0,
 							"level2": 1500.0,
-							"run1": 120000.0,
-							"run2": 120000.0
+							"run1": 0.0,
+							"run2": 0.0
 						}
 					}
 				}
@@ -506,22 +506,14 @@
 				"pv": {
 					"status": "running",
 					"state": {
-						"run1": 150000.0,
-						"run2": 150000.0,
-						"energy1": 41.66666666666667,
+						"run1": 30000.0,
+						"run2": 30000.0,
+						"energy1": 8.333333333333334,
 						"day": 20625.0
 					}
 				}
 			},
-			"records": {
-				"pv": {
-					"day": 20625.0,
-					"run1": 150000.0,
-					"energy1": 41.66666666666667,
-					"run2": 150000.0,
-					"energy2": 62.5
-				}
-			}
+			"records": {}
 		}
 	}
 }

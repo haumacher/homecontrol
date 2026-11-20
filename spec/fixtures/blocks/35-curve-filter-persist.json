@@ -1,6 +1,6 @@
 {
-	"title": "Heating curve: the outside filter (backward Euler over the monotonic dt, time constant outsideFilter) and its persistence: an orderly reboot keeps the filtered value; until the outside temperature reports again the state is fault (4) and the curve runs on the kept value.",
-	"note": "outsideFilter 1 h, minChange 0, persistEvery 30 min. A step of the outside from 0 to 10 at 30 s.",
+	"title": "Heating curve: the outside filter (backward Euler over the monotonic dt, time constant outsideFilter); after an orderly reboot it starts again (not persisted): until the outside temperature reports the state is fault (4) and the curve runs on the initial 0 °C, then the filter starts from that report.",
+	"note": "outsideFilter 1 h, minChange 0. A step of the outside from 0 to 10 at 30 s. After the reboot at 1800 s the flow is that of 0 °C (44) until the report of 10 °C at 1830 s; the period at 1860 s takes it as the filtered value (32).",
 	"datapoints": [
 		{
 			"name": "out",
@@ -73,15 +73,15 @@
 			"at": 1801000,
 			"check": {
 				"datapoints": {
-					"flow": 39.30842353086639,
+					"flow": 44.0,
 					"block/hk/state": 4,
-					"block/hk/outsideFiltered": 3.909647057611339
+					"block/hk/outsideFiltered": 0.0
 				},
 				"blocks": {
 					"hk": {
 						"state": {
-							"filtered": 3.909647057611339,
-							"hasFiltered": 1.0
+							"filtered": 0.0,
+							"hasFiltered": 0.0
 						}
 					}
 				}
@@ -99,7 +99,7 @@
 			"check": {
 				"datapoints": {
 					"block/hk/state": 0,
-					"block/hk/outsideFiltered": 4.009488909125907
+					"block/hk/outsideFiltered": 10.0
 				}
 			}
 		}
@@ -297,94 +297,33 @@
 				"at": 1800000,
 				"block": "hk",
 				"datapoint": "flow",
-				"value": 39.30842353086639
+				"value": 44.0
 			},
 			{
 				"at": 1860000,
 				"block": "hk",
 				"datapoint": "flow",
-				"value": 39.18861330904891
-			},
-			{
-				"at": 1920000,
-				"block": "hk",
-				"datapoint": "flow",
-				"value": 39.070767189228434
-			},
-			{
-				"at": 1980000,
-				"block": "hk",
-				"datapoint": "flow",
-				"value": 38.954852973011576
-			},
-			{
-				"at": 2040000,
-				"block": "hk",
-				"datapoint": "flow",
-				"value": 38.840838989847455
-			},
-			{
-				"at": 2100000,
-				"block": "hk",
-				"datapoint": "flow",
-				"value": 38.728694088374546
-			},
-			{
-				"at": 2160000,
-				"block": "hk",
-				"datapoint": "flow",
-				"value": 38.618387627909385
-			},
-			{
-				"at": 2220000,
-				"block": "hk",
-				"datapoint": "flow",
-				"value": 38.50988947007481
-			},
-			{
-				"at": 2280000,
-				"block": "hk",
-				"datapoint": "flow",
-				"value": 38.403169970565386
-			},
-			{
-				"at": 2340000,
-				"block": "hk",
-				"datapoint": "flow",
-				"value": 38.29819997104792
-			},
-			{
-				"at": 2400000,
-				"block": "hk",
-				"datapoint": "flow",
-				"value": 38.19495079119467
+				"value": 32.0
 			}
 		],
 		"logs": [],
 		"final": {
 			"datapoints": {
-				"flow": 38.19495079119467,
+				"flow": 32.0,
 				"block/hk/state": 0,
-				"block/hk/outsideFiltered": 4.83754100733777
+				"block/hk/outsideFiltered": 10.0
 			},
 			"blocks": {
 				"hk": {
 					"state": {
-						"filtered": 4.83754100733777,
+						"filtered": 10.0,
 						"hasFiltered": 1.0,
 						"aboveFor": 0.0,
 						"derivedSummer": 0.0
 					}
 				}
 			},
-			"records": {
-				"hk": {
-					"filtered": 4.83754100733777,
-					"hasFiltered": 1.0,
-					"aboveFor": 0.0,
-					"derivedSummer": 0.0
-				}
-			}
+			"records": {}
 		}
 	}
 }

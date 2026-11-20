@@ -35,6 +35,11 @@ class BlobKeeper {
 public:
 	/// Whether the blob `name` (which starts with the prefix) belongs to the current image.
 	virtual bool keep(const char* name) const = 0;
+	/// Why a blob that is not kept goes (the log line of its deletion).
+	virtual const char* reason(const char* name) const {
+		(void)name;
+		return "no longer in the image";
+	}
 
 protected:
 	~BlobKeeper() = default;

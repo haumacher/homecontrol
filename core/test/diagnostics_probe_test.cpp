@@ -25,7 +25,6 @@ struct Crashed : hc::Diagnostics {
 	void visit_boot(hc::DiagnosticsVisitor& v) const override {
 		v.number("count", 57);
 		v.number("brownouts", 4);
-		v.number("previous_uptime_s", 1260);
 		v.flag("coredump", true);
 	}
 	size_t coredump_size() const override { return 4096; }

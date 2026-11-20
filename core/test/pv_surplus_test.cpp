@@ -112,7 +112,7 @@ TEST_CASE("PvSurplus: the manifest is valid and within the limits; the type is b
 	CHECK(m.port_count == 19);
 	CHECK(m.param_count == 24);
 	CHECK(m.state_count == 15);
-	CHECK(m.persists());
+	CHECK_FALSE(m.persists()); // no managed state (spec/blocks.md 20.1)
 	CHECK(std::strcmp(m.ports[PvSurplus::kSwitch1 + 4].id, "switch2") == 0);
 	CHECK(std::strcmp(m.ports[PvSurplus::kEnergy1 + 4].id, "energy2") == 0);
 	CHECK(std::strcmp(m.ports[PvSurplus::kSurplus].id, "surplus") == 0);
@@ -324,7 +324,7 @@ TEST_CASE("PvSurplus: surplus runs count for the must-run; forced loads take the
 	CHECK(level(rig, 0) == 1000);
 }
 
-TEST_CASE("PvSurplus: maxPerDay blocks a load; the day starts again at midnight, without a clock after 24 h") {
+TEST_CASE("PvSurplus: maxPerDay blocks a load; the day starts again at midnight, without a clock after 24 h, and at a reboot") {
 	hc_test::FakeBlobStore blobs;
 	Rig rig = rig_of(R"("surplusFilter": 0, "power1": 1000, "minOn1": 0, "minOff1": 0, "maxPerDay1": 3600000)",
 		R"("gridPower": "grid")", &blobs);
@@ -336,10 +336,15 @@ TEST_CASE("PvSurplus: maxPerDay blocks a load; the day starts again at midnight,
 	CHECK(level(rig, 0) == 0);
 	CHECK(state_of(rig, 0) == PvSurplus::blocked);
 	CHECK(run_of(rig, 0) == kHour);
-	rig.reboot(); // the counters are persisted: still blocked
+	CHECK(blobs.writes == 0); // the counters are not managed state (spec/blocks.md 20.2 D11): no record
+	rig.reboot(); // the day's counters start again: the load runs another maxPerDay
 	House again{rig, house.pv};
 	again.until(rig.now() + kMinute);
+	CHECK(level(rig, 0) == 1000);
+	CHECK(run_of(rig, 0) < kMinute);
+	again.until(3 * kHour);
 	CHECK(state_of(rig, 0) == PvSurplus::blocked);
+	CHECK(run_of(rig, 0) == kHour);
 	again.until(4 * kHour + 30000); // after midnight
 	CHECK(level(rig, 0) == 1000);
 	CHECK(run_of(rig, 0) == 30000);
@@ -595,7 +600,7 @@ TEST_CASE("PvSurplus: no allocation in steady state; the cost of an instance is 
 	house.battery = true;
 	house.charge_max = 500;
 	house.pv = 300 + 5000;
-	house.for_(10 * kMinute); // the record is stored before the measurement
+	house.for_(10 * kMinute);
 	{
 		hc_test::AllocationScope scope;
 		auto writes = rig.blobs().writes;
@@ -603,9 +608,8 @@ TEST_CASE("PvSurplus: no allocation in steady state; the cost of an instance is 
 			house.pv = 300 + 2500 + 2500 * ((i / 7) % 3) - 1500 * (i % 2);
 			house.for_(30000);
 		}
-		size_t stored = static_cast<size_t>(rig.blobs().writes - writes);
-		CHECK(stored >= 1);
-		CHECK(scope.count() - stored == 0); // the fake store allocates for each record it keeps
+		CHECK(rig.blobs().writes == writes); // no managed state: no record
+		CHECK(scope.count() == 0);
 	}
 	auto heap = [](Rig& r) {
 		hc::blocks::BlockMemory m = r.blocks().memory();

@@ -21,7 +21,7 @@ second lists the platform's boot facts:
 
 ```
 W (812) hc.ctl: HomeControl 0.1.0-dev (build 1a2b3c4) starting, reset reason: brownout
-I (813) hc.ctl: boot: count 57, brownouts 4, previous_uptime_s 1260, coredump no
+I (813) hc.ctl: boot: count 57, brownouts 4, coredump no
 ```
 
 | Reason | Device (`esp_reset_reason()`) | POSIX |
@@ -48,19 +48,20 @@ show it), every key a u32. Frozen once flashed.
 |---|---|
 | `boots` | starts since the record began (incremented at every boot) |
 | `reason` | this start's `hc::ResetReason` |
-| `uptime` | seconds since boot of the current run, written every minute; at the next boot the previous run's uptime, at most a minute short; set to 0 at boot, so a run that dies within its first minute reports 0, not the run before |
 | `brownouts` | starts after a brownout |
 
-The boot update is one commit; the uptime is one 32-byte NVS entry and a commit per minute (a value
-that did not change is not written; a loop that fell behind writes once, the periodic timer coalesces
-missed periods). Wear: 1440 entries a day fill about 11 of the 4 KB NVS pages, spread over the
-partition's six: about two erases per sector and day, some 130 years for 100,000 cycles. A factory
+The record is written once per start, in one commit, and never while the device runs (homecontrol
+#102: only what the controller manages and a restart would lose goes to the flash). Firmware before
+it also kept `uptime`, the seconds of the current run written every minute (1440 NVS entries a day),
+to report the previous run's uptime (`previous_uptime_s`) after a crash; that fact is gone, and the
+first start of a newer firmware erases the key within the boot's commit (`nvs_erase_key`, one NVS
+entry marked erased: well under a millisecond beside the commit the boot makes anyway). A factory
 reset erases the record with the rest of NVS.
 
 `status` on the console, `/api/status` and the log report it:
 
 ```json
-"boot": {"reason": "task watchdog", "count": 58, "brownouts": 4, "previous_uptime_s": 360,
+"boot": {"reason": "task watchdog", "count": 58, "brownouts": 4,
          "coredump": true, "coredump_task": "hc_loop", "coredump_pc": "0x4200a1b2"}
 ```
 

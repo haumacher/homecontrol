@@ -87,8 +87,7 @@ constexpr const char* kTimers[] = {"away"};
 constexpr Manifest kManifest = {
 	"org.homecontrol.house-mode", 1, 0, "House mode",
 	"Home, away, night or vacation from presence, buttons and schedules; the HVAC mode for the room controllers",
-	kPorts, HouseMode::kPortCount, kParams, HouseMode::kParamCount, kFields, HouseMode::kFieldCount, kTimers, 1, 60000,
-	60000};
+	kPorts, HouseMode::kPortCount, kParams, HouseMode::kParamCount, kFields, HouseMode::kFieldCount, kTimers, 1, 60000};
 
 /// The largest update time of the port's datapoints that are good and true; -1 if none (19.4).
 double latest(const BlockContext& cx, size_t port) {

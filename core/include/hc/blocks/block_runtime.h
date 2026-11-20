@@ -99,8 +99,9 @@ struct BlockMemory {
 
 /// The block runtime (spec/blocks.md, doc/blocks.md): holds the compiled instances and their
 /// runtime (state records, parameter values, timers, the period grid, the diagnostics), owns the
-/// mirror datapoints `block/<id>/<x>` (technology "blocks"), persists the state records in the
-/// BlobStore and the parameter overrides in the store of the rule parameters, and is called by the
+/// mirror datapoints `block/<id>/<x>` (technology "blocks"), persists the managed state of the
+/// records in the BlobStore when it changes (spec/blocks.md B4) and the parameter overrides in the
+/// store of the rule parameters, and is called by the
 /// rule engine inside its cascades (rules::BlockHost): after the rules for every event, for its
 /// timers and periods ordered with the rule timers, and after the rules' start cascades.
 ///
@@ -135,6 +136,12 @@ public:
 	void bind();
 	/// Writes every due record now (an orderly reboot).
 	void flush();
+	/// The state records written and deleted since construction (the System page's write counters).
+	uint32_t writes() const { return writes_; }
+	/// Writes of the parameter and enable overrides since construction.
+	uint32_t override_writes() const { return store_.writes(); }
+	/// How long a changed record waits before it is written: as a rule state (spec/blocks.md B4).
+	static constexpr uint32_t kRecordDelayMs = rules::Engine::kStatePersistDelayMs;
 
 	void set_observer(BlockObserver* observer) { observer_ = observer; }
 
@@ -189,8 +196,9 @@ public:
 		size_t size, size_t& length);
 	/// Decodes a record: its type and major version, and each persisted field of `manifest` found by
 	/// id into `values` (others untouched). False for a damaged record or another type or major.
+	/// `unmanaged` (optional) receives the number of the record's fields `manifest` does not persist.
 	static bool decode_record(const Manifest& manifest, const char* block, const uint8_t* data, size_t length,
-		double* values, const char** reason);
+		double* values, const char** reason, size_t* unmanaged = nullptr);
 
 private:
 	class MirrorTechnology : public Technology {
@@ -228,6 +236,7 @@ private:
 	void log_text(const char* id, Instance* instance, BlockLogCode code, LogLevel level, const char* text);
 	bool load_record(size_t block, bool& mismatch);
 	void record_changed(size_t block);
+	bool differs(size_t block) const;
 	void write_record(size_t block);
 	void schedule_persist();
 	void on_persist();
@@ -246,12 +255,20 @@ private:
 	BlockSet set_;
 	Runtime* runtime_ = nullptr;
 	bool booted_ = false;
-	uint32_t persist_interval_ms_ = 0; ///< n x 120 s of spec/blocks.md B13 (n the instances with persistent state).
 
-	/// The shortest interval between two writes of the instance's record (spec/blocks.md B13).
-	uint64_t persist_interval(size_t block) const;
+	/// The window of the guard of spec/blocks.md B13.
+	static constexpr uint64_t kGuardWindowMs = 3600000;
+	/// When the guard lets the next write through (0: now).
+	uint64_t guard_free_at() const;
 	TimerHandle persist_timer_;
 	uint64_t persist_deadline_ = 0;
+	/// The times of the last kRecordWritesPerHour writes, a ring (the guard of B13).
+	uint64_t write_times_[BlockLimits::kRecordWritesPerHour] = {};
+	uint32_t write_next_ = 0;
+	uint32_t write_ring_ = 0;  ///< The ring's entries in use (up to kRecordWritesPerHour).
+	uint32_t writes_ = 0;      ///< Records written and deleted since construction.
+	bool guard_logged_ = false;
+	uint64_t guard_logged_ms_ = 0;
 };
 
 } // namespace hc::blocks

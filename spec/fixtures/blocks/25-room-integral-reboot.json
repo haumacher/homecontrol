@@ -1,6 +1,6 @@
 {
-	"title": "The integral survives an orderly reboot (persisted at most every persistEvery and at the reboot); the filter starts again from the first report.",
-	"note": "After the reboot the temperature is unknown until its report at 31 min: fallback until then, the integral frozen at its restored value.",
+	"title": "After an orderly reboot the room controller starts fresh: the integral at 0 and the filter from the first report (nothing of its state is managed state, spec/blocks.md 14.1); no record is written.",
+	"note": "After the reboot the temperature is unknown until its report at 31 min: fallback until then. Then the PI step from the integral 0 (e 0.6 K, Kp 50, Ti 3600 s: +0.5 a minute): 31 at 1861000 is not sent (minChange 2), 32 at 1981000, 34 at 2221000.",
 	"datapoints": [
 		{
 			"name": "temp",
@@ -122,7 +122,7 @@
 				"blocks": {
 					"wz": {
 						"state": {
-							"integral": 20.333170413970965
+							"integral": 0.0
 						}
 					}
 				}
@@ -206,34 +206,28 @@
 				"value": 30.0
 			},
 			{
-				"at": 1861000,
+				"at": 1981000,
 				"block": "wz",
 				"datapoint": "valve",
-				"value": 51.0
+				"value": 32.0
 			},
 			{
-				"at": 2101000,
+				"at": 2221000,
 				"block": "wz",
 				"datapoint": "valve",
-				"value": 53.0
-			},
-			{
-				"at": 2341000,
-				"block": "wz",
-				"datapoint": "valve",
-				"value": 55.0
+				"value": 34.0
 			}
 		],
 		"logs": [],
 		"final": {
 			"datapoints": {
-				"block/wz/valve": 55.0,
+				"block/wz/valve": 34.0,
 				"block/wz/switch": true,
 				"block/wz/demand": true,
 				"block/wz/activeSetpoint": 21.0,
 				"block/wz/state": 1,
 				"block/wz/p": 30.00000000000007,
-				"block/wz/i": 24.833170413970965,
+				"block/wz/i": 4.500000000000011,
 				"block/wz/d": 0.0,
 				"block/wz/error": 0.6000000000000014,
 				"block/wz/filtered": 20.4
@@ -242,16 +236,11 @@
 				"wz": {
 					"status": "running",
 					"state": {
-						"integral": 24.833170413970965
+						"integral": 4.500000000000011
 					}
 				}
 			},
-			"records": {
-				"wz": {
-					"integral": 24.833170413970965,
-					"protectedOn": 0.0
-				}
-			}
+			"records": {}
 		}
 	}
 }

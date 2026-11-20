@@ -337,3 +337,18 @@ outside world (weather, external services).
   An image with Zigbee bindings loads: its Zigbee datapoints keep no value and refuse commands.
   The E-Home connection speaks `wss://` through OpenSSL. Rejected: mDNS, port 8080 or 80, packs
   from the update server, a service not enabled on installation; a Docker image is put off.
+- **2026-11-20 — Only managed state goes to the flash, and only when it changes (homecontrol #102,
+  the owner: "man muss nur Einstellungen und Datenpunkte in den Flash schreiben, die der Kontroller
+  verwaltet und die durch einen Neustart verloren wären" — "ja mach das konsistent").** Reverses the
+  block persistence of #60: a state field marked `persist` is managed state, kept like a rule's
+  state (written 10 s after it changes, restored at the boot), with no write interval; the
+  manifest's `persistEvery` goes (an older manifest's is ignored). Of the built-in types only the
+  house mode keeps its mode and `since`; the room controller, the heating demand, the heating curve,
+  the PV surplus control and the conformance type persist nothing and start from their initial
+  state after a reboot (the integral at 0, the filters from the first report, the PV day's counters
+  at 0). The cap of 30 record writes an hour stays as a guard only. The first start of the new
+  firmware deletes the records of instances without managed state and drops unmanaged fields from
+  the others. The uptime record written every minute to NVS goes, and with it `previous_uptime_s`;
+  the boot record is written once per start. The diagnostics count the writes per writer. Rejected:
+  a resolution per persisted field (it still writes recomputable state); the house mode's mode as a
+  `persist` datapoint (an unbound output would lose it).

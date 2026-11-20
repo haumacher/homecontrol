@@ -80,7 +80,6 @@ function firmwareCard(d) {
 		[t("sys.reset"), boot.reason || "—"],
 		boot.count !== undefined ? [t("sys.boots"), String(boot.count)] : null,
 		boot.brownouts !== undefined ? [t("sys.brownouts"), String(boot.brownouts)] : null,
-		boot.previous_uptime_s !== undefined ? [t("sys.prev"), formatDuration(boot.previous_uptime_s)] : null,
 		[t("status.uptime"), formatDuration(d.uptime_s || 0)],
 		[t("system.coredump"), boot.coredump
 			? badge(false, [boot.coredump_task, boot.coredump_pc].filter(Boolean).join(" ") || t("status.yes"))
