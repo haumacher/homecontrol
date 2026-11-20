@@ -68,8 +68,8 @@ struct ValueStoreLimits {
 ///   both hold, otherwise from the store's tick (every kTickMs). One blob per datapoint, named
 ///   "v." + 8 hex digits of the FNV-1a hash of its name.
 /// - load(), called right after the model is loaded, restores each persisted datapoint's record
-///   with DatapointModel::restore(): the value with quality stale (the bus has not confirmed it),
-///   its saved wall-clock time available from wall_time(). Records of datapoints no longer
+///   with DatapointModel::restore(): the value with quality good (the last value counts; a read on
+///   start replaces it), its saved wall-clock time available from wall_time(). Records of datapoints no longer
 ///   persisted are deleted.
 /// - flush() writes everything pending at once (orderly shutdown).
 ///

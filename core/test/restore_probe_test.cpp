@@ -36,7 +36,7 @@ struct Counting : DatapointListener {
 
 } // namespace
 
-TEST_CASE("RestoreProbe.RestoredValuesAreStaleSilentAndLoseAgainstTheBus") {
+TEST_CASE("RestoreProbe.RestoredValuesAreGoodSilentAndLoseAgainstTheBus") {
 	hc_test::ScopedCapture capture;
 	hc_test::FakeClock clock;
 	DatapointModel model(clock);
@@ -48,9 +48,10 @@ TEST_CASE("RestoreProbe.RestoredValuesAreStaleSilentAndLoseAgainstTheBus") {
 	REQUIRE(model.add_listener(listener) == DatapointStatus::ok);
 	REQUIRE(model.bind(0, bus) == DatapointStatus::ok);
 	REQUIRE(model.bind(1, bus) == DatapointStatus::ok);
-	// A restore at boot: stale, no listener fires (no rule triggers on a saved value), time 0.
+	// A restore at boot: good (the last value counts, #100), no listener fires (no rule triggers on
+	// a saved value), time 0.
 	CHECK(model.restore(0, Value::of_real(20.5)) == DatapointStatus::ok);
-	CHECK(model.get(0)->quality() == Quality::stale);
+	CHECK(model.get(0)->quality() == Quality::good);
 	CHECK(model.get(0)->value().as_real() == doctest::Approx(20.5));
 	CHECK(model.get(0)->updated_ms() == 0);
 	CHECK(listener.origins.empty());
@@ -65,7 +66,7 @@ TEST_CASE("RestoreProbe.RestoredValuesAreStaleSilentAndLoseAgainstTheBus") {
 	CHECK(model.get(0)->quality() == Quality::good);
 	CHECK(model.restore(0, Value::of_real(19.0)) == DatapointStatus::busy);
 	CHECK(model.get(0)->value().as_real() == doctest::Approx(21.0));
-	CHECK(model.restore(1, Value::of_signed(8)) == DatapointStatus::busy); // stale counts as "has a value"
+	CHECK(model.restore(1, Value::of_signed(8)) == DatapointStatus::busy); // a restored value counts as "has a value"
 	CHECK(model.get(1)->value().as_unsigned() == 7);
 	// The bus report was the only notification.
 	REQUIRE(listener.origins.size() == 1);

@@ -201,7 +201,7 @@ TEST_CASE("ValueStore: an unchanged value is re-written only to refresh an old s
 	CHECK(decode_blob(blobs, "Living.Light").wall_s == kWall + 3600);
 }
 
-TEST_CASE("ValueStore: after a reboot the last value is restored stale, with its saved time") {
+TEST_CASE("ValueStore: after a reboot the last value is restored good, with its saved time") {
 	ScopedCapture capture;
 	FakeBlobStore blobs;
 	{
@@ -215,7 +215,7 @@ TEST_CASE("ValueStore: after a reboot the last value is restored stale, with its
 	Boot second(blobs, kWall + 3 * 3600); // the power was off for 3 hours
 	second.load(kSpecs, 3);
 	const hc::Datapoint* temp = second.model.get(0);
-	CHECK(temp->quality() == Quality::stale);
+	CHECK(temp->quality() == Quality::good);
 	CHECK(temp->value() == Value::of_real(20.5));
 	CHECK(temp->updated_ms() == 0);
 	CHECK(second.store.wall_time(0) == kWall);
@@ -227,9 +227,10 @@ TEST_CASE("ValueStore: after a reboot the last value is restored stale, with its
 	CHECK(blobs.writes == 2); // restoring writes nothing
 	CHECK(capture.sink.contains("2 persisted datapoints, 2 restored"));
 
-	// The bus confirms the same value: good again, and the old saved time is refreshed.
+	// The bus confirms the same value: the old saved time is refreshed.
 	second.report(0, Value::of_real(20.5));
 	CHECK(temp->quality() == Quality::good);
+	CHECK(temp->updated_ms() != 0);
 	CHECK(blobs.writes == 3);
 	CHECK(second.store.wall_time(0) == kWall + 3 * 3600);
 }
@@ -244,7 +245,7 @@ TEST_CASE("ValueStore: a datapoint that never had a value stays unknown after a 
 	}
 	Boot second(blobs);
 	second.load(kSpecs, 3);
-	CHECK(second.model.get(0)->quality() == Quality::stale);
+	CHECK(second.model.get(0)->quality() == Quality::good);
 	CHECK(second.model.get(1)->quality() == Quality::unknown);
 	CHECK(second.model.get(1)->value().empty());
 }
@@ -271,7 +272,7 @@ TEST_CASE("ValueStore: a record with an unknown field restores; a newer generati
 	Boot boot(blobs);
 	boot.load(kSpecs, 3);
 	CHECK(boot.model.get(0)->value() == Value::of_real(19.25));
-	CHECK(boot.model.get(0)->quality() == Quality::stale);
+	CHECK(boot.model.get(0)->quality() == Quality::good);
 	CHECK(boot.store.wall_time(0) == kWall - 600);
 	CHECK(boot.model.get(1)->quality() == Quality::unknown);
 	CHECK(capture.sink.contains("written by a newer firmware"));
@@ -396,7 +397,7 @@ TEST_CASE("ValueStore: flush() writes everything pending; a reload writes the pr
 	REQUIRE(boot.store.load() == DatapointStatus::ok);
 	CHECK(decode_blob(blobs, "Living.Temp").value == Value::of_real(2.0));
 	CHECK(boot.model.get(1)->value() == Value::of_real(2.0));
-	CHECK(boot.model.get(1)->quality() == Quality::stale);
+	CHECK(boot.model.get(1)->quality() == Quality::good);
 }
 
 TEST_CASE("ValueStore: a failing store is retried after the interval and logged once") {
@@ -446,5 +447,5 @@ TEST_CASE("ValueStore: restore() of the model refuses a datapoint that has a val
 	CHECK(model.restore(9, Value::of_real(2.0)) == DatapointStatus::unknown_id);
 	CHECK(model.restore(1, Value::of_real(2.0)) == DatapointStatus::wrong_type);
 	CHECK(model.restore(1, Value::of_bool(true)) == DatapointStatus::ok);
-	CHECK(model.get(1)->quality() == Quality::stale);
+	CHECK(model.get(1)->quality() == Quality::good);
 }

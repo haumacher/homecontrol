@@ -681,7 +681,7 @@ DatapointStatus DatapointModel::restore(uint16_t id, const Value& value) {
 		return DatapointStatus::wrong_type;
 	}
 	dp->value_ = *converted;
-	dp->quality_ = Quality::stale;
+	dp->quality_ = Quality::good; // persist: the last value counts (homecontrol #100)
 	return DatapointStatus::ok;
 }
 

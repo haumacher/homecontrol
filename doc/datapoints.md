@@ -60,8 +60,8 @@ before the first) and a quality:
 - `unknown`: nothing reported or commanded since the load;
 - `good`: the last update came from the technology or the application;
 - `stale`: the technology lost contact (`report_stale()`: bus down, device gone); the value is the
-  last known one and stays until the next report. A `kPersist` datapoint also starts stale after
-  a reboot: `restore(id, value)` sets its saved value right after the load (see below).
+  last known one and stays until the next report. A reboot is no loss of contact: a `kPersist`
+  datapoint starts good with its saved value (`restore(id, value)` right after the load, below).
 
 A datapoint can also be **pending** (`Datapoint::pending()`, homecontrol #72): its owner holds a
 commanded value it has not sent because it is not connected (a technology whose
@@ -137,12 +137,17 @@ keeps the overrides) nor a history.
 ### Restored values
 
 `restore(id, value)` is the value store's way back in (`doc/persistence.md`): right after `load()`
-it sets the saved last value of a `kPersist` datapoint, converted where exact, with quality `stale`
-(the bus has not confirmed it yet). `updated_ms` stays 0 (nothing was updated in this boot; the
-value store knows the saved wall-clock time) and no listener is told: the restore is part of the
-load, and the rules start afterwards and see it through `lastKnown()`. It is refused (`busy`) once
-the datapoint has a value (a report or command since the load always wins) and (`wrong_type`) for a
-value that does not convert to a changed type.
+it sets the saved last value of a `kPersist` datapoint, converted where exact, with quality `good`,
+whatever its technology (homecontrol #100): `kPersist` says the last value counts, also for a value
+of the application or a KNX group address only the controller writes, which nobody on the bus
+confirms. `updated_ms` stays 0 (nothing was updated in this boot; the value store knows the saved
+wall-clock time) and no listener is told: the restore is part of the load, and the rules start
+afterwards and read the value. Where the bus knows better, `kReadOnStart` decides as for any
+datapoint: the technology reads it when it starts, and the answer, a report, replaces the restored
+value. The restore is refused (`busy`) once the datapoint has a value (a report or command since the
+load always wins, also one that arrived before the value store's load) and (`wrong_type`) for a
+value that does not convert to a changed type. A technology that carries its own stale values over a
+reload (the Zigbee adapter) uses `carry()`, which keeps the quality.
 
 ### Listeners
 

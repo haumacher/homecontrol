@@ -210,6 +210,7 @@ enum class Quality : uint8_t {
 	unknown, ///< No value received or commanded yet.
 	good,    ///< The last update came from the technology or the application.
 	stale,   ///< The technology lost contact (bus down, device gone); the value is the last known.
+	         ///< A reboot is no loss of contact: a restored value is good (DatapointModel::restore()).
 };
 
 /// "unknown", "good", "stale".
@@ -227,8 +228,8 @@ struct DatapointFlags {
 	/// The technology reads the value when it starts (KNX: I flag).
 	static constexpr uint8_t kReadOnStart = 0x08;
 	/// The last good value and its wall-clock time survive a reboot: hc::ValueStore saves it (write
-	/// coalescing, a flash budget) and restores it after the load with quality stale
-	/// (doc/persistence.md).
+	/// coalescing, a flash budget) and restores it after the load with quality good: the last value
+	/// counts (doc/persistence.md); with kReadOnStart the technology's answer replaces it.
 	static constexpr uint8_t kPersist = 0x10;
 	/// hc::History keeps a ring of recent samples for the UI's sparklines; the retention and the
 	/// sample spacing come with the image's history spec (doc/persistence.md). Numeric and boolean
@@ -479,11 +480,13 @@ public:
 	/// is newer than the held one.
 	DatapointStatus set_pending(Technology& technology, uint16_t id, bool pending);
 
-	/// Sets the last known value of a datapoint from before the reboot (hc::ValueStore, right after
-	/// load()): the value (converted where exact) with quality stale, updated_ms() stays 0, and no
-	/// listener is told (it is part of the load: rules start afterwards and see it through
-	/// lastKnown()). Refused with wrong_type if it does not convert, and with busy unless the
-	/// quality is still unknown (a value reported or commanded since the load always wins).
+	/// Sets the last value of a kPersist datapoint from before the reboot (hc::ValueStore, right after
+	/// load()): the value (converted where exact) with quality good, whatever the technology (the
+	/// flag says the last value counts; homecontrol #100), updated_ms() stays 0, and no listener is
+	/// told (it is part of the load: rules start afterwards and read it). Where the bus knows better,
+	/// kReadOnStart reads it and the answer, a report, replaces it. Refused with wrong_type if it does
+	/// not convert, and with busy unless the quality is still unknown (a value reported or commanded
+	/// since the load always wins, also one that came before the restore).
 	DatapointStatus restore(uint16_t id, const Value& value);
 	/// Sets value, quality and update time of a datapoint as an image swap carries them from the
 	/// previous model (spec/runtime-image.md 12, right after load()): no listener is told. Refused

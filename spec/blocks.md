@@ -976,8 +976,9 @@ State: `offset` persisted, and not persisted `lastStep`, `lastLevel`, `heat`, `s
   mirrors, which show the highest valve and whether any room asks.
 - **D3. "Not good" is stale or unknown.** A datapoint without a value since the load and one whose
   technology lost contact are treated alike by `staleInput`: `full` heats on missing information.
-  After a reboot the restored values are stale until their next report, so `full` requests heat
-  until the rooms have reported; that is its purpose (better heated than frozen). Times of updates
+  After a reboot the values the device persists come back good (homecontrol #100), the others are
+  unknown until their next report, so `full` requests heat until those rooms have reported; that is
+  its purpose (better heated than frozen). Times of updates
   are not checked: a room controller sends its valve only on a change, so a valve that has not
   changed for hours is not missing.
 - **D4. The minimum times apply to every switching**, also to `enable` and `summer`: they protect the
@@ -1369,8 +1370,9 @@ none.
   good calm; they serve the mirrors). `windTimeout` makes a silent or missing wind sensor an alarm,
   each of them: an unattended blind is retracted when one of its wind sensors fails, and at a start
   until every sensor has a value (then `alarmRelease` more). After a reboot the datapoints whose
-  values the device persists are restored stale (`doc/persistence.md`), so a storm before the
-  reboot is one after it; the others are unknown (the corpus's `reboot` makes every value unknown).
+  values the device persists are restored good (`doc/persistence.md`, homecontrol #100), so a storm
+  before the reboot is one after it; the others are unknown (the corpus's `reboot` restores only the
+  `persist` datapoints).
   Because the sensors are read one by one, `wind` and `rain` have the trigger `update`: with
   `change`, a report of one sensor that leaves the aggregate as it was (a calm after a stale storm,
   behind a good sensor at a higher speed) would call nothing, and the alarm would end a period late;

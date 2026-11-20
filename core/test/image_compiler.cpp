@@ -3106,6 +3106,7 @@ bool compile_case(const char* case_json, size_t length, int step, std::vector<ui
 		source += "{\"id\":" + quoted(member_text(dp, "name")) + ",\"type\":" + quoted(member_text(dp, "type"));
 		source += writable ? ",\"writable\":true,\"transmit\":true" : "";
 		source += member_flag(dp, "application", false) ? ",\"virtual\":{}" : "";
+		source += member_flag(dp, "persist", false) ? ",\"persist\":true" : "";
 		source += "}";
 	}
 	source += "]";

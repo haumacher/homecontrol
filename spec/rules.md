@@ -55,7 +55,7 @@ Expression values have the types `boolean`, `integer`, `real`, `string`, `durati
 `date`, `dateTime`, `enumeration`, `controlled`, `color` and `raw` (section 3). Datapoints of the
 value types `unsigned` and `signed` read as `integer` (64-bit signed); a command converts back
 exactly or is refused. *No value* is the result of reading a datapoint whose quality is not good
-(unknown or stale) and propagates like SQL NULL; a condition that has no value is not satisfied
+(unknown or stale; a value restored at boot for a persisted datapoint is good, 7.10) and propagates like SQL NULL; a condition that has no value is not satisfied
 and is logged once, never a crash. *Alternatives:* keep `unsigned` and `signed` distinct in
 arithmetic (C-style promotion rules are a known source of wrong results; nothing in a house needs
 both 32-bit ranges at once); a default value instead of no value (a missing sensor would silently
@@ -447,7 +447,8 @@ conversions are functions (section 4.7): `round`, `floor`, `ceil`, `trunc` (real
 
 *No value* is not a type; any expression of any type may have no value. It arises from:
 
-- a datapoint reference whose datapoint has quality `unknown` or `stale`;
+- a datapoint reference whose datapoint has quality `unknown` or `stale` (stale: its technology
+  lost contact; a persisted datapoint's value restored at boot is good, 7.10);
 - a time function while the wall clock is not synchronized, a sun function without a result
   (`sunrise()` and the like when the event does not occur, `sunAzimuth()` and `sunElevation()`
   without a location);
@@ -985,7 +986,13 @@ of the parameter change; a rule with a timeline enters the state due now there (
 ### 7.10 Reboot
 
 A reboot loses timers, match memories, change tracking and the diagnostics. Persisted parameter
-overrides and rule states (8.5) survive (decision 3). After the image is loaded at boot:
+overrides and rule states (8.5) survive (decision 3), and so do the values of the datapoints the
+image declares `persist` (`spec/runtime-image.md` 3.3): each comes back with its last good value and
+quality good, whatever owns it (a value of the application, a group address only the controller
+writes, a device's attribute; homecontrol #100), before the rules start; the restore is no update,
+so no trigger fires on it. Where the bus knows better the datapoint is `readOnStart`: the
+technology's answer replaces the restored value like any report. Every other datapoint starts
+unknown. After the image is loaded at boot:
 
 1. Each rule with states whose persisted state the image still declares takes that state, without
    running its entry actions.

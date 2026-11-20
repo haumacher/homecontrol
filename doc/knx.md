@@ -192,8 +192,11 @@ per datapoint:
 
 The flags come from the datapoint: `kTransmit` sends a command as A_GroupValue_Write to the sending
 address; `kReadable` answers an A_GroupValue_Read of the sending address with an A_GroupValue_Response
-of the current value — only while its quality is good (otherwise the read stays unanswered, logged);
-`kReadOnStart` reads the sending address (or the first listening one) when the tunnel comes up.
+of the current value — only while its quality is good (otherwise the read stays unanswered, logged;
+a persisted value restored at boot is good and answered); `kReadOnStart` reads the sending address
+(or the first listening one) when the tunnel comes up, and the answer replaces a value restored at
+boot (homecontrol #100). A persisted datapoint without it, a group address only the controller
+writes, keeps its restored value as good until it changes or the tunnel goes down.
 
 `configure()` checks every mapping before anything changes: the datapoint exists, is mapped once and
 is not owned by another technology; the DPT is supported and produces the datapoint's value type

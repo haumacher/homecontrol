@@ -202,7 +202,7 @@ An array of datapoint objects (at most 1024). The array order is the model order
 | `writable` | boolean | no, false | The user may command it (the UI, the API, MQTT), and so may rules. A value of the application (`virtual`, or a datapoint without a technology member) is the rules' to write also when it is not writable (1.6, `spec/rules.md` 7.3): `writable` is the user's permission. |
 | `transmit` | boolean | no, false | A commanded value is sent to the technology. |
 | `readOnStart` | boolean | no, false | The technology reads the value after a start or reconnect. |
-| `persist` | boolean | no, false | The last value is kept across restarts (`doc/persistence.md`). |
+| `persist` | boolean | no, false | The last value is kept across restarts (`doc/persistence.md`): after a restart it counts, with quality good, whatever the technology; with `readOnStart` the technology's answer replaces it (`spec/rules.md` 7.10). |
 | `history` | `{"retention": s, "spacing": s, "archives": [...]}` | no | A short-term history ring: `spacing` 10..86400 s, `retention` from the spacing up to 31 days, at most 2048 samples; only `boolean`, `unsigned`, `signed`, `real`. `archives` (1.2, optional): the consolidated archives of the datapoint, below. |
 | `knx` | object | no | The KNX binding, below. |
 | `zigbee` | object | no | The Zigbee binding, below. Excludes `knx` and `virtual`. |
@@ -1991,7 +1991,7 @@ then compiles that source like any other (section 9):
 | Case | Source member of the image |
 |---|---|
 | (the file name) | `image`: `schemaVersion` `"1.7"`, `projectId` the file name without `.json` (`05-timer-presence-light`), `revision` 0 for the case's image and the step's position plus 1 for a step's image |
-| `datapoints` (`{"name", "type"}`) | `datapoints`, in the case's order: `id` the name, `type` the type; `writable` and `transmit` unless the case says `"writable": false`; an `"application": true` datapoint gets `virtual` (owner none, the application flag); every other one has no technology member and no application flag: owner none without the application flag, which no real image has (E-Home gives every datapoint without a technology the flag), marks the harness's test technology |
+| `datapoints` (`{"name", "type"}`) | `datapoints`, in the case's order: `id` the name, `type` the type; `writable` and `transmit` unless the case says `"writable": false`; an `"application": true` datapoint gets `virtual` (owner none, the application flag); a `"persist": true` datapoint gets `persist`; every other one has no technology member and no application flag: owner none without the application flag, which no real image has (E-Home gives every datapoint without a technology the flag), marks the harness's test technology |
 | `schedules` as ids or `{"id", "output"}` | `schedules`: per id an entry of kind `once` at 1970-01-01 00:00:00, not enabled and not adjustable (it never fires by itself; the case's `schedule` steps fire it), with the `output` where the case names one |
 | `schedules` as full entries | `schedules`, as they are |
 | `rules` | `rules`, as they are (the parameter, state and schedule time datapoints follow as in 3.3) |

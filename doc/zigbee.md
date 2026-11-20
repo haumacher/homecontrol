@@ -304,7 +304,8 @@ A device that has configured reporting must be heard within three times the larg
 reporting interval of its datapoints (`kStaleFactor`), the effective ones (a binding's override
 over the default): a bulb (max 300 s) within 15 minutes, a temperature sensor (max 600 s) within 30
 minutes, a battery-only device (max 21600 s) within 18 hours. The adapter checks every 10 s; the
-silence counts from the controller's start for a device not heard since. A stale device's
+silence counts from the controller's start for a device not heard since (a persisted value restored
+at boot is good until then, homecontrol #100; a read on start replaces it). A stale device's
 datapoints get the quality stale; its next frame ends it and its values are read again. Devices
 without configured reporting (pure buttons, IAS zones) never go stale. A function whose override
 turns the periodic report off promises no report and does not count: `max` 65535 (ZCL: the device

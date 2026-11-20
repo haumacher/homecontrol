@@ -403,7 +403,8 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 		model_.bind(static_cast<uint16_t>(i), *this);
 		ids[i] = static_cast<uint16_t>(i);
 	}
-	// Carry the values over: a good value is reported again, a stale one restored as stale.
+	// Carry the values over: a good value is reported again, a stale one carried as stale (the
+	// device is still silent; a restore would make it good).
 	if (saved != nullptr) {
 		for (size_t i = 0; i < count; ++i) {
 			for (size_t j = 0; j < point_count_; ++j) {
@@ -413,7 +414,10 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 				if (saved[j].quality == Quality::good) {
 					model_.report(*this, static_cast<uint16_t>(i), saved[j].value);
 				} else {
-					model_.restore(static_cast<uint16_t>(i), saved[j].value);
+					std::optional<Value> value = saved[j].value.convert(model_.get(static_cast<uint16_t>(i))->type());
+					if (value) {
+						model_.carry(static_cast<uint16_t>(i), *value, Quality::stale, 0);
+					}
 				}
 				if (saved[j].pending) {
 					model_.set_pending(*this, static_cast<uint16_t>(i), true);

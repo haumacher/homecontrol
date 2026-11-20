@@ -20,7 +20,7 @@ The image loader (issue #8) drives both after it has loaded the model:
 
 ```
 model.load(specs, count);                     // all values unknown
-value_store.load();                           // restores the kPersist datapoints (stale)
+value_store.load();                           // restores the kPersist datapoints (good)
 history.load(history_specs, n, budget_bytes); // allocates and restores the rings
 // ... the rule engine starts (spec/rules.md 7.10: reason "boot")
 ```
@@ -183,8 +183,16 @@ the same values again, which are written only if their saved time is older than 
 
 `load()` reads the record of every `kPersist` datapoint and calls `DatapointModel::restore()`:
 the value (converted where exact; a type changed by the image so that it does not convert is
-refused and logged) with quality **stale**, `updated_ms` 0 and no listener notification (the
-restore is part of the load; rules start afterwards, `lastKnown()` returns it). The record's wall
+refused and logged) with quality **good**, `updated_ms` 0 and no listener notification (the
+restore is part of the load; rules start afterwards and read it like any good value). `persist`
+states that the last value counts, for every datapoint whatever its technology (homecontrol #100):
+an application value or a group address only the controller writes is never confirmed by anybody,
+and a stale restore made each of them *no value* for the rules until someone wrote it again. Where
+the bus knows better, the datapoint has `readOnStart`: the technology reads it when it starts (KNX
+when the tunnel comes up, Zigbee when the device is refreshed), and the answer replaces the restored
+value. A value the model already has when the store loads (kept across an image swap, or reported
+before) is never overwritten: the record then gives only its wall time. `stale` keeps its own
+meaning, a technology that lost contact (`report_stale()`): a reboot is none. The record's wall
 time is what `wall_time(id)` returns until the next update. Records of datapoints no longer
 flagged (or no longer in the image) are deleted at load; a record whose name field does not match
 the datapoint (a hash collision) is ignored.
@@ -552,14 +560,19 @@ raise `writes_per_hour`, `save_bytes_per_hour` and `cap_bytes` there.
 
 `core/test/value_store_test.cpp` and `core/test/history_test.cpp` run under the fake clock with an
 in-memory `FakeBlobStore` (`core/test/fake_blob_store.h`) that counts writes: coalescing and the
-budget (counted writes), the refresh rule, restore with stale quality and the saved time, a
+budget (counted writes), the refresh rule, restore with good quality and the saved time, a
 datapoint without a value staying unknown, a record with an unknown field restoring, a newer
 generation and a bad checksum ignored, every value type through encode and decode, a changed type,
 orphan deletion, flush and the image swap, failing stores; the ring capacity, the budget and cap
 refusals, spec validation, sampling with spacing and keepalives, gaps, the ring wrap, retention,
 decimation (min, max, last per bucket, never more than `max_points`), the save interval, save and
 restore across a reboot and an image swap, a blob with unknown header fields and larger samples, a
-damaged blob, a clock going back.
+damaged blob, a clock going back. `core/test/persisted_restore_test.cpp` (homecontrol #100) restarts
+the image service on the same blobs, slot and Zigbee database: a persisted application value, a KNX
+datapoint without and one with `readOnStart` and a Zigbee one come back good with their saved
+values, a start rule `write x = if(@setting, 100, 80)` writes 100, the read on start's answer replaces
+the restored value, a tunnel loss still makes them stale; and a report before or after the store's
+load wins over the record. Rule corpus case 102 pins the same for both interpreters.
 
 `core/test/history_archive_test.cpp` (issue #56) runs the archives the same way: the budget
 arithmetic as E-Home computes it, three days at 1 min into an hourly archive (min, max, last, the

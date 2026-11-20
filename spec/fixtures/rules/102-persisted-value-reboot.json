@@ -1,0 +1,65 @@
+{
+	"title": "A persisted value counts after a reboot: the rules read it as good until a report replaces it",
+	"description": "homecontrol #100, spec/rules.md 3.3 and 7.10: `persist` restores the last good value of a datapoint at boot with quality good, whatever owns it. setting is a value of the application (the house's rollladen-winter), status a datapoint a technology owns that is persisted, other is a value of the application without persist. The first start finds no values: three valueNoValue. The UI sets setting and other at 1000, the technology reports status. After the reboot at 2000 setting and status are restored and the start writes x = if(@setting, 100, 80) = 100 and z = 100; other is unknown again (valueNoValue). A report at 3000 replaces the restored status (the follow rule writes 80).",
+	"note": "The restored value is no update: no `datapoint` trigger fires on it (the follow rule does not fire at 2000), and it is good, not stale (homecontrol #100: stale only when the technology lost contact).",
+	"datapoints": [
+		{"name": "setting", "type": "boolean", "application": true, "persist": true},
+		{"name": "other", "type": "boolean", "application": true},
+		{"name": "status", "type": "boolean", "persist": true},
+		{"name": "x", "type": "unsigned"},
+		{"name": "y", "type": "unsigned"},
+		{"name": "z", "type": "unsigned"}
+	],
+	"rules": [
+		{
+			"id": "start",
+			"name": "Start",
+			"reactions": [
+				{
+					"triggers": [{"kind": "start"}],
+					"actions": [
+						{"kind": "write", "datapoint": "x", "value": {"kind": "call", "function": "if", "args": [{"kind": "datapoint", "name": "setting"}, {"kind": "literal", "type": "integer", "value": 100}, {"kind": "literal", "type": "integer", "value": 80}]}},
+						{"kind": "write", "datapoint": "y", "value": {"kind": "call", "function": "if", "args": [{"kind": "datapoint", "name": "other"}, {"kind": "literal", "type": "integer", "value": 100}, {"kind": "literal", "type": "integer", "value": 80}]}},
+						{"kind": "write", "datapoint": "z", "value": {"kind": "call", "function": "if", "args": [{"kind": "datapoint", "name": "status"}, {"kind": "literal", "type": "integer", "value": 100}, {"kind": "literal", "type": "integer", "value": 80}]}}
+					]
+				}
+			]
+		},
+		{
+			"id": "follow",
+			"name": "Follow",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "status"}],
+					"actions": [
+						{"kind": "write", "datapoint": "z", "value": {"kind": "call", "function": "if", "args": [{"kind": "datapoint", "name": "status"}, {"kind": "literal", "type": "integer", "value": 100}, {"kind": "literal", "type": "integer", "value": 80}]}}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "command": {"datapoint": "setting", "value": true}},
+		{"at": 1000, "command": {"datapoint": "other", "value": true}},
+		{"at": 1000, "report": {"datapoint": "status", "value": true}},
+		{"at": 2000, "reboot": true},
+		{"at": 2000, "check": {"datapoints": {"setting": true, "other": null, "status": true, "x": 100, "y": null, "z": 100}}},
+		{"at": 3000, "report": {"datapoint": "status", "value": false}}
+	],
+	"end": 4000,
+	"expected": {
+		"commands": [
+			{"at": 1000, "rule": "follow", "datapoint": "z", "value": 100},
+			{"at": 2000, "rule": "start", "datapoint": "x", "value": 100},
+			{"at": 2000, "rule": "start", "datapoint": "z", "value": 100},
+			{"at": 3000, "rule": "follow", "datapoint": "z", "value": 80}
+		],
+		"logs": [
+			{"at": 0, "rule": "start", "code": "valueNoValue", "datapoint": "setting"},
+			{"at": 0, "rule": "start", "code": "valueNoValue", "datapoint": "other"},
+			{"at": 0, "rule": "start", "code": "valueNoValue", "datapoint": "status"},
+			{"at": 2000, "rule": "start", "code": "valueNoValue", "datapoint": "other"}
+		],
+		"final": {"datapoints": {"setting": true, "other": null, "status": false, "x": 100, "y": null, "z": 80}}
+	}
+}

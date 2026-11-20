@@ -346,6 +346,7 @@ public:
 			return;
 		}
 		load_model(*image_);
+		load_values();
 		for (const auto& entry : case_["persisted"].members) {
 			if (entry.first.compare(0, 6, "block/") == 0) {
 				persist_record(entry.first.substr(6), entry.second);
@@ -528,6 +529,23 @@ private:
 		}
 	}
 
+	/// README `persist`: the value store restores the last good value of each persisted datapoint
+	/// right after the model's load (doc/persistence.md, the image service's order: before the rules
+	/// start and before the case's `initial` reports); created only for a model with one (its tick).
+	void load_values() {
+		bool persists = false;
+		for (size_t i = 0; i < model_.size() && !persists; ++i) {
+			persists = model_.get(static_cast<uint16_t>(i))->persists();
+		}
+		if (!persists && values_ == nullptr) {
+			return;
+		}
+		if (values_ == nullptr) {
+			values_ = std::make_unique<hc::ValueStore>(loop_, clock_, model_, blobs_);
+		}
+		REQUIRE(values_->load() == hc::DatapointStatus::ok);
+	}
+
 	/// The components on the loaded model, as the device boots (the image service's apply): the
 	/// engine with the image's rules, the block runtime with its blocks, the scheduler with its
 	/// schedules; every rule starts with the reason boot.
@@ -565,6 +583,9 @@ private:
 	void swap(uint64_t at) {
 		engine_->flush();
 		blocks_->flush();
+		if (values_ != nullptr) {
+			values_->flush();
+		}
 		struct Kept {
 			hc::Value value;
 			hc::Quality quality;
@@ -610,6 +631,7 @@ private:
 					hc::DatapointStatus::ok);
 			}
 		}
+		load_values();
 		LoadResult result = engine_->adopt(std::move(next->plan->rule_set), carry);
 		Engine::free_carry(carry);
 		REQUIRE_MESSAGE(result.ok(), "the engine refused the rules of the image at " << at << ": "
@@ -621,12 +643,17 @@ private:
 		engine_->start(StartReason::image);
 	}
 
-	/// README `reboot`: an orderly reboot (the block runtime writes its due records), the slot's image
-	/// loaded again on a model without values.
+	/// README `reboot`: an orderly reboot (the block runtime and the value store write their due
+	/// records), the slot's image loaded again on a model without values; the value store of the new
+	/// boot restores the persisted ones.
 	void reboot() {
 		scheduler_.reset();
 		blocks_.reset();
 		engine_.reset();
+		if (values_ != nullptr) {
+			values_->flush();
+			values_.reset();
+		}
 		std::vector<uint8_t> bytes = std::move(image_->bytes);
 		image_.reset();
 		image_ = open_image(std::move(bytes), "the image at the reboot");
@@ -634,6 +661,7 @@ private:
 			return;
 		}
 		load_model(*image_);
+		load_values();
 		boot();
 	}
 
@@ -1399,6 +1427,7 @@ private:
 	hc_test::TestTechnology technologies_[4];
 	Recorder recorder_{clock_};
 	hc_test::FakeBlobStore blobs_;
+	std::unique_ptr<hc::ValueStore> values_; ///< README `persist`; destroyed before the model.
 	std::unique_ptr<LoadedImage> image_; ///< The slot's image; declared before the components: destroyed last.
 	std::unique_ptr<Engine> engine_;
 	std::unique_ptr<hc::blocks::BlockRuntime> blocks_; ///< Declared after the engine: destroyed first.
@@ -1531,6 +1560,7 @@ HC_RULE_CASE("98", "load-refused-state-parameter")
 HC_RULE_CASE("99", "load-refused-write-state-datapoint")
 HC_RULE_CASE("100", "load-refused-own-state-datapoint")
 HC_RULE_CASE("101", "timeline-enable-override-watch")
+HC_RULE_CASE("102", "persisted-value-reboot")
 
 /// The counts of a corpus run (the cases selected in this run), for the log.
 void print_stats(const char* name, const std::string& directory) {
@@ -1547,7 +1577,7 @@ void print_stats(const char* name, const std::string& directory) {
 
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
-	CHECK(files.size() == 101);
+	CHECK(files.size() == 102);
 	print_stats("RulesCorpus", "rules");
 }
 
