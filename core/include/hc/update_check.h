@@ -55,6 +55,12 @@ constexpr const char* kUpdateToken = "update.token";
 /// "update to X completed (uploaded)".
 constexpr const char* kUpdateUploaded = "update.uploaded";
 
+/// Why the updater's last attempt failed (string, at most Settings::kMaxStringLength bytes; written
+/// with store_update_error() at the start of each download attempt and after each failed attempt or
+/// upload, erased with the instruction and by a new one): the application appends it to its report
+/// of an abandoned update or upload (format_abandoned_report(); homecontrol #96).
+constexpr const char* kUpdateError = "update.error";
+
 } // namespace setting
 
 /// A semantic version (semver.org 2.0): MAJOR.MINOR.PATCH, optionally `-<pre-release>` and
@@ -224,6 +230,9 @@ struct UpdateInstruction {
 	int32_t size = 0;
 	int32_t attempts = 0;
 	char token[kUploadTokenLength + 1] = {}; ///< Only for an upload instruction.
+	/// The updater's reason for its last failed attempt (setting::kUpdateError); empty if none was
+	/// stored or it is unreadable.
+	char error[Settings::kMaxStringLength + 1] = {};
 };
 
 enum class InstructionStatus : uint8_t {
@@ -237,7 +246,8 @@ enum class InstructionStatus : uint8_t {
 const char* instruction_status_name(InstructionStatus status);
 
 /// Reads the instruction. `attempts` is 0 if the updater has not counted one yet. For an upload
-/// instruction only `token` is filled.
+/// instruction only `token` and `error` are filled. `error` is diagnostic: an unreadable one leaves
+/// it empty and never makes the instruction corrupt.
 InstructionStatus load_update_instruction(const Settings& settings, UpdateInstruction& out,
 	const char** error = nullptr);
 
@@ -253,18 +263,30 @@ bool store_upload_instruction(Settings& settings, const char* token, const char*
 /// token `expected`. The comparison takes the same time wherever the first difference is.
 bool upload_authorized(const char* expected, const char* authorization);
 
-/// Stores the instruction for the manifest's image at `image_url` (attempts reset to 0; the image
-/// key last). False with the reason if a write fails.
+/// Stores the instruction for the manifest's image at `image_url` (attempts reset to 0, the previous
+/// instruction's error erased; the image key last). False with the reason if a write fails.
 bool store_update_instruction(Settings& settings, const UpdateManifest& manifest, const char* image_url,
 	const char** error = nullptr);
 
-/// Removes the instruction (the image key first, the upload token with it). False if a key could not
-/// be erased.
+/// Removes the instruction (the image key first, the upload token and the updater's error with it).
+/// False if a key could not be erased.
 bool clear_update_instruction(Settings& settings);
 
 /// Whether the running firmware is the version the instruction asked for (precedence equal):
 /// the update completed. Otherwise the updater gave up and booted the previous application.
 bool update_instruction_fulfilled(const char* running, const UpdateInstruction& instruction);
+
+/// Stores `reason` as the updater's error (setting::kUpdateError) for the application's report:
+/// control characters become spaces, a reason longer than Settings::kMaxStringLength bytes is cut at
+/// a UTF-8 character boundary (nullptr stores ""). Returns the settings' status of the write.
+SettingsStatus store_update_error(Settings& settings, const char* reason);
+
+/// The application's report of an instruction the updater gave up on, into `out` (cut to
+/// `capacity`, always terminated): `update to <version> abandoned after <n> attempt(s)` for a
+/// download, `firmware upload abandoned: no image was installed` for an upload (`status` upload),
+/// each followed by `: <error>` when the updater stored a reason. Returns the length written.
+size_t format_abandoned_report(InstructionStatus status, const UpdateInstruction& instruction, char* out,
+	size_t capacity);
 
 /// What the updater finds in the application partition (ota_0).
 enum class AppImageState : uint8_t {

@@ -243,7 +243,12 @@ Each appears when the build has the service.
 build adds `partition`, `confirmed`, `checking`, `source` (the update source in use: `https://haumacher.github.io/homecontrol/<update.channel>`, or the development server of the console's update.url; `""` when the channel is `off`), `last`,
 `last_ago_s`, with a source `next_check_s`, and `release_key`: the fingerprint of the release key
 the firmware accepts manifests from (doc/ota.md "Manifest signature"; an unsigned or mis-signed
-manifest shows in `last` as `manifest refused: <reason>`). The POSIX build (the Linux package) has
+manifest shows in `last` as `manifest refused: <reason>`). After the first confirmed start that
+follows an update the updater gave up on, `last` is `update to <version> abandoned after <n>
+attempt(s): <reason>`, the reason of the updater's last attempt (doc/ota.md, `update.error`; without
+a reason from an updater that predates it), and after an abandoned firmware upload `firmware upload
+abandoned: no image was installed[: <reason>]`; a reason longer than `last`'s 100 bytes is cut, the
+log has it whole. The POSIX build (the Linux package) has
 `available: false` and `last` only: the system's package manager updates it (doc/linux.md).
 
 ## Datapoints

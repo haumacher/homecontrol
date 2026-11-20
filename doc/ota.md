@@ -98,10 +98,12 @@ renamed.
 | `update.image` = `upload` | string | application (written last) | updater | an *upload* instruction: not a URL on purpose (below) |
 | `update.token` | string | application | updater | the upload's one-time token, 32 lower-case hex digits (128 random bits) |
 | `update.uploaded` | string | updater (after the uploaded image verified) | application | version installed from an upload; reported and erased after the confirmed start |
+| `update.error` | string | updater (at the start of each download attempt, after each failed attempt or upload) | application | why the updater's last attempt failed, at most 127 bytes (`hc::store_update_error`: control characters become spaces, a longer reason is cut at a character boundary); appended to the application's report of an abandoned update or upload |
 | `wifi.ssid`, `wifi.psk` | string | provisioning (doc/network.md) | application, updater | WiFi credentials |
 
 The application erases the instruction keys after its next confirmed start (`update.image` first,
-`update.token` with them). The updater never erases them except when they are unreadable, and after a
+`update.token` and `update.error` with them; `update.error` also alone). A new instruction erases the
+`update.error` of the previous one. The updater never erases them except when they are unreadable, and after a
 successful upload (which leaves `update.uploaded` for the application's report instead).
 
 **Two kinds of instruction under one key.** `update.image` holds the image URL of a download or the
@@ -182,8 +184,11 @@ metadata does not count). `-dev` (pre-release) builds update to any newer releas
   `esp_ota_mark_app_valid_cancel_rollback()` (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`). A new image
   that resets before (crash, watchdog, power loss) is marked aborted by the bootloader, which then
   boots the updater. After confirming, a leftover instruction is reported as `update to X completed`
-  (the running version is X) or `update to X abandoned after N attempt(s)` (the updater booted the
-  previous image) and erased.
+  (the running version is X) or `update to X abandoned after N attempt(s): <reason>` (the updater booted
+  the previous image; `<reason>` is the updater's `update.error`, the reason of its last attempt,
+  e.g. `cannot connect: ESP_ERR_HTTP_CONNECT`; an updater that predates it leaves the report without
+  one) and erased. The report goes to the log (`hc.ota`, whole) and to `last` of the update status
+  (spec/api.md "Status"; cut at 100 bytes like every reason there).
 - **Check.** 15 minutes after start and then every 24 hours, unless the update channel is `off`, if the network
   is up (otherwise skipped with a log line), and on the console. The manifest and its signature are
   fetched on the `update` lane of the one fetch worker (doc/external.md "One fetch worker": second
@@ -238,7 +243,19 @@ build never erases the application). Only then `esp_ota_begin` erases ota_0, the
 and hashed, the SHA-256 must equal `update.sha256`, `esp_ota_end` verifies the image, and
 `esp_ota_set_boot_partition(ota_0)` selects it (state *new*: the application must confirm itself).
 Restart. Every failure is logged with its reason and whether the application partition was
-already overwritten.
+already overwritten, and stored as `update.error` for the application's report.
+
+**A failed attempt restarts the updater.** The next attempt starts from a fresh boot instead of the
+network state the failed one left (#96): the counter and the reason are in NVS, the decision table's
+pause (10 s; 5 minutes once three attempts failed and ota_0 is gone) follows the restart, so nothing is lost and
+nothing runs faster. A restart is the one reset that is complete by construction: the network
+stack's one-time setup (`esp_netif`, the default event loop, the station interface, `esp_wifi_init`)
+cannot be undone step by step after a partial failure, and before this change a failed setup made
+every further attempt of the same boot fail at once with `network stack not started` (three
+attempts in about 30 s). The restart also covers what a failure may leave behind unseen (a WiFi
+driver or lwIP in a bad state, a fragmented heap after TLS). Before each attempt the updater stores
+`update.error` = `attempt N interrupted: the updater restarted`, which the attempt's own reason
+replaces: a crash or a power loss during the last attempt is reported as such.
 
 **First boot.** A board flashed over USB or with the web flasher gets an otadata image that selects
 ota_0 with state *undefined* (`tools/gen_otadata.py`, the entry otatool's `switch_ota_partition`
@@ -416,7 +433,11 @@ sends to the device's private one may make the browser ask the user for access t
 
 **Timeouts.** Without a complete upload within 600 s the updater boots ota_0 if it holds a valid image
 (log `boot application: no firmware upload within 10 minutes ...`); the application then reports
-`firmware upload abandoned: no image was installed` and erases the instruction. With ota_0 missing or
+`firmware upload abandoned: no image was installed`, followed by `: <reason>` when the updater
+stored one (`update.error`: a refused or failed upload, WiFi that did not start), and erases the
+instruction. WiFi that does not start is tried again every 10 s; a network stack whose setup failed
+is not repaired within a boot: without a time limit (ota_0 missing) the updater restarts after 5
+minutes, with one it boots ota_0 when the 10 minutes are over (a restart would start them over). With ota_0 missing or
 rolled back it serves without a limit and logs `waiting for the firmware upload at http://<IP>/ (no
 time limit, ...)` every minute. A running upload is never cut off by the timeout. While an image streams in, the updater
 waits up to 2 minutes for the next data (12 receive timeouts of 10 s, each logged `upload: no data
@@ -442,7 +463,7 @@ well; a device with a working application is never opened this way.
 |---|---|---|
 | while the application stores the instruction | application (otadata intact) | the instruction is incomplete (`update.image` written last) or is reported as abandoned and erased after the confirmation; the next check tries again |
 | after the application erased otadata, before its restart | updater | downloads as instructed |
-| during the download, before `esp_ota_begin` | updater | attempt counted; retries; after 3 attempts boots the intact old application, which reports the update abandoned |
+| during the download, before `esp_ota_begin` | updater | attempt counted; retries; after 3 attempts boots the intact old application, which reports the update abandoned (with the reason `attempt 3 interrupted: the updater restarted` when the last attempt was the one cut off) |
 | during the write (ota_0 half written) | updater (otadata blank) | ota_0 *missing*: retries, after 3 attempts every 5 minutes until it succeeds |
 | after `esp_ota_set_boot_partition(ota_0)` | new application (state new → pending) | confirms after network up or 60 s, reports `completed`, erases the instruction |
 | new application crashes or resets within its first minute | bootloader marks it aborted, boots the updater | instruction still pending: re-download (attempts permitting), else every 5 min |

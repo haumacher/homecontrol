@@ -116,7 +116,9 @@ private:
 	bool signature_missing_ = false; ///< 404: the manifest is not signed
 	char fetch_error_[96] = {};
 
-	char last_[160] = "none since start";
+	/// Holds the longest report whole (`update to <63> abandoned after <n> attempt(s): <127>`); the
+	/// status cuts it at status_text::kText, the log shows it whole.
+	char last_[256] = "none since start";
 	uint64_t last_at_ms_ = 0;
 	uint64_t next_check_ms_ = 0;
 };

@@ -123,15 +123,15 @@ void OtaService::confirm() {
 				static_cast<long>(instruction.attempts));
 			set_last("update to %s completed", instruction.version);
 		} else {
-			ESP_LOGW(kTag, "update to %s abandoned after %ld attempt(s): the updater booted %s again; the next check "
-				"tries again", instruction.version, static_cast<long>(instruction.attempts), kVersion);
-			set_last("update to %s abandoned after %ld attempt(s)", instruction.version,
-				static_cast<long>(instruction.attempts));
+			// The report with the updater's reason for its last attempt (update.error, homecontrol #96).
+			format_abandoned_report(status, instruction, last_, sizeof(last_));
+			last_at_ms_ = controller_->clock().monotonic_ms();
+			ESP_LOGW(kTag, "%s (the updater booted %s again; the next check tries again)", last_, kVersion);
 		}
 	} else if (status == InstructionStatus::upload) {
-		ESP_LOGW(kTag, "firmware upload abandoned: no image was installed (the updater's 10 minutes ran out or the "
-			"upload was cancelled); %s runs on", kVersion);
-		set_last("firmware upload abandoned: no image was installed");
+		format_abandoned_report(status, instruction, last_, sizeof(last_));
+		last_at_ms_ = controller_->clock().monotonic_ms();
+		ESP_LOGW(kTag, "%s (the updater's 10 minutes ran out or the upload was cancelled; %s runs on)", last_, kVersion);
 	} else if (status == InstructionStatus::corrupt) {
 		ESP_LOGW(kTag, "discarding an unusable update instruction (%s)", error);
 	} else {
@@ -148,6 +148,12 @@ void OtaService::confirm() {
 	}
 	if (status != InstructionStatus::none) {
 		clear_update_instruction(settings);
+	} else {
+		// A reason without an instruction (an interrupted clearing) must not outlive this start.
+		SettingsStatus erased = settings.erase(setting::kUpdateError);
+		if (erased != SettingsStatus::ok && erased != SettingsStatus::not_found) {
+			ESP_LOGE(kTag, "cannot erase %s: %s", setting::kUpdateError, settings_status_name(erased));
+		}
 	}
 }
 

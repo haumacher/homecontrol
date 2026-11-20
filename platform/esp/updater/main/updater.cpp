@@ -83,6 +83,8 @@ constexpr EventBits_t kDisconnected = BIT1;
 hc::esp::NvsSettings g_settings;
 EventGroupHandle_t g_events = nullptr;
 bool g_wifi_started = false;
+/// The network stack's one-time setup failed: nothing in this boot repairs it (wifi_start()).
+bool g_stack_failed = false;
 int g_last_reason = 0;
 char g_ip[16] = {};
 uint8_t g_buffer[kChunk];
@@ -123,6 +125,26 @@ const char* reason(const char* fmt, ...) {
 
 void delay_ms(uint32_t ms) {
 	vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
+/// Stores `why` as update.error for the application's report of an abandoned update or upload
+/// (homecontrol #96; bounded and cut by hc::store_update_error). The same reason again is not
+/// written again (a retry every few seconds must not wear the flash). Called by the main task and by
+/// the upload server's task, never both at once: the server runs only once WiFi has started, the
+/// main task's WiFi retry only before.
+void record_error(const char* why) {
+	static char recorded[hc::Settings::kMaxStringLength + 1] = {};
+	static bool any = false;
+	if (any && std::strncmp(recorded, why, sizeof(recorded) - 1) == 0) {
+		return;
+	}
+	any = true;
+	std::snprintf(recorded, sizeof(recorded), "%s", why);
+	hc::SettingsStatus status = hc::store_update_error(g_settings, why);
+	if (status != hc::SettingsStatus::ok) {
+		ESP_LOGW(kTag, "cannot store %s (%s): the application will report no reason", hc::setting::kUpdateError,
+			hc::settings_status_name(status));
+	}
 }
 
 // ---- The status LED (doc/ota.md "The updater", the status LED) -----------------------------------
@@ -246,15 +268,19 @@ bool wifi_start(const char*& why) {
 		return false;
 	}
 
-	// The stack is set up once; a failure here is not retried within this boot.
+	// The stack is set up once per boot. A partial setup cannot be undone step by step (the default
+	// event loop, the station interface and the WiFi driver stay half there), so a failure is not
+	// retried within this boot: a failed download attempt restarts the updater (app_main), the upload
+	// restarts it when it has no time limit (serve_upload), and the next try starts from scratch.
 	static bool stack_tried = false;
 	static bool stack_ready = false;
+	static esp_err_t stack_error = ESP_OK;
 	static char hostname[hc::setting::kMaxNetHostnameLength + 1];
 	if (!stack_tried) {
 		stack_tried = true;
 		g_events = xEventGroupCreate();
 		temperature_sensor_on();
-		esp_err_t err = esp_netif_init();
+		esp_err_t err = g_events != nullptr ? esp_netif_init() : ESP_ERR_NO_MEM;
 		if (err == ESP_OK) {
 			err = esp_event_loop_create_default();
 		}
@@ -284,9 +310,11 @@ bool wifi_start(const char*& why) {
 			ESP_LOGE(kTag, "network stack not started: %s", esp_err_to_name(err));
 		}
 		stack_ready = err == ESP_OK;
+		stack_error = err;
 	}
 	if (!stack_ready) {
-		why = reason("network stack not started (see above); restart the device");
+		g_stack_failed = true;
+		why = reason("network stack not started: %s", esp_err_to_name(stack_error));
 		return false;
 	}
 	esp_err_t err = ESP_OK;
@@ -924,6 +952,9 @@ int receive(httpd_req_t* request, uint8_t* buffer, size_t length) {
 esp_err_t upload_failed(httpd_req_t* request, const char* status, const char* code, bool erased, const char* why) {
 	std::snprintf(g_upload_error, sizeof(g_upload_error), "%s%s", why,
 		erased ? " (the application partition was overwritten; upload the image again)" : "");
+	if (g_upload_token[0] != '\0') {
+		record_error(g_upload_error); // the application's report if the upload is abandoned
+	}
 	g_upload_state.store(UploadState::failed);
 	return refuse(request, status, code, g_upload_error);
 }
@@ -1122,10 +1153,33 @@ void serve_upload(const esp_partition_t* app, const hc::UpdateInstruction& instr
 	// when an upload fails, which may have erased it.
 	bool button_counts = g_button_ready && inspect(app) != hc::AppImageState::valid;
 	UploadState last_state = g_upload_state.load();
-	if (!g_wifi_started && !wifi_start(why)) {
-		ESP_LOGE(kTag, "upload: %s", why);
-	}
+	// WiFi that did not start is tried again every kUpdateRetryDelayMs. A failed stack setup is not
+	// repaired within this boot (wifi_start): without a time limit the updater restarts after
+	// kUpdateIdleRetryMs; with one it waits for the limit and boots ota_0, since a restart would start
+	// the limit over and never boot the application.
+	int64_t next_wifi_try_us = 0;
+	int64_t restart_at_us = 0;
+	char wifi_why[sizeof(g_reason)] = {};
 	for (;;) {
+		if (!g_wifi_started && esp_timer_get_time() >= next_wifi_try_us) {
+			next_wifi_try_us = esp_timer_get_time() + static_cast<int64_t>(hc::kUpdateRetryDelayMs) * 1000;
+			if (!wifi_start(why) && std::strcmp(why, wifi_why) != 0) { // logged once per reason
+				std::snprintf(wifi_why, sizeof(wifi_why), "%s", why);
+				ESP_LOGE(kTag, "upload: %s (trying again every %u s)", why,
+					static_cast<unsigned>(hc::kUpdateRetryDelayMs / 1000));
+				if (g_upload_token[0] != '\0') {
+					record_error(why);
+				}
+			}
+			if (g_stack_failed && restart_at_us == 0) {
+				restart_at_us = esp_timer_get_time() + static_cast<int64_t>(hc::kUpdateIdleRetryMs) * 1000;
+			}
+		}
+		if (restart_at_us != 0 && g_upload_deadline_us.load() == 0 && esp_timer_get_time() >= restart_at_us) {
+			ESP_LOGW(kTag, "upload: restarting the updater for a new network stack");
+			delay_ms(100);
+			esp_restart();
+		}
 		if (g_upload_restart.load()) {
 			led_show(hc::UpdaterLedState::off);
 			delay_ms(1000); // the answer leaves first
@@ -1317,6 +1371,8 @@ extern "C" void app_main(void) {
 			if (counted != hc::SettingsStatus::ok) {
 				ESP_LOGE(kTag, "cannot count the attempt (%s)", hc::settings_status_name(counted));
 			}
+			// Replaced by the attempt's own reason: what remains when the updater restarts during it.
+			record_error(reason("attempt %ld interrupted: the updater restarted", static_cast<long>(attempt)));
 			ESP_LOGI(kTag, "attempt %ld: downloading %s %s (%ld bytes)", static_cast<long>(attempt), instruction.version,
 				instruction.image_url, static_cast<long>(instruction.size));
 			const char* why = "";
@@ -1329,8 +1385,15 @@ extern "C" void app_main(void) {
 			}
 			ESP_LOGE(kTag, "attempt %ld failed: %s%s", static_cast<long>(attempt), why,
 				erased ? " (the application partition was already overwritten)" : " (the application is untouched)");
+			record_error(why);
 			led_show(hc::UpdaterLedState::connecting);
 			led_error();
+			// The next attempt starts from a fresh boot, not from the network state this one left (a
+			// failed stack setup is not repaired within a boot, homecontrol #96): the counter and the
+			// reason are stored, the decision table's pause follows the restart.
+			ESP_LOGI(kTag, "restarting the updater for the next step");
+			delay_ms(hc::UpdaterLed::kErrorTicks * hc::UpdaterLed::kTickMs); // the error overlay shows first
+			esp_restart();
 			break;
 		}
 		}

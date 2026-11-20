@@ -913,6 +913,17 @@ bool upload_token_valid(const char* token) {
 	return i == kUploadTokenLength;
 }
 
+namespace {
+
+/// The updater's reason into `out.error`; anything but a readable string leaves it empty.
+void read_update_error(const Settings& settings, UpdateInstruction& out) {
+	if (settings.get_string(setting::kUpdateError, out.error, sizeof(out.error)) != SettingsStatus::ok) {
+		out.error[0] = '\0';
+	}
+}
+
+} // namespace
+
 InstructionStatus load_update_instruction(const Settings& settings, UpdateInstruction& out, const char** error) {
 	out = UpdateInstruction();
 	SettingsStatus status = settings.get_string(setting::kUpdateImage, out.image_url, sizeof(out.image_url));
@@ -931,6 +942,7 @@ InstructionStatus load_update_instruction(const Settings& settings, UpdateInstru
 			refuse(error, "update.token missing or invalid");
 			return InstructionStatus::corrupt;
 		}
+		read_update_error(settings, out);
 		return InstructionStatus::upload;
 	}
 	if (!update_url_valid(out.image_url)) {
@@ -965,6 +977,7 @@ InstructionStatus load_update_instruction(const Settings& settings, UpdateInstru
 		refuse(error, "update.attempts invalid");
 		return InstructionStatus::corrupt;
 	}
+	read_update_error(settings, out);
 	return InstructionStatus::pending;
 }
 
@@ -984,6 +997,10 @@ bool store_update_instruction(Settings& settings, const UpdateManifest& manifest
 	status = settings.erase(setting::kUpdateToken); // a download replaces an upload instruction completely
 	if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
 		return refuse(error, "cannot erase the previous update.token");
+	}
+	status = settings.erase(setting::kUpdateError); // the reason belongs to the previous instruction
+	if (status != SettingsStatus::ok && status != SettingsStatus::not_found) {
+		return refuse(error, "cannot erase the previous update.error");
 	}
 	if (settings.set_string(setting::kUpdateVersion, manifest.version) != SettingsStatus::ok) {
 		return refuse(error, "cannot store update.version");
@@ -1041,7 +1058,7 @@ bool upload_authorized(const char* expected, const char* authorization) {
 
 bool clear_update_instruction(Settings& settings) {
 	static const char* const kKeys[] = {setting::kUpdateImage, setting::kUpdateToken, setting::kUpdateVersion,
-		setting::kUpdateSha256, setting::kUpdateSize, setting::kUpdateAttempts};
+		setting::kUpdateSha256, setting::kUpdateSize, setting::kUpdateAttempts, setting::kUpdateError};
 	bool ok = true;
 	for (const char* key : kKeys) {
 		SettingsStatus status = settings.erase(key);
@@ -1058,6 +1075,53 @@ bool update_instruction_fulfilled(const char* running, const UpdateInstruction& 
 	Version wanted;
 	return parse_version(running, current) && parse_version(instruction.version, wanted) &&
 		compare_versions(current, wanted) == 0;
+}
+
+SettingsStatus store_update_error(Settings& settings, const char* reason) {
+	char text[Settings::kMaxStringLength + 1];
+	size_t length = 0;
+	if (reason != nullptr) {
+		length = std::strlen(reason);
+	}
+	if (length > Settings::kMaxStringLength) {
+		length = Settings::kMaxStringLength;
+		// Back to the start of the character the cut falls into (a UTF-8 continuation byte is 10xxxxxx).
+		while (length > 0 && (static_cast<unsigned char>(reason[length]) & 0xC0) == 0x80) {
+			--length;
+		}
+	}
+	for (size_t i = 0; i < length; ++i) {
+		unsigned char c = static_cast<unsigned char>(reason[i]);
+		text[i] = c < 0x20 || c == 0x7F ? ' ' : static_cast<char>(c);
+	}
+	text[length] = '\0';
+	return settings.set_string(setting::kUpdateError, text);
+}
+
+size_t format_abandoned_report(InstructionStatus status, const UpdateInstruction& instruction, char* out,
+	size_t capacity) {
+	if (capacity == 0) {
+		return 0;
+	}
+	int n;
+	if (status == InstructionStatus::upload) {
+		n = std::snprintf(out, capacity, "firmware upload abandoned: no image was installed");
+	} else {
+		n = std::snprintf(out, capacity, "update to %s abandoned after %ld attempt(s)", instruction.version,
+			static_cast<long>(instruction.attempts));
+	}
+	size_t length = n < 0 ? 0 : static_cast<size_t>(n);
+	if (length >= capacity) {
+		return capacity - 1;
+	}
+	if (instruction.error[0] != '\0') {
+		n = std::snprintf(out + length, capacity - length, ": %s", instruction.error);
+		length += n < 0 ? 0 : static_cast<size_t>(n);
+		if (length >= capacity) {
+			length = capacity - 1;
+		}
+	}
+	return length;
 }
 
 const char* app_image_state_name(AppImageState state) {
