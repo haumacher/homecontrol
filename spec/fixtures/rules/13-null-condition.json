@@ -77,14 +77,14 @@
 			{"at": 6000, "rule": "heat", "datapoint": "heat.on", "value": false}
 		],
 		"logs": [
-			{"at": 1000, "rule": "heat", "code": "conditionNoValue"},
+			{"at": 1000, "rule": "heat", "code": "conditionNoValue", "datapoint": "room.temp"},
 			{"at": 1000, "rule": "and3", "code": "log", "level": "info", "message": "and false"},
-			{"at": 1000, "rule": "or3", "code": "conditionNoValue"},
+			{"at": 1000, "rule": "or3", "code": "conditionNoValue", "datapoint": "room.temp"},
 			{"at": 3000, "rule": "and3", "code": "log", "level": "info", "message": "and false"},
 			{"at": 3000, "rule": "or3", "code": "log", "level": "info", "message": "or true"},
-			{"at": 4000, "rule": "heat", "code": "conditionNoValue"},
+			{"at": 4000, "rule": "heat", "code": "conditionNoValue", "datapoint": "room.temp"},
 			{"at": 5000, "rule": "and3", "code": "log", "level": "info", "message": "and false"},
-			{"at": 5000, "rule": "or3", "code": "conditionNoValue"}
+			{"at": 5000, "rule": "or3", "code": "conditionNoValue", "datapoint": "room.temp"}
 		]
 	}
 }

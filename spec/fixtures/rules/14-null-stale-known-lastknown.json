@@ -64,6 +64,6 @@
 			{"at": 3000, "rule": "show", "datapoint": "out.quality", "value": "good"},
 			{"at": 3000, "rule": "show", "datapoint": "out.coalesce", "value": 22.0}
 		],
-		"logs": [{"at": 0, "rule": "show", "code": "valueNoValue"}]
+		"logs": [{"at": 0, "rule": "show", "code": "valueNoValue", "datapoint": "sensor.temp"}]
 	}
 }

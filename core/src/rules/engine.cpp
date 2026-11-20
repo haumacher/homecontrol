@@ -181,6 +181,8 @@ struct Engine::RuleRuntime {
 	DateTime last_trigger_wall;
 	Val last_action_value;
 	const char* last_error_text = "";
+	uint16_t last_error_expression = kNone; ///< Root node of the expression (spec 9.1).
+	uint16_t last_error_datapoint = kNone;  ///< Its first datapoint without a value.
 	uint32_t firings = 0;
 	uint32_t errors = 0;
 	uint32_t peak_cascade_firings = 0;
@@ -383,11 +385,33 @@ void Engine::log_rule(size_t rule, LogCode code, LogLevel level, const char* det
 	}
 }
 
+void Engine::log_expression(size_t rule, LogCode code, LogLevel level, const char* detail, uint16_t root,
+	const char* fmt, ...) {
+	char text[Limits::kMessage + 56];
+	va_list args;
+	va_start(args, fmt);
+	int length = std::vsnprintf(text, sizeof(text), fmt, args);
+	va_end(args);
+	uint16_t datapoint = first_without_value(root);
+	const Datapoint* dp = datapoint != kNone ? model_.get(datapoint) : nullptr;
+	if (dp != nullptr && length >= 0 && static_cast<size_t>(length) < sizeof(text)) {
+		std::snprintf(text + length, sizeof(text) - static_cast<size_t>(length), " – %s has no value", dp->name());
+	}
+	if (runtime_ && rule < runtime_->rule_count) {
+		log_code(set_.str(set_.rule(rule).id), &runtime_->rules[rule], code, level, detail, text, true, root, datapoint);
+	} else {
+		log_code("-", nullptr, code, level, detail, text, true, root, datapoint);
+	}
+}
+
 void Engine::log_code(const char* rule_id, RuleRuntime* rr, LogCode code, LogLevel level, const char* detail,
-	const char* text) {
+	const char* text, bool site, uint16_t expression, uint16_t datapoint) {
 	Log::write(level, kTag, "%s %s: %s", rule_id, log_code_name(code), text);
 	if (observer_) {
 		observer_->rule_logged(rule_id, code, level, text);
+		if (site) {
+			observer_->no_value_datapoint(rule_id, datapoint != kNone ? model_.get(datapoint) : nullptr);
+		}
 	}
 	if (rr && code != LogCode::log && level <= LogLevel::warn) {
 		++rr->errors;
@@ -395,6 +419,8 @@ void Engine::log_code(const char* rule_id, RuleRuntime* rr, LogCode code, LogLev
 		rr->last_error_ms = in_cascade_ ? cascade_ms_ : clock_.monotonic_ms();
 		rr->last_error_code = code;
 		rr->last_error_text = detail;
+		rr->last_error_expression = expression;
+		rr->last_error_datapoint = datapoint;
 	}
 }
 
@@ -445,6 +471,7 @@ struct Engine::Carry {
 		uint64_t state = 0;      ///< Of the current state's id (with has_state).
 		uint64_t trigger_dp = 0; ///< Of the name of the last trigger's datapoint (datapoint, silence).
 		uint64_t action_dp = 0;  ///< Of the name of the last write's or read's datapoint.
+		uint64_t error_dp = 0;   ///< Of the name of the last error's datapoint without a value.
 		char state_id[33] = {};
 		uint16_t first_timer = 0;
 		uint16_t first_parameter = 0;
@@ -565,6 +592,9 @@ Engine::Carry* Engine::detach() {
 			if (rr.last_action_kind == static_cast<uint8_t>(ActionKind::write) ||
 				rr.last_action_kind == static_cast<uint8_t>(ActionKind::read)) {
 				e.action_dp = name_hash(rr.last_action_target);
+			}
+			if (rr.last_error_datapoint != kNone) {
+				e.error_dp = name_hash(rr.last_error_datapoint);
 			}
 			e.first_timer = rule.first_timer;
 			e.first_parameter = rule.first_parameter;
@@ -761,6 +791,14 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const Carry* carry)
 				nr.last_action_target = follow(old_rule.action_dp, found);
 				if (!found) {
 					nr.last_action_kind = kNoKind;
+				}
+			}
+			// The last error's expression is a node of the old set; its datapoint follows by name.
+			nr.last_error_expression = kNone;
+			if (orr.last_error_datapoint != kNone) {
+				nr.last_error_datapoint = follow(old_rule.error_dp, found);
+				if (!found) {
+					nr.last_error_datapoint = kNone;
 				}
 			}
 			// Other references are by index of the old set.
@@ -2054,8 +2092,8 @@ void Engine::process_event(const Event& e, bool derived) {
 						flags |= kNoValueLogged;
 						char text[160];
 						print_expression(set_, model_, r, reaction.condition, text, sizeof(text));
-						log_rule(r, LogCode::condition_no_value, LogLevel::warn, "condition has no value",
-							"condition has no value: %s", text);
+						log_expression(r, LogCode::condition_no_value, LogLevel::warn, "condition has no value",
+							reaction.condition, "condition has no value: %s", text);
 					}
 					continue;
 				}
@@ -2207,7 +2245,7 @@ void Engine::action_write(size_t rule, const Action& action) {
 	if (!v.has()) {
 		if (!error && (flags & kNoValueLogged) == 0) {
 			flags |= kNoValueLogged;
-			log_rule(rule, LogCode::value_no_value, LogLevel::warn, "write value has no value",
+			log_expression(rule, LogCode::value_no_value, LogLevel::warn, "write value has no value", action.expr,
 				"value for '%s' has no value; nothing written", name);
 		}
 		return;
@@ -2360,7 +2398,8 @@ Val Engine::evaluate(uint16_t root, size_t rule, bool& error) {
 			flags |= kEvalErrorLogged;
 			char text[160];
 			print_expression(set_, model_, rule, root, text, sizeof(text));
-			log_rule(rule, LogCode::eval_error, LogLevel::error, cx.error_text, "%s in %s", cx.error_text, text);
+			log_expression(rule, LogCode::eval_error, LogLevel::error, cx.error_text, root, "%s in %s", cx.error_text,
+				text);
 		}
 	} else {
 		flags = static_cast<uint8_t>(flags & ~kEvalErrorLogged);
@@ -2389,6 +2428,28 @@ Val Engine::datapoint_value(uint16_t id) const {
 		return Val::none();
 	}
 	return val_from_datapoint(dp->value());
+}
+
+uint16_t Engine::first_without_value(uint16_t root) const {
+	const Node& n = set_.node(root);
+	switch (n.kind) {
+		case NodeKind::datapoint: {
+			const Datapoint* dp = model_.get(n.a);
+			return dp == nullptr || dp->quality() != Quality::good ? n.a : kNone;
+		}
+		case NodeKind::unary:
+		case NodeKind::binary:
+		case NodeKind::call:
+			// The children are next to each other, in the order of the text (printer.cpp).
+			for (uint8_t i = 0; i < n.argc; ++i) {
+				uint16_t found = first_without_value(static_cast<uint16_t>(n.a + i));
+				if (found != kNone) {
+					return found;
+				}
+			}
+			return kNone;
+		default: return kNone;
+	}
 }
 
 int64_t Engine::cascade_age(uint64_t time) const {
@@ -3115,8 +3176,52 @@ bool Engine::diagnostics(size_t rule, RuleDiagnostics& out) const {
 		out.last_error_ms = rr.last_error_ms;
 		out.last_error_code = rr.last_error_code;
 		out.last_error_text = rr.last_error_text;
+		out.last_error_expression = rr.last_error_expression;
+		out.last_error_datapoint = rr.last_error_datapoint;
 	}
 	return true;
+}
+
+size_t Engine::last_error_text(size_t rule, char* out, size_t size) const {
+	if (size > 0) {
+		out[0] = '\0';
+	}
+	if (runtime_ == nullptr || rule >= runtime_->rule_count || !runtime_->rules[rule].has_error) {
+		return 0;
+	}
+	const RuleRuntime& rr = runtime_->rules[rule];
+	size_t length = 0;
+	auto append = [&](const char* text) {
+		size_t n = std::strlen(text);
+		if (length < size) {
+			size_t room = size - length - 1;
+			std::memcpy(out + length, text, n < room ? n : room);
+			out[length + (n < room ? n : room)] = '\0';
+		}
+		length += n;
+	};
+	const Datapoint* dp = rr.last_error_datapoint != kNone ? model_.get(rr.last_error_datapoint) : nullptr;
+	bool no_value = rr.last_error_code == LogCode::condition_no_value || rr.last_error_code == LogCode::value_no_value;
+	if (rr.last_error_expression == kNone) {
+		append(rr.last_error_text); // no expression site, or one of the image before a swap
+	} else {
+		if (rr.last_error_code == LogCode::eval_error) {
+			append(rr.last_error_text);
+			append(" in ");
+		}
+		char text[160];
+		print_expression(set_, model_, rule, rr.last_error_expression, text, sizeof(text));
+		append(text);
+		if (no_value && dp == nullptr) {
+			append(" has no value");
+		}
+	}
+	if (dp != nullptr) {
+		append(" – ");
+		append(dp->name());
+		append(" has no value");
+	}
+	return length;
 }
 
 EngineMemory Engine::memory() const {

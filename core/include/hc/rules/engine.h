@@ -154,6 +154,9 @@ public:
 	virtual void loop_guard(const char* rule, const char* culprit, uint32_t firings) {
 		(void)rule, (void)culprit, (void)firings;
 	}
+	/// Right after an entry conditionNoValue, valueNoValue or evalError of `rule`: the first datapoint
+	/// of the expression without a value, nullptr when it has none (spec 9.1).
+	virtual void no_value_datapoint(const char* rule, const Datapoint* datapoint) { (void)rule, (void)datapoint; }
 
 protected:
 	~EngineObserver() = default;
@@ -189,7 +192,9 @@ struct RuleDiagnostics {
 	bool has_error = false;
 	uint64_t last_error_ms = 0;
 	LogCode last_error_code = LogCode::log;
-	const char* last_error_text = "";
+	const char* last_error_text = "";    ///< The fixed text of the code; the full one is Engine::last_error_text().
+	uint16_t last_error_expression = kNone; ///< conditionNoValue, valueNoValue, evalError: the expression's root node.
+	uint16_t last_error_datapoint = kNone;  ///< Its first datapoint without a value (spec 9.1).
 	const char* state = nullptr;         ///< Current state id; nullptr without states.
 	uint32_t peak_cascade_firings = 0;   ///< Most derived firings of this rule in one cascade (loop-guard culprit).
 	uint32_t loop_guards = 0;            ///< Cascades refused while this rule fired.
@@ -422,6 +427,11 @@ public:
 	bool loaded() const { return runtime_ != nullptr; }
 
 	bool diagnostics(size_t rule, RuleDiagnostics& out) const;
+	/// The text of the rule's last error (spec 9.1): for conditionNoValue, valueNoValue and evalError
+	/// the printed expression and its first datapoint without a value (`@presence and @lux < 50 – lux
+	/// has no value`, `division by zero in 100 / @count`), else the code's fixed text. Formatted on
+	/// request; snprintf convention. 0 and an empty text without an error.
+	size_t last_error_text(size_t rule, char* out, size_t size) const;
 	/// The current value of parameter `index` (0 is `enabled`) of `rule`.
 	const Val& parameter_value(size_t rule, size_t index) const;
 	bool parameter_overridden(size_t rule, size_t index) const;
@@ -517,13 +527,20 @@ private:
 	Val eval_binary(const Node& node, Eval& cx);
 	Val literal(const Node& node) const;
 	Val datapoint_value(uint16_t id) const;
+	/// The first datapoint of the expression rooted at `root`, in the order of its text, without a
+	/// value; kNone when there is none.
+	uint16_t first_without_value(uint16_t root) const;
 	int64_t cascade_age(uint64_t time) const;
 
 	// Logging.
 	void log_rule(size_t rule, LogCode code, LogLevel level, const char* detail, const char* fmt, ...)
 		HC_PRINTF_FORMAT(6, 7);
+	/// An entry of an expression site (conditionNoValue, valueNoValue, evalError): remembers the
+	/// expression and its first datapoint without a value, which the text names too.
+	void log_expression(size_t rule, LogCode code, LogLevel level, const char* detail, uint16_t root,
+		const char* fmt, ...) HC_PRINTF_FORMAT(7, 8);
 	void log_code(const char* rule_id, RuleRuntime* runtime, LogCode code, LogLevel level, const char* detail,
-		const char* text);
+		const char* text, bool site = false, uint16_t expression = kNone, uint16_t datapoint = kNone);
 
 	// Swap.
 	bool install(RuleSet&& next, LoadResult& result, const Carry* carry);

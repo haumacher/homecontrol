@@ -2538,9 +2538,12 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 	json.member("errors", d.errors);
 	json.key("lastError");
 	if (d.has_error) {
+		// Formatted on request: the expression and its datapoint without a value (spec/rules.md 9.1).
+		char error_text[256];
+		engine.last_error_text(index, error_text, sizeof(error_text));
 		json.begin_object()
 			.member("code", rules::log_code_name(d.last_error_code))
-			.member("text", d.last_error_text)
+			.member("text", error_text)
 			.member("ms", d.last_error_ms)
 			.end_object();
 	} else {

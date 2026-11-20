@@ -153,6 +153,8 @@ struct LogEntry {
 	std::string message;
 	std::string culprit; ///< loopGuard: the rule that fired most, and its derived firings.
 	uint32_t firings = 0;
+	bool site = false;     ///< conditionNoValue, valueNoValue, evalError: the datapoint without a value.
+	std::string datapoint; ///< Its name, "null" for none.
 };
 
 struct CommandEntry {
@@ -174,7 +176,8 @@ public:
 
 	void rule_logged(const char* rule, LogCode code, hc::LogLevel level, const char* text) override {
 		const char* level_name = level == hc::LogLevel::error ? "error" : (level == hc::LogLevel::warn ? "warning" : "info");
-		logs.push_back(LogEntry{clock_.now_ms - kBase, rule, hc::rules::log_code_name(code), level_name, text, std::string(), 0});
+		logs.push_back(LogEntry{clock_.now_ms - kBase, rule, hc::rules::log_code_name(code), level_name, text, std::string(), 0,
+			false, std::string()});
 	}
 
 	void loop_guard(const char* rule, const char* culprit, uint32_t firings) override {
@@ -183,6 +186,13 @@ public:
 		CHECK((logs.back().rule == rule || logs.back().rule == std::string("block ") + rule)); // a rule or a block
 		logs.back().culprit = culprit;
 		logs.back().firings = firings;
+	}
+
+	void no_value_datapoint(const char* rule, const hc::Datapoint* datapoint) override {
+		REQUIRE(!logs.empty());
+		CHECK(logs.back().rule == rule);
+		logs.back().site = true;
+		logs.back().datapoint = datapoint != nullptr ? datapoint->name() : "null";
 	}
 
 	void rule_commanded(const char* rule, const hc::Datapoint& datapoint, const hc::Value& value) override {
@@ -197,7 +207,7 @@ public:
 	void block_logged(const char* block, hc::blocks::BlockLogCode code, hc::LogLevel level, const char* text) override {
 		const char* level_name = level == hc::LogLevel::error ? "error" : (level == hc::LogLevel::warn ? "warning" : "info");
 		logs.push_back(LogEntry{clock_.now_ms - kBase, std::string("block ") + block, hc::blocks::block_log_code_name(code),
-			level_name, text, std::string(), 0});
+			level_name, text, std::string(), 0, false, std::string()});
 	}
 
 	void block_commanded(const char* block, const hc::Datapoint& datapoint, const hc::Value& value) override {
@@ -1335,6 +1345,10 @@ private:
 				have_logs.back() = ' ';
 				have_logs += "culprit " + l.culprit + " " + std::to_string(l.firings) + "\n";
 			}
+			if (l.site) {
+				have_logs.back() = ' ';
+				have_logs += "datapoint " + l.datapoint + "\n";
+			}
 		}
 		bool logs_ok = recorder_.logs.size() == expected["logs"].items.size();
 		for (size_t i = 0; i < expected["logs"].items.size(); ++i) {
@@ -1347,6 +1361,12 @@ private:
 				want_logs.back() = ' ';
 				want_logs += "culprit " + l["culprit"].text + " " + std::to_string(static_cast<uint32_t>(l["firings"].number)) + "\n";
 			}
+			// The first datapoint of the expression without a value (spec/rules.md 9.1), null for none.
+			std::string datapoint = l.has("datapoint") ? (l["datapoint"].kind == Json::Kind::null ? "null" : l["datapoint"].text) : "";
+			if (l.has("datapoint")) {
+				want_logs.back() = ' ';
+				want_logs += "datapoint " + datapoint + "\n";
+			}
 			if (logs_ok) {
 				const LogEntry& h = recorder_.logs[i];
 				logs_ok = h.at == static_cast<uint64_t>(l["at"].number) && h.rule == who && h.code == l["code"].text;
@@ -1355,6 +1375,9 @@ private:
 				}
 				if (logs_ok && l.has("culprit")) {
 					logs_ok = h.culprit == l["culprit"].text && h.firings == static_cast<uint32_t>(l["firings"].number);
+				}
+				if (logs_ok && l.has("datapoint")) {
+					logs_ok = h.site && h.datapoint == datapoint;
 				}
 			}
 		}

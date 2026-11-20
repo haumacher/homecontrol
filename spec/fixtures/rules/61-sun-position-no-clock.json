@@ -248,22 +248,26 @@
 			{
 				"at": 1000,
 				"rule": "sun",
-				"code": "valueNoValue"
+				"code": "valueNoValue",
+				"datapoint": null
 			},
 			{
 				"at": 1000,
 				"rule": "sun",
-				"code": "conditionNoValue"
+				"code": "conditionNoValue",
+				"datapoint": null
 			},
 			{
 				"at": 21000,
 				"rule": "sun",
-				"code": "valueNoValue"
+				"code": "valueNoValue",
+				"datapoint": null
 			},
 			{
 				"at": 21000,
 				"rule": "sun",
-				"code": "conditionNoValue"
+				"code": "conditionNoValue",
+				"datapoint": null
 			}
 		],
 		"final": {

@@ -701,6 +701,33 @@ TEST_CASE("WebApi.History: buckets, refusals, a datapoint without history") {
 	CHECK(r.json["code"].text == "history.no_time");
 }
 
+TEST_CASE("WebApi.Rules: lastError names the condition and its datapoint without a value (#97)") {
+	DashboardFixture f;
+	f.load(R"({
+		"image": {"schemaVersion": "1.2", "projectId": "last-error", "revision": 1},
+		"datapoints": [{"id": "presence", "type": "boolean", "writable": true, "virtual": {}},
+		               {"id": "lux", "type": "unsigned", "writable": true, "virtual": {}},
+		               {"id": "light", "type": "boolean", "writable": true, "virtual": {}}],
+		"rules": [{"id": "dark", "name": "Dark",
+			"reactions": [{"triggers": [{"kind": "datapoint", "datapoint": "presence"}],
+				"condition": {"kind": "binary", "op": "and", "left": {"kind": "datapoint", "name": "presence"},
+					"right": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "lux"},
+						"right": {"kind": "literal", "type": "integer", "value": 50}}},
+				"actions": [{"kind": "write", "datapoint": "light", "value": {"kind": "literal", "type": "boolean", "value": true}}]}]}]
+	})");
+	f.controller.run_once();
+	auto r = f.get("/api/rules", f.cookie);
+	REQUIRE(r.status == 200);
+	CHECK(r.json["rules"].items[0]["lastError"].kind == hc_test::Json::Kind::null);
+	r = f.post("/api/datapoints/" + std::to_string(f.model.find("presence")->id()) + "/command", "{\"value\": true}", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	f.controller.run_once();
+	r = f.get("/api/rules", f.cookie);
+	auto& error = r.json["rules"].items[0]["lastError"];
+	CHECK(error["code"].text == "conditionNoValue");
+	CHECK(error["text"].text == "@presence and @lux < 50 – lux has no value");
+}
+
 TEST_CASE("WebApi.Rules: diagnostics, parameters with their ranges, set, reset, refusals") {
 	DashboardFixture f;
 	f.load(image_fixture("example.json"));

@@ -50,15 +50,15 @@
 		],
 		"logs": [
 			{"at": 1000, "rule": "ratio", "code": "log", "level": "info", "message": "count 4"},
-			{"at": 2000, "rule": "ratio", "code": "evalError"},
+			{"at": 2000, "rule": "ratio", "code": "evalError", "datapoint": null},
 			{"at": 2000, "rule": "ratio", "code": "log", "level": "info", "message": "count 0"},
-			{"at": 2000, "rule": "guard", "code": "evalError"},
+			{"at": 2000, "rule": "guard", "code": "evalError", "datapoint": null},
 			{"at": 3000, "rule": "ratio", "code": "log", "level": "info", "message": "count 0"},
 			{"at": 4000, "rule": "ratio", "code": "log", "level": "info", "message": "count 5"},
 			{"at": 4000, "rule": "guard", "code": "log", "level": "info", "message": "divides"},
-			{"at": 5000, "rule": "ratio", "code": "evalError"},
+			{"at": 5000, "rule": "ratio", "code": "evalError", "datapoint": null},
 			{"at": 5000, "rule": "ratio", "code": "log", "level": "info", "message": "count 0"},
-			{"at": 5000, "rule": "guard", "code": "evalError"}
+			{"at": 5000, "rule": "guard", "code": "evalError", "datapoint": null}
 		]
 	}
 }

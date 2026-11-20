@@ -1375,6 +1375,85 @@ TEST_CASE("RulesEngine a self-triggering rule ends with loopGuard naming it") {
 	CHECK(bench.logs.size() == 2);
 }
 
+TEST_CASE("RulesEngine lastError names the expression and its first datapoint without a value (#97)") {
+	EngineBench bench;
+	std::string datapoints = hc_test::datapoint_source("go", "boolean") + "," +
+		hc_test::datapoint_source("presence", "boolean") + "," + hc_test::datapoint_source("lux", "unsigned") + "," +
+		hc_test::datapoint_source("a", "unsigned") + "," + hc_test::datapoint_source("z", "unsigned") + "," +
+		hc_test::datapoint_source("light", "boolean") + "," + hc_test::datapoint_source("level", "unsigned") + "," +
+		hc_test::datapoint_source("ratio", "unsigned");
+	std::string on_go = R"({"triggers": [{"kind": "datapoint", "datapoint": "go", "on": "update"}], )";
+	std::string condition = on_go + R"("condition": )" + bin("and", dp("presence"), bin("<", dp("lux"), lit_int(50))) +
+		R"(, "actions": [{"kind": "write", "datapoint": "light", "value": )" + lit_bool(true) + "}]}";
+	std::string value = on_go + R"("actions": [{"kind": "write", "datapoint": "level", "value": )" +
+		bin("+", dp("lux"), lit_int(1)) + "}]}";
+	std::string error = on_go + R"("actions": [{"kind": "write", "datapoint": "ratio", "value": {"kind": "call", "function": "coalesce", "args": [)" +
+		dp("a") + ", " + bin("/", lit_int(10), dp("z")) + "]}}]}";
+	std::string rules = rule_json(condition, "", "cond") + "," + rule_json(value, "", "value") + "," +
+		rule_json(error, "", "eval");
+	hc_test::ScopedCapture capture(hc::LogLevel::warn);
+	bench.setup(datapoints, rules);
+	char text[256];
+	CHECK(bench.engine->last_error_text(0, text, sizeof(text)) == 0);
+	CHECK(std::string(text).empty());
+
+	bench.report("presence", hc::Value::of_bool(true));
+	bench.report("z", hc::Value::of_unsigned(0));
+	bench.report("go", hc::Value::of_bool(true));
+	hc::rules::RuleDiagnostics d;
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.last_error_code == hc::rules::LogCode::condition_no_value);
+	bench.engine->last_error_text(0, text, sizeof(text));
+	CHECK(std::string(text) == "@presence and @lux < 50 – lux has no value");
+	REQUIRE(bench.engine->diagnostics(1, d));
+	CHECK(d.last_error_code == hc::rules::LogCode::value_no_value);
+	bench.engine->last_error_text(1, text, sizeof(text));
+	CHECK(std::string(text) == "@lux + 1 – lux has no value");
+	REQUIRE(bench.engine->diagnostics(2, d));
+	CHECK(d.last_error_code == hc::rules::LogCode::eval_error);
+	bench.engine->last_error_text(2, text, sizeof(text));
+	CHECK(std::string(text) == "division by zero in coalesce(@a, 10 / @z) – a has no value");
+	// The log lines name the datapoint too.
+	CHECK(capture.sink.contains("cond conditionNoValue: condition has no value: @presence and @lux < 50 – lux has no value"));
+	CHECK(capture.sink.contains("eval evalError: division by zero in coalesce(@a, 10 / @z) – a has no value"));
+
+	// The first datapoint without a value, in the order of the text: presence before lux.
+	bench.report("lux", hc::Value::of_unsigned(10));
+	bench.report("go", hc::Value::of_bool(true)); // the condition had a value: logged again when it has none
+	bench.report("presence", hc::Value::of_bool(true));
+	REQUIRE(bench.model.report_stale(bench.technology, bench.model.find("presence")->id()) == hc::DatapointStatus::ok);
+	bench.settle();
+	bench.report("go", hc::Value::of_bool(true));
+	bench.engine->last_error_text(0, text, sizeof(text));
+	CHECK(std::string(text) == "@presence and @lux < 50 – presence has no value");
+
+	// An evaluation error with every datapoint known names only the expression.
+	bench.report("a", hc::Value::of_unsigned(1));
+	bench.report("go", hc::Value::of_bool(true)); // evaluates without error: logged again on the next error
+	bench.engine->last_error_text(2, text, sizeof(text));
+	CHECK(std::string(text) == "division by zero in coalesce(@a, 10 / @z) – a has no value"); // unchanged: no new error
+	REQUIRE(bench.model.report_stale(bench.technology, bench.model.find("a")->id()) == hc::DatapointStatus::ok);
+	bench.settle();
+	bench.report("go", hc::Value::of_bool(true));
+	bench.engine->last_error_text(2, text, sizeof(text));
+	CHECK(std::string(text) == "division by zero in coalesce(@a, 10 / @z) – a has no value");
+
+	// A truncated buffer keeps the snprintf convention.
+	char small[8];
+	size_t full = bench.engine->last_error_text(0, small, sizeof(small));
+	CHECK(full == std::strlen("@presence and @lux < 50 – presence has no value"));
+	CHECK(std::string(small) == "@presen");
+
+	// A swap: the expression was a node of the old set and is forgotten; the datapoint is followed.
+	hc_test::RuleImage next;
+	REQUIRE(next.compile(hc_test::rules_source(datapoints, rule_json(value, "", "value") + "," + rule_json(condition, "", "cond"))));
+	LoadResult result = bench.engine->adopt(next.bind());
+	REQUIRE(result.ok());
+	bench.settle();
+	bench.engine->last_error_text(1, text, sizeof(text));
+	CHECK(std::string(text) == "condition has no value – presence has no value");
+}
+
 TEST_CASE("RulesEngine readRefused is logged once per action until a read is accepted") {
 	EngineBench bench;
 	std::string datapoints = hc_test::datapoint_source("go", "boolean") + "," + hc_test::datapoint_source("t", "real");

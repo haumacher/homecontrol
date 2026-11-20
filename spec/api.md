@@ -996,7 +996,10 @@ datapoints (`count`, `from`, `next`):
 ```
 
 `lastTrigger`, `lastAction`, `lastError` (`{"code", "text", "ms"}`) are `null` until they happen;
-`*_ms`/`ms` are monotonic like `now_ms`. `timers` lists the running ones. `parameters` are the
+`*_ms`/`ms` are monotonic like `now_ms`. The `text` of `lastError` is formatted on request; for
+`conditionNoValue`, `valueNoValue` and `evalError` it names the expression and its first datapoint
+without a value (`spec/rules.md` 9.1): `@presence and @lux < 50 – lux has no value`, `division by
+zero in 100 / @count`; for the other codes it is the code's fixed text. `timers` lists the running ones. `parameters` are the
 declared parameters (`enabled`, parameter 0, is the `enabled*` members): `type` is the rules
 type name, `value`/`default`/`min`/`max` in the parameter's JSON form (boolean; number for
 integer, real, enumeration and duration (ms); string; `{"hour","minute","second"}` for a time of
