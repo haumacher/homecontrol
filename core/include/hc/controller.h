@@ -12,6 +12,7 @@
 #include "hc/improv.h"
 #include "hc/log.h"
 #include "hc/log_ring.h"
+#include "hc/shutdown.h"
 #include "hc/status_led.h"
 #include "hc/time_service.h"
 #include "hc/platform/clock.h"
@@ -143,6 +144,9 @@ public:
 	TimeZone& time_zone_platform() { return time_zone_platform_; }
 	/// The lines logged since the controller was constructed (GET /api/log, doc/web.md).
 	const LogRing& log_ring() const { return log_ring_; }
+	/// The closing phase of a planned restart (homecontrol #103): the connections register, the
+	/// platform's restart paths run through it (doc/core.md "Planned restart").
+	Shutdown& shutdown() { return shutdown_; }
 
 private:
 	void heartbeat();
@@ -164,6 +168,7 @@ private:
 	Improv improv_;
 	LogRing log_ring_;
 	TimeService time_;
+	Shutdown shutdown_;
 	char time_zone_[kMaxTimeZone] = {};
 	uint64_t start_ms_ = 0;
 	bool started_ = false;

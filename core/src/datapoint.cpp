@@ -662,6 +662,30 @@ DatapointStatus DatapointModel::report_stale(Technology& technology, uint16_t id
 	return DatapointStatus::ok;
 }
 
+DatapointStatus DatapointModel::resume(Technology& technology, uint16_t id) {
+	if (refuse_busy("resume")) {
+		return DatapointStatus::busy;
+	}
+	Datapoint* dp = lookup(id, "resume");
+	if (dp == nullptr) {
+		return DatapointStatus::unknown_id;
+	}
+	if (dp->technology_ != &technology) {
+		Log::error(kTag, "refusing resume of '%s' from %s: not its owner", dp->name_, technology.name());
+		return DatapointStatus::not_owner;
+	}
+	if (dp->quality_ != Quality::stale) {
+		return DatapointStatus::ok;
+	}
+	dp->quality_ = Quality::good; // the last value counts (homecontrol #103)
+	notifying_ = true;
+	for (size_t i = 0; i < listener_count_; ++i) {
+		listeners_[i]->datapoint_quality(*dp);
+	}
+	notifying_ = false;
+	return DatapointStatus::ok;
+}
+
 DatapointStatus DatapointModel::restore(uint16_t id, const Value& value) {
 	if (refuse_busy("restore")) {
 		return DatapointStatus::busy;

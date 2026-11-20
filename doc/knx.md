@@ -92,6 +92,18 @@ later (a follow-up issue).
   reconnects. `stop()` sends a DISCONNECT_REQUEST and stays down (`homecontrol` and `knxtool` stop
   this way, so the gateway frees its tunnel slot at once). `set_gateway()` closes the connection to
   the old gateway and connects to the new one.
+- **Planned restart** (homecontrol #103). Every restart the device decides on — the API's restart
+  and factory reset, the console's `restart` and `factory reset`, the switch to the OTA updater for
+  an update or a firmware upload (`POST /api/system/update/upload`), and the POSIX controller's stop
+  — runs through `Controller::shutdown()` (`hc::Shutdown`, doc/core.md "Planned restart"), where the
+  tunnel is a participant: an up tunnel sends its DISCONNECT_REQUEST and waits at most 500 ms
+  (`kDisconnectTimeoutMs`) for the DISCONNECT_RESPONSE (or the gateway's own DISCONNECT_REQUEST), an
+  attempt under way waits as long for its CONNECT_RESPONSE and closes the channel it brings, then
+  the device restarts. Without this the gateway kept the old connection until its heartbeat timeout,
+  and a gateway without a free slot refused the restarted controller with E_NO_MORE_CONNECTIONS
+  (0x24) for half a minute (the house controller, 2026-11-20). The tunnel stays down afterwards
+  (state `down`, reason "closed for a restart"); the network going down while it waits ends the
+  wait.
 
 | Timer | Value |
 |---|---|
@@ -101,9 +113,10 @@ later (a follow-up issue).
 | TUNNELING_ACK | 1 s, 1 repetition |
 | L_Data.con | 3 s |
 | Reconnect backoff | 1 s doubling to 60 s |
+| DISCONNECT_RESPONSE before a planned restart | 500 ms |
 | Read-on-start spacing (adapter) | 100 ms |
 
-The tunnel uses up to six event-loop timers, the adapter one; the tunnel takes one of
+The tunnel uses up to six event-loop timers (seven while it closes for a restart), the adapter one; the tunnel takes one of
 `Connectivity`'s four listener slots.
 
 ## Frames
@@ -253,10 +266,21 @@ Behavior:
   new mapping cannot send; a datapoint the new image does not have is gone with its value. The
   boot with the tunnel down is the common case: the start cascade of the rules and blocks writes
   before the tunnel is up, and those values reach the bus with the first connect.
-- **Tunnel down**: every mapped datapoint becomes `stale` (`report_stale()`; an unknown one stays
-  unknown), except the transmit-only ones, whose owner decides. **Tunnel up**: the read-on-start datapoints are read, one every 100 ms
-  (`kReadSpacingMs`), so a hundred reads take ten seconds instead of flooding the gateway; the tunnel
-  queue additionally paces them to the bus.
+- **Tunnel down** after it was up (contact lost): every mapped datapoint becomes `stale`
+  (`report_stale()`; an unknown one stays unknown), except the transmit-only ones, whose owner
+  decides; the rules see no value meanwhile. A tunnel that was never up since the start loses no
+  contact (homecontrol #103): the failed attempts after a boot (the gateway still holding the old
+  connection, E_NO_MORE_CONNECTIONS) leave the qualities as they are, so a value restored as good
+  (doc/datapoints.md "Restored values") stays good. **Tunnel up**: the read-on-start datapoints are
+  read, one every 100 ms (`kReadSpacingMs`), so a hundred reads take ten seconds instead of flooding
+  the gateway; the tunnel queue additionally paces them to the bus; each is good with its answer. A
+  stale datapoint without `kReadOnStart` has no source on the bus to ask (a group address only the
+  controller writes, `schlafzimmer.tag_nacht_update`): it is good again with its last value — the
+  controller's own write or the restored value — through `DatapointModel::resume()`, which is no update
+  (no rule fires on it, the next evaluation reads the value; no history entry) and tells only the
+  displays: the live feed and MQTT's retained state show `good` again (`datapoint_quality()`). A datapoint
+  commanded while the tunnel was down is good already (the model took the command, the adapter
+  sends it with the connect); none was reported meanwhile (no telegrams while down).
 - **Reads on request**: a rule's `read` action (`spec/rules.md` 7.12) reaches the adapter through
   `Technology::read`; the datapoint joins the same read queue (one read per 100 ms, duplicates
   merged), so a rule reading twenty datapoints at once keeps the spacing. Refused, with a log line

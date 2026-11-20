@@ -196,7 +196,8 @@ metadata does not count). `-dev` (pre-release) builds update to any newer releas
   HTTP accepted), the decision runs on the event loop. For an applicable update the application
   checks that the image fits ota_0, stores the instruction, makes the updater the boot partition
   (`esp_ota_set_boot_partition(factory)`, which erases otadata) and restarts 2 s later, after the
-  log line `update 0.1.0 -> 0.2.0 (... bytes, <url>): restarting into the updater in 2 s`.
+  log line `update 0.1.0 -> 0.2.0 (... bytes, <url>): restarting into the updater in 2 s`, once the
+  KNX tunnel is closed (at most 500 ms more; doc/knx.md "Planned restart").
 
 Console (prompt `hc>`):
 
@@ -331,7 +332,8 @@ ota_0), so the hand-over goes through the updater, which has WiFi, NVS and the O
    `update.image` = `upload`), makes the updater the boot partition and answers
    `{"ok": true, "url": "http://<its IP>/", "token": "<hex>", "restart_in_ms": 750, "timeout_s": 600}`.
    It restarts 750 ms later through the API's deferred action (log `restarting into the updater for
-   the firmware upload`).
+   the firmware upload`), once the KNX tunnel is closed (at most 500 ms more; doc/knx.md "Planned
+   restart"), so the gateway's slot is free when the new firmware connects.
 3. The page stores the token in `sessionStorage` of its own origin (key `hc.upload.token`; the
    tab also keeps it in memory), stops its WebSocket and polls `GET /status` of the updater at the
    answer's `url`: at its own origin when it was opened under that IP address, else across origins

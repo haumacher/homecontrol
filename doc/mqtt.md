@@ -44,7 +44,9 @@ With `mosquitto_sub -v -t 'homecontrol/#' -t 'homeassistant/#'`:
   the last will `offline` when the connection drops, the controller publishes it before an orderly
   disconnect (a new image with another broker, the host build's SIGINT).
 - `<base>/dp/<name>/state` carries `{"value": ..., "quality": "good"|"stale", "time": <UTC s>}`
-  for every datapoint with a value, again after every connect and image load. States are retained
+  for every datapoint with a value, again after every connect and image load, and after a quality
+  change without an update (a stale value good again when the technology has contact, homecontrol
+  #103). States are retained
   by default (`retain: false` in the image turns that off).
 - `<base>/dp/<name>/set` takes a JSON value (`true`, `21.5`, `{"hour": 6, "minute": 30, "second": 0}`)
   and runs it as a command with the model's rules (writable, the owner's acceptance); a refusal is

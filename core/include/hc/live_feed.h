@@ -135,6 +135,7 @@ public:
 	void datapoint_updated(const DatapointUpdate& update) override;
 	/// The pending mark changed (a held command went out): the datapoint's state goes out like an update.
 	void datapoint_pending(const Datapoint& datapoint) override;
+	void datapoint_quality(const Datapoint& datapoint) override;
 
 	/// A change of the Zigbee coordinator (WebApi relays the adapter's events): every subscribed
 	/// client gets a {"type": "zigbee"} message at once (spec/api.md "Zigbee"). A client that missed

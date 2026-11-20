@@ -415,7 +415,8 @@ dump). Every refusal is also logged (`<method> <path> from <peer> refused (<code
 ### `POST /api/system/restart`
 
 No body. 200 `{"ok": true, "action": "restart", "in_ms": 750}`: the restart follows after `in_ms`,
-so the answer leaves first. Refusals: 501 `system.unavailable`, 409 `system.busy` (a restart, reset
+so the answer leaves first, and after the device closed its connections (the KNX tunnel, at most a
+second more; homecontrol #103). Refusals: 501 `system.unavailable`, 409 `system.busy` (a restart, reset
 or WiFi change is already pending).
 
 ### `POST /api/system/factory-reset`

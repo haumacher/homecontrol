@@ -127,6 +127,126 @@ void KnxTunnel::stop() {
 	}
 }
 
+void KnxTunnel::shutdown_begin(Shutdown& shutdown) {
+	started_ = false;
+	if (phase_ == Phase::up || phase_ == Phase::connecting) {
+		bool up = phase_ == Phase::up;
+		cancel_timers();
+		heartbeat_outstanding_ = false;
+		close_sent_ = false;
+		if (up) {
+			ip::FrameBuffer frame;
+			ip::build_disconnect_request(frame, channel_, local_);
+			close_sent_ = transmit(control_, frame, "DISCONNECT_REQUEST");
+		}
+		phase_ = Phase::closing;
+		shutdown_ = &shutdown;
+		flush_queue();
+		std::snprintf(reason_, sizeof(reason_), "closed for a restart");
+		if (up && !close_sent_) {
+			set_state(TunnelState::down, reason_);
+			finish_closing("the DISCONNECT_REQUEST did not get out", LogLevel::warn);
+			return;
+		}
+		close_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kDisconnectTimeoutMs,
+			Callback::member<KnxTunnel, &KnxTunnel::close_timeout>(this));
+		if (up) {
+			Log::info(kTag, "knx tunnel closing for a restart: DISCONNECT_REQUEST sent, waiting at most %u ms for the answer",
+				static_cast<unsigned>(kDisconnectTimeoutMs));
+		} else {
+			Log::info(kTag, "knx tunnel closing for a restart: waiting at most %u ms for the CONNECT_RESPONSE of the "
+				"attempt under way, to close the connection it brings", static_cast<unsigned>(kDisconnectTimeoutMs));
+		}
+		set_state(TunnelState::down, reason_);
+		return;
+	}
+	if (phase_ != Phase::idle || retry_timer_.valid()) {
+		teardown("stopped for a restart", false, false, LogLevel::info);
+	} else {
+		Log::info(kTag, "knx tunnel stopped for a restart (no connection to close)");
+	}
+	shutdown.done(*this);
+}
+
+void KnxTunnel::handle_closing(uint16_t service, const uint8_t* data, size_t length) {
+	switch (static_cast<ip::Service>(service)) {
+	case ip::Service::disconnect_response: {
+		ip::ChannelStatus response;
+		ip::ParseResult result = ip::parse_disconnect_response(data, length, response);
+		if (!result || !close_sent_ || response.channel != channel_) {
+			Log::debug(kTag, "DISCONNECT_RESPONSE ignored while closing");
+			return;
+		}
+		finish_closing("the gateway confirmed the DISCONNECT_REQUEST", LogLevel::info);
+		return;
+	}
+	case ip::Service::disconnect_request: {
+		ip::DisconnectRequest request;
+		ip::ParseResult result = ip::parse_disconnect_request(data, length, request);
+		if (!result || !close_sent_ || request.channel != channel_) {
+			Log::debug(kTag, "DISCONNECT_REQUEST ignored while closing");
+			return;
+		}
+		ip::FrameBuffer frame;
+		ip::build_disconnect_response(frame, channel_, ip::status::kNoError);
+		transmit(control_, frame, "DISCONNECT_RESPONSE");
+		finish_closing("the gateway closed the tunnel itself", LogLevel::info);
+		return;
+	}
+	case ip::Service::connect_response: {
+		if (close_sent_) {
+			Log::debug(kTag, "CONNECT_RESPONSE ignored while closing");
+			return;
+		}
+		ip::ConnectResponse response;
+		ip::ParseResult result = ip::parse_connect_response(data, length, response);
+		if (!result || response.status != ip::status::kNoError) {
+			finish_closing("the attempt under way brought no connection", LogLevel::info);
+			return;
+		}
+		channel_ = response.channel;
+		ip::FrameBuffer frame;
+		ip::build_disconnect_request(frame, channel_, local_);
+		close_sent_ = transmit(control_, frame, "DISCONNECT_REQUEST");
+		if (!close_sent_) {
+			finish_closing("the DISCONNECT_REQUEST did not get out", LogLevel::warn);
+			return;
+		}
+		Log::info(kTag, "knx tunnel closing for a restart: the attempt under way got channel %u, DISCONNECT_REQUEST sent",
+			static_cast<unsigned>(channel_));
+		return;
+	}
+	default:
+		Log::debug(kTag, "ignoring %s (0x%04X) while closing", ip::service_name(service), service);
+		return;
+	}
+}
+
+void KnxTunnel::close_timeout() {
+	close_timer_ = TimerHandle();
+	if (phase_ != Phase::closing) {
+		return;
+	}
+	char how[64];
+	std::snprintf(how, sizeof(how), "no %s within %u ms", close_sent_ ? "DISCONNECT_RESPONSE" : "CONNECT_RESPONSE",
+		static_cast<unsigned>(kDisconnectTimeoutMs));
+	finish_closing(how, LogLevel::warn);
+}
+
+void KnxTunnel::finish_closing(const char* how, LogLevel level) {
+	loop_.cancel(close_timer_);
+	close_timer_ = TimerHandle();
+	socket_.close();
+	phase_ = Phase::idle;
+	close_sent_ = false;
+	Log::write(level, kTag, "knx tunnel closed for the restart: %s", how);
+	Shutdown* shutdown = shutdown_;
+	shutdown_ = nullptr;
+	if (shutdown != nullptr) {
+		shutdown->done(*this);
+	}
+}
+
 bool KnxTunnel::can_connect(const char** why) const {
 	if (!started_) {
 		*why = "not started";
@@ -265,7 +385,7 @@ bool KnxTunnel::transmit(const ip::Endpoint& to, const ip::FrameBuffer& frame, c
 // ---- Receiving -----------------------------------------------------------------------------
 
 void KnxTunnel::udp_received(const uint8_t* data, size_t length, const Ipv4Endpoint& from) {
-	if (phase_ != Phase::connecting && phase_ != Phase::up) {
+	if (phase_ != Phase::connecting && phase_ != Phase::up && phase_ != Phase::closing) {
 		return;
 	}
 	if (from.address != control_.address) {
@@ -278,6 +398,10 @@ void KnxTunnel::udp_received(const uint8_t* data, size_t length, const Ipv4Endpo
 	if (!result) {
 		Log::warn(kTag, "ignoring a datagram of %u octets from the gateway: %s", static_cast<unsigned>(length),
 			result.reason);
+		return;
+	}
+	if (phase_ == Phase::closing) {
+		handle_closing(service, data, length);
 		return;
 	}
 	switch (static_cast<ip::Service>(service)) {
@@ -739,6 +863,9 @@ void KnxTunnel::fail(const char* reason, bool retry) {
 
 void KnxTunnel::teardown(const char* reason, bool send_disconnect, bool retry, LogLevel level) {
 	cancel_timers();
+	Shutdown* shutdown = shutdown_; // a teardown while closing for a restart ends the closing
+	shutdown_ = nullptr;
+	close_sent_ = false;
 	if (send_disconnect && phase_ == Phase::up) {
 		ip::FrameBuffer frame;
 		ip::build_disconnect_request(frame, channel_, local_);
@@ -759,6 +886,9 @@ void KnxTunnel::teardown(const char* reason, bool send_disconnect, bool retry, L
 		Log::write(level, kTag, "knx tunnel down: %s", reason);
 	}
 	set_state(TunnelState::down, reason_);
+	if (shutdown != nullptr) {
+		shutdown->done(*this);
+	}
 }
 
 void KnxTunnel::cancel_timers() {
@@ -768,12 +898,14 @@ void KnxTunnel::cancel_timers() {
 	loop_.cancel(heartbeat_timeout_timer_);
 	loop_.cancel(ack_timer_);
 	loop_.cancel(confirm_timer_);
+	loop_.cancel(close_timer_);
 	retry_timer_ = TimerHandle();
 	connect_timer_ = TimerHandle();
 	heartbeat_timer_ = TimerHandle();
 	heartbeat_timeout_timer_ = TimerHandle();
 	ack_timer_ = TimerHandle();
 	confirm_timer_ = TimerHandle();
+	close_timer_ = TimerHandle();
 	retry_at_ = EventLoop::kNever;
 }
 
@@ -782,6 +914,10 @@ void KnxTunnel::connectivity_changed(const Connectivity& connectivity, LinkState
 	if (up && previous != LinkState::up) {
 		backoff_.reset();
 		evaluate();
+		return;
+	}
+	if (!up && previous == LinkState::up && phase_ == Phase::closing) {
+		finish_closing("network down", LogLevel::warn);
 		return;
 	}
 	if (!up && previous == LinkState::up && started_) {

@@ -61,7 +61,15 @@ before the first) and a quality:
 - `good`: the last update came from the technology or the application;
 - `stale`: the technology lost contact (`report_stale()`: bus down, device gone); the value is the
   last known one and stays until the next report. A reboot is no loss of contact: a `kPersist`
-  datapoint starts good with its saved value (`restore(id, value)` right after the load, below).
+  datapoint starts good with its saved value (`restore(id, value)` right after the load, below),
+  and neither is a connection that never came up since the boot (the KNX tunnel's failed first
+  attempts, homecontrol #103). When the contact is back, a datapoint the technology can read
+  (`kReadOnStart`) is good with the answer; one it has nothing to ask for (a KNX group address only
+  the controller writes) is good again with its last value: `resume(technology, id)` turns `stale`
+  into `good` without an update — `updated_ms` stays, `datapoint_updated()` is not called, so no
+  rule trigger, change event or history entry — and tells the displays the new quality through
+  `datapoint_quality()` (Listeners, below), only for the owner (`not_owner`); it leaves `unknown`
+  and `good` alone.
 
 A datapoint can also be **pending** (`Datapoint::pending()`, homecontrol #72): its owner holds a
 commanded value it has not sent because it is not connected (a technology whose
@@ -159,7 +167,13 @@ and the origin (`report`, `command`, `stale`, `publish`). Every report is an upd
 same value (a push button sending "on" again matters to a rule); `DatapointUpdate::changed()` tells
 whether value or quality differ.
 
-While listeners run the model refuses every change — `report`, `report_stale`, `command`,
+Two display-only callbacks report a change that is no update: `datapoint_pending()` (the held mark,
+above) and `datapoint_quality()` (homecontrol #103: `resume()` made a stale value good again). Both
+default to nothing; the live feed sends the datapoint to the open pages and MQTT publishes its
+retained state again, while the rule engine, the history and the value store ignore them — no value
+changed, so no trigger fires and nothing is recorded.
+
+While listeners run the model refuses every change — `report`, `report_stale`, `resume`, `command`,
 `publish`, `load`, `clear`, `bind`, `set_transmitter` and listener (un)registration — with `busy` and a log line. A listener that wants to
 react with a change posts it to the event loop; it then runs in the next `run_once`, after all
 listeners have seen the current update. This keeps the order of notifications equal to the order of

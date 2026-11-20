@@ -365,6 +365,12 @@ public:
 	/// a report) is told through datapoint_updated() alone. The same rules as datapoint_updated().
 	virtual void datapoint_pending(const Datapoint& datapoint) { (void) datapoint; }
 
+	/// The quality changed without an update, for the displays only (homecontrol #103:
+	/// DatapointModel::resume() makes a stale value good again when the technology has contact
+	/// again). No value changed: rules, triggers, the history and the value store ignore it; the live
+	/// feed and MQTT show the new quality. The same rules as datapoint_updated().
+	virtual void datapoint_quality(const Datapoint& datapoint) { (void) datapoint; }
+
 protected:
 	~DatapointListener() = default;
 };
@@ -471,6 +477,14 @@ public:
 	/// The technology lost contact: the value stays, the quality becomes stale (listeners are told
 	/// if the quality was good).
 	DatapointStatus report_stale(Technology& technology, uint16_t id);
+
+	/// The technology has contact again and nothing on its side to ask for the value (homecontrol
+	/// #103: a KNX group address only the controller writes, no kReadOnStart): a stale value becomes
+	/// good again, the last value counts (the controller's own write or the restored value). No update:
+	/// updated_ms() stays and datapoint_updated() is not called (no rule trigger, no change event, no
+	/// history entry); the displays learn the quality through DatapointListener::datapoint_quality().
+	/// Unknown and good stay as they are. Only the owner may (not_owner).
+	DatapointStatus resume(Technology& technology, uint16_t id);
 
 	/// The owning technology marks the datapoint's value as held for sending (`pending` true: it is
 	/// not connected; homecontrol #72) or as sent or dropped (false); Datapoint::pending(). Only the

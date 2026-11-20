@@ -21,6 +21,24 @@ network. The controller owns the `hc::EventLoop`, the `hc::Connectivity` (the ne
 `doc/network.md`) and `hc::Improv` (WiFi provisioning from the web flasher, active only when the
 platform supplies an `ImprovPort`); later packages hang their work onto them.
 
+### Planned restart
+
+Every restart the device decides on goes through `Controller::shutdown()` (`hc::Shutdown`,
+homecontrol #103): the API's restart and factory reset, the console's `restart` and `factory
+reset`, the switch to the OTA updater for an update or a firmware upload, and the POSIX
+controller's stop (a signal or the API's restart). Components with a connection that should end
+cleanly register as `ShutdownParticipant`s (up to four; today the KNX tunnel, which sends its
+DISCONNECT_REQUEST so the gateway frees its slot at once, doc/knx.md "Planned restart").
+`begin(reason, then)` asks each to close and runs `then` — the platform's restart — once all have
+called `done()` or after `kMaxWaitMs` (1 s), naming in the log whoever did not finish; a second
+`begin()` is refused (logged). Everything runs on the loop, so the core decides and tests the
+closing and the platform restarts: on the ESP `hc::esp::planned_restart()` (`hc_platform`) runs the
+factory reset's erase, if any, drains the console and calls `esp_restart()`; the POSIX build runs
+its loop until the closing has finished, then ends the process. A fault (a panic, the task
+watchdog, `crash yes`) is no planned restart and closes nothing. MQTT is no participant: on the
+device the broker publishes the last will when the client goes away without DISCONNECT, the POSIX
+build retires its client before (doc/mqtt.md).
+
 ## Event loop model
 
 - **Single-threaded.** Every `EventLoop` method is called on the loop's thread; handlers may

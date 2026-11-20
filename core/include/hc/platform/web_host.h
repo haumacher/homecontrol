@@ -68,7 +68,8 @@ public:
 
 	/// Carries out `action` (restart; factory reset: erase the settings and the stored state, then
 	/// restart). The API calls it on the loop a moment after it answered the request, once
-	/// system_action_possible() said ok. On the device it does not return.
+	/// system_action_possible() said ok. A planned restart: the platform closes the connections first
+	/// (Controller::shutdown(), homecontrol #103), so the restart follows within Shutdown::kMaxWaitMs.
 	virtual void system_action(SystemAction action) { (void)action; }
 
 	/// Starts an update check (`force` false, the console's `update check`) or an installation

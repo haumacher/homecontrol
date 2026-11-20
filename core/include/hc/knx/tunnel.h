@@ -17,6 +17,7 @@
 #include "hc/log.h"
 #include "hc/platform/clock.h"
 #include "hc/platform/udp_socket.h"
+#include "hc/shutdown.h"
 
 namespace hc {
 namespace knx {
@@ -135,12 +136,16 @@ protected:
 ///   to tunnel_raw_frame() as received, then, if it decodes into LData, to tunnel_frame().
 /// - The gateway's DISCONNECT_REQUEST is answered and ends the connection (reconnect follows).
 /// - stop() sends a DISCONNECT_REQUEST and does not reconnect.
+/// - A planned restart (Shutdown, homecontrol #103) sends the DISCONNECT_REQUEST and waits at most
+///   kDisconnectTimeoutMs for the gateway's DISCONNECT_RESPONSE before it reports done, so the
+///   gateway has freed the slot before the device restarts; an attempt under way waits as long for
+///   its CONNECT_RESPONSE and closes the connection it brings. The tunnel stays down afterwards.
 ///
 /// Every transition is logged under the tag "hc.knx" with its reason. Frames still queued when the
 /// connection ends are reported `lost`, never sent later.
 ///
 /// Threading: every method is called on the event loop's thread.
-class KnxTunnel : public ConnectivityListener, public UdpReceiver {
+class KnxTunnel : public ConnectivityListener, public UdpReceiver, public ShutdownParticipant {
 public:
 	static constexpr uint32_t kConnectTimeoutMs = 10000;
 	static constexpr uint32_t kHeartbeatPeriodMs = 60000;
@@ -148,6 +153,8 @@ public:
 	static constexpr uint32_t kHeartbeatAttempts = 3;
 	static constexpr uint32_t kAckTimeoutMs = 1000;
 	static constexpr uint32_t kConfirmTimeoutMs = 3000;
+	/// The longest a planned restart waits for the gateway's answer (Shutdown).
+	static constexpr uint32_t kDisconnectTimeoutMs = 500;
 	static constexpr size_t kQueueCapacity = 32;
 	static constexpr size_t kListenerCapacity = 4;
 	/// Longest reason text including the NUL (a gateway host name has up to 127 characters).
@@ -215,12 +222,17 @@ public:
 	void udp_error(const char* reason) override;
 	void udp_resolved(bool ok, uint32_t address, const char* error) override;
 
+	// ShutdownParticipant
+	const char* shutdown_name() const override { return "knx tunnel"; }
+	void shutdown_begin(Shutdown& shutdown) override;
+
 private:
 	enum class Phase : uint8_t {
 		idle,       ///< Down; maybe a retry scheduled.
 		resolving,  ///< Waiting for the host name's address.
 		connecting, ///< CONNECT_REQUEST sent.
 		up,
+		closing,    ///< A planned restart: waiting for the gateway's answer (state down).
 	};
 
 	struct Pending {
@@ -259,6 +271,10 @@ private:
 	void handle_tunneling_request(const uint8_t* data, size_t length);
 	void handle_tunneling_ack(const uint8_t* data, size_t length);
 	void handle_confirmation(const LData& frame);
+	void handle_closing(uint16_t service, const uint8_t* data, size_t length);
+	void close_timeout();
+	/// Ends the closing phase: the socket closes, the Shutdown is told.
+	void finish_closing(const char* how, LogLevel level);
 	void set_state(TunnelState state, const char* reason);
 	bool refuse_notifying(const char* what);
 
@@ -296,6 +312,12 @@ private:
 	TimerHandle heartbeat_timeout_timer_;
 	TimerHandle ack_timer_;
 	TimerHandle confirm_timer_;
+	TimerHandle close_timer_;
+
+	/// The planned restart this tunnel closes for (Phase::closing), nullptr otherwise.
+	Shutdown* shutdown_ = nullptr;
+	/// While closing: the DISCONNECT_REQUEST is out (false: waiting for an attempt's CONNECT_RESPONSE).
+	bool close_sent_ = false;
 
 	Pending queue_[kQueueCapacity];
 	size_t queue_head_ = 0;

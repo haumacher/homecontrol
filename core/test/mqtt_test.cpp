@@ -945,3 +945,29 @@ TEST_CASE("MqttHistoryExportWaitsForTheWallClock") {
 }
 
 } // TEST_SUITE
+
+TEST_CASE("MqttRepublishesTheQualityOfAResumedDatapoint") {
+	// homecontrol #103: the technology has contact again and the last value counts (resume()): no
+	// update, but the retained state must not keep saying stale.
+	Fixture f;
+	f.load(example(), kMember);
+	Sensor bus;
+	f.bind(bus, "hall.presence");
+	f.connect();
+	f.report(bus, "hall.presence", Value::of_bool(true));
+	f.settle();
+	const std::string topic = "homecontrol/a1b2c3/dp/hall.presence/state";
+	REQUIRE(f.model.report_stale(bus, f.dp("hall.presence").id()) == DatapointStatus::ok);
+	f.settle();
+	auto p = f.client.to(topic);
+	REQUIRE(!p.empty());
+	CHECK(p.back().payload.find("\"quality\":\"stale\"") != std::string::npos);
+	size_t before = p.size();
+	REQUIRE(f.model.resume(bus, f.dp("hall.presence").id()) == DatapointStatus::ok);
+	f.settle();
+	p = f.client.to(topic);
+	REQUIRE(p.size() == before + 1);
+	CHECK(p.back().payload.find("\"value\":true,\"quality\":\"good\"") != std::string::npos);
+	CHECK(p.back().retain);
+	CHECK(f.client.retained[topic].find("\"quality\":\"good\"") != std::string::npos);
+}

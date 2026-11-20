@@ -253,3 +253,32 @@ TEST_CASE("LiveFeed logout ends the WebSocket of that session") {
 	CHECK(f.transport.messages(1, "error").back()["code"].text == "auth.session_ended");
 	CHECK(f.feed.client_count() == 0);
 }
+
+TEST_CASE("LiveFeed shows the quality of a resumed datapoint (homecontrol #103)") {
+	FeedFixture f;
+	REQUIRE(f.demo.load());
+	REQUIRE(f.feed.open(1, f.cookie.c_str(), nullptr, nullptr));
+	f.send(1, "{\"type\":\"subscribe\"}");
+	f.run();
+	f.model.command(0, hc::Value::of_bool(true));
+	f.run();
+	f.transport.sent.clear();
+	REQUIRE(f.model.report_stale(f.demo, 0) == hc::DatapointStatus::ok);
+	f.run();
+	auto updates = f.transport.messages(1, "datapoints");
+	REQUIRE(updates.size() == 1);
+	CHECK(updates[0]["updates"].items[0]["quality"].text == "stale");
+	f.transport.sent.clear();
+	// The contact is back, the last value counts: no update, but the page shows good again.
+	uint64_t updated = f.model.get(0)->updated_ms();
+	REQUIRE(f.model.resume(f.demo, 0) == hc::DatapointStatus::ok);
+	f.run();
+	updates = f.transport.messages(1, "datapoints");
+	REQUIRE(updates.size() == 1);
+	const auto& items = updates[0]["updates"].items;
+	REQUIRE(items.size() == 1);
+	CHECK(items[0]["id"].number == 0);
+	CHECK(items[0]["value"].boolean == true);
+	CHECK(items[0]["quality"].text == "good");
+	CHECK(items[0]["updated_ms"].number == static_cast<double>(updated));
+}

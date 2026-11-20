@@ -32,7 +32,8 @@ Controller::Controller(const Platform& platform)
 	  connectivity_(loop_, platform.clock, platform.network),
 	  improv_(loop_, platform.clock, platform.settings, connectivity_, platform.improv, platform.scanner),
 	  log_ring_(&platform.clock),
-	  time_(loop_, platform.clock, platform.time_zone, platform.settings) {
+	  time_(loop_, platform.clock, platform.time_zone, platform.settings),
+	  shutdown_(loop_, platform.clock) {
 	Log::set_sink(&sink_);
 	Log::set_ring(&log_ring_);
 	loop_.set_clock(&clock_); // the loop measures its turns (the System page)

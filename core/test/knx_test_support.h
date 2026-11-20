@@ -258,6 +258,10 @@ inline Bytes disconnect_request(uint8_t channel) {
 	return result;
 }
 
+inline Bytes disconnect_response(uint8_t channel, uint8_t status = 0) {
+	return Bytes{0x06, 0x10, 0x02, 0x0A, 0x00, 0x08, channel, status};
+}
+
 /// Records what a tunnel tells its listeners.
 /// The records a TelegramLog hands on, kept for a test (the device keeps them in the monitor ring).
 struct TelegramRecorder : hc::knx::TelegramListener {

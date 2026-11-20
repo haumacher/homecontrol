@@ -46,6 +46,7 @@ void KnxAdapter::start() {
 		return;
 	}
 	started_ = tunnel_.add_listener(this);
+	was_up_ = tunnel_.is_up();
 }
 
 bool KnxAdapter::configure(const KnxMapping* mappings, size_t count, const char** error) {
@@ -388,6 +389,8 @@ void KnxAdapter::send_held() {
 void KnxAdapter::tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previous) {
 	(void) previous;
 	if (tunnel.state() == TunnelState::up) {
+		was_up_ = true;
+		resume_unread();
 		size_t held = commands_held();
 		if (held > 0) {
 			Log::info(kTag, "knx tunnel up: sending %u held command(s)", static_cast<unsigned>(held));
@@ -407,11 +410,41 @@ void KnxAdapter::tunnel_state_changed(const KnxTunnel& tunnel, TunnelState previ
 			entries_[i].read_wanted = false;
 		}
 		pending_count_ = 0;
+		if (!was_up_) {
+			// A tunnel that was never up loses no contact (homecontrol #103): the failed attempts after
+			// the boot leave the restored values good.
+			return;
+		}
 		for (size_t i = 0; i < count_; ++i) {
 			if (!entries_[i].transmit_only) {
 				model_.report_stale(*this, entries_[i].datapoint);
 			}
 		}
+	}
+}
+
+void KnxAdapter::resume_unread() {
+	// A datapoint read on start gets good with the answer. One without it has nothing on the bus to
+	// ask (a group address only the controller writes): its last value counts again (homecontrol
+	// #103), without an update (no rule trigger; the displays learn the quality). A datapoint commanded while the tunnel was down is good
+	// already (the model took the command); none was reported meanwhile (no telegrams while down).
+	size_t resumed = 0;
+	for (size_t i = 0; i < count_; ++i) {
+		const Entry& entry = entries_[i];
+		if (entry.transmit_only) {
+			continue;
+		}
+		const Datapoint* dp = model_.get(entry.datapoint);
+		if (dp == nullptr || dp->technology() != this || dp->read_on_start() || dp->quality() != Quality::stale) {
+			continue;
+		}
+		if (model_.resume(*this, entry.datapoint) == DatapointStatus::ok) {
+			++resumed;
+		}
+	}
+	if (resumed > 0) {
+		Log::info(kTag, "knx tunnel up: %u datapoint(s) without a read on start keep their last value as good",
+			static_cast<unsigned>(resumed));
 	}
 }
 

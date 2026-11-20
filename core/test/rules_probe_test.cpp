@@ -157,3 +157,32 @@ TEST_CASE("RulesProbe.ARuleOfTheImageDrivesTheTechnologyAndItsParameterOverrideS
 		CHECK(d.has_error);
 	}
 }
+
+TEST_CASE("RulesProbe.AResumedDatapointTriggersNoRule") {
+	// homecontrol #103: resume() makes a stale value good again without an update; the rule
+	// triggered by a change of `a` must not run (it would write b = a + 1 again).
+	Rig r;
+	Engine engine(r.loop, r.model, r.clock, r.settings, r.time);
+	r.adopt(engine);
+	engine.start(StartReason::boot);
+	r.run();
+	REQUIRE(r.model.report(r.tech, 0, Value::of_signed(5)) == DatapointStatus::ok);
+	r.run();
+	REQUIRE(r.tech.commands.size() == 1);
+	// Contact lost: the trigger fires, `a` has no value, nothing is written.
+	REQUIRE(r.model.report_stale(r.tech, 0) == DatapointStatus::ok);
+	r.run();
+	CHECK(r.tech.commands.size() == 1);
+	size_t no_value = r.capture.sink.count("valueNoValue");
+	// Contact back: good again with 5, silently for the rules.
+	REQUIRE(r.model.resume(r.tech, 0) == DatapointStatus::ok);
+	r.run();
+	CHECK(r.model.get(0)->quality() == hc::Quality::good);
+	CHECK(r.tech.commands.size() == 1);
+	CHECK(r.capture.sink.count("valueNoValue") == no_value);
+	// The next change of `a` evaluates with the good value as usual.
+	REQUIRE(r.model.report(r.tech, 0, Value::of_signed(7)) == DatapointStatus::ok);
+	r.run();
+	REQUIRE(r.tech.commands.size() == 2);
+	CHECK(r.tech.commands.back().value == Value::of_signed(8));
+}

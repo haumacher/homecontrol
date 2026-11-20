@@ -24,6 +24,7 @@
 #include "hc/network_settings.h"
 #include "linenoise/linenoise.h"
 #include "nvs_flash.h"
+#include "planned_restart.h"
 
 namespace hc {
 namespace esp {
@@ -361,11 +362,10 @@ int cmd_update(ConsoleContext& c, int argc, char** argv) {
 	return usage(kUsage);
 }
 
-int cmd_restart(ConsoleContext&, int, char**) {
+int cmd_restart(ConsoleContext& c, int, char**) {
 	ESP_LOGW(kTag, "restart requested on the console");
 	std::printf("restarting\n");
-	console_output().drain(500);
-	esp_restart();
+	planned_restart(c.controller, "restart on the console"); // closes the KNX tunnel first (homecontrol #103)
 	return 0;
 }
 
@@ -548,7 +548,10 @@ int cmd_factory(ConsoleContext& c, int argc, char** argv) {
 		return usage("factory reset yes   (erases the settings with the WiFi credentials, the runtime image and "
 			"its state, the Zigbee network; then restarts)");
 	}
-	factory_reset_and_restart(c.blobs, "on the console");
+	// The connections close first (homecontrol #103), then the erase and the restart.
+	planned_restart(c.controller, "factory reset on the console",
+		Callback{[](void* blobs) { factory_reset_and_restart(static_cast<BlobStore*>(blobs), "on the console"); }, c.blobs});
+	return 0;
 }
 
 // ---- The command table: the one place where commands are registered --------------------------

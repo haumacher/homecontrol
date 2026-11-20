@@ -17,6 +17,7 @@
 #include "freertos/task.h"
 #include "hc/signature.h"
 #include "hc/version.h"
+#include "planned_restart.h"
 
 namespace hc {
 namespace esp {
@@ -442,7 +443,7 @@ bool OtaService::start_upload(const char* token, const char** error) {
 
 void OtaService::restart_into_updater() {
 	ESP_LOGW(kTag, "restarting into the updater");
-	esp_restart();
+	planned_restart(*controller_, "restart into the updater"); // closes the KNX tunnel first (homecontrol #103)
 }
 
 bool OtaService::set_url(const char* url, const char** error) {

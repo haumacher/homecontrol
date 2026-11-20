@@ -30,6 +30,7 @@ void KnxService::init() {
 	socket_.init();
 	adapter_.start();
 	tunnel_.add_listener(this);
+	controller_.shutdown().add(tunnel_); // a planned restart closes the tunnel first (homecontrol #103)
 	knx::GatewayAddress gateway;
 	bool nat = false;
 	knx::read_gateway_settings(controller_.settings(), gateway, nat);

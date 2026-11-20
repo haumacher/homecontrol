@@ -1903,11 +1903,17 @@ bool Mqtt::write_config(const Function& function) {
 // ---- Inbound -----------------------------------------------------------------------------------
 
 void Mqtt::datapoint_updated(const DatapointUpdate& update) {
-	if (table_ == nullptr || !update.changed()) {
-		return;
+	if (update.changed()) {
+		mark_dirty(update.datapoint.id());
 	}
-	uint16_t id = update.datapoint.id();
-	if (id >= table_->point_count) {
+}
+
+void Mqtt::datapoint_quality(const Datapoint& datapoint) {
+	mark_dirty(datapoint.id());
+}
+
+void Mqtt::mark_dirty(uint16_t id) {
+	if (table_ == nullptr || id >= table_->point_count) {
 		return;
 	}
 	Point& point = table_->points[id];

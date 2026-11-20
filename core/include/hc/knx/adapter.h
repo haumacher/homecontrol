@@ -72,8 +72,13 @@ struct KnxMapping {
 /// - Refused: a command of a datapoint without a sending address, one the DPT cannot encode, and
 ///   while the tunnel is up and kPendingCapacity writes wait for their confirmation (outside the
 ///   sending of the held commands).
-/// - Tunnel down: every datapoint becomes stale. Tunnel up: the read-on-start datapoints are read,
-///   one every kReadSpacingMs, so a hundred reads do not burst onto the bus.
+/// - Tunnel down after it was up: every datapoint becomes stale (contact lost). A tunnel that was
+///   never up since the adapter started loses no contact: the failed first attempts after a boot
+///   leave the qualities as they are, a restored value stays good (homecontrol #103). Tunnel up: the
+///   read-on-start datapoints are read, one every kReadSpacingMs, so a hundred reads do not burst
+///   onto the bus, and are good with their answer; a stale datapoint without kReadOnStart has
+///   nothing on the bus to ask and is good again with its last value (DatapointModel::resume(): no
+///   update, only the displays are told through DatapointListener::datapoint_quality()).
 /// - A read the application asks for (read(), a rule's `read` action) joins the same queue: a group
 ///   read of the address read-on-start uses (`send`, else the first listening address), with the
 ///   same spacing; a read already waiting is not queued twice. Refused while the tunnel is down and
@@ -175,6 +180,8 @@ private:
 	void log_telegram(TelegramRecord::Direction direction, const LData& frame, const GroupData& data);
 	void schedule_read();
 	void read_due();
+	/// Makes the stale datapoints without kReadOnStart good again with their last value (tunnel up).
+	void resume_unread();
 	/// Queues a group read of every read-on-start datapoint (tunnel up, new mapping).
 	void want_reads_on_start();
 	void free_tables();
@@ -200,6 +207,7 @@ private:
 	size_t read_cursor_ = 0;     ///< Next entry to consider for a read (count_: none waits).
 	size_t held_cursor_ = 0;     ///< Next entry to consider for a held command (count_: none waits).
 	bool hold_logged_ = false;   ///< The first held command since the tunnel was last up is logged.
+	bool was_up_ = false;        ///< The tunnel was up since start(): a later down is a loss of contact.
 	TimerHandle read_timer_;
 	PendingSend pending_[kPendingCapacity] = {};
 	size_t pending_count_ = 0;

@@ -208,6 +208,8 @@ public:
 
 	// DatapointListener
 	void datapoint_updated(const DatapointUpdate& update) override;
+	/// The quality changed without an update (homecontrol #103): the retained state is published again.
+	void datapoint_quality(const Datapoint& datapoint) override;
 
 	// MqttClientListener
 	void mqtt_connected() override;
@@ -238,6 +240,8 @@ private:
 	void start_sweep();
 
 	void request_pump();
+	/// Queues the state of datapoint `id` for publishing (a change, a quality change).
+	void mark_dirty(uint16_t id);
 	void pump();
 	enum class Step : uint8_t { done, budget, blocked };
 	Step pump_discovery(size_t& budget);

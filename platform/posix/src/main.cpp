@@ -250,6 +250,7 @@ int main(int argc, char** argv) {
 	hc::knx::TelegramLog telegrams(clock);
 	hc::knx::KnxTunnel tunnel(controller.loop(), clock, controller.connectivity(), knx_socket);
 	hc::knx::KnxAdapter adapter(controller.loop(), clock, model, tunnel, &telegrams);
+	controller.shutdown().add(tunnel); // the stop closes the tunnel first (homecontrol #103)
 	// The gateway search of the Settings page (/api/knx/search), on a socket of its own while it runs.
 	hc::posix::PosixUdpSocketFactory search_sockets(controller.loop());
 	hc::knx::GatewaySearch gateway_search(controller.loop(), clock, controller.connectivity(), search_sockets);
@@ -369,12 +370,18 @@ int main(int argc, char** argv) {
 		controller.run_once(); // the retirement drains the queue and disconnects (at most kRetireMs)
 		sleep_until_work(executor, udp, 100, controller.loop(), clock);
 	}
+	// The connections close (homecontrol #103): the KNX tunnel's DISCONNECT_REQUEST, its answer awaited
+	// at most Shutdown::kMaxWaitMs, so the gateway frees the slot before the process ends.
+	controller.shutdown().begin(g_restart ? "restart over the API" : "stop", hc::Callback());
+	while (!controller.shutdown().finished()) {
+		controller.run_once();
+		sleep_until_work(executor, udp, 50, controller.loop(), clock);
+	}
 	executor.stop();
 	if (web) {
 		web->stop();
 	}
 	image.flush(); // pending value and history writes
-	tunnel.stop(); // DISCONNECT_REQUEST, so the gateway frees the tunnel at once
 	hc::Log::info(kTag, "stopping on %s after %llu s", g_restart ? "a restart over the API" :
 		hc::posix::PosixDiagnostics::signal_name(g_stop).c_str(),
 		static_cast<unsigned long long>(controller.uptime_ms() / 1000));

@@ -244,7 +244,8 @@ browser"), `clear_coredump`, `set_platform_log_level`/`has_platform_log` and `st
 
 A restart, a factory reset and a WiFi change answer first and act 750 ms later from an event-loop
 timer, so the HTTP response leaves the device; a second request in that time gets 409
-`system.busy`. Console-only by design: `web password clear` (needs physical access, the recovery
+`system.busy`. The restart and the factory reset then close the connections first (the KNX
+tunnel's DISCONNECT_REQUEST, at most 500 ms; doc/core.md "Planned restart"). Console-only by design: `web password clear` (needs physical access, the recovery
 from a lost password), `crash` (a test of the dump pipeline) and `web demo` (a development aid).
 
 ### The UI: static files from LittleFS, no framework

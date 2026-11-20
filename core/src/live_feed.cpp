@@ -634,6 +634,8 @@ void LiveFeed::datapoint_updated(const DatapointUpdate& update) { queue_datapoin
 
 void LiveFeed::datapoint_pending(const Datapoint& datapoint) { queue_datapoint(datapoint.id()); }
 
+void LiveFeed::datapoint_quality(const Datapoint& datapoint) { queue_datapoint(datapoint.id()); }
+
 void LiveFeed::queue_datapoint(uint16_t id) {
 	bool any = false;
 	for (const Client& c : clients_) {

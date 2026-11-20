@@ -35,6 +35,7 @@
 #include "hc/websocket.h"
 #include "hc/language_packs.h"
 #include "littlefs_blob_store.h"
+#include "planned_restart.h"
 #include "storage.h"
 #include "ui_files.h"
 
@@ -351,12 +352,15 @@ HostResult WebServer::system_action_possible(SystemAction, const char**) const {
 }
 
 void WebServer::system_action(SystemAction action) {
+	// The connections close first (homecontrol #103: the KNX tunnel's DISCONNECT_REQUEST), then the
+	// factory reset's erase, then the restart.
 	if (action == SystemAction::factory_reset) {
-		factory_reset_and_restart(blobs_, "over the API");
+		planned_restart(controller_, "factory reset over the API",
+			Callback{[](void* blobs) { factory_reset_and_restart(static_cast<BlobStore*>(blobs), "over the API"); }, blobs_});
+		return;
 	}
 	Log::warn(kTag, "restart requested over the API: restarting");
-	vTaskDelay(pdMS_TO_TICKS(100)); // let the log line out
-	esp_restart();
+	planned_restart(controller_, "restart over the API");
 }
 
 HostResult WebServer::start_update(bool force, const char* url, const char** reason) {

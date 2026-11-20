@@ -448,7 +448,11 @@ conversions are functions (section 4.7): `round`, `floor`, `ceil`, `trunc` (real
 *No value* is not a type; any expression of any type may have no value. It arises from:
 
 - a datapoint reference whose datapoint has quality `unknown` or `stale` (stale: its technology
-  lost contact; a persisted datapoint's value restored at boot is good, 7.10);
+  lost contact; a persisted datapoint's value restored at boot is good, 7.10, and stays good while
+  a bus connection that never came up since the boot is retried; when the contact is back, a
+  datapoint the technology reads at start is good with the answer, one it has nothing to ask for —
+  a group address only the controller writes — is good again with its last value, without an
+  update: no trigger fires on it);
 - a time function while the wall clock is not synchronized, a sun function without a result
   (`sunrise()` and the like when the event does not occur, `sunAzimuth()` and `sunElevation()`
   without a location);
@@ -991,7 +995,9 @@ image declares `persist` (`spec/runtime-image.md` 3.3): each comes back with its
 quality good, whatever owns it (a value of the application, a group address only the controller
 writes, a device's attribute; homecontrol #100), before the rules start; the restore is no update,
 so no trigger fires on it. Where the bus knows better the datapoint is `readOnStart`: the
-technology's answer replaces the restored value like any report. Every other datapoint starts
+technology's answer replaces the restored value like any report. A bus connection that fails at
+first after the boot (the KNX gateway still holding the connection of the run before) is no loss of
+contact: the restored values stay good (homecontrol #103). Every other datapoint starts
 unknown. After the image is loaded at boot:
 
 1. Each rule with states whose persisted state the image still declares takes that state, without

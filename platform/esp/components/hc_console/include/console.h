@@ -64,7 +64,8 @@ bool console_start(ConsoleContext& context);
 /// removes every blob of `blobs` (nullptr: the state directory is kept, and said so), erases the
 /// Zigbee network (zb_storage, zb_db) and the nvs partition (settings with the WiFi credentials, the
 /// web password and tokens, the boot record), then restarts. Prints each step to stdout. Does not
-/// return.
+/// return. The console and the API run it through planned_restart(), after the connections closed
+/// (homecontrol #103).
 [[noreturn]] void factory_reset_and_restart(BlobStore* blobs, const char* origin);
 
 } // namespace esp
