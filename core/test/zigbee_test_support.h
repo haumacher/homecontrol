@@ -68,6 +68,18 @@ public:
 		return record("identify " + hex4(short_addr) + " " + std::to_string(endpoint) + " " + std::to_string(seconds));
 	}
 	bool leave(hc::zigbee::Ieee, uint16_t short_addr) override { return record("leave " + hex4(short_addr)); }
+	/// Hands `neighbors` to the visitor (not recorded in `calls`: the adapter reads the table at every
+	/// check); `neighbors_readable` false refuses.
+	bool read_neighbors(hc::ZigbeeNeighborVisitor& visitor) override {
+		++neighbor_reads;
+		if (!neighbors_readable) {
+			return false;
+		}
+		for (const hc::ZigbeeNeighbor& neighbor : neighbors) {
+			visitor.neighbor(neighbor);
+		}
+		return true;
+	}
 
 	static std::string hex4(uint16_t value) {
 		char text[8];
@@ -95,6 +107,10 @@ public:
 
 	std::vector<std::string> calls;
 	bool accept = true;
+	/// The coordinator's neighbour table read_neighbors() reports.
+	std::vector<hc::ZigbeeNeighbor> neighbors;
+	bool neighbors_readable = true;
+	size_t neighbor_reads = 0;
 
 private:
 	bool record(const std::string& line) {

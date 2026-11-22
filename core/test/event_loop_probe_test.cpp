@@ -182,7 +182,12 @@ TEST_CASE("ControllerProbe.HeartbeatSurvivesClockJumpWithOneBeatAndRightUptime")
 	CHECK(p.sink.count("W hc.loop") == 1); // the missed period is visible, not silent
 	CHECK(p.sink.contains("periodic timer controller.heartbeat (period 10000 ms) missed 1 period(s)"));
 	CHECK(controller.next_deadline() == p.clock.now_ms + 5000); // back on the 10 s grid
-	p.clock.advance(5000);
+	controller.connectivity().link_up("192.0.2.11"); // a change the next beat reports (#98: only changes)
+	p.clock.advance(4999);
+	controller.run_once();
+	CHECK(p.sink.count("heartbeat: uptime") == 1);
+	p.clock.advance(1);
 	controller.run_once();
 	CHECK(p.sink.count("heartbeat: uptime") == 2);
+	CHECK(p.sink.contains("heartbeat: uptime 30 s, network up 192.0.2.11"));
 }

@@ -300,10 +300,14 @@ owner that load is refused ("the model holds datapoints of another owner").
 
 ## Stale rule
 
-A device that has configured reporting must be heard within three times the largest maximum
+A device that has configured reporting must be heard within three times the shortest maximum
 reporting interval of its datapoints (`kStaleFactor`), the effective ones (a binding's override
-over the default): a bulb (max 300 s) within 15 minutes, a temperature sensor (max 600 s) within 30
-minutes, a battery-only device (max 21600 s) within 18 hours. The adapter checks every 10 s; the
+over the default). Every frame of the device counts as heard, so the most frequent promise is the
+one to check (homecontrol #98; before, the largest interval counted, and the Hue motion sensor
+SML002, whose battery reports at most every 21600 s, was stale only after 18 hours although its
+temperature, illuminance and occupancy promise a report every 600 s): a bulb (max 300 s) within 15
+minutes, a temperature sensor or the SML002 (max 600 s) within 30 minutes, a device whose only
+periodic report is the battery (max 21600 s) within 18 hours. The adapter checks every 10 s; the
 silence counts from the controller's start for a device not heard since (a persisted value restored
 at boot is good until then, homecontrol #100; a read on start replaces it). A stale device's
 datapoints get the quality stale; its next frame ends it and its values are read again. Devices
@@ -312,6 +316,40 @@ turns the periodic report off promises no report and does not count: `max` 65535
 issues no reports of the attribute) and `max` 0 (ZCL: reports on a change only). A device whose
 every function has it off never goes stale, like a pure button.
 
+## Radio facts and the join log (homecontrol #98)
+
+To tell a lost parent from an empty battery or a dead device (homecontrol #99), the adapter keeps
+per device what the stack knows of its radio link, for this boot only (not persisted), and shows it
+in the adapter view (`GET /api/zigbee`, spec/zigbee.md "Adapter view") and on the Zigbee page:
+
+- **`lqi`, `rssi`**: with each frame the stack hands over (reports, read responses, commands, ZDO
+  answers, announces), the platform asks ZBOSS for the sender's last LQI and RSSI
+  (`zb_zdo_get_diag_data()`, ZBOSS's own API of the managed `esp-zboss-lib`; the esp-zigbee-lib's
+  report callback carries neither) and puts them into the event. ZBOSS keeps them per neighbour: a
+  device behind a router has none (the router's link is its neighbour entry), so the members stay
+  absent for it.
+- **The child table**: every 10 s (with the stale check) the adapter reads the coordinator's
+  neighbour table through the driver (`ZigbeeDriver::read_neighbors()`, on the ESP
+  `esp_zb_nwk_get_next_neighbor()` under the stack's lock, waiting at most 20 ms for it: a busy stack
+  skips one read). A device listed as a child shows `parent: "coordinator"`, its end-device timeout
+  `timeout_s` (`device_timeout`) and the remaining time of its entry at the read `expires_in_s`
+  (`timeout_counter`); a polling sleepy device keeps restarting it. A router (from the table or its
+  announce's capability) has no parent. A device that joined or rejoined through a router names it
+  (the trust center's Update Device carries the parent).
+- **The log**: the first read names every child (`<device> is a child of the coordinator (short
+  0xaf9e, end-device timeout 15360 s, 9 s left)`), later reads every change (`became a child`, `is no
+  longer a child of the coordinator: removed from its child table (end-device timeout ..., N s were
+  left 10 s before; last heard M s ago)`). Every Update Device of the trust center (unsecured join,
+  secured rejoin, trust center rejoin, leave) is one info line with the parent and the trust
+  center's decision (`<device>: secured rejoin (short 0xaf9e) through the coordinator, trust center:
+  authorize`), every authorization (`authorization (legacy device): success`, a failure at warn) and
+  every MAC association (`associated with the coordinator`) too.
+
+What the stack does not signal stays invisible: a NWK rejoin request it refuses below the trust
+center (no Update Device follows) leaves no line; the absence of a rejoin line while the device's
+LED says it searches is then the evidence. A device's own child table entry at a router is not read
+(no Mgmt_Lqi request).
+
 ## Threading
 
 The stack runs in its own task and calls back there. Its callbacks (signals, attribute reports,
@@ -319,8 +357,8 @@ read responses, ZDO answers, commands) copy what the adapter needs into a ring o
 one drain message through the `LoopQueue`; the event loop delivers them to the adapter. A full ring
 drops the frame, counts it (`zigbee status`: "events N dropped") and logs the first drop of a burst
 (`hc.zigbee: Zigbee event dropped: the ring to the event loop is full ...`). The adapter's requests run on
-the event loop's task: the driver takes the stack's lock (at most 500 ms) and calls the SDK
-directly. Allocation happens at `init()` (the adapter, the driver, the task) and at the model
+the event loop's task: the driver takes the stack's lock (at most 500 ms; the periodic read of the
+neighbour table at most 20 ms) and calls the SDK directly. Allocation happens at `init()` (the adapter, the driver, the task) and at the model
 reloads (the adapter's point tables, the specs it states); reports, commands and the stale check
 allocate nothing.
 
@@ -332,7 +370,8 @@ The **Zigbee** page (doc/web.md, "Pages") does what the console does, over the A
 `interviewing`, `interviewed`, `interview_failed`, `interview_incomplete`, `left`, ...) appear in a list under the network
 card as they happen, and the device cards follow (the page reads `GET /api/zigbee` again on each
 event). Each device card shows the state (an incomplete interview with what did not answer),
-manufacturer and model, IEEE, last seen and its
+manufacturer and model, IEEE, last seen, the radio link (LQI and RSSI of the last frame, the parent,
+the child entry's timeout and remaining time, where known) and its
 datapoints' live values, with **Identify** (10 s), **Rename** (the label), **Interview again** and
 **Remove** (after a confirmation; asks the device to leave and forgets it). The adapter reports
 every change of its device list through `ZigbeeEventListener` (one listener, the `WebApi`, which

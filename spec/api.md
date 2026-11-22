@@ -683,7 +683,8 @@ The coordinator's network and devices (doc/zigbee.md, spec/zigbee.md). Without a
  "devices": [{"ieee": "00124b0012345678", "short": 6699, "manufacturer": "IKEA of Sweden",
               "model": "TRADFRI bulb E27 WS opal 980lm", "label": "Hall", "interviewed": true,
               "stale": false, "left": false, "interviewing": false, "last_seen": 1792231392,
-              "seen_ago_s": 12, "datapoints": ["zigbee.00124b0012345678.1.on"]}],
+              "seen_ago_s": 12, "lqi": 156, "rssi": -71, "parent": "coordinator", "timeout_s": 15360,
+              "expires_in_s": 15342, "datapoints": ["zigbee.00124b0012345678.1.on"]}],
  "next": null}
 ```
 
@@ -691,7 +692,12 @@ Paged by 16 devices: `next` is the `from` of the next page or `null`. `generatio
 changes of the list (every WebSocket `zigbee` event increments it). `datapoints` are the names of
 the device's datapoints (their values come from `/api/datapoints` or the live feed). `left`: the
 device announced its leave (it stays known, rejoining restores it); `stale`: not heard within its
-expected interval; `seen_ago_s` only once heard since the start. An incomplete interview (a sleepy
+shortest reporting interval × 3 (doc/zigbee.md "Stale rule"); `seen_ago_s` only once heard since the
+start. The radio facts (homecontrol #98; new members, absent until known since the start): `lqi`
+and `rssi` of the last frame received from the device; `parent`: `"coordinator"` while the device
+is in the coordinator's child table, then with `timeout_s` (its end-device timeout) and
+`expires_in_s` (the remaining time of its entry), otherwise the IEEE of the router it joined
+through, with `parent_label`, where known; absent for a router (spec/zigbee.md "Adapter view"). An incomplete interview (a sleepy
 device did not answer every request; `interviewed` false, its datapoints in use) adds
 `"missing": {"endpoints": [2], "names": false}` and the English reason
 `"incomplete": "endpoint 2 did not answer"` (spec/zigbee.md "Adapter view"); the export's device

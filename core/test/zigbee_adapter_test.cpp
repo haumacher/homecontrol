@@ -247,7 +247,7 @@ TEST_CASE("ZigbeeAdapter: a sensor's datapoints are read-only") {
 	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..600 10"));
 	CHECK(f.driver.has("configure 0x3c4d 1 0x0405 0x0000 30..600 100"));
 	CHECK(f.driver.has("configure 0x3c4d 1 0x0001 0x0021 3600..21600 2"));
-	CHECK(f.adapter.stale_timeout_s(kSensor) == 3 * 21600);
+	CHECK(f.adapter.stale_timeout_s(kSensor) == 3 * 600); // the shortest promise: temperature and humidity
 }
 
 TEST_CASE("ZigbeeAdapter: a contact sensor is enrolled and its zone notifications are reported") {
@@ -1198,7 +1198,7 @@ TEST_CASE("ZigbeeAdapter probe: the override of a function on the unanswered end
 	CHECK(f.adapter.interviewing() == 0);
 	CHECK(f.driver.has("configure 0x3c4d 2 0x0406 0x0000 0..120 0"));
 	CHECK(f.driver.count("configure 0x3c4d 2") == 1);
-	CHECK(f.adapter.stale_timeout_s(kSensor) == 3 * 600); // the longer default of the temperature rules
+	CHECK(f.adapter.stale_timeout_s(kSensor) == 3 * 120); // the shorter override of the presence
 	exported = export_json(f, kSensor);
 	CHECK(exported.find("\"interviewed\":true") != std::string::npos);
 	CHECK(exported.find("\"function\":\"occupancy\",\"endpoint\":2,\"cluster\":1030,\"attribute\":0,\"type\":\"boolean\","

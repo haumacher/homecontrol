@@ -29,6 +29,40 @@ struct ReportingConfig {
 	uint32_t change;
 };
 
+/// One entry of the coordinator's neighbour table as the stack keeps it (ZigbeeDriver::read_neighbors()).
+struct ZigbeeNeighbor {
+	/// The neighbour's relationship to the coordinator (Zigbee nwkNeighborTable).
+	enum class Relationship : uint8_t {
+		parent = 0,
+		child = 1,
+		sibling = 2,
+		none = 3,
+		previous_child = 4,
+		unauthenticated_child = 5,
+	};
+	zigbee::Ieee ieee = 0;
+	uint16_t short_addr = zigbee::kNoShortAddress;
+	/// The neighbour is a router (a full-function device that routes; an end device is not).
+	bool router = false;
+	Relationship relationship = Relationship::none;
+	/// The end-device timeout of a child in seconds: how long the coordinator keeps it in its child
+	/// table without hearing from it (negotiated with an End Device Timeout Request, else the stack's
+	/// default).
+	uint32_t timeout_s = 0;
+	/// The stack's aging counter of a child in milliseconds: how long it stays in the child table
+	/// unless it is heard (each poll of a sleepy child restarts it).
+	uint32_t expires_ms = 0;
+};
+
+/// Told about every entry of the neighbour table (ZigbeeDriver::read_neighbors()).
+class ZigbeeNeighborVisitor {
+public:
+	virtual void neighbor(const ZigbeeNeighbor& neighbor) = 0;
+
+protected:
+	~ZigbeeNeighborVisitor() = default;
+};
+
 /// The Zigbee coordinator as the core sees it (doc/zigbee.md): requests to the network, sent by the
 /// platform's stack. Implemented by the ESP component hc_zigbee over the esp-zigbee-lib, and by a
 /// recording fake in the tests.
@@ -82,6 +116,12 @@ public:
 
 	/// ZDO Management Leave Request: the device leaves the network (without rejoin).
 	virtual bool leave(zigbee::Ieee ieee, uint16_t short_addr) = 0;
+
+	/// Reads the coordinator's neighbour table (homecontrol #98): calls `visitor` once per entry before
+	/// it returns, on the calling thread, while the platform holds the stack (the visitor only copies,
+	/// it must not call the driver). False when the table could not be read now (stack not running, or
+	/// busy longer than the platform waits for it); the visitor was not called then.
+	virtual bool read_neighbors(ZigbeeNeighborVisitor& visitor) = 0;
 
 protected:
 	~ZigbeeDriver() = default;

@@ -4,6 +4,7 @@
 #include "hc/controller.h"
 
 #include <cstdio>
+#include <cstring>
 
 #include "hc/diagnostics.h"
 #include "hc/network_settings.h"
@@ -83,6 +84,11 @@ void Controller::start() {
 	Log::info(kTag, "free heap %u B (min %u B)", static_cast<unsigned>(memory.free_bytes),
 		static_cast<unsigned>(memory.min_free_bytes));
 
+	// The heartbeat reports a change of the network from what it is now (the start line names none:
+	// Connectivity logs its own start).
+	beat_state_ = connectivity_.state();
+	beat_mode_ = connectivity_.mode();
+	std::snprintf(beat_ip_, sizeof(beat_ip_), "%s", connectivity_.ip());
 	loop_.schedule_periodic(start_ms_ + kHeartbeatPeriodMs, kHeartbeatPeriodMs,
 		Callback::member<Controller, &Controller::heartbeat>(this, "controller.heartbeat"));
 
@@ -226,12 +232,35 @@ bool Controller::format_wall_time(char* buffer, size_t size) const {
 void Controller::heartbeat() {
 	MemoryInfo memory = system_.memory();
 	const char* ip = connectivity_.ip();
-	bool normal = connectivity_.mode() == NetworkMode::normal;
-	Log::info(kTag, "heartbeat: uptime %llu s, network %s%s%s%s%s, free heap %u B (min %u B)",
-		static_cast<unsigned long long>(uptime_ms() / 1000), link_state_name(connectivity_.state()),
-		ip[0] != '\0' ? " " : "", ip, normal ? "" : ", ", normal ? "" : network_mode_name(connectivity_.mode()),
-		static_cast<unsigned>(memory.free_bytes),
-		static_cast<unsigned>(memory.min_free_bytes));
+	LinkState state = connectivity_.state();
+	NetworkMode mode = connectivity_.mode();
+	bool changed = state != beat_state_ || mode != beat_mode_ || std::strcmp(ip, beat_ip_) != 0;
+	// A measured heap (free_bytes 0: the platform has no figure) whose minimum fell to a new low below
+	// the low-water mark.
+	bool low = memory.free_bytes != 0 && memory.min_free_bytes < kHeapLowWaterBytes &&
+		(heap_low_warned_ == 0 || memory.min_free_bytes < heap_low_warned_);
+	if (!changed && !low) {
+		return; // steady state: nothing new for the log ring
+	}
+	bool normal = mode == NetworkMode::normal;
+	char low_text[64] = "";
+	if (low) {
+		std::snprintf(low_text, sizeof(low_text), ": the minimum is a new low below %u B",
+			static_cast<unsigned>(kHeapLowWaterBytes));
+	}
+	Log::write(low ? LogLevel::warn : LogLevel::info, kTag,
+		"heartbeat: uptime %llu s, network %s%s%s%s%s, free heap %u B (min %u B)%s",
+		static_cast<unsigned long long>(uptime_ms() / 1000), link_state_name(state), ip[0] != '\0' ? " " : "", ip,
+		normal ? "" : ", ", normal ? "" : network_mode_name(mode), static_cast<unsigned>(memory.free_bytes),
+		static_cast<unsigned>(memory.min_free_bytes), low_text);
+	if (changed) {
+		beat_state_ = state;
+		beat_mode_ = mode;
+		std::snprintf(beat_ip_, sizeof(beat_ip_), "%s", ip);
+	}
+	if (low) {
+		heap_low_warned_ = memory.min_free_bytes;
+	}
 }
 
 void Controller::time_changed(uint8_t events) {

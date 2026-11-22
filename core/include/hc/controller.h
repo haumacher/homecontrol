@@ -67,12 +67,21 @@ protected:
 ///
 /// At start it logs the version with the reset reason and the platform's boot facts (Diagnostics), applies the time zone setting, logs the wall clock state and
 /// starts connecting. Its TimeService watches the wall clock; the controller logs the local time
-/// once it is synchronized, and logs a heartbeat every kHeartbeatPeriodMs with the uptime, the network state and the heap.
+/// once it is synchronized, and checks a heartbeat every kHeartbeatPeriodMs (homecontrol #98): it
+/// logs the uptime, the network state and the heap only when the network's state, mode or address
+/// changed since the last line, and warns once per new low when the free heap's minimum falls below
+/// kHeapLowWaterBytes; in steady state it writes nothing (the figures are in GET /api/status), so the
+/// log ring reaches back hours.
 /// With a status light it shows led_status() (hc::StatusLed): checked after every run_once(), a
 /// blinking pattern ticked every StatusLed::kTickMs, a steady one set once without a timer.
 class Controller : private TimeListener {
 public:
 	static constexpr uint32_t kHeartbeatPeriodMs = 10000;
+
+	/// The free heap's minimum below which the heartbeat warns, once per new low. Far below what the
+	/// device's steady state keeps (about 30 KB at the lowest), above the shortage that makes requests
+	/// fail.
+	static constexpr uint32_t kHeapLowWaterBytes = 16384;
 
 	/// How often an unsynchronized wall clock is checked for synchronization (the TimeService's watch).
 	static constexpr uint32_t kClockWatchPeriodMs = TimeService::kWatchPeriodMs;
@@ -181,6 +190,12 @@ private:
 	char time_zone_[kMaxTimeZone] = {};
 	uint64_t start_ms_ = 0;
 	bool started_ = false;
+	/// The network as the last heartbeat line reported it (a line is written when it changes).
+	LinkState beat_state_ = LinkState::down;
+	NetworkMode beat_mode_ = NetworkMode::normal;
+	char beat_ip_[Connectivity::kMaxAddress] = {};
+	/// The free heap minimum of the last low-water warning (0: none yet).
+	uint32_t heap_low_warned_ = 0;
 	const LedInput* led_input_ = nullptr;
 };
 

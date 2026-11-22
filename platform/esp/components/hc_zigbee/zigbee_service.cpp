@@ -18,6 +18,11 @@
 #include "hc/log.h"
 #include "nvs_blob_store.h"
 #include "sdkconfig.h"
+// ZBOSS's own API (zb_zdo_get_diag_data(), the radio facts of homecontrol #98): C declarations without
+// a C++ guard of their own.
+extern "C" {
+#include "zboss_api.h"
+}
 
 namespace hc {
 namespace esp {
@@ -48,6 +53,9 @@ constexpr UBaseType_t kTaskPriority = 5;
 constexpr uint32_t kRetryMs = 1000;
 /// How long a request from the event loop waits for the stack's lock.
 constexpr TickType_t kLockTicks = pdMS_TO_TICKS(500);
+/// How long the periodic read of the neighbour table waits for it (homecontrol #98): a busy stack
+/// skips one read (the next comes 10 s later) instead of holding the loop.
+constexpr TickType_t kNeighborLockTicks = pdMS_TO_TICKS(20);
 
 constexpr const char* kStoragePartition = "zb_storage";
 constexpr const char* kFactoryPartition = "zb_fct";
@@ -59,8 +67,10 @@ constexpr const char* kDatabaseNamespace = "zigbee";
 enum class Kind : uint8_t {
 	network,
 	permit,
-	joined,
-	announce,
+	update, ///< the trust center's Update Device (status, tc_action in command, parent in cluster)
+	authorized, ///< type in command, status
+	associated,
+	announce, ///< capability in command
 	leave,
 	active_endpoints,
 	simple_descriptor,
@@ -91,6 +101,10 @@ struct Event {
 	uint8_t count; ///< endpoints, records, input clusters, payload bytes
 	uint8_t out_count;
 	bool up;
+	/// `lqi` and `rssi` hold what the stack knows of the sender's last frame (zb_zdo_get_diag_data()).
+	bool radio;
+	uint8_t lqi;
+	int8_t rssi;
 	uint16_t short_addr;
 	uint16_t cluster;
 	uint16_t profile; ///< also the PAN id
@@ -244,6 +258,9 @@ void add_record(Event& event, uint16_t attribute, uint8_t status, const esp_zb_z
 
 void deliver(ZigbeeAdapter& adapter, const Event& event) {
 	NodeAddress address{event.ieee, event.short_addr};
+	if (event.radio) {
+		adapter.radio(address, event.lqi, event.rssi); // before the frame's own event
+	}
 	switch (event.kind) {
 		case Kind::network:
 			adapter.network_state(event.up, event.profile, static_cast<uint8_t>(event.device), event.extended_pan);
@@ -251,11 +268,17 @@ void deliver(ZigbeeAdapter& adapter, const Event& event) {
 		case Kind::permit:
 			adapter.permit_join_status(event.count);
 			break;
-		case Kind::joined:
-			adapter.device_joined(address);
+		case Kind::update:
+			adapter.device_updated(address, event.status, event.command, event.cluster);
+			break;
+		case Kind::authorized:
+			adapter.device_authorized(address, event.command, event.status);
+			break;
+		case Kind::associated:
+			adapter.device_associated(event.ieee);
 			break;
 		case Kind::announce:
-			adapter.device_announced(address);
+			adapter.device_announced(address, event.command);
 			break;
 		case Kind::leave:
 			adapter.device_left(address);
@@ -320,6 +343,23 @@ void drain(void*, const LoopMessage&) {
 
 // ---- Callbacks of the stack (its task) ----
 
+/// Adds what the stack knows of the radio link to the sender of the frame the event carries: the
+/// LQI and RSSI of its last frame (ZBOSS keeps them per neighbour; a device behind a router has
+/// none). Stack task only.
+void add_radio(Event& event) {
+	if (event.short_addr == zigbee::kNoShortAddress) {
+		return;
+	}
+	zb_uint8_t lqi = ZB_MAC_LQI_UNDEFINED;
+	zb_int8_t rssi = static_cast<zb_int8_t>(ZB_MAC_RSSI_UNDEFINED);
+	zb_zdo_get_diag_data(event.short_addr, &lqi, &rssi);
+	if (rssi != static_cast<zb_int8_t>(ZB_MAC_RSSI_UNDEFINED)) {
+		event.radio = true;
+		event.lqi = lqi;
+		event.rssi = rssi;
+	}
+}
+
 void push_network(bool up) {
 	Event* event = claim(Kind::network);
 	if (event == nullptr) {
@@ -353,6 +393,7 @@ void active_endpoints_answer(esp_zb_zdp_status_t status, uint8_t count, uint8_t*
 		std::memcpy(event->payload.bytes, list, n);
 		event->count = static_cast<uint8_t>(n);
 	}
+	add_radio(*event);
 	commit();
 }
 
@@ -392,6 +433,7 @@ void simple_descriptor_answer(esp_zb_zdp_status_t status, esp_zb_af_simple_desc_
 				static_cast<unsigned>(in + out), static_cast<unsigned>(keep_in + keep_out));
 		}
 	}
+	add_radio(*event);
 	commit();
 }
 
@@ -403,6 +445,7 @@ void bind_answer(esp_zb_zdp_status_t status, void* context) {
 	event->short_addr = static_cast<uint16_t>(reinterpret_cast<uintptr_t>(context) >> 8);
 	event->ieee = ieee_by_short(event->short_addr);
 	event->status = static_cast<uint8_t>(status);
+	add_radio(*event);
 	commit();
 }
 
@@ -449,6 +492,7 @@ esp_err_t action_handler(esp_zb_core_action_callback_id_t id, const void* messag
 			event->endpoint = report->src_endpoint;
 			event->cluster = report->cluster;
 			add_record(*event, report->attribute.id, zigbee::zcl_status::kSuccess, report->attribute.data);
+			add_radio(*event);
 			commit();
 			break;
 		}
@@ -462,6 +506,7 @@ esp_err_t action_handler(esp_zb_core_action_callback_id_t id, const void* messag
 			for (const esp_zb_zcl_read_attr_resp_variable_t* v = response->variables; v != nullptr; v = v->next) {
 				add_record(*event, v->attribute.id, static_cast<uint8_t>(v->status), v->attribute.data);
 			}
+			add_radio(*event);
 			commit();
 			break;
 		}
@@ -478,6 +523,7 @@ esp_err_t action_handler(esp_zb_core_action_callback_id_t id, const void* messag
 					event->status = static_cast<uint8_t>(v->status);
 				}
 			}
+			add_radio(*event);
 			commit();
 			break;
 		}
@@ -494,6 +540,7 @@ esp_err_t action_handler(esp_zb_core_action_callback_id_t id, const void* messag
 			event->payload.bytes[2] = change->extended_status;
 			event->payload.bytes[3] = change->zone_id;
 			event->count = 4;
+			add_radio(*event);
 			commit();
 			break;
 		}
@@ -513,6 +560,7 @@ esp_err_t action_handler(esp_zb_core_action_callback_id_t id, const void* messag
 				std::memcpy(event->payload.bytes, command->data, n);
 				event->count = static_cast<uint8_t>(n);
 			}
+			add_radio(*event);
 			commit();
 			break;
 		}
@@ -654,7 +702,7 @@ void zigbee_task(void*) {
 
 class Lock {
 public:
-	Lock() : held_(g_state.ready.load() && esp_zb_lock_acquire(kLockTicks)) {}
+	explicit Lock(TickType_t wait = kLockTicks) : held_(g_state.ready.load() && esp_zb_lock_acquire(wait)) {}
 	~Lock() {
 		if (held_) {
 			esp_zb_lock_release();
@@ -869,6 +917,27 @@ public:
 		esp_zb_zdo_device_leave_req(&request, &leave_answer, reinterpret_cast<void*>(context_of(short_addr)));
 		return true;
 	}
+
+	bool read_neighbors(ZigbeeNeighborVisitor& visitor) override {
+		Lock lock(kNeighborLockTicks);
+		if (!lock) {
+			return false;
+		}
+		// At most the table's size (kNetworkSize entries): the iteration ends with ESP_ERR_NOT_FOUND.
+		esp_zb_nwk_info_iterator_t iterator = ESP_ZB_NWK_INFO_ITERATOR_INIT;
+		esp_zb_nwk_neighbor_info_t info = {};
+		for (uint16_t n = 0; n < kNetworkSize && esp_zb_nwk_get_next_neighbor(&iterator, &info) == ESP_OK; ++n) {
+			ZigbeeNeighbor neighbor;
+			neighbor.ieee = ieee_of(info.ieee_addr);
+			neighbor.short_addr = info.short_addr;
+			neighbor.router = info.device_type == ESP_ZB_DEVICE_TYPE_ROUTER;
+			neighbor.relationship = static_cast<ZigbeeNeighbor::Relationship>(info.relationship);
+			neighbor.timeout_s = info.device_timeout;
+			neighbor.expires_ms = info.timeout_counter;
+			visitor.neighbor(neighbor);
+		}
+		return true;
+	}
 };
 
 bool partition_present(const char* label) {
@@ -915,16 +984,42 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t* signal) {
 			}
 			break;
 		case ESP_ZB_ZDO_SIGNAL_DEVICE_UPDATE: {
-			// The trust center's view of a join: an unsecured join is a fresh association (a new device
-			// or a reset one); a secured rejoin is a device that came back with its key (no news).
+			// The trust center's view of a join, rejoin or leave (homecontrol #98: each one is logged by the
+			// adapter): an unsecured join is a fresh association (a new device or a reset one); a secured
+			// or trust center rejoin is a device that came back with its key.
 			auto* params = static_cast<esp_zb_zdo_signal_device_update_params_t*>(esp_zb_app_signal_get_params(pointer));
-			if (params->status == ESP_ZB_ZDO_STANDARD_DEV_UNSECURED_JOIN) {
-				Event* event = claim(Kind::joined);
-				if (event != nullptr) {
-					event->short_addr = params->short_addr;
-					event->ieee = ieee_of(params->long_addr);
-					commit();
-				}
+			Event* event = claim(Kind::update);
+			if (event != nullptr) {
+				event->short_addr = params->short_addr;
+				event->ieee = ieee_of(params->long_addr);
+				event->status = params->status;
+				event->command = params->tc_action;
+				event->cluster = params->parent_short;
+				commit();
+			}
+			break;
+		}
+		case ESP_ZB_ZDO_SIGNAL_DEVICE_AUTHORIZED: {
+			auto* params =
+				static_cast<esp_zb_zdo_signal_device_authorized_params_t*>(esp_zb_app_signal_get_params(pointer));
+			Event* event = claim(Kind::authorized);
+			if (event != nullptr) {
+				event->short_addr = params->short_addr;
+				event->ieee = ieee_of(params->long_addr);
+				event->command = params->authorization_type;
+				event->status = params->authorization_status;
+				commit();
+			}
+			break;
+		}
+		case ESP_ZB_NWK_SIGNAL_DEVICE_ASSOCIATED: {
+			auto* params =
+				static_cast<esp_zb_nwk_signal_device_associated_params_t*>(esp_zb_app_signal_get_params(pointer));
+			Event* event = claim(Kind::associated);
+			if (event != nullptr) {
+				event->short_addr = zigbee::kNoShortAddress;
+				event->ieee = ieee_of(params->device_addr);
+				commit();
 			}
 			break;
 		}
@@ -934,6 +1029,8 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t* signal) {
 			if (event != nullptr) {
 				event->short_addr = params->device_short_addr;
 				event->ieee = ieee_of(params->ieee_addr);
+				event->command = params->capability;
+				add_radio(*event);
 				commit();
 			}
 			break;

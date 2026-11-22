@@ -234,6 +234,7 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/zigbee_database_test.cpp"
 	"${HC_REPO_DIR}/core/test/zigbee_mapping_test.cpp"
 	"${HC_REPO_DIR}/core/test/zigbee_adapter_test.cpp"
+	"${HC_REPO_DIR}/core/test/zigbee_diagnostics_test.cpp"
 	"${HC_REPO_DIR}/core/test/zigbee_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/zigbee_reporting_test.cpp"
 )

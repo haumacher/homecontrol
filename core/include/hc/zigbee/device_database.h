@@ -97,6 +97,27 @@ struct ZigbeeDevice {
 	/// next interview the device's own frames trigger waits kInterviewRetryMs from it.
 	uint64_t interview_ms = 0;
 
+	// Radio facts of this boot (homecontrol #98, spec/zigbee.md "Adapter view"), not persisted; ordered
+	// to pack into 16 bytes.
+
+	/// The device's end-device timeout in the coordinator's child table, in seconds, and the
+	/// remaining time of its entry at the last read of the table, in milliseconds (valid while
+	/// `child`).
+	uint32_t child_timeout_s = 0;
+	uint32_t child_expires_ms = 0;
+	/// The parent the trust center named in the device's last join or rejoin (kNoShortAddress: none).
+	uint16_t parent_short = kNoShortAddress;
+	/// Link quality (0..255) and signal strength (dBm) of the device's last frame (valid while
+	/// `radio_known`: the stack gave them with a frame since the start).
+	uint8_t lqi = 0;
+	int8_t rssi = 0;
+	bool radio_known = false;
+	/// The device is a router (its announce's capability, or the coordinator's neighbour table): it
+	/// has no parent.
+	bool router = false;
+	/// The device was in the coordinator's child table at the last read of the table.
+	bool child = false;
+
 	/// The interview ended incomplete: its partial result (endpoints() is not empty) is kept and
 	/// mapped, the device is not interviewed and is interviewed again when it is next heard.
 	bool incomplete() const { return !interviewed && endpoint_count > 0 && (missing_count > 0 || missing_names); }

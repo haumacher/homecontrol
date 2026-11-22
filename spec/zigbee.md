@@ -256,6 +256,11 @@ pairs in the field, E-Home names, places and wires, and ships back as the bindin
 			"interviewing": false,
 			"last_seen": 1792234567,
 			"seen_ago_s": 12,
+			"lqi": 156,
+			"rssi": -71,
+			"parent": "coordinator",
+			"timeout_s": 15360,
+			"expires_in_s": 15342,
 			"datapoints": ["zigbee.00158d0001020304.1.temperature", "zigbee.00158d0001020304.1.humidity"]
 		}
 	]
@@ -271,5 +276,15 @@ interview runs now; `seen_ago_s`: seconds since it was last heard (absent before
 the start). For an incomplete interview (doc/zigbee.md "Incomplete interviews"; `interviewed` false
 with datapoints) the device also has `missing` (as in the device database) and `incomplete`, the
 English reason, e.g. `"incomplete": "endpoint 2 did not answer"` or `"endpoints 2, 3 did not answer;
-manufacturer and model did not answer"`; a UI translates from `missing`. `GET /api/zigbee` (spec/api.md) pages the same device objects with `write_device_json()`
+manufacturer and model did not answer"`; a UI translates from `missing`.
+The radio facts (homecontrol #98, doc/zigbee.md "Radio facts and the join log"; facts of this boot,
+each absent until known): `lqi` (0..255) and `rssi` (dBm) of the last frame received from the
+device, as the stack gives them (absent for a device that is not the coordinator's neighbour);
+`parent` is `"coordinator"` while the device is a child in the coordinator's child table, with
+`timeout_s` (its end-device timeout there) and `expires_in_s` (the remaining time of its entry at the
+last read of the table, every 10 s); otherwise the IEEE address of the router the device joined or
+rejoined through when the trust center named it, with that router's label as `parent_label` if it
+has one; absent for a router and when no parent is known. `stale` turns true when the device was
+not heard within three times its shortest periodic maximum reporting interval ("Stale rule" in
+doc/zigbee.md). `GET /api/zigbee` (spec/api.md) pages the same device objects with `write_device_json()`
 and the network with `write_network_json()`.

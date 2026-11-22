@@ -153,9 +153,10 @@ protected:
 ///   and bindings that change it configure the interviewed devices concerned again
 ///   (reconfigure_reporting()), except at their first application (the start).
 /// - **Stale.** Every kCheckPeriodMs the adapter compares each device's silence with its stale
-///   timeout: kStaleFactor times the largest effective maximum reporting interval of its datapoints
-///   (a device without a periodic report, a pure button or one whose overrides turn it off with max
-///   0 or 65535, never goes stale). Silence counts from the start
+///   timeout: kStaleFactor times the shortest effective maximum reporting interval of its datapoints
+///   (every frame of the device counts as heard, so the most frequent promise is the one to check; a
+///   device without a periodic report, a pure button or one whose overrides turn it off with max 0
+///   or 65535, never goes stale). Silence counts from the start
 ///   for a device not heard since. Any frame of a stale device ends it; its datapoints are read
 ///   again.
 /// - **Commands.** A commandable point's command goes to the driver at once. While the network is
@@ -164,6 +165,14 @@ protected:
 ///   commands are sent once, in datapoint order, one every kHeldSpacingMs. A report drops the held
 ///   value (the device's is newer). Refused: a point without a command, a value out of range, a
 ///   device that has not joined, and the stack's refusal while the network is up.
+/// - **Radio facts** (homecontrol #98). The platform hands the link quality and signal strength of
+///   each frame (radio()); every kCheckPeriodMs the adapter reads the coordinator's neighbour table
+///   (ZigbeeDriver::read_neighbors()) and keeps, per device, whether it is a child of the coordinator
+///   with its end-device timeout and the remaining time of its entry, and whether it is a router.
+///   A device that enters or leaves the child table is logged at info, as is every join, rejoin and
+///   leave the trust center reports (device_updated()), every authorization (device_authorized())
+///   and every association (device_associated()), so that a device's loss and its return show in the
+///   log with their time and kind.
 /// - **Reads.** After start() and after a silence, the server attributes of each device are read,
 ///   one device every kRefreshSpacingMs. A read the application asks for (read(), a rule's `read`
 ///   action) sends a Read Attributes of the datapoint's attribute at once; refused for a point the
@@ -177,6 +186,13 @@ class ZigbeeAdapter : public Technology, public image::DynamicSpecProvider {
 public:
 	/// A point whose datapoint is not in the model (point_id()).
 	static constexpr uint16_t kNoId = 0xFFFF;
+	/// The MAC capability bit of a router (a full-function device) in a device announce.
+	static constexpr uint8_t kCapabilityRouter = 0x02;
+	/// Update Device status values (device_updated()).
+	static constexpr uint8_t kUpdateSecuredRejoin = 0x00;
+	static constexpr uint8_t kUpdateUnsecuredJoin = 0x01;
+	static constexpr uint8_t kUpdateLeft = 0x02;
+	static constexpr uint8_t kUpdateTrustCenterRejoin = 0x03;
 
 	static constexpr uint32_t kInterviewTimeoutMs = 10000;
 	static constexpr uint8_t kInterviewAttempts = 3;
@@ -248,6 +264,22 @@ public:
 	/// configuration are gone; it is interviewed again with the announce that follows.
 	void device_joined(NodeAddress address);
 	void device_announced(NodeAddress address);
+	/// The announce with the device's MAC capability (bit 0x02: a router).
+	void device_announced(NodeAddress address, uint8_t capability);
+	/// The trust center's Update Device (a join, rejoin or leave through it or its routers): `status`
+	/// as in Zigbee's Update Device command (UpdateDevice), `tc_action` what the trust center decided
+	/// (TcAction), `parent_short` the parent the device joined through. Logged at info with the device;
+	/// an unsecured join continues as device_joined().
+	void device_updated(NodeAddress address, uint8_t status, uint8_t tc_action, uint16_t parent_short);
+	/// The trust center authorized a joining or rejoining device, or failed to: `type` and `status`
+	/// as the stack gives them (0 success). Logged at info, a failure at warn.
+	void device_authorized(NodeAddress address, uint8_t type, uint8_t status);
+	/// A device associated with the coordinator at the MAC level (a join during permit join). Logged at
+	/// info.
+	void device_associated(Ieee ieee);
+	/// The link quality and signal strength the stack gives for the device's last frame; told before
+	/// the frame's own event. Kept for the adapter view, not a sign of life by itself.
+	void radio(NodeAddress address, uint8_t lqi, int8_t rssi);
 	void device_left(NodeAddress address);
 	void active_endpoints(NodeAddress address, uint8_t status, const uint8_t* endpoints, size_t count);
 	void simple_descriptor(NodeAddress address, uint8_t status, const SimpleDescriptor& descriptor);
@@ -292,9 +324,10 @@ public:
 	uint32_t permit_join_s() const;
 
 	/// {"network": {...}, "devices": [{ieee, short, manufacturer, model, label, interviewed, stale,
-	/// left, interviewing, last_seen, seen_ago_s, missing, incomplete, datapoints: [names]}]} for the
-	/// console, the API and E-Home's pairing view (spec/zigbee.md; `missing` and `incomplete` only for
-	/// an incomplete interview).
+	/// left, interviewing, last_seen, seen_ago_s, lqi, rssi, parent, parent_label, timeout_s,
+	/// expires_in_s, missing, incomplete, datapoints: [names]}]} for the console, the API and E-Home's
+	/// pairing view (spec/zigbee.md; `missing` and `incomplete` only for an incomplete interview, the
+	/// radio facts only where known).
 	void write_json(JsonWriter& json) const;
 	/// The members of the "network" object into an open object.
 	void write_network_json(JsonWriter& json) const;
@@ -373,6 +406,12 @@ private:
 	bool rebuild(const char** error);
 	bool save_database();
 	void check_stale();
+	/// Reads the coordinator's neighbour table into the devices' radio facts and logs who entered or
+	/// left the child table.
+	void read_child_table();
+	class ChildTableReader;
+	/// Whether the child table was read since the start (the first read logs every child it finds).
+	bool children_read_ = false;
 	void refresh_due();
 	void schedule_refresh();
 	/// Reports the value of the mapped point; the datapoint's id, kNoId when unmapped.
@@ -391,6 +430,12 @@ private:
 	/// binding, reporting configuration or read until an interview learns the endpoint.
 	size_t device_points(const ZigbeeDevice& device, ZigbeePoint* out, size_t capacity) const;
 	const char* device_text(const ZigbeeDevice& device, char* buffer, size_t size) const;
+	/// The device's text, or its IEEE address while it is not in the database.
+	const char* node_text(NodeAddress address, char* buffer, size_t size);
+	/// "the coordinator", the router's device text, or "router 0x1234".
+	const char* parent_text(uint16_t parent_short, char* buffer, size_t size);
+	/// lqi, rssi, parent, parent_label, timeout_s, expires_in_s where known.
+	void write_radio_json(JsonWriter& json, const ZigbeeDevice& device) const;
 
 	EventLoop& loop_;
 	const Clock& clock_;

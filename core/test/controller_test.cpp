@@ -176,7 +176,9 @@ TEST_CASE("Controller.StartConnectsTheNetwork") {
 	CHECK(p.sink.contains("I hc.net: network connecting (attempt 1)"));
 }
 
-TEST_CASE("Controller.HeartbeatEveryTenSecondsWithNetworkState") {
+TEST_CASE("Controller.HeartbeatLogsOnlyWhatChanged") {
+	// homecontrol #98: the heartbeat runs every 10 s but writes a line only when the network changed
+	// in kind (state, mode, address), so the log ring is not flooded.
 	FakePlatform p;
 	Controller controller(p.platform());
 	controller.start();
@@ -185,6 +187,7 @@ TEST_CASE("Controller.HeartbeatEveryTenSecondsWithNetworkState") {
 	controller.run_once();
 	CHECK(p.sink.count("heartbeat") == 0);
 
+	// The first beat reports the network the start began to connect (down at the start).
 	p.clock.advance(1);
 	controller.run_once();
 	CHECK(p.sink.count("heartbeat") == 1);
@@ -195,15 +198,80 @@ TEST_CASE("Controller.HeartbeatEveryTenSecondsWithNetworkState") {
 	CHECK(p.sink.lines.back() == "I hc.net: network up 192.0.2.10");
 	p.system.free_bytes = 280000;
 	p.system.min_free_bytes = 270000;
-	run_until(controller, p.clock, 1000 + 60000);
-	CHECK(p.sink.count("heartbeat") == 6);
+	run_until(controller, p.clock, 1000 + 20000);
+	CHECK(p.sink.count("heartbeat") == 2);
 	CHECK(p.sink.lines.back() ==
-		"I hc.ctl: heartbeat: uptime 60 s, network up 192.0.2.10, free heap 280000 B (min 270000 B)");
-	CHECK(controller.uptime_ms() == 60000);
+		"I hc.ctl: heartbeat: uptime 20 s, network up 192.0.2.10, free heap 280000 B (min 270000 B)");
+
+	// Steady state: ten minutes without a line, in the sink or the ring.
+	uint32_t last = controller.log_ring().last_seq();
+	p.system.free_bytes = 260000; // the heap moves, the network does not
+	run_until(controller, p.clock, 1000 + 20000 + 600000);
+	CHECK(p.sink.count("heartbeat") == 2);
+	CHECK(controller.log_ring().last_seq() == last);
+	CHECK(controller.uptime_ms() == 620000);
+
+	// The address changes: one line.
+	controller.connectivity().link_up("192.0.2.11");
+	run_until(controller, p.clock, 1000 + 630000);
+	CHECK(p.sink.count("heartbeat") == 3);
+	CHECK(p.sink.contains("I hc.ctl: heartbeat: uptime 630 s, network up 192.0.2.11, free heap 260000 B"));
 
 	controller.connectivity().link_down("test");
-	p.clock.advance(500);
-	controller.run_once();
-	run_until(controller, p.clock, 1000 + 70000);
-	CHECK(p.sink.contains("heartbeat: uptime 70 s, network "));
+	run_until(controller, p.clock, 1000 + 640000);
+	CHECK(p.sink.count("heartbeat") == 4);
+	CHECK(p.sink.contains("heartbeat: uptime 640 s, network "));
+}
+
+TEST_CASE("Controller.HeartbeatWarnsOncePerNewHeapLowBelowTheLowWaterMark") {
+	FakePlatform p;
+	p.clock.synchronized = true;
+	Controller controller(p.platform());
+	controller.start();
+	controller.connectivity().link_up("192.0.2.10");
+	run_until(controller, p.clock, 1000 + 10000);
+	REQUIRE(p.sink.count("heartbeat") == 1); // the network came up
+	CHECK(p.sink.count("W hc.ctl") == 0);
+
+	// A low minimum above the mark: nothing.
+	p.system.min_free_bytes = Controller::kHeapLowWaterBytes;
+	run_until(controller, p.clock, 1000 + 30000);
+	CHECK(p.sink.count("heartbeat") == 1);
+
+	// Below it: one warning with the figures and the time, not repeated while the minimum stays.
+	p.system.free_bytes = 20000;
+	p.system.min_free_bytes = 12000;
+	run_until(controller, p.clock, 1000 + 40000);
+	CHECK(p.sink.count("W hc.ctl") == 1);
+	CHECK(p.sink.lines.back() == "W hc.ctl: heartbeat: uptime 40 s, network up 192.0.2.10, free heap 20000 B (min "
+		"12000 B): the minimum is a new low below 16384 B");
+	run_until(controller, p.clock, 1000 + 100000);
+	CHECK(p.sink.count("W hc.ctl") == 1);
+
+	// A new low: one more warning, in the ring too.
+	p.system.min_free_bytes = 3188;
+	run_until(controller, p.clock, 1000 + 110000);
+	CHECK(p.sink.count("W hc.ctl") == 2);
+	CHECK(p.sink.contains("(min 3188 B): the minimum is a new low below 16384 B"));
+	struct Last : hc::LogLineVisitor {
+		std::string text;
+		bool line(const hc::LogLine& l) override {
+			text = l.message;
+			return true;
+		}
+	} newest;
+	REQUIRE(controller.log_ring().read_tail(1, newest) == 1);
+	CHECK(newest.text.find("min 3188 B") != std::string::npos);
+	run_until(controller, p.clock, 1000 + 200000);
+	CHECK(p.sink.count("W hc.ctl") == 2);
+}
+
+TEST_CASE("Controller.HeartbeatWarnsNothingWithoutAMeasuredHeap") {
+	FakePlatform p;
+	p.system.free_bytes = 0; // the POSIX platform has no heap figure
+	p.system.min_free_bytes = 0;
+	Controller controller(p.platform());
+	controller.start();
+	run_until(controller, p.clock, 1000 + 60000);
+	CHECK(p.sink.count("W hc.ctl") == 0);
 }

@@ -895,7 +895,7 @@ TEST_CASE("Image.ZigbeeReportingOverrideReachesTheDeviceAndTheExport") {
 	CHECK(f.driver.has("configure 0x3c4d 1 0x0402 0x0000 30..900 50"));
 	CHECK(f.driver.has("configure 0x3c4d 1 0x0405 0x0000 30..600 100"));
 	CHECK(f.driver.count("configure") == 2);
-	CHECK(f.zigbee.stale_timeout_s(hc_test::kSensor) == 2700);
+	CHECK(f.zigbee.stale_timeout_s(hc_test::kSensor) == 3 * 600); // the humidity's 600 s is the shortest promise
 	std::string view = export_json(f.zigbee, 0);
 	CHECK(view.find("\"reporting\":{\"min\":30,\"max\":900,\"change\":0.5},\"datapoint\":\"bath.temperature\"") !=
 		std::string::npos);

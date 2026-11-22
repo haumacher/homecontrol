@@ -1,12 +1,13 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
 // Zigbee: the coordinator's network and devices (GET /api/zigbee, spec/api.md "Zigbee"). "Pair"
 // opens the network for 254 s with a countdown; joins and interviews show as they happen (the live
-// feed's zigbee messages). Per device: identify, rename, interview again, remove. Values come from
-// the live datapoints, by name.
+// feed's zigbee messages). Per device: identify, rename, interview again, remove; its radio link
+// (LQI, RSSI, parent, the coordinator's child entry: homecontrol #98). Values come from the live
+// datapoints, by name.
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
-import { formatAgo, formatValue } from "/format.js";
+import { formatAgo, formatDuration, formatValue } from "/format.js";
 import { t, tv } from "/i18n.js";
 
 const kPairSeconds = 254;
@@ -45,6 +46,26 @@ function stateBadge(d) {
 		return h("span", { class: "badge warn" }, t("zigbee.state.stale"));
 	}
 	return h("span", { class: "badge ok" }, t("zigbee.state.ok"));
+}
+
+/// The radio rows of a device (spec/zigbee.md "Adapter view"): link quality and signal strength of
+/// its last frame, its parent, and its entry in the coordinator's child table; each only where known.
+function radioRows(d, all) {
+	const rows = [];
+	if (d.lqi !== undefined) {
+		rows.push([t("zigbee.link"), t("zigbee.link.value", { lqi: d.lqi, rssi: d.rssi })]);
+	}
+	if (d.parent === "coordinator") {
+		rows.push([t("zigbee.parent"), t("zigbee.parent.coordinator")]);
+	} else if (d.parent) {
+		const router = all.find((other) => other.ieee === d.parent);
+		rows.push([t("zigbee.parent"), d.parent_label || (router && deviceTitle(router)) || d.parent]);
+	}
+	if (d.timeout_s !== undefined) {
+		rows.push([t("zigbee.child"), t("zigbee.child.value", { timeout: formatDuration(d.timeout_s),
+			expires: formatDuration(d.expires_in_s || 0) })]);
+	}
+	return rows;
 }
 
 export function renderZigbee(content, ctx) {
@@ -115,7 +136,8 @@ export function renderZigbee(content, ctx) {
 			h("dl", { class: "rows" },
 				[[t("zigbee.device"), `${d.manufacturer || "?"} / ${d.model || "?"}`], [t("zigbee.ieee"), d.ieee],
 					...(missing ? [[t("zigbee.missing"), missing]] : []),
-					[t("zigbee.seen"), seen], ...points].map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
+					[t("zigbee.seen"), seen], ...radioRows(d, data.devices), ...points]
+					.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
 			missing ? h("p", { class: "hint" }, t("zigbee.missing.hint")) : null,
 			h("div", { class: "actions" }, identify, rename, interview, remove));
 	}
