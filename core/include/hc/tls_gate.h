@@ -18,8 +18,28 @@ class TlsGateClient {
 public:
 	virtual void tls_gate_opened() = 0;
 
+	/// What waits, for the log's pause line ("language, update"); default "a TLS session".
+	virtual void tls_gate_describe(char* out, size_t size) const;
+
 protected:
 	~TlsGateClient() = default;
+};
+
+/// The E-Home link as the gate pauses it (TlsGate::set_link(), homecontrol #112).
+class TlsGateLink {
+public:
+	/// The link's socket is open (after its handshake, while the session lasts).
+	virtual bool tls_link_open() const = 0;
+	/// A pause would lose nothing now: connected, no request, streamed answer, bus session or offered
+	/// key in progress.
+	virtual bool tls_link_pausable() const = 0;
+	/// Closes the session for the pause (close code 4000, "fetch") and waits for tls_link_resume().
+	virtual void tls_link_pause() = 0;
+	/// Connects again at once (no backoff: the close was planned).
+	virtual void tls_link_resume() = 0;
+
+protected:
+	~TlsGateLink() = default;
 };
 
 /// One TLS session's start at a time, and a second session only when the memory DMA reaches can
@@ -48,6 +68,19 @@ protected:
 /// Without a MemoryWatch (the host) or without a figure from it, sessions are admitted by the order
 /// alone.
 ///
+/// **The pause** (homecontrol #112). Beside an open E-Home session a second TLS session rarely finds
+/// the room (the house controller, 2026-11-22: every fetch starved, HP 32300 B of 49152 B). The gate
+/// measures the link's session: the DMA-capable free memory when the link is admitted to connect
+/// and when its socket is open (the link releases the gate then); the difference is its footprint.
+/// When a session waits for memory, the link is pausable (TlsGateLink::tls_link_pausable()), the
+/// free memory plus the footprint reaches the need, and the last pause started kPauseIntervalMs ago
+/// or more, the gate pauses the link: the link closes with code 4000 "fetch", the waiting sessions
+/// run one after the other as their memory comes free (sessions that arrive meanwhile join), and when
+/// none waits and none holds the gate the link reconnects at once; after kPauseMaxMs it reconnects
+/// anyway, and what still waits stays for the next pause. A session that would not fit even without
+/// the link, or a link that is not open or busy, starts no pause. The link checks every second
+/// whether a waiting session wants a pause (link_tick()).
+///
 /// Threading: the event loop's thread.
 class TlsGate : private MemoryListener {
 public:
@@ -75,6 +108,12 @@ public:
 
 	/// The earliest renewed memory notification after a check found the free memory but not the block.
 	static constexpr uint32_t kBlockRetryMs = 1000;
+
+	/// The least time between two pauses' starts: E-Home is down at most a few seconds in ten minutes,
+	/// however often a fetch fails or comes back (the language packs retry after 1 min, doubling).
+	static constexpr uint32_t kPauseIntervalMs = 10u * 60u * 1000u;
+	/// The longest pause: four fetches at the lanes' 15 s timeout.
+	static constexpr uint32_t kPauseMaxMs = 60000;
 
 	/// Clients that may wait at once.
 	static constexpr size_t kMaxWaiting = 4;
@@ -110,6 +149,20 @@ public:
 
 	const Needs& needs() const { return needs_; }
 
+	/// The E-Home link (`link`) and its identity as a client of the gate (`client`); nullptr: no pauses.
+	void set_link(TlsGateLink* link, TlsGateClient* client) {
+		link_ = link;
+		link_client_ = client;
+	}
+	/// The link's tick (every second): starts a pause when one is due.
+	void link_tick();
+
+	bool pausing() const { return pausing_; }
+	/// The link's measured footprint in the DMA-capable memory (0: not measured yet).
+	uint32_t link_footprint() const { return link_footprint_; }
+	/// Pauses since the start.
+	uint32_t pauses() const { return pauses_; }
+
 private:
 	struct Waiter {
 		TlsGateClient* client;
@@ -128,6 +181,14 @@ private:
 	void ask_for_memory();
 	void rearm();
 	void memory_freed() override;
+	/// A session waits (for memory or for the holder).
+	bool session_waits() const;
+	/// Starts a pause when one is due and would help (`free_bytes`: the DMA-capable free memory now).
+	void try_pause(uint32_t free_bytes);
+	void end_pause(const char* why);
+	void pause_over();
+	/// The link was admitted: the free memory before its connect.
+	void link_admitted();
 
 	EventLoop& loop_;
 	const Clock& clock_;
@@ -144,6 +205,18 @@ private:
 	char reason_[96] = {};
 	uint32_t admitted_ = 0;
 	uint32_t waited_for_memory_ = 0;
+	uint32_t last_free_ = 0;      ///< The DMA-capable free memory of the last check (0: no figure).
+
+	TlsGateLink* link_ = nullptr;
+	TlsGateClient* link_client_ = nullptr;
+	uint32_t link_before_ = 0;    ///< The free memory when the link was admitted (0: not measured).
+	uint32_t link_footprint_ = 0;
+	bool pausing_ = false;
+	bool paused_before_ = false;
+	uint64_t pause_since_ms_ = 0;
+	uint32_t pause_sessions_ = 0; ///< Sessions admitted during this pause.
+	uint32_t pauses_ = 0;
+	TimerHandle pause_timer_;
 };
 
 } // namespace hc

@@ -100,7 +100,8 @@ const char* ehome_state_name(EhomeState state);
 /// Every state change is one log line under the tag "hc.ehome"; the secret never reaches the log.
 ///
 /// Threading: the event loop's thread.
-class EhomeLink : public WebSocketClientListener, public WsTransport, public FetchReceiver, private TlsGateClient {
+class EhomeLink : public WebSocketClientListener, public WsTransport, public FetchReceiver, private TlsGateClient,
+	private TlsGateLink {
 public:
 	static constexpr uint32_t kTickMs = 1000;
 	static constexpr uint32_t kBackoffInitialMs = Backoff::kDefaultInitialMs;
@@ -147,8 +148,13 @@ public:
 
 	/// Orders the link's connects with the other TLS sessions (homecontrol #110/#112): a connect waits
 	/// while another session starts (the link goes first among the waiting) and holds the gate until
-	/// the socket is open or the attempt failed. nullptr: no gate. Before start().
-	void set_gate(TlsGate* gate) { gate_ = gate; }
+	/// the socket is open or the attempt failed; the gate may pause the link for TLS sessions that
+	/// find no room beside it (TlsGateLink: close code 4000 "fetch", reconnect at once). nullptr: no
+	/// gate. Before start().
+	void set_gate(TlsGate* gate);
+
+	/// Paused by the TLS gate (the socket closed for a fetch, homecontrol #112).
+	bool paused() const { return phase_ == Phase::paused; }
 
 	/// ehome.enabled changed (WebApi stores it): connects at once or closes at once.
 	void enabled_changed();
@@ -214,9 +220,15 @@ public:
 private:
 	/// Where the socket is: off, waiting for the network, waiting for the TLS gate, backoff, opening
 	/// (connect() called), awaiting the challenge, awaiting ready (auth sent), connected.
-	enum class Phase : uint8_t { idle, waiting, gated, backoff, opening, challenge, authenticating, connected };
+	enum class Phase : uint8_t { idle, waiting, gated, paused, backoff, opening, challenge, authenticating, connected };
 
 	void tls_gate_opened() override;
+	void tls_gate_describe(char* out, size_t size) const override;
+	// TlsGateLink
+	bool tls_link_open() const override;
+	bool tls_link_pausable() const override;
+	void tls_link_pause() override;
+	void tls_link_resume() override;
 	/// Gives the TLS gate back (or withdraws the wait for it).
 	void release_gate();
 

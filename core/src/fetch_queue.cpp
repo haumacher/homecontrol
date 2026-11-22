@@ -88,8 +88,13 @@ bool FetchQueue::Lane::submit(const char* url, const char* body, size_t length, 
 	}
 	cancelled_ = false;
 	bool has_body = body != nullptr;
-	if (!queue_.worker_busy_ && !queue_.worker_.busy() && queue_.waiting() == 0 && queue_.gate_admits(url)) {
-		return queue_.start(*this, url, body, length, has_body, receiver, error);
+	if (!queue_.worker_busy_ && !queue_.worker_.busy() && queue_.waiting() == 0) {
+		queue_.asking_ = name_; // the gate's pause line names it
+		bool admitted = queue_.gate_admits(url);
+		queue_.asking_ = nullptr;
+		if (admitted) {
+			return queue_.start(*this, url, body, length, has_body, receiver, error);
+		}
 	}
 	url_ = copy_of(url, url_length, true);
 	body_ = has_body ? copy_of(body, length, false) : nullptr;
@@ -341,6 +346,24 @@ void FetchQueue::release_gate() {
 	}
 }
 
+void FetchQueue::tls_gate_describe(char* out, size_t size) const {
+	size_t n = 0;
+	out[0] = '\0';
+	if (asking_ != nullptr) {
+		int r = std::snprintf(out, size, "%s", asking_);
+		n = r > 0 ? static_cast<size_t>(r) : 0;
+	}
+	for (const Lane* lane : lanes_) {
+		if (lane != nullptr && lane->state_ == Lane::State::waiting && n + 1 < size) {
+			int r = std::snprintf(out + n, size - n, "%s%s", n > 0 ? ", " : "", lane->name_);
+			n += r > 0 ? static_cast<size_t>(r) : 0;
+		}
+	}
+	if (n == 0) {
+		std::snprintf(out, size, "a fetch");
+	}
+}
+
 void FetchQueue::tls_gate_opened() {
 	kick(); // the waiting request starts (or, gone meanwhile, the gate goes back)
 }
@@ -384,6 +407,19 @@ void FetchQueue::fetch_end(const FetchResult& result) {
 		}
 	}
 	if (waiting() > 0) {
+		// Back in line at once (also with a request its receiver made from its end): a pause of the
+		// E-Home link goes on with it, and a waiting link still goes first.
+		const Lane* next = nullptr;
+		for (const Lane* l : lanes_) {
+			if (l != nullptr && l->state_ == Lane::State::waiting &&
+				(next == nullptr || l->priority_ < next->priority_ ||
+					(l->priority_ == next->priority_ && l->sequence_ < next->sequence_))) {
+				next = l;
+			}
+		}
+		if (next != nullptr) {
+			gate_admits(next->url_);
+		}
 		kick();
 	}
 }

@@ -1017,6 +1017,10 @@ void Mqtt::set_state(MqttState state) {
 	}
 }
 
+void Mqtt::tls_gate_describe(char* out, size_t size) const {
+	std::snprintf(out, size, "mqtt");
+}
+
 void Mqtt::tls_gate_opened() {
 	if (state_ == MqttState::waiting && table_ != nullptr && table_->config.enabled) {
 		attempt();

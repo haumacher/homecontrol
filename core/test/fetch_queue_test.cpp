@@ -449,3 +449,73 @@ TEST_CASE("FetchQueue: a cancelled request that waited for the gate gives its pl
 	f.run();
 	CHECK(f.worker.requests.empty());
 }
+
+namespace {
+
+/// The E-Home link as the gate pauses it (homecontrol #112).
+struct PausedLink : hc::TlsGateLink, hc::TlsGateClient {
+	bool tls_link_open() const override { return open; }
+	bool tls_link_pausable() const override { return open; }
+	void tls_link_pause() override {
+		++pauses;
+		open = false;
+	}
+	void tls_link_resume() override { ++resumes; }
+	void tls_gate_opened() override {}
+	bool open = false;
+	int pauses = 0;
+	int resumes = 0;
+};
+
+} // namespace
+
+TEST_CASE("FetchQueue: the waiting fetches run in one pause of the E-Home link, a second document included") {
+	GatedRig f;
+	PausedLink link;
+	f.gate.set_link(&link, &link);
+	// The link connected: 80000 B before, 56000 B with its socket open.
+	f.memory.room = {80000, 30000};
+	REQUIRE(f.gate.acquire(link, hc::TlsGate::Kind::link));
+	f.memory.room = {56000, 28000};
+	link.open = true;
+	f.gate.release(link);
+	REQUIRE(f.gate.link_footprint() == 24000);
+
+	// Beside it (and a browser) the fetches find no room: the first starts the pause (named), the
+	// second joins it.
+	f.memory.room = {32300, 28672};
+	Consumer lang(f.order, "language");
+	Consumer upd(f.order, "update");
+	const char* error = nullptr;
+	REQUIRE(f.language.fetch("https://haumacher.github.io/homecontrol/stable/1.5.0/i18n/manifest.json", lang, &error));
+	REQUIRE(f.update.fetch("https://haumacher.github.io/homecontrol/stable/manifest.json", upd, &error));
+	f.run();
+	CHECK(link.pauses == 1);
+	CHECK(f.capture.sink.contains("I hc.tls: pausing the E-Home link for language: HP 32300 B free"));
+	CHECK(f.worker.requests.empty());
+
+	// The link's session is freed: the update check runs (first in the lanes' order), then fetches its
+	// signature from its end, then the language pack; only then the link returns.
+	f.memory.free_to(57000);
+	f.run();
+	REQUIRE(f.worker.requests.size() == 1);
+	CHECK(f.update.running());
+	upd.again = &f.update;
+	upd.again_url = "https://haumacher.github.io/homecontrol/stable/manifest.sig";
+	f.worker.answer(200, "{}");
+	f.run();
+	CHECK(upd.again_accepted);
+	REQUIRE(f.worker.requests.size() == 2);
+	CHECK(f.worker.requests.back().url == "https://haumacher.github.io/homecontrol/stable/manifest.sig");
+	CHECK(link.resumes == 0);
+	f.worker.answer(200, "sig");
+	f.run();
+	REQUIRE(f.worker.requests.size() == 3);
+	CHECK(f.language.running());
+	CHECK(link.resumes == 0);
+	f.worker.answer(200, "{}");
+	f.run();
+	CHECK(link.resumes == 1);
+	CHECK(link.pauses == 1);
+	CHECK(f.capture.sink.contains("3 TLS session(s) ran, nothing waits any more"));
+}

@@ -5,6 +5,7 @@
 // further session only with room in the DMA-capable memory; a waiting session goes on when the holder
 // releases or the platform reports freed memory, never by polling.
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -210,4 +211,168 @@ TEST_CASE("TlsGate: without a memory figure sessions go by the order alone") {
 	f.memory.room = {0, 0};
 	Client c;
 	CHECK(f.gate.acquire(c, TlsGate::Kind::session));
+}
+
+// ---- The pause of the E-Home link (homecontrol #112) --------------------------------------------
+
+namespace {
+
+/// The E-Home link as the gate sees it.
+struct FakeLink : hc::TlsGateLink, hc::TlsGateClient {
+	bool tls_link_open() const override { return open; }
+	bool tls_link_pausable() const override { return open && pausable; }
+	void tls_link_pause() override {
+		++pauses;
+		open = false;
+	}
+	void tls_link_resume() override { ++resumes; }
+	void tls_gate_opened() override { ++opened; }
+	bool open = false;
+	bool pausable = true;
+	int pauses = 0;
+	int resumes = 0;
+	int opened = 0;
+};
+
+struct Named : Client {
+	explicit Named(const char* n) : name(n) {}
+	void tls_gate_describe(char* out, size_t size) const override { std::snprintf(out, size, "%s", name); }
+	const char* name;
+};
+
+/// The link connects: 80000 B free before, 56000 B once its socket is open: a footprint of 24000 B.
+struct PauseFixture : Fixture {
+	hc_test::ScopedCapture capture;
+	FakeLink link;
+	PauseFixture() {
+		gate.set_link(&link, &link);
+		memory.room = {80000, 30000};
+		REQUIRE(gate.acquire(link, TlsGate::Kind::link));
+		memory.room = {56000, 28000};
+		link.open = true;
+		gate.release(link);
+		REQUIRE(gate.link_footprint() == 24000);
+	}
+};
+
+} // namespace
+
+TEST_CASE("TlsGate pause: starts only when the fetch fits without the E-Home session") {
+	// The house controller: HP 32300 B free beside the link; 32300 + 24000 >= 49152.
+	PauseFixture f;
+	Named language("language");
+	f.memory.room = {32300, 28672};
+	CHECK_FALSE(f.gate.acquire(language, TlsGate::Kind::session));
+	CHECK(f.link.pauses == 1);
+	CHECK(f.gate.pausing());
+	CHECK(f.capture.sink.contains("I hc.tls: pausing the E-Home link for language: HP 32300 B free, the link holds "
+		"24000 B, 49152 B needed"));
+
+	// Would not fit even without the link: no pause.
+	PauseFixture g;
+	Named update("update");
+	g.memory.room = {20000, 20000};
+	CHECK_FALSE(g.gate.acquire(update, TlsGate::Kind::session));
+	g.gate.link_tick();
+	CHECK(g.link.pauses == 0);
+
+	// The link is not open, or not measured: no pause.
+	PauseFixture h;
+	h.link.open = false;
+	h.memory.room = {32300, 28672};
+	Named a("a");
+	CHECK_FALSE(h.gate.acquire(a, TlsGate::Kind::session));
+	CHECK(h.link.pauses == 0);
+	Fixture u;
+	FakeLink unmeasured;
+	unmeasured.open = true;
+	u.gate.set_link(&unmeasured, &unmeasured);
+	u.memory.room = {32300, 28672};
+	Named b("b");
+	CHECK_FALSE(u.gate.acquire(b, TlsGate::Kind::session));
+	CHECK(unmeasured.pauses == 0);
+}
+
+TEST_CASE("TlsGate pause: a busy link is not paused; its tick starts the pause once it is idle") {
+	PauseFixture f;
+	f.link.pausable = false; // a deploy or a bus session runs
+	f.memory.room = {32300, 28672};
+	Named language("language");
+	CHECK_FALSE(f.gate.acquire(language, TlsGate::Kind::session));
+	CHECK(f.link.pauses == 0);
+	f.gate.link_tick();
+	CHECK(f.link.pauses == 0);
+	f.link.pausable = true;
+	f.gate.link_tick();
+	CHECK(f.link.pauses == 1);
+}
+
+TEST_CASE("TlsGate pause: the waiting sessions run in one pause, one that arrives joins, the link returns at once") {
+	PauseFixture f;
+	Named language("language"), update("update"), external("external");
+	f.memory.room = {32300, 28672};
+	CHECK_FALSE(f.gate.acquire(language, TlsGate::Kind::session));
+	CHECK_FALSE(f.gate.acquire(update, TlsGate::Kind::session));
+	REQUIRE(f.link.pauses == 1);
+	// The link's session is freed: the first runs.
+	f.memory.free_to(57000, 28672);
+	f.run();
+	CHECK(language.opened == 1);
+	CHECK(update.opened == 0);
+	// One arrives during the pause: it joins.
+	CHECK_FALSE(f.gate.acquire(external, TlsGate::Kind::session));
+	f.advance(2000);
+	f.gate.release(language);
+	f.run();
+	CHECK(update.opened == 1);
+	CHECK(f.link.resumes == 0);
+	f.gate.release(update);
+	f.run();
+	CHECK(external.opened == 1);
+	f.gate.release(external);
+	f.run();
+	CHECK(f.link.resumes == 1);
+	CHECK_FALSE(f.gate.pausing());
+	CHECK(f.capture.sink.contains("I hc.tls: the E-Home link reconnects after a pause of 2.0 s: 3 TLS session(s) ran, "
+		"nothing waits any more"));
+	CHECK(f.link.pauses == 1);
+	CHECK(f.loop.timer_count() == 0); // the longest pause's timer is gone
+}
+
+TEST_CASE("TlsGate pause: at most one per interval, and never longer than the longest pause") {
+	PauseFixture f;
+	Named language("language");
+	f.memory.room = {32300, 28672};
+	CHECK_FALSE(f.gate.acquire(language, TlsGate::Kind::session));
+	REQUIRE(f.link.pauses == 1);
+	// The memory never comes (the fetch would fail anyway): the link returns after the longest pause.
+	f.advance(TlsGate::kPauseMaxMs - 1);
+	CHECK(f.link.resumes == 0);
+	f.advance(1);
+	CHECK(f.link.resumes == 1);
+	CHECK(f.gate.waits(language)); // waits for the next pause
+	CHECK(f.capture.sink.contains("0 TLS session(s) ran, the longest pause is over"));
+
+	// The link is back; its ticks do not pause it again within the interval.
+	f.link.open = true;
+	uint64_t since_pause = TlsGate::kPauseMaxMs;
+	for (int i = 0; i < 8; ++i) {
+		f.advance(60000);
+		since_pause += 60000;
+		f.gate.link_tick();
+	}
+	f.advance(TlsGate::kPauseIntervalMs - since_pause - 1);
+	f.gate.link_tick();
+	CHECK(f.link.pauses == 1); // 1 ms short of the interval
+	f.advance(1);
+	f.gate.link_tick();
+	CHECK(f.link.pauses == 2);
+}
+
+TEST_CASE("TlsGate pause: with room a session is admitted directly, the link stays") {
+	PauseFixture f; // no browser: room for a second session
+	Named language("language");
+	f.memory.room = {52000, 28672};
+	CHECK(f.gate.acquire(language, TlsGate::Kind::session));
+	CHECK(f.link.pauses == 0);
 }

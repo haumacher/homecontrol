@@ -15,11 +15,16 @@ constexpr const char* kTag = "hc.tls";
 
 } // namespace
 
+void TlsGateClient::tls_gate_describe(char* out, size_t size) const {
+	std::snprintf(out, size, "a TLS session");
+}
+
 TlsGate::TlsGate(EventLoop& loop, const Clock& clock, MemoryWatch* memory, Needs needs)
 	: loop_(loop), clock_(clock), memory_(memory), needs_(needs) {}
 
 TlsGate::~TlsGate() {
 	loop_.cancel(rearm_);
+	loop_.cancel(pause_timer_);
 	if (memory_ != nullptr && notify_armed_) {
 		memory_->cancel_notify();
 	}
@@ -41,6 +46,7 @@ bool TlsGate::room_for_session() {
 	if (memory_ == nullptr || !memory_->dma_room(room)) {
 		return true;
 	}
+	last_free_ = room.free_bytes;
 	uint32_t need = needs_.session_bytes + needs_.reserve_bytes;
 	if (room.free_bytes >= need && room.largest_block >= needs_.block_bytes) {
 		return true;
@@ -63,6 +69,9 @@ bool TlsGate::acquire(TlsGateClient& client, Kind kind) {
 	if (holder_ == nullptr) {
 		if (kind == Kind::link) {
 			holder_ = &client;
+			if (&client == link_client_) {
+				link_admitted();
+			}
 			return true;
 		}
 		bool link_waits = false;
@@ -73,6 +82,9 @@ bool TlsGate::acquire(TlsGateClient& client, Kind kind) {
 			if (room_for_session()) {
 				holder_ = &client;
 				++admitted_;
+				if (pausing_) {
+					++pause_sessions_;
+				}
 				return true;
 			}
 			memory_short = true;
@@ -87,6 +99,7 @@ bool TlsGate::acquire(TlsGateClient& client, Kind kind) {
 	if (memory_short) {
 		Log::info(kTag, "a TLS session waits for memory: %s", reason_);
 		ask_for_memory();
+		try_pause(last_free_);
 	}
 	return false;
 }
@@ -94,10 +107,21 @@ bool TlsGate::acquire(TlsGateClient& client, Kind kind) {
 void TlsGate::release(TlsGateClient& client) {
 	if (holder_ == &client) {
 		holder_ = nullptr;
-		if (count_ > 0) {
+		if (&client == link_client_ && link_before_ != 0) {
+			// The link's socket is open (or its attempt failed): what its session keeps of the memory.
+			DmaRoom room;
+			if (link_ != nullptr && link_->tls_link_open() && memory_ != nullptr && memory_->dma_room(room)) {
+				link_footprint_ = link_before_ > room.free_bytes ? link_before_ - room.free_bytes : 0;
+			}
+			link_before_ = 0;
+		}
+		if (count_ > 0 || pausing_) {
 			kick();
 		}
 		return;
+	}
+	if (pausing_) {
+		kick(); // the pause may be over
 	}
 	for (size_t i = 0; i < count_; ++i) {
 		if (waiting_[i].client == &client) {
@@ -133,7 +157,13 @@ void TlsGate::kick() {
 
 void TlsGate::evaluate() {
 	kicked_ = false;
-	if (holder_ != nullptr || count_ == 0) {
+	if (holder_ != nullptr) {
+		return;
+	}
+	if (count_ == 0) {
+		if (pausing_) {
+			end_pause("nothing waits any more");
+		}
 		return;
 	}
 	size_t next = count_;
@@ -152,9 +182,13 @@ void TlsGate::evaluate() {
 				Log::info(kTag, "a TLS session waits for memory: %s", reason_);
 			}
 			ask_for_memory();
+			try_pause(last_free_);
 			return;
 		}
 		++admitted_;
+		if (pausing_) {
+			++pause_sessions_;
+		}
 		if (chosen.memory) {
 			++waited_for_memory_;
 			Log::info(kTag, "a TLS session is admitted: the memory was freed");
@@ -162,6 +196,9 @@ void TlsGate::evaluate() {
 	}
 	remove(next);
 	holder_ = chosen.client;
+	if (chosen.client == link_client_) {
+		link_admitted();
+	}
 	reason_[0] = '\0';
 	if (count_ == 0 && memory_ != nullptr && notify_armed_) {
 		memory_->cancel_notify();
@@ -198,6 +235,94 @@ void TlsGate::memory_freed() {
 	notify_armed_ = false;
 	if (holder_ == nullptr && count_ > 0) {
 		kick();
+	}
+}
+
+// ---- The pause (homecontrol #112) --------------------------------------------------------------
+
+void TlsGate::link_admitted() {
+	DmaRoom room;
+	link_before_ = memory_ != nullptr && memory_->dma_room(room) ? room.free_bytes : 0;
+}
+
+bool TlsGate::session_waits() const {
+	for (size_t i = 0; i < count_; ++i) {
+		if (waiting_[i].kind == Kind::session) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void TlsGate::link_tick() {
+	if (pausing_ || link_ == nullptr || memory_ == nullptr || holder_ != nullptr) {
+		return;
+	}
+	bool memory_waits = false;
+	for (size_t i = 0; i < count_; ++i) {
+		memory_waits = memory_waits || (waiting_[i].kind == Kind::session && waiting_[i].memory);
+	}
+	DmaRoom room;
+	if (memory_waits && memory_->dma_room(room)) {
+		try_pause(room.free_bytes);
+	}
+}
+
+void TlsGate::try_pause(uint32_t free_bytes) {
+	if (link_ == nullptr || pausing_ || memory_ == nullptr || link_footprint_ == 0 || !session_waits()) {
+		return;
+	}
+	uint64_t now = clock_.monotonic_ms();
+	uint32_t need = needs_.session_bytes + needs_.reserve_bytes;
+	if (paused_before_ && now - pause_since_ms_ < kPauseIntervalMs) {
+		return; // at most one pause per interval
+	}
+	if (static_cast<uint64_t>(free_bytes) + link_footprint_ < need) {
+		return; // would not fit even without the link
+	}
+	if (!link_->tls_link_pausable()) {
+		return; // the link's tick asks again
+	}
+	char names[96] = "";
+	size_t n = 0;
+	for (size_t i = 0; i < count_ && n + 1 < sizeof(names); ++i) {
+		if (waiting_[i].kind != Kind::session) {
+			continue;
+		}
+		char name[48];
+		waiting_[i].client->tls_gate_describe(name, sizeof(name));
+		int r = std::snprintf(names + n, sizeof(names) - n, "%s%s", n > 0 ? ", " : "", name);
+		n += r > 0 ? static_cast<size_t>(r) : 0;
+	}
+	pausing_ = true;
+	paused_before_ = true;
+	pause_since_ms_ = now;
+	pause_sessions_ = 0;
+	++pauses_;
+	Log::info(kTag, "pausing the E-Home link for %s: HP %u B free, the link holds %u B, %u B needed",
+		names, static_cast<unsigned>(free_bytes), static_cast<unsigned>(link_footprint_), static_cast<unsigned>(need));
+	loop_.cancel(pause_timer_);
+	pause_timer_ = loop_.schedule_at(now + kPauseMaxMs, Callback::member<TlsGate, &TlsGate::pause_over>(this, "tls_gate.pause_over"));
+	link_->tls_link_pause();
+}
+
+void TlsGate::pause_over() {
+	pause_timer_ = TimerHandle();
+	if (pausing_) {
+		end_pause("the longest pause is over");
+	}
+}
+
+void TlsGate::end_pause(const char* why) {
+	pausing_ = false;
+	loop_.cancel(pause_timer_);
+	pause_timer_ = TimerHandle();
+	uint64_t ms = clock_.monotonic_ms() - pause_since_ms_;
+	Log::info(kTag, "the E-Home link reconnects after a pause of %u.%u s: %u TLS session(s) ran, %s",
+		static_cast<unsigned>(ms / 1000), static_cast<unsigned>(ms % 1000 / 100), static_cast<unsigned>(pause_sessions_),
+		why);
+	if (link_ != nullptr) {
+		link_->tls_link_resume();
 	}
 }
 

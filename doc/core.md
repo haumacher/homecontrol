@@ -195,6 +195,35 @@ I hc.ehome: waiting for another TLS session to start (the link goes first)
 I hc.mqtt: waiting for room for a TLS session (another one starts, or the memory is short)
 ```
 
+**The pause** (homecontrol #112). With the gate on the house controller (50bfac2) the heap's minimum
+rose to 18644 B and no allocation failed, but every fetch starved: beside the E-Home session and a
+browser the HP SRAM held 32300 to 38288 B, not 49152 B. So the gate pauses the link for them
+(owner's decision):
+
+- **The link's footprint** is measured at every connect: the DMA-capable free memory when the gate
+  admits the link and when its socket is open (`TlsGate::link_footprint()`).
+- **When:** a session waits for memory, the free memory plus the footprint reaches its need, the
+  link is pausable (connected, and no request, streamed answer, bus session or offered key in
+  progress: `TlsGateLink::tls_link_pausable()`), and the last pause started at least 10 minutes ago
+  (`kPauseIntervalMs`). A session that would not fit even without the link starts no pause, nor does
+  one beside a link that is not open. The check runs when the session asks, when the gate evaluates,
+  and on the link's tick (every second) while a session waits for memory.
+- **How:** the link closes its socket with the close code 4000 and the reason `fetch` (spec/api.md
+  "E-Home connection"); its session's memory comes free, and the waiting sessions run one after
+  another through the gate; sessions that come meanwhile join (the fetch queue gets back in line
+  from a request's end, so the update check's signature follows its manifest within the pause). When
+  none waits and none holds the gate the link connects at once, without backoff; after 60 s
+  (`kPauseMaxMs`, four fetches at the lanes' 15 s timeout) it connects anyway, and what still waits
+  stays for the next pause. While the link holds no open session it is not paused; its priority
+  among waiting clients is otherwise unchanged.
+- **Logged** (tag `hc.tls`): `pausing the E-Home link for language: HP 32300 B free, the link holds
+  24000 B, 49152 B needed` and `the E-Home link reconnects after a pause of 3.4 s: 2 TLS session(s)
+  ran, nothing waits any more` (or `the longest pause is over`); a fetch that fails meanwhile is
+  logged as always.
+
+E-Home is down for a few seconds at most once in ten minutes; a fetch that keeps failing cannot
+hold it down longer.
+
 **Does the fetch need TLS?** The update manifest is signed with the release key (`manifest.sig`,
 doc/ota.md "Manifest signature") and the firmware is guarded by the manifest's SHA-256, so the
 update's authenticity does not rest on TLS; the language-pack manifest is not signed, and the packs'

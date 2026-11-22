@@ -240,6 +240,7 @@ private:
 	void set_state(MqttState state);
 	void attempt();
 	void tls_gate_opened() override;
+	void tls_gate_describe(char* out, size_t size) const override;
 	void fail(const char* reason);
 	void begin_retire(Table* next);
 	void finish_retire();

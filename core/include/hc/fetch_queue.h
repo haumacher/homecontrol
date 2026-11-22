@@ -142,6 +142,8 @@ private:
 
 	// TlsGateClient.
 	void tls_gate_opened() override;
+	/// The waiting lanes' names ("language, update").
+	void tls_gate_describe(char* out, size_t size) const override;
 	/// Whether `url` may start now as far as the gate is concerned (it then holds the gate); false
 	/// when it waits for the gate.
 	bool gate_admits(const char* url);
@@ -160,6 +162,7 @@ private:
 	TimerHandle expiry_;
 	TimerHandle retry_;
 	TlsGate* gate_ = nullptr;
+	const char* asking_ = nullptr; ///< The lane whose request asks the gate right now (not yet waiting).
 };
 
 } // namespace hc

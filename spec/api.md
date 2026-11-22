@@ -1373,6 +1373,16 @@ that announces `length` closes the socket: its binary messages could not be told
 to `PUT /api/image` comes when the image runs or is refused (above), the request is running until then. The device
 pings every 30 s; a pong missing after 10 s closes the socket and the backoff reconnects it.
 
+**A pause for a fetch** (homecontrol #112). The controller starts a TLS session of its own (an HTTPS
+fetch: the update check, the language packs, external values; an `mqtts://` broker) beside E-Home's
+only when its memory allows. When such a session finds no room beside E-Home's, but would find it
+without, the controller closes the socket with the close code **4000** and the reason `fetch`, runs
+the waiting sessions one after another, and connects again at once, without backoff: as soon as none
+waits, at the latest 60 s after the close. It pauses at most once in 10 minutes, and never while a
+request (a deploy among them), a streamed answer, a bus session or an offered installation key is in
+progress. For E-Home, 4000 is a planned pause, not a failure: no error and no alarm, the controller is
+about to connect again (a request it sends meanwhile fails as with any closed connection).
+
 ### Signed runtime images (issue #35)
 
 **The installation key.** E-Home holds one Ed25519 key pair per installation; the private key never
@@ -1687,7 +1697,8 @@ client reads `GET /api/zigbee` for the details; a missed event shows as a jump o
 
 A client that misses a message (the server's send buffers were full) gets a fresh snapshot. Close
 codes: 1007 invalid UTF-8, 1008 policy (authentication, origin), 1009 message longer than 1024
-bytes, 1003 binary or fragmented messages, 1013 too many clients or the controller busy.
+bytes, 1003 binary or fragmented messages, 1013 too many clients or the controller busy. (4000, a
+pause for a fetch, occurs only on the E-Home connection, section "E-Home connection".)
 
 ## Monitor
 

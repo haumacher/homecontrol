@@ -246,6 +246,31 @@ std::string compiled_fixture(const std::string& name, const char* seed_hex = nul
 	return compiled_text(image_fixture(name), seed_hex);
 }
 
+/// The DMA-capable memory for the TLS gate; without a figure (the default) the gate goes by order alone.
+struct LinkMemory : hc::MemoryWatch {
+	bool dma_room(hc::DmaRoom& out) const override {
+		out = room;
+		return known;
+	}
+	void notify_at(uint32_t free_bytes, hc::MemoryListener& l) override {
+		at = free_bytes;
+		listener = &l;
+	}
+	void cancel_notify() override { listener = nullptr; }
+	void free_to(uint32_t free_bytes) {
+		room.free_bytes = free_bytes;
+		if (listener != nullptr && free_bytes >= at) {
+			hc::MemoryListener* l = listener;
+			listener = nullptr;
+			l->memory_freed();
+		}
+	}
+	bool known = false;
+	hc::DmaRoom room{80000, 30000};
+	uint32_t at = 0;
+	hc::MemoryListener* listener = nullptr;
+};
+
 struct EhomeFixture : WebFixture {
 	hc_test::ScopedCapture capture{hc::LogLevel::debug};
 	hc_test::FakeTransport transport;
@@ -259,13 +284,18 @@ struct EhomeFixture : WebFixture {
 	FakeWsClient client;
 	FakeFetcher fetcher;
 	EhomeLink link{api, feed, client, fetcher};
-	/// The TLS gate (homecontrol #110/#112), by order alone; the link uses it when `gated`.
-	hc::TlsGate gate{controller.loop(), fake.clock, nullptr};
+	/// The TLS gate (homecontrol #110/#112), by order alone unless the test gives `memory` a figure;
+	/// the link uses it when the fixture is `gated` or a session holds it at the start.
+	LinkMemory memory;
+	hc::TlsGate gate{controller.loop(), fake.clock, &memory};
 	std::string cookie;
 
-	explicit EhomeFixture(bool enrolled = true, bool enabled = true, hc::TlsGateClient* gate_holder = nullptr) {
-		if (gate_holder != nullptr) {
+	explicit EhomeFixture(bool enrolled = true, bool enabled = true, hc::TlsGateClient* gate_holder = nullptr,
+		bool gated = false) {
+		if (gate_holder != nullptr || gated) {
 			link.set_gate(&gate);
+		}
+		if (gate_holder != nullptr) {
 			REQUIRE(gate.acquire(*gate_holder, hc::TlsGate::Kind::session));
 		}
 		controller.start();
@@ -574,6 +604,63 @@ TEST_CASE("E-Home: the connect waits while another TLS session starts, then hold
 	f.gate.release(blocker);
 	f.run();
 	CHECK(f.client.connects == 2);
+}
+
+TEST_CASE("E-Home: the gate pauses an idle link with close code 4000 for a fetch, and it returns at once") {
+	// homecontrol #112: on the house controller every fetch starved beside the E-Home session.
+	EhomeFixture f(true, true, nullptr, true);
+	f.memory.known = true;
+	// The link connected at the start, before the memory had a figure: not measured, no pause.
+	REQUIRE(f.client.connects == 1);
+	f.memory.room = {56000, 28000};
+	f.handshake();
+	CHECK(f.gate.link_footprint() == 0);
+	// Connected again: 78000 B free when admitted, 56000 B with the socket open.
+	auto reconnect = [&f](int connects) {
+		f.memory.room = {78000, 30000};
+		f.client.drop("socket: Connection reset by peer (errno 104)");
+		f.advance(1100);
+		REQUIRE(f.client.connects == connects);
+		f.memory.room = {56000, 28000};
+		f.handshake();
+		CHECK(f.gate.link_footprint() == 22000);
+	};
+	reconnect(2);
+
+	// A request in progress (a deploy's body arriving): no pause, whatever the memory.
+	SessionHolder fetch;
+	f.memory.room = {32300, 28672};
+	f.client.deliver("{\"type\":\"request\",\"id\":3,\"method\":\"PUT\",\"path\":\"/api/image\",\"length\":5000}");
+	CHECK_FALSE(f.gate.acquire(fetch, hc::TlsGate::Kind::session));
+	f.advance(3000);
+	CHECK(f.client.closes.empty());
+	CHECK(f.link.state() == EhomeState::connected);
+	f.gate.release(fetch);
+	reconnect(3);
+
+	// Idle: the pause starts with the close code 4000 "fetch".
+	f.memory.room = {32300, 28672};
+	CHECK_FALSE(f.gate.acquire(fetch, hc::TlsGate::Kind::session));
+	CHECK(f.gate.pausing());
+	REQUIRE(f.client.closes.size() == 1);
+	CHECK(f.client.closes.back().code == hc::websocket::kClosePause);
+	CHECK(f.client.closes.back().reason == "fetch");
+	CHECK(f.link.paused());
+	CHECK(f.link.state() == EhomeState::connecting);
+	CHECK(f.capture.sink.contains("I hc.tls: pausing the E-Home link for a TLS session: HP 32300 B free, the link holds "
+		"22000 B, 49152 B needed"));
+	f.advance(5000);
+	CHECK(f.client.connects == 3); // paused, not retrying
+	// The session's memory is free: the fetch runs; when it ends the link connects at once.
+	f.memory.free_to(70000);
+	f.run();
+	CHECK(fetch.opened == 1);
+	f.advance(1500);
+	f.gate.release(fetch);
+	f.run();
+	CHECK(f.client.connects == 4);
+	CHECK(f.link.failures() == 0); // no backoff: a planned close
+	CHECK(f.capture.sink.contains("I hc.tls: the E-Home link reconnects after a pause of 6.5 s: 1 TLS session(s) ran"));
 }
 
 TEST_CASE("E-Home: ehome.enabled false closes at once and never reconnects") {

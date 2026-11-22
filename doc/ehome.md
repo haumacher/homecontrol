@@ -43,7 +43,12 @@ Before it opens the socket the link asks the TLS gate (homecontrol #110/#112, do
 gate"): while another TLS session starts (a fetch's, an `mqtts://` broker's) it waits (`waiting for
 another TLS session to start (the link goes first)`, state `connecting`), ahead of every other
 waiting session and without a memory check, and it holds the gate until the socket is open or the
-attempt failed, so no second TLS handshake runs beside its own. The handshake must complete within 30 s. Connected, the controller pings every 30 s and closes the
+attempt failed, so no second TLS handshake runs beside its own. When a TLS session of the controller
+finds no room beside the link's but would without it, the gate pauses the link (doc/core.md "The
+TLS gate", spec/api.md "A pause for a fetch"): the socket closes with code 4000 `fetch`, the state
+shows `connecting`, the waiting fetches run, and the link connects again at once without backoff (at
+most once in 10 minutes, at most 60 s, never during a request, a bus session or an offered key).
+The handshake must complete within 30 s. Connected, the controller pings every 30 s and closes the
 socket when the pong is 10 s late; the backoff reconnects. After `ready` the socket joins the
 `LiveFeed` as one more client (an extra slot beside the four browser slots, `LiveFeed::attach_ehome`),
 already authenticated; its commands show in the monitor with `"via": "ehome"`.

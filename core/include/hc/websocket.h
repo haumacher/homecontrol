@@ -33,6 +33,9 @@ constexpr uint16_t kCloseInvalidPayload = 1007;
 constexpr uint16_t kClosePolicy = 1008;
 constexpr uint16_t kCloseTooBig = 1009;
 constexpr uint16_t kCloseTryAgainLater = 1013;
+/// The controller pauses its E-Home connection for a fetch and connects again at once (the private
+/// range 4000-4999; spec/api.md "E-Home connection", homecontrol #112). Reason text "fetch".
+constexpr uint16_t kClosePause = 4000;
 
 /// Longest frame header: 2 + 8 (length) + 4 (mask).
 constexpr size_t kMaxHeader = 14;
