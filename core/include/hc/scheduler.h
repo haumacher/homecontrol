@@ -359,8 +359,15 @@ public:
 	bool add_listener(ScheduleListener& listener);
 	bool remove_listener(ScheduleListener& listener);
 
-	/// Re-evaluates all entries now (what every time event does).
+	/// Re-evaluates all entries now, in this turn, whatever sun dates that computes (what a change
+	/// by the inhabitant does). A time event, a load and the evaluation after a firing spread
+	/// theirs instead: at most kSunDatesPerTurn uncached sun dates per turn of the loop.
 	void evaluate();
+
+	/// The uncached dates whose sun events a spread evaluation computes in one turn of the loop:
+	/// one such date costs about 5 ms on the C6, and the first evaluation after the clock
+	/// synchronizes needs five or six of them with a house's schedules (homecontrol #105).
+	static constexpr int kSunDatesPerTurn = 1;
 
 	// TimeListener
 	void time_changed(uint8_t events) override;
@@ -392,6 +399,9 @@ private:
 	std::optional<int64_t> firing_on(const Entry& entry, const Date& date) const;
 	void report_time(Entry& entry);
 	void evaluate_soon();
+	void evaluate_spread();
+	void evaluate_from(size_t from, bool spread);
+	bool sun_times(const Date& date, SunTimes& out) const;
 	std::optional<int64_t> occurrence_after(const Entry& entry, int64_t utc) const;
 	std::optional<int64_t> occurrence_on(const Entry& entry, const Date& date) const;
 	std::optional<int64_t> interval_after(const Entry& entry, const Date& date, int64_t utc) const;
@@ -426,6 +436,13 @@ private:
 	bool commanding_ = false; ///< Within command(): the model stores the value, nothing may report.
 	bool defer_times_ = false;
 	QuietReports* quiet_ = nullptr;
+	/// A spread evaluation in progress: the first entry it has not evaluated yet, which `timer_`
+	/// continues with in the next turn; kNoPass when none is.
+	static constexpr size_t kNoPass = static_cast<size_t>(-1);
+	size_t pass_next_ = kNoPass;
+	bool pass_due_ = false;              ///< An entry evaluated by the pass so far is due.
+	mutable int sun_budget_ = -1;        ///< Uncached sun dates the evaluation may still compute; -1: any.
+	mutable bool sun_deferred_ = false;  ///< The evaluation needed a date beyond the budget.
 };
 
 } // namespace hc

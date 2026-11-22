@@ -28,7 +28,7 @@ What consumers call; the service implements it and the tests fake it:
 | `monotonic_ms()` | the event loop's time base |
 | `now_utc()` | wall seconds since the epoch and `synchronized` |
 | `to_local(utc, LocalTime&)` | local civil time (fields, DST flag, zone abbreviation) |
-| `sun_times(date, SunTimes&)` | dawn, sunrise, sunset, dusk of a local date as UTC instants; false without a location; an event that does not occur is absent. The TimeService keeps the last 12 dates' results for its location (one computation costs about 5 ms on the C6, which has no FPU, and a schedule's next occurrence may look at ten dates, #50) |
+| `sun_times(date, SunTimes&)` | dawn, sunrise, sunset, dusk of a local date as UTC instants; false without a location; an event that does not occur is absent. The TimeService keeps the last 12 dates' results for its location (one computation costs about 5 ms on the C6, which has no FPU, and a schedule's next occurrence may look at ten dates, #50); `sun_known(date)` says whether a date is cached, so the scheduler computes one uncached date per turn of the loop (#105) |
 | `sun_window(date, SunWindow&)` | the span within which every sun event of the date lies, without computing them (`hc::sun_window()`, below); false exactly when `sun_times()` is |
 | `synchronized()`, `local_time()`, `local_date()`, `utc_offset()` | helpers on top of the above; `local_time()` is false while not synchronized |
 | `local_to_utc(date, h, m, s)` | the UTC instant of a local time, with the DST rules of `spec/schedules.md` S1: a repeated time resolves to its first occurrence, a non-existent one to the end of the gap |
@@ -156,6 +156,23 @@ whole wall seconds, so a firing is up to a second late, never early; a timer tha
 the clock is not synchronized nothing is armed (logged once: `schedules wait for a synchronized
 wall clock`).
 
+The evaluations of a load, a time event and a firing round are *spread* (#105): they compute at
+most `Scheduler::kSunDatesPerTurn` (one) uncached sun date per turn of the loop. An entry that
+needs one more (`TimeSource::sun_known()` is false for its date and the turn's date is spent) stops
+the evaluation; the scheduler's timer continues it from that entry in the next turn, when the dates
+computed so far are in the TimeService's cache, and arms the firing timer when the last entry is
+done. Each turn computes a date, so the pass ends after as many turns as dates plus one, and it
+decides what an evaluation in one turn decides (`scheduler_sync_load_test.cpp` runs a house's 33
+schedules both ways for a week, across day changes, a clock step and a new location). The first
+evaluation after the clock synchronizes needs five or six dates with such a house (yesterday's of
+the entries accounted then, today, tomorrow, and the weekend and Friday entries' next days): about
+30 ms in one turn on the C6 before (`slow periodic handler time.tick took 31 ms` on the house
+controller), at most one date of about 5 ms per turn now. An entry not reached yet keeps its
+previous next firing until the pass gets to it. `set_enabled`, `set_members` and `reset_overrides`
+evaluate in their turn (`evaluate()`), so the web API answers with the new next firing; they compute
+at most the changed entry's dates, the others are cached. A change by a datapoint command
+(`schedule/<id>/time`) evaluates from the loop, spread like a firing round.
+
 ### Next-firing computation
 
 Per kind, from a UTC instant `t` and the local date `L` of `t`:
@@ -173,8 +190,9 @@ Per kind, from a UTC instant `t` and the local date `L` of `t`:
   local times by a day give or take a DST hour, and the clamp is non-decreasing in both). The result
   is the same as the walk over every day (`scheduler_astro_test.cpp` compares the two over a year
   at places from Sydney to McMurdo, with the ±12 h offsets); the first evaluation after the clock
-  synchronizes computes two dates instead of ten (about 11 ms instead of 55 ms on the C6), and
-  polar nights still walk the whole window, once per day thanks to the TimeService's cache.
+  synchronizes computes two dates per entry instead of ten (about 11 ms instead of 55 ms on the
+  C6), and polar nights still walk the whole window, once per day thanks to the TimeService's
+  cache. The dates of all entries together are spread over the loop's turns (Timers, above).
 - `yearly`: the years `L.year-1 .. L.year+8` (29 February: the next leap year within eight years).
 - `dates`: the sorted list from `L-1`.
 - `once`: its moment if after `t`.

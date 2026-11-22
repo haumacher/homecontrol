@@ -81,6 +81,14 @@ public:
 		return false;
 	}
 
+	/// Whether sun_times() answers for `date` from what it already holds, without the computation
+	/// (about 5 ms on the C6; homecontrol #105). The scheduler spreads the dates it does not hold over
+	/// the loop's turns. The default, for a source without such a cost, holds every date.
+	virtual bool sun_known(const Date& date) const {
+		(void)date;
+		return true;
+	}
+
 	/// now_utc().synchronized.
 	bool synchronized() const { return now_utc().synchronized; }
 
@@ -204,6 +212,8 @@ public:
 	bool to_local(int64_t utc_seconds, LocalTime& out) const override;
 	bool sun_times(const Date& date, SunTimes& out) const override;
 	bool sun_window(const Date& date, SunWindow& out) const override;
+	/// True without a location (sun_times() answers false at once) and for a date in the cache.
+	bool sun_known(const Date& date) const override;
 
 	/// How many dates' sun events were computed (not taken from the cache); a diagnostic for tests.
 	uint32_t sun_computations() const { return sun_computations_; }
@@ -241,7 +251,8 @@ private:
 	bool has_location_ = false;
 	// One sun computation costs about 5 ms on a chip without an FPU (the C6), and a schedule's next
 	// occurrence may look at ten dates (homecontrol #50; usually two since #57): the results are kept per date, for the
-	// location they were computed at, and replaced round-robin.
+	// location they were computed at, and replaced round-robin. The scheduler computes one date it does
+	// not find here per turn of the loop (sun_known(), #105).
 	mutable SunCacheEntry sun_cache_[kSunCacheSize] = {};
 	mutable size_t sun_cache_count_ = 0;
 	mutable size_t sun_cache_next_ = 0;

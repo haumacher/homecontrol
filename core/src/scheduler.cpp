@@ -685,6 +685,7 @@ ScheduleStatus Scheduler::load(const ScheduleSpec* specs, size_t count) {
 		loop_.cancel(timer_);
 		timer_ = TimerHandle();
 	}
+	pass_next_ = kNoPass;
 	delete[] entries_;
 	delete[] block_;
 	entries_ = entries;
@@ -698,7 +699,7 @@ ScheduleStatus Scheduler::load(const ScheduleSpec* specs, size_t count) {
 	delete_orphan_records();
 	bind_outputs();
 	Log::info(kTag, "loaded %u schedule entries", static_cast<unsigned>(count_));
-	evaluate();
+	evaluate_spread();
 	return ScheduleStatus::ok;
 }
 
@@ -711,6 +712,7 @@ void Scheduler::clear() {
 		loop_.cancel(timer_);
 		timer_ = TimerHandle();
 	}
+	pass_next_ = kNoPass;
 	delete[] entries_;
 	delete[] block_;
 	entries_ = nullptr;
@@ -1336,6 +1338,7 @@ void Scheduler::apply_change(Entry& entry, const ScheduleSpec& before, bool from
 }
 
 void Scheduler::evaluate_soon() {
+	pass_next_ = kNoPass; // fire_due() evaluates anew
 	if (timer_.valid()) {
 		loop_.cancel(timer_);
 	}
@@ -1563,7 +1566,7 @@ std::optional<int64_t> Scheduler::occurrence_on(const Entry& entry, const Date& 
 		return time_.local_to_utc(date, spec.at_time.hour, spec.at_time.minute, spec.at_time.second);
 	case ScheduleKind::astro: {
 		SunTimes sun;
-		if (!time_.sun_times(date, sun) || !sun.occurs(spec.sun)) {
+		if (!sun_times(date, sun) || !sun.occurs(spec.sun)) {
 			return std::nullopt;
 		}
 		return AstroClamp(time_, spec, date).apply(sun.at(spec.sun) + spec.offset_s);
@@ -1721,7 +1724,7 @@ std::optional<int64_t> Scheduler::latest_up_to(const Entry& entry, int64_t first
 // --- Evaluation ---
 
 void Scheduler::time_changed(uint8_t) {
-	evaluate();
+	evaluate_spread();
 }
 
 bool Scheduler::is_idle(const Entry& entry) {
@@ -1741,9 +1744,29 @@ void Scheduler::idle(Entry& entry, int64_t now) {
 }
 
 void Scheduler::evaluate() {
+	evaluate_from(0, false);
+}
+
+void Scheduler::evaluate_spread() {
+	evaluate_from(0, true);
+}
+
+bool Scheduler::sun_times(const Date& date, SunTimes& out) const {
+	if (sun_budget_ >= 0 && !time_.sun_known(date)) {
+		if (sun_budget_ == 0) {
+			sun_deferred_ = true;
+			return false;
+		}
+		--sun_budget_;
+	}
+	return time_.sun_times(date, out);
+}
+
+void Scheduler::evaluate_from(size_t from, bool spread) {
 	if (firing_) {
 		return; // fire_due() evaluates when it is done
 	}
+	pass_next_ = kNoPass;
 	WallTime now = time_.now_utc();
 	if (!now.synchronized) {
 		if (timer_.valid()) {
@@ -1759,10 +1782,17 @@ void Scheduler::evaluate() {
 		}
 		return;
 	}
-	waiting_logged_ = false;
-	update_outputs(now.seconds);
-	bool due = false;
-	for (size_t i = 0; i < count_; ++i) {
+	if (from == 0) {
+		waiting_logged_ = false;
+		update_outputs(now.seconds);
+		pass_due_ = false;
+	}
+	// A spread evaluation computes at most kSunDatesPerTurn uncached sun dates in this turn: an entry
+	// that needs one more is evaluated again from the next turn on, when the dates computed so far
+	// are cached (homecontrol #105). Each turn computes a date, so the pass ends.
+	sun_budget_ = spread ? kSunDatesPerTurn : -1;
+	bool due = pass_due_;
+	for (size_t i = from; i < count_; ++i) {
 		Entry& entry = entries_[i];
 		entry.next = kNone;
 		if (!entry.enabled) {
@@ -1792,15 +1822,31 @@ void Scheduler::evaluate() {
 			persist(entry);
 		}
 		std::optional<int64_t> first = occurrence_after(entry, entry.accounted);
-		if (first && *first <= now.seconds) {
+		bool entry_due = !sun_deferred_ && first && *first <= now.seconds;
+		if (entry_due) {
 			entry.next = *first;
-			due = true;
-			continue;
+		} else if (!sun_deferred_) {
+			int64_t base = entry.accounted > now.seconds ? entry.accounted : now.seconds;
+			std::optional<int64_t> next = occurrence_after(entry, base);
+			entry.next = next ? *next : kNone;
 		}
-		int64_t base = entry.accounted > now.seconds ? entry.accounted : now.seconds;
-		std::optional<int64_t> next = occurrence_after(entry, base);
-		entry.next = next ? *next : kNone;
+		if (sun_deferred_) {
+			// Not decided with a date missing: this entry again in the next turn.
+			entry.next = kNone;
+			sun_deferred_ = false;
+			sun_budget_ = -1;
+			pass_due_ = due;
+			pass_next_ = i;
+			if (timer_.valid()) {
+				loop_.cancel(timer_);
+			}
+			timer_ = loop_.schedule_at(time_.monotonic_ms(),
+				Callback::member<Scheduler, &Scheduler::on_timer>(this, "scheduler.on_timer"));
+			return;
+		}
+		due = due || entry_due;
 	}
+	sun_budget_ = -1;
 	if (due) {
 		if (timer_.valid()) {
 			loop_.cancel(timer_);
@@ -1866,6 +1912,10 @@ void Scheduler::fire(Entry& entry, int64_t now, bool caught_up) {
 
 void Scheduler::on_timer() {
 	timer_ = TimerHandle();
+	if (pass_next_ != kNoPass) {
+		evaluate_from(pass_next_, true);
+		return;
+	}
 	fire_due();
 }
 
@@ -1943,7 +1993,7 @@ void Scheduler::fire_due() {
 		fire(*pick, now, caught_up);
 	}
 	firing_ = false;
-	evaluate();
+	evaluate_spread();
 }
 
 } // namespace hc

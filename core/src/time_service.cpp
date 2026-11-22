@@ -467,6 +467,22 @@ bool TimeService::sun_window(const Date& date, SunWindow& out) const {
 	return true;
 }
 
+bool TimeService::sun_known(const Date& date) const {
+	if (!has_location_) {
+		return true;
+	}
+	if (sun_cache_location_.latitude != location_.latitude || sun_cache_location_.longitude != location_.longitude ||
+		sun_cache_location_.elevation_m != location_.elevation_m) {
+		return false; // the cache holds another location's dates
+	}
+	for (size_t i = 0; i < sun_cache_count_; ++i) {
+		if (sun_cache_[i].date == date) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool TimeService::sun_times(const Date& date, SunTimes& out) const {
 	if (!has_location_) {
 		return false;

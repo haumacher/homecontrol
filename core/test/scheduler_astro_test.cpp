@@ -45,6 +45,10 @@ uint32_t computations_at_synchronization(int64_t utc_now) {
 	clock.synchronized = true;
 	clock.wall_seconds = utc_now;
 	time.refresh(); // the watch's tick: kSynchronized, the scheduler evaluates
+	// The evaluation is spread, a sun date per turn (#105): the turns that follow complete it.
+	for (int turn = 0; turn < 10 && loop.next_deadline() <= clock.now_ms; ++turn) {
+		loop.run_once(clock.now_ms);
+	}
 	for (size_t i = 0; i < specs.size(); ++i) {
 		REQUIRE(scheduler.next_firing(i));
 	}

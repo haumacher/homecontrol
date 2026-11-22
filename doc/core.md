@@ -119,7 +119,8 @@ controller.led_tick (period 50 ms) missed 3 period(s)`). Every callback carries 
 name is logged by its function's address, for `addr2line -C -f -e homecontrol.elf 0x…`. That is
 how #50 found the scheduler's 333 ms evaluation (the sun computed for ten dates per astro entry,
 now cached by the TimeService, and since #57 computed only for the two or so dates that can hold
-the next firing), and #55 the live feed's `pump` holding the loop 111 and 164 ms when
+the next firing; #105 the first evaluation after the clock synchronizes, which still computed five or six
+dates for a house's 33 schedules in `time.tick`: one date per turn since), and #55 the live feed's `pump` holding the loop 111 and 164 ms when
 E-Home joined: the E-Home client wrote each snapshot chunk into the TLS socket on the loop (about
 6 ms of CPU each, and about 60 ms waiting for the server's ACK when lwIP's send buffer was below its
 low-water mark); it now queues and a task of its own writes (doc/ehome.md, "The platforms").
