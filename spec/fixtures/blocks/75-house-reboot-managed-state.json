@@ -1,6 +1,6 @@
 {
 	"title": "House mode across a reboot (19.2 D11, spec/blocks.md 8.1): the mode is managed state, written 10 s after it changes and only then, restored at the boot; a record of an older firmware is written again without its fields that are not managed state, one of another type is deleted (stateReset) and the instance starts fresh.",
-	"note": "Munich time zone, 2026-11-20 18:00 CET at 0, the clock synchronized. The stored record of hm is away since 2026-11-20 08:00 (minute 29 919 360) with `armed` 0 and `absentSince` 5, fields an older firmware kept: hm starts away and armed (1), and its record holds mode and since alone. hm2's record is a room controller's: hm2 starts fresh, home since the start (minute 29 919 960, 18:00), written at 10 s. The home button at 90 s (18:01:30, minute 29 919 961) and the night button at 800 s after the reboot (18:13:20, minute 29 919 973) each write hm's record 10 s later; the periods in between write nothing.",
+	"note": "Munich time zone, 2026-11-20 18:00 CET at 0, the clock synchronized. The stored record of hm is away since 2026-11-20 08:00 (minute 29 919 360) with `armed` 0 and `absentSince` 5, fields an older firmware kept: hm starts away and armed (1), and its record holds mode and since alone. hm2's record is a room controller's: hm2 starts fresh, home since the start (minute 29 919 960, 18:00), written at 10 s. The home button at 90 s (18:01:30, minute 29 919 961) and the night button at 800 s after the reboot (18:13:20, minute 29 919 973) each write hm's record 10 s later, not before: the checks at 9 s after each change still find the record as it was (none of hm2 before its first write); the periods in between write nothing.",
 	"clock": {
 		"start": "2026-11-20T18:00:00",
 		"zone": "CET-1CEST,M3.5.0,M10.5.0/3"
@@ -107,6 +107,18 @@
 			}
 		},
 		{
+			"at": 9000,
+			"check": {
+				"stored": {
+					"hm": {
+						"mode": 1.0,
+						"since": 29919360.0
+					},
+					"hm2": null
+				}
+			}
+		},
+		{
 			"at": 11000,
 			"check": {
 				"stored": {
@@ -126,6 +138,21 @@
 			"report": {
 				"datapoint": "hb",
 				"value": true
+			}
+		},
+		{
+			"at": 99000,
+			"check": {
+				"stored": {
+					"hm": {
+						"mode": 1.0,
+						"since": 29919360.0
+					},
+					"hm2": {
+						"mode": 0.0,
+						"since": 29919960.0
+					}
+				}
 			}
 		},
 		{
@@ -193,6 +220,21 @@
 			"report": {
 				"datapoint": "nb",
 				"value": true
+			}
+		},
+		{
+			"at": 809000,
+			"check": {
+				"stored": {
+					"hm": {
+						"mode": 0.0,
+						"since": 29919961.0
+					},
+					"hm2": {
+						"mode": 0.0,
+						"since": 29919960.0
+					}
+				}
 			}
 		},
 		{

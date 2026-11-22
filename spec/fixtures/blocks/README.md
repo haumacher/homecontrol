@@ -153,7 +153,7 @@ entries of one block for parameters that are gone come in an unspecified order; 
 | `72-pv-enable-ready-no-clock` | PV surplus: no forced run without a wall clock; enable false releases every load as minOn allows, a stale enable counts as unbound; a stale ready is not ready. |
 | `73-load-refused-pv-min-power` | The PV surplus control's check (B17): a modulated load needs 0 < minPower <= power; minPower2 is blamed; an unused load is not checked. |
 | `74-load-refused-pv-must-run` | The PV surplus control's check (B17): mustRunFor above maxPerDay refuses the image; mustRunFor1 is blamed. |
-| `75-house-reboot-managed-state` | House mode across a reboot: the mode is managed state, written 10 s after it changes and only then, restored at the boot; an older firmware's record is written again without its fields that are not managed state, one of another type is deleted (stateReset). |
+| `75-house-reboot-managed-state` | House mode across a reboot: the mode is managed state, written 10 s after it changes (not at 9 s) and only then, restored at the boot; an older firmware's record is written again without its fields that are not managed state, one of another type is deleted (stateReset). |
 
 ## How the expected values were computed
 
