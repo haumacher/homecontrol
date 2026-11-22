@@ -997,8 +997,9 @@ writes, a device's attribute; homecontrol #100), before the rules start; the res
 so no trigger fires on it. Where the bus knows better the datapoint is `readOnStart`: the
 technology's answer replaces the restored value like any report. A bus connection that fails at
 first after the boot (the KNX gateway still holding the connection of the run before) is no loss of
-contact: the restored values stay good (homecontrol #103). Every other datapoint starts
-unknown. After the image is loaded at boot:
+contact: the restored values stay good (homecontrol #103). A value of the application with an
+initial value that has none persisted starts with it, with quality good, no update either
+(`spec/runtime-image.md` 3.3, homecontrol #107). Every other datapoint starts unknown. After the image is loaded at boot:
 
 1. Each rule with states whose persisted state the image still declares takes that state, without
    running its entry actions.

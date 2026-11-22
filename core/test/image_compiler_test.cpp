@@ -179,7 +179,7 @@ std::string Checker::run() {
 	if (b_.size() < 32 || std::memcmp(b_.data(), "HCIM", 4) != 0) {
 		return "no header";
 	}
-	if (u16(4) != 1 || u16(6) > 1 || u32(8) != b_.size() || b_.size() % 8 != 0 || u16(20) != 32 || (u32(16) & ~1u) != 0) {
+	if (u16(4) != 1 || u16(6) > 2 || u32(8) != b_.size() || b_.size() % 8 != 0 || u16(20) != 32 || (u32(16) & ~1u) != 0) {
 		return "a bad header";
 	}
 	size_t signed_end = b_.size() - ((u32(16) & 1) != 0 ? 64 : 0);
@@ -770,6 +770,20 @@ TEST_CASE("Image compiler: anonymous-pages.json, the format 1.1 fixture of the a
 	CHECK(out[6] == 1);
 	if (std::getenv("HC_WRITE_FIXTURES") != nullptr) {
 		std::ofstream file(HC_SPEC_DIR "/fixtures/images/anonymous-pages.bin", std::ios::binary);
+		file.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+	}
+}
+
+TEST_CASE("Image compiler: accept-initial-values.json, the format 1.2 case of the initial values") {
+	// The initial values of application datapoints (homecontrol #107, haumacher/ehome#217): the image
+	// is written in format 1.2; its `.bin` is compared with E-Home's (Image.CompiledCorpus).
+	// HC_WRITE_FIXTURES=1 writes it again.
+	std::string path = HC_SPEC_DIR "/fixtures/images/cases/accept-initial-values.json";
+	std::vector<uint8_t> out;
+	compile_and_check(path, read_file(path), out);
+	CHECK(out[6] == 2);
+	if (std::getenv("HC_WRITE_FIXTURES") != nullptr) {
+		std::ofstream file(HC_SPEC_DIR "/fixtures/images/cases/accept-initial-values.bin", std::ios::binary);
 		file.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
 	}
 }

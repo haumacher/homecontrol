@@ -1,0 +1,18 @@
+{"comment": "Initial values refused (schema 1.9, homecontrol #107): only a datapoint with virtual has one; it is a JSON literal value of the datapoint's type (spec/rules.md 3.1) within the range of that type.",
+ "expect": {"valid": false, "kind": "invalid", "refusals": [
+   {"path": "datapoints[0].initial", "reason": "only a datapoint with virtual has an initial value"},
+   {"path": "datapoints[1].initial", "reason": "not a value of type boolean"},
+   {"path": "datapoints[2].initial", "reason": "not a value of type unsigned"},
+   {"path": "datapoints[3].initial", "reason": "not a value of type signed"},
+   {"path": "datapoints[4].initial", "reason": "not a value of type string"},
+   {"path": "datapoints[5].initial", "reason": "not a value of type timeOfDay"},
+   {"path": "datapoints[6].initial", "reason": "not a value of type raw"}]},
+ "image": {"schemaVersion": "1.9", "projectId": "case", "revision": 1},
+ "datapoints": [
+   {"id": "knx", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["1/1/1"]}, "initial": false},
+   {"id": "flag", "type": "boolean", "virtual": {}, "initial": 0},
+   {"id": "count", "type": "unsigned", "virtual": {}, "initial": -1},
+   {"id": "big", "type": "signed", "virtual": {}, "initial": 2147483648},
+   {"id": "long", "type": "string", "virtual": {}, "initial": "a text of more than 28 bytes!"},
+   {"id": "time", "type": "timeOfDay", "virtual": {}, "initial": {"hour": 25, "minute": 0, "second": 0}},
+   {"id": "bytes", "type": "raw", "virtual": {}, "initial": "0A FF 1"}]}

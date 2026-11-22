@@ -853,6 +853,28 @@ bool ImageService::bind_persistence(const Plan& plan, Source source) {
 	return true;
 }
 
+size_t ImageService::apply_initial_values(const Plan& plan) {
+	size_t applied = 0;
+	size_t n = plan.view.count(bin::kDatapoints);
+	for (size_t i = 0; i < n && i < model_.size(); ++i) {
+		const bin::DatapointRec& r = plan.view.at<bin::DatapointRec>(bin::kDatapoints, i);
+		uint16_t id = static_cast<uint16_t>(i);
+		if ((r.init & bin::kDatapointInitial) == 0 || model_.get(id)->quality() != Quality::unknown) {
+			continue; // A value kept across the swap or persisted wins.
+		}
+		std::optional<Value> value = rules::convert_for_datapoint(
+			plan.view.at<rules::Val>(bin::kConstants, r.initial), static_cast<ValueType>(r.type));
+		if (value && model_.restore(id, *value) == DatapointStatus::ok) {
+			++applied;
+		}
+	}
+	if (applied > 0) {
+		Log::info(kTag, "%u datapoint%s without a value took the initial value", static_cast<unsigned>(applied),
+			applied == 1 ? "" : "s");
+	}
+	return applied;
+}
+
 bool ImageService::bind_technologies(const Plan& plan, Source source) {
 	const char* error = nullptr;
 	if (!adapter_.configure(plan.mappings, plan.mapping_count, &error)) {
@@ -943,6 +965,7 @@ bool ImageService::apply(const Plan& constant_plan, Source source) {
 	if (!bind_persistence(plan, source)) {
 		return false;
 	}
+	apply_initial_values(plan);
 	phase("persistence");
 	rules::LoadResult result = engine_.adopt(std::move(plan.rule_set), swap_ != nullptr ? swap_->carry : nullptr);
 	if (!result.ok()) {

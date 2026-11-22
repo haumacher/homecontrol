@@ -221,6 +221,9 @@ private:
 	bool compose(const Plan* plan, Composed& out, Report& report);
 	void bind_providers(const Plan* plan, const Composed& composed);
 	bool bind_persistence(const Plan& plan, Source source);
+	/// Gives every datapoint with an initial value that has none (neither kept across the swap nor
+	/// persisted) its initial value, with quality good (spec/runtime-image.md 3.3, format 1.2); how many.
+	size_t apply_initial_values(const Plan& plan);
 	bool bind_technologies(const Plan& plan, Source source);
 	bool reload_dynamic(const char* why);
 	void reload_due();

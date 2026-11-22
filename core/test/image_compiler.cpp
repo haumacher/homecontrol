@@ -428,6 +428,7 @@ struct Datapoint {
 	uint16_t owner_index = kNone;
 	uint16_t owner_member = 0;
 	uint16_t history = kNone;
+	uint16_t initial = kNone; ///< The constant of the initial value (format 1.2), kNone without.
 };
 
 constexpr uint8_t kReadable = 0x01;
@@ -563,6 +564,7 @@ private:
 
 	const blocks::BlockRegistry& registry_;
 	bool harness_;
+	bool has_initial_ = false; ///< A datapoint has an initial value: format 1.2.
 	JsonSpanDocument document_;
 	std::map<uint16_t, Table> tables_;
 	std::vector<StringFix> string_fixes_;
@@ -660,6 +662,17 @@ bool Compiler::declared_datapoints(const JsonSpan& root) {
 		bool technology = has_member(item, "knx") || has_member(item, "zigbee");
 		if (is_virtual) {
 			dp.flags = static_cast<uint8_t>(dp.flags | kApplication | kVirtual);
+			if (member(item, "initial", value)) {
+				// The initial value (3.3, format 1.2): a constant of the datapoint's expression type,
+				// appended in datapoint order before the rules' constants (9.18).
+				Val parsed;
+				if (rules::val_from_json(rules::type_of_datapoint(type), document_.value(value), parsed) !=
+					rules::LiteralStatus::ok || !rules::convert_for_datapoint(parsed, type)) {
+					return fail("datapoints[%u].initial: no value of its type", static_cast<unsigned>(datapoints_.size()));
+				}
+				dp.initial = add_constant(parsed);
+				has_initial_ = true;
+			}
 		} else if (!technology && !harness_) {
 			// A value of the application (3.3, 1.6). The harness's test technology (13.1) has no flag.
 			dp.flags = static_cast<uint8_t>(dp.flags | kApplication);
@@ -2866,6 +2879,10 @@ void Compiler::datapoint_table() {
 		t.u16(r, 16, dp.owner == kOwnerNone ? kNone : dp.owner_index);
 		t.u16(r, 18, dp.owner == kOwnerNone ? 0 : dp.owner_member);
 		t.u16(r, 20, dp.history);
+		if (dp.initial != kNone) {
+			t.u8(r, 15, 0x01);
+			t.u16(r, 22, dp.initial);
+		}
 	}
 }
 
@@ -2946,7 +2963,9 @@ bool Compiler::assemble(std::vector<uint8_t>& out, const uint8_t* seed) {
 	std::memcpy(out.data(), magic, 4);
 	put16(out, 4, 1);
 	// Format 1.1 only for an image with its sections (spec/runtime-image.md 8): the anonymous pages.
-	put16(out, 6, tables_.count(kUiAnonymous) != 0 && !tables_[kUiAnonymous].bytes.empty() ? 1 : 0);
+	// The oldest minor version that has what the image uses (section 8): 1.2 the initial values, 1.1
+	// the anonymous pages.
+	put16(out, 6, has_initial_ ? 2 : tables_.count(kUiAnonymous) != 0 && !tables_[kUiAnonymous].bytes.empty() ? 1 : 0);
 	put32(out, 8, static_cast<uint32_t>(length));
 	put32(out, 16, seed != nullptr ? 1 : 0);
 	put16(out, 20, static_cast<uint16_t>(header));

@@ -495,7 +495,8 @@ public:
 	DatapointStatus set_pending(Technology& technology, uint16_t id, bool pending);
 
 	/// Sets the last value of a kPersist datapoint from before the reboot (hc::ValueStore, right after
-	/// load()): the value (converted where exact) with quality good, whatever the technology (the
+	/// load()), or the initial value of an application datapoint that has none (ImageService,
+	/// spec/runtime-image.md 3.3): the value (converted where exact) with quality good, whatever the technology (the
 	/// flag says the last value counts; homecontrol #100), updated_ms() stays 0, and no listener is
 	/// told (it is part of the load: rules start afterwards and read it). Where the bus knows better,
 	/// kReadOnStart reads it and the answer, a report, replaces it. Refused with wrong_type if it does

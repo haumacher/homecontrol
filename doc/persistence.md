@@ -235,6 +235,14 @@ time is what `wall_time(id)` returns until the next update. Records of datapoint
 flagged (or no longer in the image) are deleted at load; a record whose name field does not match
 the datapoint (a hash collision) is ignored.
 
+**Initial values** (homecontrol #107, `spec/runtime-image.md` 3.3, format 1.2). After the store has
+loaded, `ImageService::apply_initial_values()` gives every application datapoint with an initial
+value that still has none (no value kept across a swap, no record, or a record whose type no longer
+converts) that value through the same `DatapointModel::restore()`: quality good, `updated_ms` 0, no
+listener told. So the store does not write it either; its first record is the first real change. A
+persisted value therefore wins over the initial value at every restart, and a datapoint without
+`persist` starts with its initial value again at each one.
+
 The wall time of a value is the wall clock at its update when the clock is synchronized. If it is
 not (no SNTP yet), the record is written without a time and `wall_time()` derives the time from the
 monotonic update time once the clock is known; the next write then carries it.

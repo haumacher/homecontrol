@@ -17,11 +17,11 @@ class JsonWriter;
 /// record at `offset + i * entrySize` of its section, so a later minor version may lengthen records.
 namespace hc::image::bin {
 
-/// The format this firmware reads (section 11): major 1, every minor up to 1 (1.1: the anonymous
-/// pages, homecontrol #91).
+/// The format this firmware reads (section 11): major 1, every minor up to 2 (1.1: the anonymous
+/// pages, homecontrol #91; 1.2: the initial values of application datapoints, homecontrol #107).
 constexpr uint16_t kFormatMajor = 1;
-constexpr uint16_t kFormatMinor = 1;
-/// "1.1".
+constexpr uint16_t kFormatMinor = 2;
+/// "1.2".
 const char* format_text();
 
 constexpr uint16_t kNone = 0xFFFF;
@@ -174,6 +174,8 @@ enum Owner : uint8_t {
 constexpr uint16_t kRuleStateMember = 0x8000;
 /// The flag of a datapoint whose source has a `virtual` member (bit 7 of `flags`).
 constexpr uint8_t kDatapointVirtual = 0x80;
+/// The bit of DatapointRec::init: the datapoint has an initial value, DatapointRec::initial (format 1.2).
+constexpr uint8_t kDatapointInitial = 0x01;
 
 struct DatapointRec {
 	uint32_t name;
@@ -182,11 +184,11 @@ struct DatapointRec {
 	uint8_t type;
 	uint8_t flags;
 	uint8_t owner;
-	uint8_t reserved;
+	uint8_t init;         ///< Bit 0 (kDatapointInitial): `initial` names the initial value (1.2; 0 before).
 	uint16_t owner_index;
 	uint16_t owner_member;
 	uint16_t history;
-	uint16_t reserved2;
+	uint16_t initial;     ///< With kDatapointInitial: the constant of the initial value (1.2; 0 before).
 };
 static_assert(sizeof(DatapointRec) == 24, "datapoint");
 

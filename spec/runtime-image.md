@@ -45,11 +45,11 @@ in `doc/image.md`); transported by `PUT /api/image` (`spec/api.md`). Fixtures:
   the flash for a case E-Home handles by sending the last valid deployment again, I9); a staging
   area beside the stored image (the scheme until firmware 1.2).
 - **I4. Two versions.** The source form is versioned by `image.schemaVersion` (`<major>.<minor>`,
-  this document 1.8, section 8): it is E-Home's and the corpus's; E-Home's compiler reads every
-  schema 1.0 to 1.8 and compiles each with the meaning its version gives it (an image of 1.6 whose
+  this document 1.9, section 8): it is E-Home's and the corpus's; E-Home's compiler reads every
+  schema 1.0 to 1.9 and compiles each with the meaning its version gives it (an image of 1.6 whose
   rule with states declares a parameter `state` keeps that parameter's datapoint and gets no state
   datapoint, section 8). The binary image is versioned by its **format version** `<major>.<minor>`
-  in the header (section 11; this document is format 1.1). The device reports the format it reads
+  in the header (section 11; this document is format 1.2). The device reports the format it reads
   and the size of its slot (`GET /api/status` `device.format` and `image.slot`, the E-Home
   connection's `auth`, `spec/api.md`); E-Home compiles for that format and refuses, before sending,
   an image larger than the slot ("Das Abbild hat N Bytes, der Controller fasst M") or one that needs
@@ -169,7 +169,7 @@ what section 10 lists. Where it says what "the device" does at run time, that ho
 
 | Member | Type | Required | Meaning |
 |---|---|---|---|
-| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.7` (section 8). The binary image carries it as text (9.6); its own version is the format version (I4, section 11). |
+| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.9` (section 8). The binary image carries it as text (9.6); its own version is the format version (I4, section 11). |
 | `projectId` | string, 1..63 | yes | E-Home's project. Shown in the status. |
 | `revision` | integer 0..4294967295 | yes | E-Home's deployment counter, shown in the status and returned by PUT. The device does not refuse an older revision: rolling back is a deployment like any other. |
 | `generatedAt` | string, 1..31 | no | ISO 8601 time of the export. |
@@ -207,6 +207,40 @@ An array of datapoint objects (at most 1024). The array order is the model order
 | `knx` | object | no | The KNX binding, below. |
 | `zigbee` | object | no | The Zigbee binding, below. Excludes `knx` and `virtual`. |
 | `virtual` | object (members reserved) | no | A value of the application: no technology; rules write it, the user commands it where it is `writable`. Excludes `knx` and `zigbee`. |
+| `initial` | the JSON literal value of the datapoint's type, below | no (only with `virtual`) | The initial value (1.9, homecontrol #107): the value the datapoint has when it has none, after a start or a new image. |
+
+**The initial value** (1.9, homecontrol #107, haumacher/ehome#217). A datapoint with `virtual` may
+carry `initial`, its value until the first write, so that a rule reading a value of the application
+nobody has set yet meets a value instead of none (`conditionNoValue`, `spec/rules.md` 9.2). After a
+start, and when an image is applied, the datapoint takes it with quality good when it has no value of
+its own: a value kept across the swap (section 12) and a persisted value (`persist`, restored at the
+start, `doc/persistence.md`) win; then the initial value; a datapoint whose type changed in the new
+image keeps no value and takes it. Taking it is no update: no trigger fires, `sinceUpdate` counts
+from the start, the value store does not write it, and the history has no sample of it. The value
+form is the JSON literal value of `spec/rules.md` 3.1 of the expression type the datapoint's type
+is read as, within the datapoint's type:
+
+| Datapoint type | `initial` | Within |
+|---|---|---|
+| `boolean` | `true` / `false` | |
+| `unsigned` | an integer | 0..4294967295 |
+| `signed` | an integer | −2147483648..2147483647 |
+| `real` | a number | finite |
+| `string` | a string | at most 28 bytes, no NUL |
+| `timeOfDay` | `{"hour", "minute", "second"}`, optional `"dayOfWeek"` | as 3.1 of `spec/rules.md` |
+| `date` | `{"year", "month", "day"}` | year 1900..2155 |
+| `dateTime` | `{"year", "month", "day", "hour", "minute", "second"}` | year 1900..2155 |
+| `enumeration` | an integer, the element's number | 0..4294967295 |
+| `controlled` | `{"control": bool, "value": n}` | `n` 0..255 |
+| `color` | `{"red", "green", "blue"}`, optional `"white"` | 0..255 each |
+| `raw` | hex octets separated by single spaces, `"0A FF"`, `""` for none | at most 14 bytes |
+
+Refusals at `datapoints[i].initial`: on a datapoint without `virtual` (`only a datapoint with virtual
+has an initial value`); not a value of the type or outside its range (`not a value of type
+unsigned`). E-Home writes `initial` for every datapoint with `virtual`: the one set in the project,
+else the type's neutral value (`false`, `0`, `0.0`, `""`, `00:00`, 1970-01-01, 1970-01-01T00:00,
+the first element 0, `controlled(false, 0)`, `#000000`, no bytes). A datapoint without `initial`
+starts without a value, as before 1.9.
 
 The archives of a history (issue #56): up to 4 objects `{"resolution": s, "retention": s}`, each a
 store of consolidated slots of `resolution` seconds kept for `retention` seconds, besides the raw
@@ -685,7 +719,8 @@ with step 4; there is nothing to keep (no table of section 12) and nothing to wr
 7. The settings are written where they differ (no flash write for an unchanged image).
 8. The value store and the history are loaded for the new model: persisted values are restored where
    the model has no kept value; the history restores its rings by datapoint name into the new rings
-   (`doc/persistence.md`).
+   (`doc/persistence.md`). Then every datapoint with an initial value that still has no value takes
+   it, with quality good (3.3, format 1.2).
 9. The rules are loaded; each rule's runtime (timers, states, change tracking, diagnostics) follows
    its id through the table of section 12, its parameter overrides and timeline override through the
    parameter store (`spec/rules.md` 7.6, 8.4, 8.7). Then the blocks: state records follow the block
@@ -855,6 +890,17 @@ no image is loaded it answers 404 `image.none`, also when the slot holds bytes t
   firmware of 1.1 with an image without them. E-Home writes them only for a controller that reports
   format 1.1 or newer (I4), and says otherwise that the anonymous pages need a firmware update.
   Corpus: the image `anonymous-pages.json` (13.1).
+- 1.9 and **format 1.2** (homecontrol #107, haumacher/ehome#217): the member `initial` of a datapoint
+  with `virtual` (3.3), the value it has after a start or a new image when it has none of its own (a
+  persisted or kept value wins), with quality good. In the binary image the datapoint record's byte
+  `init` (bit 0) and its field `initial`, a constant (9.7), both reserved and 0 in format 1.1. E-Home
+  writes `initial` for every datapoint with `virtual` and the header's minor 2 for an image with one;
+  an image without one is written as before (minor 1 or 0). A firmware of format 1.1 does not read
+  the two fields and loads the image with its application datapoints without a value, as before;
+  E-Home deploys such an image only to a controller that reports format 1.2 or newer (I4) and says
+  otherwise that the initial values need a firmware update. A firmware of 1.2 loads an image of 1.1
+  and older unchanged (the byte `init` is 0). Corpus cases `accept-initial-values` (every value
+  type, format 1.2) and `refuse-initial-values`.
 
 ## 9. The binary image
 
@@ -896,7 +942,7 @@ The image starts with a header of 32 bytes; the section table follows it.
 |---|---|---|---|
 | 0 | `u8[4]` | `magic` | `48 43 49 4D` ("HCIM") |
 | 4 | `u16` | `major` | The format's major version: 1. |
-| 6 | `u16` | `minor` | The format's minor version the image is written in: 0 (format 1.0), 1 for an image with a section of format 1.1 (section 8). |
+| 6 | `u16` | `minor` | The format's minor version the image is written in: the oldest whose fields and sections the image uses: 0 (format 1.0), 1 for an image with a section of format 1.1, 2 for one with an initial value (format 1.2; section 8). |
 | 8 | `u32` | `length` | The image's size in bytes, the signature included; a multiple of 8. |
 | 12 | `u32` | `crc` | CRC-32 (the IEEE polynomial as zlib's `crc32()`: reflected `0xEDB88320`, initial and final XOR `0xFFFFFFFF`) over the bytes `[0, signedEnd)` with this field taken as 0. |
 | 16 | `u32` | `flags` | Bit 0 `signed`: the image ends with a 64-byte Ed25519 signature (9.17). Other bits: none in 1.0. |
@@ -1047,11 +1093,11 @@ parameters, outputs and aggregated inputs. Record of 24 bytes:
 | 12 | `u8` | `type` | Value type code (9.14). |
 | 13 | `u8` | `flags` | Bits 0..6 the datapoint flags: `0x01` readable, `0x02` writable, `0x04` transmit, `0x08` readOnStart, `0x10` persist, `0x20` history, `0x40` application (`spec/api.md` "Datapoints"); bit 7 (`0x80`): the source has a `virtual` member (the API's `binding` shows `{"virtual": {}}`). |
 | 14 | `u8` | `owner` | Who owns it, below. |
-| 15 | `u8` | reserved | |
+| 15 | `u8` | `init` | Bit 0: the datapoint has an initial value, `initial` names it (3.3; format 1.2, reserved and 0 before). Other bits: none. Only with flag bit 7 (`virtual`). |
 | 16 | `u16` | `ownerIndex` | The owner's record, below. |
 | 18 | `u16` | `ownerMember` | Which of the owner's datapoints, below. |
 | 20 | `u16` | `history` | Index in `history` (9.9); `kNone` without. |
-| 22 | `u16` | reserved | |
+| 22 | `u16` | `initial` | With `init` bit 0: the index in `constants` (9.14) of the initial value, a constant of the expression type the datapoint's type is read as (`boolean` 0, `unsigned` and `signed` integer, `real` real, ..., `raw` raw); else 0, not read. |
 
 | `owner` | Owner | `ownerIndex` | `ownerMember` |
 |---|---|---|---|
@@ -1592,6 +1638,8 @@ files are compared byte for byte). Where the format leaves a choice, it writes:
   and `history` by datapoint; `knx.addresses` by value;
 - the runs of a record in the order of the records that own them (the roles of function 0, then of
   function 1, ...), so each table is the concatenation of its runs;
+- `constants`: first the initial values of the datapoints (9.7) in datapoint order, one constant
+  each (none shared), then the rules' constants;
 - per rule, in rule order, the walk: its parameters (`enabled` first), appending the constants of
   each (`default`, `min`, `max`, `step`, then its choices' values); its timers, each followed by its
   duration's expression; its states, each with its entry actions, then its exit actions; its
@@ -1614,8 +1662,8 @@ kinds and codes; the paths name the header (`header.<field>`), an entry of the s
 `i` the record's index) or a whole section (`strings`).
 
 **The hint.** A refusal of an unknown code, flag bit or required section adds, when the image's
-minor version is newer than the firmware's: ` (the image's format 1.2 is newer than this firmware
-reads, up to 1.1: update the firmware)`.
+minor version is newer than the firmware's: ` (the image's format 1.3 is newer than this firmware
+reads, up to 1.2: update the firmware)`.
 
 ### 10.1 The header, before the slot is erased
 
@@ -1623,7 +1671,7 @@ reads, up to 1.1: update the firmware)`.
 |---|---|---|---|
 | The body announced or received has at least 32 bytes. | `header` | `image.format` | `not a runtime image: 20 bytes, the header alone has 32` |
 | `magic` is `48 43 49 4D`. | `header.magic` | `image.format` | `not a runtime image: the magic is 7B 0A 09 22, not 48 43 49 4D ("HCIM")`; when the first byte is `{` it adds `: a JSON text (E-Home compiles the image; send the binary form)` |
-| `major` is 1. | `header.major` | `image.version` | `format 2.0: this firmware reads format 1 (up to 1.1)` |
+| `major` is 1. | `header.major` | `image.version` | `format 2.0: this firmware reads format 1 (up to 1.2)` |
 | `flags` has no bits but `signed`. | `header.flags` | `image.version` | `unknown flags 0x2` with the hint |
 | `length` equals the bytes of the body (at boot: is at most the slot's size). | `header.length` | `image.format` | `the header says 112 bytes, the body has 100` (at boot: `the header says 600000 bytes, the slot holds 524288`) |
 | `length` is a multiple of 8 and at least `headerSize`, plus 64 when `signed`. | `header.length` | `image.format` | `length 113 is not a multiple of 8`; `length 64 leaves no room for the signature` |
@@ -1689,7 +1737,7 @@ The fields not listed here are reserved (not checked) or plain numbers the runti
 |---|---|---|
 | `image` | `projectId`, `schemaVersion`; `name`, `generator`, `generatedAt` | id string; string |
 | `settings` | `tz`, `ntp`; `flags`; `lat`, `lon`, `elev` (with flag bit 0) | string; flags 0..1; range −90..90, −180..180, −500..9000 |
-| `datapoints` | `name`; `label`; `unit`; `type`; `owner`; `history` | id string; label; string; code 1..12; code 0..7; index into `history` or `kNone`, and flag `0x20` set exactly when it is not `kNone` (`malformed: the history flag and the history index disagree`) |
+| `datapoints` | `name`; `label`; `unit`; `type`; `owner`; `history`; `init`, `initial` | id string; label; string; code 1..12; code 0..7; index into `history` or `kNone`, and flag `0x20` set exactly when it is not `kNone` (`malformed: the history flag and the history index disagree`); flags 0..1, bit 0 only with flag bit 7 (`malformed: an initial value of a datapoint without virtual`); with bit 0 a constant index (checked after `constants`) of the datapoint's expression type (`malformed: constant 2 is a real, the signed datapoint takes integer`) whose value converts exactly into the datapoint's type (`malformed: constant 1 does not fit the unsigned datapoint`) |
 | `locations` | `id`; `label`; `parent`; `kind` | id string; label; index or `kNone`; code 0..5. The parents form no cycle (`malformed: the parents of location 4 form a cycle`). |
 | `functions` | `id`; `label`; `unit`; `room`; roles; `kind`; `scene`; `presses` | id string; label; string; location index or `kNone`; run in `roles`; code 0..7; range 0..64; each byte flags of bits 0..5 |
 | `roles` | `name`; `datapoint` | id string; datapoint index |
@@ -1798,7 +1846,7 @@ listeners do not name it`; `malformed: 18 listeners, the bindings use addresses 
 
 ## 11. Versioning of the binary image
 
-The header's `major.minor` (I4). This document is format **1.1**; the firmware reads exactly one
+The header's `major.minor` (I4). This document is format **1.2**; the firmware reads exactly one
 major version and every minor version up to its own.
 
 - **Another major version** is refused from the header, before the slot is erased (`image.version`,
@@ -1939,7 +1987,7 @@ each with the CRC recomputed unless the row is about the CRC):
 |---|---|---|---|
 | Cut to 100 bytes | `image.format` | `header.length` | `the header says 112 bytes, the body has 100` |
 | The source text `minimal.json` itself | `image.format` | `header.magic` | `not a runtime image: the magic is 7B 22 69 6D, not 48 43 49 4D ("HCIM"): a JSON text (E-Home compiles the image; send the binary form)` |
-| `header.major` 2 | `image.version` | `header.major` | `format 2.0: this firmware reads format 1 (up to 1.1)` |
+| `header.major` 2 | `image.version` | `header.major` | `format 2.0: this firmware reads format 1 (up to 1.2)` |
 | Byte 0x66 changed, CRC kept | `image.damaged` | `header.crc` | `the CRC-32 is 59772c42, the bytes give …: the image was damaged on the way or in the slot` |
 | Sent to a device that holds the installation key | `image.unsigned` | `header.flags` | `the image is not signed; …` |
 | `minimal.signed.bin` to a device holding the "rotated" key | `image.bad_signature` | `signature` | `the signature does not verify under the installation key 90ae 3702 f3a9 63ab` |
@@ -1973,7 +2021,9 @@ above its first entries; a mutation whose outcome depends on the device's key ha
 another key). `images/test-system.template.json` is a template, not an image: it gets no `.bin`. `images/anonymous-pages.json`
 (format 1.1, homecontrol #91) has the anonymous pages of 3.9: its `.bin` was first written by the
 device's test compiler (`core/test/image_compiler.cpp`), until E-Home's compiler writes the
-sections (haumacher/ehome#184) and the two are compared byte for byte as for every other image.
+sections (haumacher/ehome#184) and the two are compared byte for byte as for every other image. The case
+`cases/accept-initial-values.json` (format 1.2, homecontrol #107) has an initial value of every
+value type (3.3); E-Home's compiler writes the same bytes (haumacher/ehome#217).
 
 Readings fixed while writing the compiler (haumacher/ehome#176):
 - A node without a value type (a timer node) carries type code 0 (10.6).

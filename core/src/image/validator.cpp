@@ -222,6 +222,7 @@ private:
 	void schedules();
 	void rules();
 	void constants();
+	void initial_values();
 	void blocks();
 	void anonymous();
 	void expressions();
@@ -1006,6 +1007,38 @@ void Checker::constants() {
 		at(kConstants, i);
 		if (!constant_valid(v, static_cast<uint8_t>(v.type), reason, sizeof(reason))) {
 			refuse(path("type"), "%s", reason);
+		}
+	}
+}
+
+void Checker::initial_values() {
+	// The initial value of an application datapoint (9.7, format 1.2): a valid constant of the
+	// datapoint's expression type whose value converts exactly into the datapoint's type.
+	char reason[Report::kMaxReason + 1];
+	for (size_t i = 0; i < count(kDatapoints) && !full(); ++i) {
+		const DatapointRec& r = rec<DatapointRec>(kDatapoints, i);
+		at(kDatapoints, i);
+		if (!flags("init", r.init, kDatapointInitial) || (r.init & kDatapointInitial) == 0) {
+			continue;
+		}
+		if ((r.flags & kDatapointVirtual) == 0) {
+			refuse(path("init"), "malformed: an initial value of a datapoint without virtual");
+			continue;
+		}
+		if (!index("initial", kConstants, r.initial, false) || r.type < 1 || r.type > 12) {
+			continue;
+		}
+		const rules::Val& v = rec<rules::Val>(kConstants, r.initial);
+		ValueType type = static_cast<ValueType>(r.type);
+		rules::Type wanted = rules::type_of_datapoint(type);
+		if (v.type != wanted) {
+			refuse(path("initial"), "malformed: constant %u is a %s, the %s datapoint takes %s",
+				static_cast<unsigned>(r.initial), rules::type_name(v.type), rules::datapoint_type_name(type),
+				rules::type_name(wanted));
+		} else if (constant_valid(v, static_cast<uint8_t>(v.type), reason, sizeof(reason)) &&
+			!rules::convert_for_datapoint(v, type)) {
+			refuse(path("initial"), "malformed: constant %u does not fit the %s datapoint", static_cast<unsigned>(r.initial),
+				rules::datapoint_type_name(type));
 		}
 	}
 }
@@ -1877,6 +1910,7 @@ void Checker::records() {
 	mqtt();
 	schedules();
 	constants();
+	initial_values();
 	rules();
 	expressions();
 	blocks();

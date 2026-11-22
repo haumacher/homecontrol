@@ -89,7 +89,8 @@ the components stop and the model is cleared: during the receive the device has 
 After the new image validated, the model is loaded from its datapoints and every datapoint whose
 name hash and value type are in the table takes value, quality and update time
 (`DatapointModel::carry()`); the value store and the history load (restoring by name what the table
-did not give); `Engine::adopt(set, carry)` installs the rules with their kept runtime; then the
+did not give); an application datapoint that still has no value takes its initial value, the
+constant its record names (`ImageService::apply_initial_values()`, spec 3.3, format 1.2); `Engine::adopt(set, carry)` installs the rules with their kept runtime; then the
 blocks, KNX, the time master, the schedules, the external values; the rules start with reason
 `image`. The table is freed once an image applied; a failed image keeps it, so that E-Home's next
 deployment of the last valid image finds the values.

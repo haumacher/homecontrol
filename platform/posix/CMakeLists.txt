@@ -176,6 +176,7 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/history_archive_test.cpp" # consolidated archives (#56)
 	"${HC_REPO_DIR}/core/test/restore_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/persisted_restore_test.cpp" # a restored value counts (#100)
+	"${HC_REPO_DIR}/core/test/initial_value_test.cpp" # the initial value of an application datapoint (#107)
 )
 # The test-only image compiler (issue #87): the JSON source form into the binary runtime image.
 target_sources(hc_tests PRIVATE

@@ -368,7 +368,7 @@ TEST_CASE("WebSystem: the status carries storage, external, lang and mqtt as the
 	// The newest format of the binary image this firmware reads (spec/api.md), for E-Home's check
 	// before a deploy; it replaces the JSON schema version.
 	CHECK(r.json["device"]["format"].text == hc::image::bin::format_text());
-	CHECK(r.json["device"]["format"].text == "1.1");
+	CHECK(r.json["device"]["format"].text == "1.2");
 	CHECK_FALSE(r.json["device"].has("schema"));
 	hc_test::FakeBlobStore blobs;
 	blobs.has_usage = true;
