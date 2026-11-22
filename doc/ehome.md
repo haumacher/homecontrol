@@ -141,8 +141,40 @@ I hc.ehome: bus session ended (closed by E-Home): 40 frames sent, 38 received, 0
 ```
 
 A failure is a warning the first time and info while it repeats unchanged (the backoff retries a
-dead E-Home every minute). The `hc.ws` line is the ESP platform's: the client task's stack reserve
-after the TLS handshake and the heap at that moment.
+dead E-Home every minute); details of the moment the platform appends in brackets do not make it a
+different failure. The `hc.ws` line is the ESP platform's: the client task's stack reserve after the
+TLS handshake and the heap at that moment.
+
+On the device the reason names the layer that ended the connection (homecontrol #112), after the
+phase the core puts in front (`cannot connect` while opening, `closed during the authentication`,
+`connection lost` once connected), and ends with the heap of that moment in brackets (HP: the
+DMA-capable HP SRAM, LP: the LP SRAM, each with its largest free block; doc/diagnostics.md "Heap low
+and failed allocations"):
+
+```
+W hc.ehome: connection lost: TLS ESP_ERR_MBEDTLS_SSL_WRITE_FAILED (mbedTLS -0x0001, errno 0) [heap 1840 B: HP 0 B (block 0 B), LP 1840 B (block 1840 B)]; retry in 1 s (failure 1)
+W hc.ehome: cannot connect: TLS connect ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME (mbedTLS -0x0000, errno 0) [heap ...]; retry in 2 s (failure 2)
+W hc.ehome: connection lost: closed by the server (1001: going away) [heap ...]; retry in 1 s (failure 1)
+W hc.ehome: connection lost: socket: Connection reset by peer (errno 104) [heap ...]; retry in 1 s (failure 1)
+W hc.ehome: connection lost: esp_transport_read() failed with -2, transport_error=ESP_OK, tls_error_code=0, tls_flags=0, errno=11 [heap ...]; retry in 1 s (failure 1)
+W hc.ehome: connection lost: a message could not be sent within 10 s [heap ...]; retry in 1 s (failure 1)
+```
+
+- `TLS` / `TLS connect`: an esp-tls error after or before the connection opened, with mbedTLS's own
+  code (`-0x7F00` is mbedTLS's allocation failure, `-0x0050` a connection reset, `-0x004E` a failed
+  send; `-0x0001` is not mbedTLS's: on the C6 the AES engine's driver returns it when a DMA-capable
+  allocation for a record's encryption fails) and the socket's errno. Before homecontrol #112 the
+  line said `cannot connect: <error> (0x<code>)` in every phase, with the code's sign flipped:
+  `0xffffffff` was `-0x0001`.
+- `closed by the server (<code>: <reason>)`: E-Home or a proxy sent a close frame.
+- `socket: ...`: the TCP socket failed with that errno.
+- A read, poll or write that failed without an error code is told in the library's own words (its
+  `WEBSOCKET_EVENT_ERROR`): `esp_transport_read() failed with -2 ... errno=11` is a frame or a TLS
+  record whose rest did not arrive within the client's network timeout (10 s, `kNetworkTimeoutMs`),
+  `esp_transport_poll_read() returned -1 ... errno=<n>` a socket error the poll saw. Without even
+  that: `the transport failed without an error code (type <n>)`, `<n>` the library's error type (0:
+  none, 1: the TCP transport, 3: the upgrade). Before homecontrol #112 all of these read `connection
+  lost: connection lost`.
 
 ## The platforms
 
@@ -224,12 +256,29 @@ allocated at the size of the record being read, the largest being E-Home's certi
 (typically 3 to 6 KB for a chain of two or three certificates; at most 16.7 KB, the largest single
 block the handshake can ask for), plus the parsed certificate chain (about 2 KB per certificate,
 freed after the handshake since `CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE` is off), the ECDHE
-context and the 4 KB outgoing record buffer while a record is written: about 12 to 18 KB above
-the steady state for a second, with the largest block typically 6 KB and 17 KB in the worst case.
+context and the outgoing record buffer while a record is written: about 10 to 16 KB above the
+steady state for a second, with the largest block typically 6 KB and 17 KB in the worst case.
 `CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA` frees the configuration's certificate data after the
 handshake. These options are set for the whole application (`sdkconfig.defaults.app`): the OTA
 check, the HTTP fetcher and MQTT over TLS allocate their record buffers per record too, instead of
 16 KB + 4 KB for the whole of each connection.
+
+**The record buffers and the two kinds of RAM** (homecontrol #110, #112). With the dynamic buffers
+every `mbedtls_ssl_write()` allocates a whole outgoing record buffer, `OUT_CONTENT_LEN` plus 341
+bytes (header, IV, MAC, CBC padding), whatever it writes, and frees it afterwards; every received
+record a buffer of the record's size (up to 16.7 KB: a server decides its records' size). The
+client writes a frame's header and its payload in pieces of at most `kBufferSize` (1024 B), so
+`CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN` is 2048 (`sdkconfig.defaults.app`): 2389 B per write instead of
+4437 B with the IDF's 4096, for every TLS client of the application. The heap places such a buffer in
+the DMA-capable HP SRAM while a block there is large enough, else in the 16 KB LP SRAM, which DMA
+does not reach. The C6 encrypts every record (AES-GCM) with the AES engine over DMA: a record in LP
+RAM is copied through two bounce buffers of up to 1600 B each, allocated in HP RAM for each record,
+and a record in HP RAM needs a few dozen bytes of DMA descriptors. When that allocation fails the
+driver returns -1 and the write fails with `ESP_ERR_MBEDTLS_SSL_WRITE_FAILED (mbedTLS -0x0001)`: the
+E-Home session ended so about 21 s after every boot on the house controller, while the free heap's
+minimum was at 2 to 4 KB (#112). A further defect of the IDF 5.5.6 driver: when the second bounce
+buffer cannot be allocated the first is not freed (1600 B lost per failure;
+`esp_aes_process_dma_ext_ram`; not reported to Espressif yet).
 
 The enrollment adds, for its duration only, the fetcher (3 KB with its 2 KB piece buffer), the
 answer's 2 KB buffer, an 8 KB task stack and a TLS handshake.

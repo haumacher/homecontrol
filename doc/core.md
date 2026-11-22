@@ -16,9 +16,12 @@ and `hc_net`. The platforms hand them to the controller bundled in an `hc::Platf
 its log sink for `hc::Log`); `start()` logs the version and the build id, applies the time zone
 setting, logs the wall clock state and the free heap, schedules a heartbeat every 10 s that writes
 its line (uptime, network state, free heap) only when the network's state, mode or address changed,
-and a warning when the free heap's minimum reaches a new low below `kHeapLowWaterBytes` (16 KB), so
-that the log ring is not flooded in steady state and a shortage leaves a trace with its time
-(homecontrol #98; the figures are in `GET /api/status`), watches the wall clock every second until it is synchronized and then
+and a warning when the free heap's minimum reaches a new low below `kHeapLowWaterBytes` (16 KB), with
+the platform's account of that low (`SystemInfo::heap_low()`), and one when allocations failed since
+the last beat, with the first of them (`SystemInfo::failed_allocations()`, homecontrol #110;
+doc/diagnostics.md "Heap low and failed allocations"), so that the log ring is not flooded in steady
+state and a shortage leaves a trace with its time (homecontrol #98; the figures are in `GET
+/api/status`), watches the wall clock every second until it is synchronized and then
 logs the local time once, drives the status LED every 50 ms (if the board has one) and starts the
 network. The controller owns the `hc::EventLoop`, the `hc::Connectivity` (the network workflow,
 `doc/network.md`) and `hc::Improv` (WiFi provisioning from the web flasher, active only when the

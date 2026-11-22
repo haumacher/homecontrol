@@ -16,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "heap_watch.h"
 #include "hc/ehome_link.h"
 #include "hc/live_feed.h"
 #if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
@@ -57,6 +58,29 @@ static_assert(EspWebSocketClient::kSendQueueBytes >=
 static_assert(EhomeLink::kStreamPiece < 0x10000 && EhomeLink::kOutBytes < 0x10000,
 	"a queued message's length is 16 bits");
 
+#if defined(CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN)
+// The library writes a frame's header and its payload in pieces of at most kBufferSize: each is one TLS
+// record, whose buffer the dynamic TLS buffers allocate at OUT_CONTENT_LEN (sdkconfig.defaults.app).
+static_assert(EspWebSocketClient::kBufferSize <= CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN,
+	"a piece of a frame must fit one outgoing TLS record");
+#endif
+
+/// Appends " [heap ...]" (the heap at the end of a connection, homecontrol #110) to a reason of
+/// `length` bytes; WebSocketClientListener::ws_client_closed() names the bracket as details that do not
+/// make a failure a different one.
+void append_heap(char* reason, size_t size, int length) {
+	if (length <= 0 || static_cast<size_t>(length) + 4 >= size) {
+		return;
+	}
+	size_t n = static_cast<size_t>(length);
+	reason[n++] = ' ';
+	reason[n++] = '[';
+	heap_watch::describe_now(reason + n, size - n - 1);
+	n += std::strlen(reason + n);
+	reason[n++] = ']';
+	reason[n] = '\0';
+}
+
 } // namespace
 
 struct EspWebSocketClient::Session {
@@ -83,15 +107,27 @@ struct EspWebSocketClient::Session {
 	StaticSemaphore_t io_storage;
 	bool transport_ended = false; ///< Under `io`: the client task ended, the transport is closed.
 
+	/// The CONNECTED event came (client task): a later failure ends an open session (read by whoever
+	/// reports the end).
+	std::atomic<bool> connected{false};
 	/// The end was reported (by the client task, or by the sender when a write failed): once.
 	std::atomic<bool> closed_reported{false};
-	char closed_reason[128] = {}; ///< Written by the reporter before it posts on_closed.
+	/// Written by the reporter before it posts on_closed; the core prefixes it ("connection lost: ")
+	/// and appends the retry within one log line of 256 bytes (EhomeLink's error_).
+	char closed_reason[200] = {};
 
 	// Client task only.
 	uint8_t message_opcode = 0;  ///< The data message in progress (text or binary).
 	size_t text_length = 0;
 	bool text_overflow = false;
 	uint16_t server_close_code = 0;
+	char server_close_reason[48] = {}; ///< The reason text of the server's close frame (printable bytes).
+
+	/// The library's own account of the first error (WEBSOCKET_EVENT_ERROR, on whichever task failed:
+	/// "esp_transport_read() failed with -2, ..., errno=11"), written once, before `library_error_ready`.
+	char library_error[112] = {};
+	std::atomic<bool> library_error_taken{false};
+	std::atomic<bool> library_error_ready{false};
 
 	// The slot handed to the loop (written by the client task before posting, read by the loop).
 	Kind kind = Kind::opened;
@@ -159,25 +195,40 @@ void EspWebSocketClient::Session::report_closed(const esp_websocket_event_data_t
 	if (closed_reported.exchange(true)) {
 		return;
 	}
+	// What ended the connection, in the terms of the layer that reported it (homecontrol #112), then
+	// the heap at this moment in brackets (#110). The core names the phase ("cannot connect",
+	// "connection lost").
 	char* reason = closed_reason;
+	size_t size = sizeof(closed_reason);
 	const esp_websocket_error_codes_t& e = event->error_handle;
+	int n;
 	if (clean || server_close_code != 0 || e.error_type == WEBSOCKET_ERROR_TYPE_SERVER_CLOSE) {
-		std::snprintf(reason, sizeof(closed_reason), "closed by the server (%u)", static_cast<unsigned>(server_close_code));
+		n = std::snprintf(reason, size, "closed by the server (%u%s%s)", static_cast<unsigned>(server_close_code),
+			server_close_reason[0] != '\0' ? ": " : "", server_close_reason);
 	} else if (e.esp_ws_handshake_status_code != 0 && e.esp_ws_handshake_status_code != 101) {
-		std::snprintf(reason, sizeof(closed_reason), "the server refused the upgrade: HTTP %d", e.esp_ws_handshake_status_code);
+		n = std::snprintf(reason, size, "the server refused the upgrade: HTTP %d", e.esp_ws_handshake_status_code);
 	} else if (e.esp_tls_cert_verify_flags != 0) {
-		std::snprintf(reason, sizeof(closed_reason), "cannot connect: the server's certificate is not trusted (flags 0x%x)",
+		n = std::snprintf(reason, size, "the server's certificate is not trusted (flags 0x%x)",
 			static_cast<unsigned>(e.esp_tls_cert_verify_flags));
-	} else if (e.esp_tls_last_esp_err != ESP_OK) {
-		std::snprintf(reason, sizeof(closed_reason), "cannot connect: %s (0x%x)", esp_err_to_name(e.esp_tls_last_esp_err),
-			static_cast<unsigned>(-e.esp_tls_stack_err));
+	} else if (e.esp_tls_last_esp_err != ESP_OK || e.esp_tls_stack_err != 0) {
+		// esp-tls keeps mbedTLS's code negated (a positive number): shown as mbedTLS writes it.
+		int tls = e.esp_tls_stack_err < 0 ? -e.esp_tls_stack_err : e.esp_tls_stack_err;
+		n = std::snprintf(reason, size, "%s %s (mbedTLS -0x%04x, errno %d)", connected.load() ? "TLS" : "TLS connect",
+			esp_err_to_name(e.esp_tls_last_esp_err), static_cast<unsigned>(tls), e.esp_transport_sock_errno);
 	} else if (e.esp_transport_sock_errno != 0) {
-		std::snprintf(reason, sizeof(closed_reason), "connection lost: %s", std::strerror(e.esp_transport_sock_errno));
+		n = std::snprintf(reason, size, "socket: %s (errno %d)", std::strerror(e.esp_transport_sock_errno),
+			e.esp_transport_sock_errno);
 	} else if (e.error_type == WEBSOCKET_ERROR_TYPE_PONG_TIMEOUT) {
-		std::snprintf(reason, sizeof(closed_reason), "no pong from the server");
+		n = std::snprintf(reason, size, "no pong from the server");
+	} else if (library_error_ready.load(std::memory_order_acquire)) {
+		// A read or poll that failed without an error code (a frame whose rest did not come within the
+		// network timeout, kNetworkTimeoutMs, reads "failed with -2 ... errno=11"): the library's words.
+		n = std::snprintf(reason, size, "%s", library_error);
 	} else {
-		std::snprintf(reason, sizeof(closed_reason), "connection lost");
+		n = std::snprintf(reason, size, "the transport failed without an error code (type %d)",
+			static_cast<int>(e.error_type));
 	}
+	append_heap(reason, size, n);
 	post_closed();
 }
 
@@ -188,6 +239,19 @@ void EspWebSocketClient::Session::handler(void* arg, esp_event_base_t, int32_t i
 		s.task.store(xTaskGetCurrentTaskHandle());
 		return;
 	}
+	if (id == WEBSOCKET_EVENT_ERROR) {
+		// Comes right before the DISCONNECTED of a failed read, poll or write; the first one is kept.
+		if (event->data_len > 0 && !s.library_error_taken.exchange(true)) {
+			const uint8_t* p = reinterpret_cast<const uint8_t*>(event->data_ptr);
+			size_t k = 0;
+			for (int i = 0; i < event->data_len && p[i] != '\0' && k + 1 < sizeof(s.library_error); ++i) {
+				s.library_error[k++] = p[i] >= 0x20 && p[i] < 0x7F ? static_cast<char>(p[i]) : '?';
+			}
+			s.library_error[k] = '\0';
+			s.library_error_ready.store(true, std::memory_order_release);
+		}
+		return;
+	}
 	if (xTaskGetCurrentTaskHandle() != s.task.load() && id != WEBSOCKET_EVENT_DISCONNECTED) {
 		// A failed send aborts the connection on the sending task (the sender), and the library runs
 		// its pending events there, as it does during the sender's teardown. The connection ends;
@@ -196,6 +260,7 @@ void EspWebSocketClient::Session::handler(void* arg, esp_event_base_t, int32_t i
 	}
 	switch (id) {
 		case WEBSOCKET_EVENT_CONNECTED:
+			s.connected.store(true);
 			s.message_opcode = 0;
 			s.text_length = 0;
 			s.text_overflow = false;
@@ -223,10 +288,16 @@ void EspWebSocketClient::Session::handler(void* arg, esp_event_base_t, int32_t i
 			}
 			if (opcode == 0x08) {
 				s.server_close_code = event->close_status_code > 0 ? static_cast<uint16_t>(event->close_status_code) : 0;
+				const uint8_t* p = reinterpret_cast<const uint8_t*>(event->data_ptr);
 				if (s.server_close_code == 0 && event->data_len >= 2) {
-					const uint8_t* p = reinterpret_cast<const uint8_t*>(event->data_ptr);
 					s.server_close_code = static_cast<uint16_t>(p[0] << 8 | p[1]);
 				}
+				// The close frame's reason (after the code), printable bytes only.
+				size_t k = 0;
+				for (int i = 2; i < event->data_len && k + 1 < sizeof(s.server_close_reason); ++i) {
+					s.server_close_reason[k++] = p[i] >= 0x20 && p[i] < 0x7F ? static_cast<char>(p[i]) : '?';
+				}
+				s.server_close_reason[k] = '\0';
 				break;
 			}
 			if (opcode == 0x09) {
@@ -290,8 +361,9 @@ void EspWebSocketClient::Session::report_failed_send() {
 	if (!esp_websocket_client_is_connected(client) || closed_reported.exchange(true)) {
 		return;
 	}
-	std::snprintf(closed_reason, sizeof(closed_reason), "connection lost: a message could not be sent within %d s",
+	int n = std::snprintf(closed_reason, sizeof(closed_reason), "a message could not be sent within %d s",
 		kSendTimeoutMs / 1000);
+	append_heap(closed_reason, sizeof(closed_reason), n);
 	post_closed();
 }
 

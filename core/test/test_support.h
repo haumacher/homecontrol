@@ -49,6 +49,23 @@ public:
 		return info;
 	}
 
+	bool heap_low(char* out, size_t size) const override {
+		if (low_detail.empty()) {
+			return hc::SystemInfo::heap_low(out, size);
+		}
+		std::snprintf(out, size, "%s", low_detail.c_str());
+		return true;
+	}
+
+	uint32_t failed_allocations(char* out, size_t size) const override {
+		uint32_t count = failures;
+		failures = 0;
+		if (count > 0) {
+			std::snprintf(out, size, "%s", failure_detail.c_str());
+		}
+		return count;
+	}
+
 	bool visit_tasks(hc::TaskVisitor& visitor, const char** reason) const override {
 		if (!list_tasks) {
 			return hc::SystemInfo::visit_tasks(visitor, reason);
@@ -86,6 +103,11 @@ public:
 	uint32_t free_bytes = 300000;
 	uint32_t min_free_bytes = 250000;
 	uint32_t largest_block = 0;
+	/// The platform's account of the heap's low (empty: not tracked) and the failed allocations the
+	/// next heartbeat takes, with the first one's account.
+	std::string low_detail;
+	mutable uint32_t failures = 0;
+	std::string failure_detail;
 	bool list_tasks = false;
 	std::vector<hc::TaskInfo> tasks;
 	bool has_temperature = false;

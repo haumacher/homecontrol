@@ -31,6 +31,11 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 # uxTaskGetSystemState() for the console's task list (name, priority, stack high-water mark).
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+# The heap watch (homecontrol #110, hc_platform/heap_watch.cpp, doc/diagnostics.md "Heap low and failed
+# allocations"): the allocation hook records the heap's lowest point where it happens, with the task
+# that allocated. No memory per block (unlike CONFIG_HEAP_TASK_TRACKING); about a microsecond per
+# allocation in a task.
+CONFIG_HEAP_USE_HOOKS=y
 
 # The E-Home connection (doc/ehome.md): every send holds the client's one lock, under which the client task
 # closes the transport after a failed read or a lost network. With the separate send lock (on from #41, when
@@ -46,6 +51,19 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
 # CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE is not set
+# The outgoing record buffer (homecontrol #110/#112): with dynamic buffers every mbedtls_ssl_write()
+# allocates a whole record buffer of OUT_CONTENT_LEN plus 341 bytes (header, IV, MAC, CBC padding),
+# whatever it writes, and frees it after: 4437 B in one block at 4096 (the IDF's default), 2389 B at
+# 2048. What the application writes needs no more: the E-Home client a frame's header and its payload
+# in pieces of at most its buffer (1024 B, esp_ws_client.cpp checks it), the HTTP client its request
+# in pieces of its send buffer (512 B), the TLS handshake a ClientHello well below 2 KB; esp-tls splits
+# a longer write into several records anyway. A smaller block is found more often in the DMA-capable
+# RAM; a record buffer that finds none lands in the LP RAM, from where the AES engine's pass over each
+# record needs two DMA bounce buffers of up to 1600 B (doc/ehome.md "Memory on the device"). Received
+# records keep the full 16 KB (IN_CONTENT_LEN): a server may send records that large.
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
 
 # The System page's CPU share per task (issue #42): FreeRTOS run-time statistics on esp_timer's
 # microseconds (one esp_timer_get_time() per context switch, no extra timer), counted in 64 bits:

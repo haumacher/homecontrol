@@ -70,8 +70,10 @@ protected:
 /// once it is synchronized, and checks a heartbeat every kHeartbeatPeriodMs (homecontrol #98): it
 /// logs the uptime, the network state and the heap only when the network's state, mode or address
 /// changed since the last line, and warns once per new low when the free heap's minimum falls below
-/// kHeapLowWaterBytes; in steady state it writes nothing (the figures are in GET /api/status), so the
-/// log ring reaches back hours.
+/// kHeapLowWaterBytes, with the platform's account of that low (SystemInfo::heap_low(), homecontrol
+/// #110); it warns once per beat when allocations failed since the last one, with the first of them
+/// (SystemInfo::failed_allocations()). In steady state it writes nothing (the figures are in GET
+/// /api/status), so the log ring reaches back hours.
 /// With a status light it shows led_status() (hc::StatusLed): checked after every run_once(), a
 /// blinking pattern ticked every StatusLed::kTickMs, a steady one set once without a timer.
 class Controller : private TimeListener {
@@ -82,6 +84,10 @@ public:
 	/// device's steady state keeps (about 30 KB at the lowest), above the shortage that makes requests
 	/// fail.
 	static constexpr uint32_t kHeapLowWaterBytes = 16384;
+
+	/// Room for the platform's account of the heap's low and of a failed allocation
+	/// (SystemInfo::heap_low(), SystemInfo::failed_allocations()); a log line holds 256 bytes.
+	static constexpr size_t kHeapDetail = 136;
 
 	/// How often an unsynchronized wall clock is checked for synchronization (the TimeService's watch).
 	static constexpr uint32_t kClockWatchPeriodMs = TimeService::kWatchPeriodMs;

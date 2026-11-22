@@ -260,13 +260,13 @@ private:
 	uint64_t retry_at_ms_ = 0;  ///< Backoff: the next attempt.
 	uint64_t ping_at_ms_ = 0;   ///< Connected: the next ping.
 	uint64_t pong_due_ms_ = 0;  ///< A ping is out: the pong is due by then (0: none out).
-	char error_[128] = {};
+	char error_[224] = {};
 	char installation_[Settings::kMaxStringLength + 1] = {};
 	char url_[Settings::kMaxStringLength + 1] = {}; ///< ehome.url
 	bool enrolled_ = false; ///< ehome_enrolled(): read at start and on every change.
 	bool enabled_ = false;  ///< ehome.enabled
 	bool socket_ = false;   ///< A session of the client runs (connect() called, no close since).
-	char last_logged_[128] = {}; ///< The last failure logged as a warning (repeats go to info).
+	char last_logged_[224] = {}; ///< The last failure logged as a warning (repeats go to info).
 
 	/// A new installation key E-Home offered, awaiting the owner's acceptance (RAM only).
 	uint8_t pending_key_[kEd25519KeySize] = {};

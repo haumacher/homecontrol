@@ -266,6 +266,65 @@ TEST_CASE("Controller.HeartbeatWarnsOncePerNewHeapLowBelowTheLowWaterMark") {
 	CHECK(p.sink.count("W hc.ctl") == 2);
 }
 
+TEST_CASE("Controller.HeartbeatWarnsWithThePlatformsAccountOfTheLow") {
+	// homecontrol #110: the platform measured the low at the allocation that reached it; the warning
+	// carries its account, within one log line.
+	FakePlatform p;
+	Controller controller(p.platform());
+	controller.start();
+	controller.connectivity().link_up("192.168.178.86");
+	run_until(controller, p.clock, 1000 + 10000);
+	p.system.free_bytes = 48120;
+	p.system.min_free_bytes = 2084;
+	p.system.low_detail = "lowest 1840 B at 20.9 s: HP 0 B (block 0 B), LP 1840 B (block 1840 B); "
+		"hc_ehome_tx took 1600 B DMA";
+	run_until(controller, p.clock, 1000 + 20000);
+	CHECK(p.sink.lines.back() == "W hc.ctl: heartbeat: uptime 20 s, network up 192.168.178.86, free heap 48120 B "
+		"(min 2084 B): the minimum is a new low below 16384 B; lowest 1840 B at 20.9 s: HP 0 B (block 0 B), "
+		"LP 1840 B (block 1840 B); hc_ehome_tx took 1600 B DMA");
+	CHECK(p.sink.lines.back().size() - std::string("W hc.ctl: ").size() < hc::Log::kMaxMessage);
+
+	// A detail longer than the room is cut, the line stays one line.
+	p.system.min_free_bytes = 1000;
+	p.system.low_detail = std::string(400, 'x');
+	run_until(controller, p.clock, 1000 + 30000);
+	CHECK(p.sink.count("W hc.ctl") == 2);
+	CHECK(p.sink.lines.back().find("(min 1000 B): the minimum is a new low below 16384 B; xxx") != std::string::npos);
+	CHECK(p.sink.lines.back().size() - std::string("W hc.ctl: ").size() < hc::Log::kMaxMessage);
+}
+
+TEST_CASE("Controller.HeartbeatReportsFailedAllocationsOncePerBeat") {
+	// homecontrol #110: a failed allocation is news whatever the minimum says: one warning per beat
+	// with the count and the first of them, nothing while none failed.
+	FakePlatform p;
+	Controller controller(p.platform());
+	controller.start();
+	controller.connectivity().link_up("192.0.2.10");
+	run_until(controller, p.clock, 1000 + 10000);
+	CHECK(p.sink.count("allocation") == 0);
+
+	p.system.failures = 3;
+	p.system.failure_detail =
+		"1600 B DMA for hc_ehome_tx at 20.94 s; free 1840 B: HP 0 B (block 0 B), LP 1840 B (block 1840 B)";
+	run_until(controller, p.clock, 1000 + 20000);
+	CHECK(p.sink.count("allocation") == 1);
+	CHECK(p.sink.lines.back() == "W hc.ctl: 3 allocation(s) failed since the last heartbeat, the first: 1600 B DMA "
+		"for hc_ehome_tx at 20.94 s; free 1840 B: HP 0 B (block 0 B), LP 1840 B (block 1840 B)");
+	CHECK(p.system.failures == 0); // taken
+
+	run_until(controller, p.clock, 1000 + 60000);
+	CHECK(p.sink.count("allocation") == 1);
+
+	// The POSIX platform counts none: the default says 0.
+	struct Plain : hc::SystemInfo {
+		hc::MemoryInfo memory() const override { return hc::MemoryInfo{1, 1}; }
+	} plain;
+	char text[16] = "untouched";
+	CHECK(plain.failed_allocations(text, sizeof(text)) == 0);
+	CHECK(!plain.heap_low(text, sizeof(text)));
+	CHECK(std::string(text) == "untouched");
+}
+
 TEST_CASE("Controller.HeartbeatWarnsNothingWithoutAMeasuredHeap") {
 	FakePlatform p;
 	p.system.free_bytes = 0; // the POSIX platform has no heap figure

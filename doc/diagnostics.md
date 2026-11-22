@@ -262,6 +262,59 @@ line at every WebSocket open reports the E-Home client's reserve after the hands
 the end of every session the reserve of its sender task `hc_ehome_tx` (issue #55, 3072 B, 1572 B
 used).
 
+## Heap low and failed allocations
+
+The heartbeat warns when the free heap's minimum reaches a new low below 16 KB (homecontrol #98).
+That minimum alone does not say what took the memory, nor whether an allocation failed; issue #110
+(a minimum of 2084 B) and #112 (a TLS write failing about 21 s after every boot) needed both. The
+heap watch (`hc_platform/heap_watch.cpp`) records them where they happen, in both builds:
+
+- **The low.** The IDF's allocation hook (`CONFIG_HEAP_USE_HOOKS`) runs after every allocation in a
+  task. It reads the free heap (one pass over the heap's six regions, about a microsecond) and, at a
+  new lowest, records the time, the free heap, its part in DMA-capable RAM, the allocation's size and
+  kind and the task that made it. Below 16 KB, and then once per 512 B of further descent (at most 32
+  times per boot), it also measures the largest free block of each kind of RAM: a walk of the heap
+  with interrupts off, as every `GET /api/status` makes for its `largest_block`. Allocations in an
+  interrupt, with the scheduler suspended or inside a critical section are not measured (the last
+  of these without the walk).
+- **The failures.** The IDF's failed-allocation callback counts every allocation that found no memory
+  and records the first after each heartbeat with the same figures. The IDF itself logs some of them
+  (`Dynamic Impl: alloc(...) failed`, `esp-aes: Failed to allocate memory`), but only on the serial
+  console; the house controller's log is the ring.
+- Nothing is allocated or logged from inside the heap; the heartbeat (every 10 s) logs the records.
+  Cost: 1012 B of internal RAM (320 B of records, 684 B of code in IRAM), nothing per block (unlike
+  `CONFIG_HEAP_TASK_TRACKING`, which `CONFIG_HC_IMAGE_HEAP_BY_TASK` turns on for measurements).
+
+**Two kinds of RAM.** The C6's heap has the HP SRAM, which DMA reaches (the AES and SHA engines, the
+WiFi driver), and the 16 KB LP SRAM (`CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP`), which only the
+CPU reaches and which the heap hands out last. The free heap and its minimum count both; an allocation
+that needs DMA-capable memory fails while LP RAM is still free. The IDF's minimum is the sum of each
+region's own minimum, which need not have been reached at the same moment: it can be lower than the
+heap ever was. The recorded low is one real moment.
+
+In the log (`GET /api/log`, the System page's log):
+
+```
+W hc.ctl: heartbeat: uptime 21 s, network up 192.168.178.86, free heap 48120 B (min 2084 B): the minimum is a new low below 16384 B; lowest 1840 B at 20.94 s: HP 0 B (block 0 B), LP 1840 B (block 1840 B); hc_ehome_tx took 1600 B DMA
+W hc.ctl: 3 allocation(s) failed since the last heartbeat, the first: 1600 B DMA for hc_ehome_tx at 20.94 s; free 1840 B: HP 0 B (block 0 B), LP 1840 B (block 1840 B)
+```
+
+How to read them:
+
+- `lowest ... at <t>`: the moment (seconds since boot) and the free heap right after the allocation
+  that reached it; `HP` (the DMA-capable HP SRAM) and `LP` (the LP SRAM) split it, each `block` is
+  that RAM's largest free block,
+  `blocks at N B free` when the walk was at a slightly higher level (within 512 B); `<task> took N B`
+  is the allocation that made the low, `DMA` when it asked for DMA-capable memory. The task names the
+  last straw, not who holds the memory: compare `<t>` with the lines around it (a connection, a
+  fetch, a deploy, a Zigbee join).
+- `N allocation(s) failed`: anything above zero is a defect to find. The first one's size and kind
+  say whose allocation it was: about 2.4 KB (an mbedTLS record buffer, `OUT_CONTENT_LEN` + 341), up to
+  16.7 KB (a received TLS record), 1600 B or less with `DMA` (the AES engine's bounce buffers for a
+  record that lies in LP RAM), a few dozen bytes with `DMA` (its descriptors: the DMA-capable RAM is
+  exhausted).
+- E-Home's connection ends with the heap of that moment in brackets (doc/ehome.md "In the log").
+
 ## Testing on the board
 
 1. Flash the full image once (the partition table changed): `write_flash @flash_args`.

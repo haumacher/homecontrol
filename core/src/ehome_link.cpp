@@ -66,6 +66,19 @@ void copy(char* out, size_t size, const char* text) {
 	std::snprintf(out, size, "%s", text != nullptr ? text : "");
 }
 
+/// The length of a failure's text without the details of the moment a platform appends in brackets
+/// (" [heap ...]", WebSocketClientListener::ws_client_closed()).
+size_t failure_key(const char* text) {
+	const char* bracket = std::strstr(text, " [");
+	return bracket != nullptr ? static_cast<size_t>(bracket - text) : std::strlen(text);
+}
+
+/// The same failure as the one logged last: the same text up to the details in brackets.
+bool same_failure(const char* logged, const char* now) {
+	size_t length = failure_key(now);
+	return failure_key(logged) == length && std::strncmp(logged, now, length) == 0;
+}
+
 /// A string member of `object` into `out`; false if absent, not a string or too long.
 bool string_member(const JsonSpan& object, const char* name, char* out, size_t size) {
 	JsonSpan span;
@@ -364,7 +377,7 @@ void EhomeLink::fail(const char* fmt, ...) {
 	loop_.cancel(retry_timer_);
 	retry_timer_ = loop_.schedule_at(retry_at_ms_, Callback::member<EhomeLink, &EhomeLink::retry>(this, "ehome.retry"));
 	set_state(EhomeState::failed);
-	if (std::strcmp(last_logged_, error_) == 0) {
+	if (same_failure(last_logged_, error_)) {
 		Log::info(kTag, "%s; retry in %u s (failure %u)", error_, static_cast<unsigned>(delay / 1000),
 			static_cast<unsigned>(backoff_.failures()));
 	} else {

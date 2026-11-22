@@ -24,10 +24,12 @@ public:
 	virtual void ws_client_pong() = 0;
 	/// The client sent a queued message, so its send room grew (once per want_writable()).
 	virtual void ws_client_writable() = 0;
-	/// The connection attempt failed or an established connection ended; `reason` says why
-	/// ("cannot connect: ESP_ERR_ESP_TLS_FAILED_CONNECT_TO_HOST", "closed by the server (1008)",
-	/// "a text message longer than 4096 bytes"). After it the client is idle until the next
-	/// connect().
+	/// The connection attempt failed or an established connection ended; `reason` says why, without
+	/// the phase, which the listener knows ("TLS connect ESP_ERR_ESP_TLS_FAILED_CONNECT_TO_HOST (mbedTLS
+	/// -0x0000, errno 113)", "closed by the server (1008: policy)", "a text message longer than 4096
+	/// bytes"). A platform may append details of the moment in brackets ("... [heap 41000 B: ...]"):
+	/// they do not make it a different reason (EhomeLink logs an unchanged reason at info level). After
+	/// it the client is idle until the next connect().
 	virtual void ws_client_closed(const char* reason) = 0;
 
 protected:

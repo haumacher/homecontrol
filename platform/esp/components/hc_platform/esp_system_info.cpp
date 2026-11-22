@@ -7,6 +7,7 @@
 #include "esp_platform.h"
 
 #include "console_output.h"
+#include "heap_watch.h"
 #include <cstdio>
 #include <memory>
 #include <new>
@@ -87,6 +88,14 @@ MemoryInfo EspSystemInfo::memory() const {
 	info.largest_block = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 	info.total_bytes = static_cast<uint32_t>(heap_caps_get_total_size(MALLOC_CAP_DEFAULT));
 	return info;
+}
+
+bool EspSystemInfo::heap_low(char* out, size_t size) const {
+	return heap_watch::low(out, size);
+}
+
+uint32_t EspSystemInfo::failed_allocations(char* out, size_t size) const {
+	return heap_watch::take_failures(out, size);
 }
 
 bool EspSystemInfo::visit_tasks(TaskVisitor& visitor, const char** reason) const {

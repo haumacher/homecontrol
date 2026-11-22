@@ -45,6 +45,9 @@ public:
 class EspSystemInfo : public SystemInfo {
 public:
 	MemoryInfo memory() const override;
+	/// The heap watch's records (heap_watch.h, homecontrol #110).
+	bool heap_low(char* out, size_t size) const override;
+	uint32_t failed_allocations(char* out, size_t size) const override;
 	bool visit_tasks(TaskVisitor& visitor, const char** reason) const override;
 	bool temperature(Temperature& out, const char** reason) const override;
 	void visit_chip(DiagnosticsVisitor& visitor) const override;

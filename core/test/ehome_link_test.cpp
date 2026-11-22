@@ -489,6 +489,35 @@ TEST_CASE("E-Home: a wrong secret is refused, the link shows failed with the rea
 	CHECK(f.client.connects == 3);
 }
 
+TEST_CASE("E-Home: a reason that differs only in the platform's bracketed details repeats at info level") {
+	// homecontrol #112: the ESP client appends the heap at the moment of the failure in brackets; the
+	// figures change with every attempt, the failure does not.
+	EhomeFixture f;
+	f.handshake();
+	f.client.drop("TLS ESP_ERR_MBEDTLS_SSL_WRITE_FAILED (mbedTLS -0x0001, errno 0) [heap 1840 B: HP 0 B (block 0 B), "
+		"LP 1840 B (block 1840 B)]");
+	CHECK(f.capture.sink.contains("W hc.ehome: connection lost: TLS ESP_ERR_MBEDTLS_SSL_WRITE_FAILED (mbedTLS -0x0001, "
+		"errno 0) [heap 1840 B: HP 0 B (block 0 B), LP 1840 B (block 1840 B)]; retry in 1 s (failure 1)"));
+	CHECK(f.status()["error"].text.find("[heap 1840 B: ") != std::string::npos);
+	f.advance(1100);
+	REQUIRE(f.client.connects == 2);
+	// The next attempt fails while connecting: another phase, another failure (a warning).
+	f.client.drop("TLS connect ESP_ERR_MBEDTLS_SSL_WRITE_FAILED (mbedTLS -0x0001, errno 0) [heap 9000 B: x]");
+	CHECK(f.capture.sink.count("W hc.ehome: cannot connect: TLS connect ESP_ERR_MBEDTLS_SSL_WRITE_FAILED") == 1);
+	f.advance(2100);
+	REQUIRE(f.client.connects == 3);
+	// The same failure with other figures: info.
+	f.client.drop("TLS connect ESP_ERR_MBEDTLS_SSL_WRITE_FAILED (mbedTLS -0x0001, errno 0) [heap 12000 B: y]");
+	CHECK(f.capture.sink.contains("I hc.ehome: cannot connect: TLS connect ESP_ERR_MBEDTLS_SSL_WRITE_FAILED (mbedTLS "
+		"-0x0001, errno 0) [heap 12000 B: y]; retry in 4 s (failure 3)"));
+	f.advance(4100);
+	REQUIRE(f.client.connects == 4);
+	// Another cause without brackets: a warning again.
+	f.client.drop("socket: Connection reset by peer (errno 104)");
+	CHECK(f.capture.sink.contains("W hc.ehome: cannot connect: socket: Connection reset by peer (errno 104); retry in 8 s "
+		"(failure 4)"));
+}
+
 TEST_CASE("E-Home: ehome.enabled false closes at once and never reconnects") {
 	EhomeFixture f;
 	f.handshake();

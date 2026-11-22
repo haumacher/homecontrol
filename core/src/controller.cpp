@@ -231,6 +231,14 @@ bool Controller::format_wall_time(char* buffer, size_t size) const {
 
 void Controller::heartbeat() {
 	MemoryInfo memory = system_.memory();
+	// The allocations that failed since the last beat (the platform counts them; homecontrol #110):
+	// one line per beat at most, with the first of them.
+	char failure[kHeapDetail];
+	uint32_t failed = system_.failed_allocations(failure, sizeof(failure));
+	if (failed > 0) {
+		Log::warn(kTag, "%u allocation(s) failed since the last heartbeat, the first: %s", static_cast<unsigned>(failed),
+			failure);
+	}
 	const char* ip = connectivity_.ip();
 	LinkState state = connectivity_.state();
 	NetworkMode mode = connectivity_.mode();
@@ -243,10 +251,14 @@ void Controller::heartbeat() {
 		return; // steady state: nothing new for the log ring
 	}
 	bool normal = mode == NetworkMode::normal;
-	char low_text[64] = "";
+	char low_text[64 + kHeapDetail] = "";
 	if (low) {
-		std::snprintf(low_text, sizeof(low_text), ": the minimum is a new low below %u B",
+		int n = std::snprintf(low_text, sizeof(low_text), ": the minimum is a new low below %u B",
 			static_cast<unsigned>(kHeapLowWaterBytes));
+		char detail[kHeapDetail];
+		if (n > 0 && system_.heap_low(detail, sizeof(detail))) {
+			std::snprintf(low_text + n, sizeof(low_text) - static_cast<size_t>(n), "; %s", detail);
+		}
 	}
 	Log::write(low ? LogLevel::warn : LogLevel::info, kTag,
 		"heartbeat: uptime %llu s, network %s%s%s%s%s, free heap %u B (min %u B)%s",

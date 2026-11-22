@@ -4,6 +4,7 @@
 #ifndef HC_PLATFORM_SYSTEM_INFO_H
 #define HC_PLATFORM_SYSTEM_INFO_H
 
+#include <cstddef>
 #include <cstdint>
 
 #include "hc/platform/diagnostics.h"
@@ -96,6 +97,25 @@ struct ConsoleOutputInfo {
 class SystemInfo {
 public:
 	virtual MemoryInfo memory() const = 0;
+
+	/// The heap's lowest point since boot as the platform measured it at the allocation that reached
+	/// it (homecontrol #110): one short text with what was free and where, the largest free blocks
+	/// and the task that allocated. The heartbeat appends it to its low-water warning. False when the
+	/// platform does not track it (the default).
+	virtual bool heap_low(char* out, size_t size) const {
+		(void)out;
+		(void)size;
+		return false;
+	}
+
+	/// The allocations that failed since the previous call (homecontrol #110), with an account of
+	/// the first of them in `out` (its size and kind, the task, the heap at that moment). 0: none, or
+	/// the platform does not count them (the default). The heartbeat is the one caller.
+	virtual uint32_t failed_allocations(char* out, size_t size) const {
+		(void)out;
+		(void)size;
+		return 0;
+	}
 
 	/// Calls `visitor` for every task. False with the reason when the platform cannot list them.
 	virtual bool visit_tasks(TaskVisitor& visitor, const char** reason) const {

@@ -48,6 +48,7 @@
 // ---- end runtime image ----
 // ---- diagnostics (issue #4) ----
 #include "esp_diagnostics.h"
+#include "heap_watch.h"
 // ---- end diagnostics ----
 
 namespace {
@@ -318,6 +319,9 @@ extern "C" void app_main(void) {
 	// The console output path first (issue #46): from here on no task blocks on the USB port;
 	// before, the IDF's synchronous path printed the start-up.
 	hc::esp::console_output().start();
+	// The heap's lowest point and the failed allocations, recorded where they happen (homecontrol #110);
+	// the heartbeat logs them.
+	hc::esp::heap_watch::start(hc::Controller::kHeapLowWaterBytes);
 	init_nvs();
 	g_diag.init(); // diagnostics: the reset reason and the boot record, before the controller logs
 	if (!g_queue.init()) {
