@@ -34,6 +34,23 @@ constexpr uint8_t kEndpoint = 2;
 
 const char* const kReadIlluminance = "read 0xaf9e 2 0x0400 0";
 
+/// A frame of the sensor that concerns none of its points (a report of the Basic cluster's software
+/// build): it is heard, nothing else.
+void other_frame(ZigbeeFixture& f) {
+	f.report(kSml002Short, kEndpoint, cluster::kBasic, 0x4000, zcl_type::kUint8, 1);
+}
+
+/// `count` frames of the sensor, each followed by the requests it gets after it (kSleepyBurst each,
+/// homecontrol #117).
+void rounds(ZigbeeFixture& f, int count) {
+	for (int i = 0; i < count; ++i) {
+		other_frame(f);
+		f.run_for(ZigbeeAdapter::kWatchDelayMs);
+	}
+}
+
+/// Joins the sensor; its answers to the first bindings and configurations (frames of its own) bring
+/// the others: four rounds in all.
 void join_sml002(ZigbeeFixture& f) {
 	f.adapter.device_announced(ZigbeeFixture::node(kSml002, kSml002Short), 0x80); // an end device, receiver off
 	uint8_t endpoints[] = {kEndpoint};
@@ -43,6 +60,12 @@ void join_sml002(ZigbeeFixture& f) {
 	f.basic(kSml002Short, kEndpoint, "Philips", "SML002");
 	REQUIRE(f.adapter.interviewing() == 0);
 	REQUIRE(f.adapter.set_label(kSml002, "Bewegungsmelder Hof"));
+	// After the interview: the reads of the refresh, then one point's binding and configuration per frame.
+	for (int i = 0; i < 8 && (f.driver.count("configure 0xaf9e") < 4 || f.driver.count("read 0xaf9e") < 4); ++i) {
+		rounds(f, 1);
+	}
+	REQUIRE(f.driver.count("configure 0xaf9e") == 4);
+	REQUIRE(f.driver.count("bind 0xaf9e") == 4);
 }
 
 void join_plug(ZigbeeFixture& f) {
@@ -104,10 +127,14 @@ struct Rebooted {
 		REQUIRE(f.driver.count("read 0xaf9e") == 0);
 	}
 
-	/// The first frame and the reads that follow it.
+	/// The first frame and the reads that follow it: kSleepyBurst after the frame, the rest after the next frame of
+	/// the device (its answer), kSleepyBurst requests per frame (homecontrol #117).
 	void first_frame() {
 		occupancy_report(f);
 		f.run_for(ZigbeeAdapter::kRefreshSpacingMs);
+		REQUIRE(f.driver.count("read 0xaf9e") == ZigbeeAdapter::kSleepyBurst);
+		other_frame(f);
+		f.run_for(ZigbeeAdapter::kWatchDelayMs);
 		REQUIRE(f.driver.count("read 0xaf9e") == 4);
 	}
 
@@ -309,14 +336,18 @@ TEST_CASE("ZigbeeBind: a configuration without an answer is sent again after the
 	join_sml002(f);
 	f.run_for(ZigbeeAdapter::kReportingAnswerMs + ZigbeeAdapter::kCheckPeriodMs);
 	const PointWatch* battery = f.adapter.watch(kSml002, kEndpoint, Function::battery);
-	REQUIRE(battery->state == ReportingState::timed_out);
+	REQUIRE(battery->state() == ReportingState::timed_out);
 	CHECK(capture.sink.contains("no answer within 30 s to the reporting configuration of battery on endpoint 2 (cluster "
 								"0x0001, attribute 0x0021): sent again after its next frame"));
 	f.driver.calls.clear();
 	occupancy_report(f);
 	f.run_for(ZigbeeAdapter::kWatchDelayMs);
+	// One point per frame, its binding and configuration (kSleepyBurst, homecontrol #117).
+	CHECK(f.driver.count("configure 0xaf9e") == 1);
+	CHECK(f.driver.count("bind 0xaf9e") == 1);
+	rounds(f, 3);
 	CHECK(f.driver.count("configure 0xaf9e") == 4); // the four timed-out points
-	CHECK(battery->state == ReportingState::requested);
+	CHECK(battery->state() == ReportingState::requested);
 	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): the reporting configuration of "
 								"battery on endpoint 2 had no answer: sent again after its frame (1 of 3)"));
 	// Each time without an answer: again after a frame, three times in all.
@@ -324,11 +355,12 @@ TEST_CASE("ZigbeeBind: a configuration without an answer is sent again after the
 		f.run_for(ZigbeeAdapter::kReportingAnswerMs + ZigbeeAdapter::kCheckPeriodMs);
 		occupancy_report(f, i % 2);
 		f.run_for(ZigbeeAdapter::kWatchDelayMs);
+		rounds(f, 3);
 	}
 	CHECK(f.driver.count("configure 0xaf9e 2 0x0001") == ZigbeeAdapter::kTimeoutResends);
 	CHECK(capture.sink.contains("battery on endpoint 2 (cluster 0x0001, attribute 0x0021): not sent again (4 times "
 								"without an answer)"));
 	// A late answer still counts.
 	f.adapter.reporting_configured(ZigbeeFixture::by_short(kSml002Short), kEndpoint, cluster::kPowerConfiguration, 0);
-	CHECK(battery->state == ReportingState::configured);
+	CHECK(battery->state() == ReportingState::configured);
 }

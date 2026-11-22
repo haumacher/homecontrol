@@ -69,7 +69,8 @@ const char* reporting_state_name(ReportingState state);
 /// The adapter's watch of one loaded point (homecontrol #108), beside the point table and of this
 /// boot only: the state of its configuration, its repeats, and when it last reported and when its
 /// configuration last went out; its binding when the device did not answer it (homecontrol #113);
-/// the read without an answer yet (homecontrol #114). 8 bytes. Times are in ticks of kTickMs since
+/// the read without an answer yet (homecontrol #114); the read that waits for its turn to a sleepy
+/// device (homecontrol #117). 8 bytes. Times are in ticks of kTickMs since
 /// the start, 16 bits wide: ZigbeeAdapter keeps every elapsed time at most kMaxAge ticks (it moves an
 /// older time forward every check), so the difference modulo 2^16 is exact up to that age; the
 /// read's time is 6 bits wide and kept at most kMaxReadAge ticks old the same way.
@@ -91,8 +92,14 @@ struct PointWatch {
 	static constexpr uint8_t kReadTimeShift = 2;
 	/// 48 ticks (8 min): beyond the wait for a read's answer (ZigbeeAdapter::kReadAnswerMs).
 	static constexpr uint8_t kMaxReadAge = 48;
+	/// The bits of `state_bits` that hold the ReportingState.
+	static constexpr uint8_t kStateMask = 0x07;
+	/// The point is to be read, but its read waits for its turn: a sleepy device gets
+	/// ZigbeeAdapter::kSleepyBurst requests per frame of its own (homecontrol #117).
+	static constexpr uint8_t kReadWanted = 0x80;
 
-	ReportingState state = ReportingState::not_requested;
+	/// The ReportingState (kStateMask) and kReadWanted.
+	uint8_t state_bits = static_cast<uint8_t>(ReportingState::not_requested);
 	/// The ZCL status of a refusal; while requested or timed out, the re-sends of the configuration
 	/// after a timeout (ZigbeeAdapter::kTimeoutResends).
 	uint8_t status = 0;
@@ -103,6 +110,14 @@ struct PointWatch {
 	uint16_t report_t = 0;
 	uint16_t sent_t = 0;
 
+	ReportingState state() const { return static_cast<ReportingState>(state_bits & kStateMask); }
+	void set_state(ReportingState state) {
+		state_bits = static_cast<uint8_t>((state_bits & ~kStateMask) | static_cast<uint8_t>(state));
+	}
+	bool read_wanted() const { return (state_bits & kReadWanted) != 0; }
+	void set_read_wanted(bool on) {
+		state_bits = static_cast<uint8_t>(on ? state_bits | kReadWanted : state_bits & ~kReadWanted);
+	}
 	bool has(uint8_t flag) const { return (bits & flag) != 0; }
 	void set(uint8_t flag, bool on) { bits = static_cast<uint8_t>(on ? bits | flag : bits & ~flag); }
 	/// Re-sends after a silence since the point last reported (0..3).
@@ -238,9 +253,14 @@ protected:
 ///   #113: no refusal, logged at info), are sent again right after the device's next frame, at most
 ///   kTimeoutResends times each; a binding refused with another ZDO status is a warning naming the
 ///   status. Both follow the one-device-at-a-time rule above.
+/// - **Sleepy devices** (homecontrol #117). A device whose receiver is off while idle gets at most
+///   kSleepyBurst requests after one frame of its own (a round: first reads, a binding with its
+///   configuration, repeated reads); the rest waits for its next frame, its answer to these. Its
+///   parent queues them until it polls, 12 frames for all children, each for 7.68 s at most.
 /// - **Stale.** Every kCheckPeriodMs the adapter compares each device's silence with its stale
-///   timeout: kStaleFactor times the shortest effective maximum reporting interval of its datapoints
-///   (every frame of the device counts as heard, so the most frequent promise is the one to check; a
+///   timeout: kStaleFactor times the shortest effective maximum reporting interval of its datapoints,
+///   among the configurations it confirmed once it confirmed one, else among those it did not refuse
+///   (homecontrol #117) (every frame of the device counts as heard, so the most frequent promise is the one to check; a
 ///   device without a periodic report, a pure button or one whose overrides turn it off with max 0
 ///   or 65535, never goes stale). Silence counts from the start
 ///   for a device not heard since. Any frame of a stale device ends it; its datapoints are read
@@ -369,6 +389,13 @@ public:
 	/// most an hour behind the last frame, and the flash sees at most about one write an hour.
 	static constexpr int64_t kSeenSaveS = 3600;
 	static constexpr uint32_t kRefreshSpacingMs = 500;
+	/// Requests (reads, and reporting configurations with their binding) a device that sleeps gets
+	/// after one frame of its own (homecontrol #117): a binding with its configuration and a read; the
+	/// rest wait for its next frame, which is its answer to these. Its parent keeps them in the
+	/// indirect queue until the device polls: the coordinator's queue holds 12 frames for all its
+	/// sleepy children (a quarter of the stack's 48 packet buffers) and drops each after 7.68 s
+	/// (macTransactionPersistenceTime).
+	static constexpr uint8_t kSleepyBurst = 3;
 	/// Spacing of the commands held while the network was not up, once it is (the first goes at once).
 	static constexpr uint32_t kHeldSpacingMs = 100;
 	/// Transition of the level and colour temperature commands, in tenths of a second.
@@ -495,6 +522,12 @@ public:
 	/// does not know which): ZDO `status` 0 success, zdo_status::kTimeout the stack's own answer when the
 	/// device did not answer (no frame of the device), else its refusal.
 	void bind_result(NodeAddress address, uint8_t status, uint8_t endpoint = 0, uint16_t cluster = kAnyCluster);
+	/// The stack could not deliver a ZCL request of the coordinator (a read, a reporting configuration,
+	/// a command) to the device (homecontrol #117): its APS confirmation failed, e.g. the parent's
+	/// indirect queue was full or dropped the frame before the device polled for it. `transaction` the
+	/// request's ZCL sequence number, `status` the platform's name of the failure. One info line per
+	/// request; the request's own watch (a read's or a configuration's answer) times out as before.
+	void request_undelivered(NodeAddress address, uint8_t endpoint, uint8_t transaction, const char* status);
 
 	// ---- State ----
 
@@ -505,7 +538,8 @@ public:
 	/// The model id of point `index`; kNoId while it is not in the model.
 	uint16_t point_id(size_t index) const { return loaded_ ? ids_[index] : kNoId; }
 	/// The device's stale timeout in seconds (0: never stale, or unknown); only the functions of the
-	/// endpoints it described count.
+	/// endpoints it described count, and of those only the confirmed configurations once the device
+	/// confirmed one, otherwise every one it did not refuse (homecontrol #117).
 	uint32_t stale_timeout_s(Ieee ieee) const;
 	/// The device being interviewed, 0 if none.
 	Ieee interviewing() const { return interview_.active ? interview_.ieee : 0; }
@@ -613,10 +647,26 @@ private:
 	struct BindSet;
 	/// Binds the point's cluster (once per round) and sends its reporting configuration; the watch
 	/// records it (requested). False when the stack refused the configuration.
-	bool send_reporting(ZigbeeDevice& device, uint8_t endpoint, Function function, const Reporting& reporting,
+	/// What became of send_reporting().
+	enum class Sent : uint8_t {
+		sent,     ///< Handed to the stack (with its binding, when new in the round).
+		refused,  ///< The stack did not take the configuration.
+		deferred, ///< The device sleeps and has had its kSleepyBurst requests: sent after its next frame.
+	};
+	Sent send_reporting(ZigbeeDevice& device, uint8_t endpoint, Function function, const Reporting& reporting,
 		BindSet& bound);
+	/// Starts a round of requests to `device` (homecontrol #117): a device that sleeps gets at most
+	/// kSleepyBurst of them until end_round(); outside a round every request goes at once.
+	void begin_round(const ZigbeeDevice& device);
+	void end_round() { round_left_ = kUnlimited; }
+	/// Takes `count` requests of the round; false when the round has no room for them.
+	bool take_round(uint8_t count);
+	/// Whether loaded point `index` of a sleepy device has a reporting configuration that waits for its
+	/// turn (not sent since the start or since its bindings changed, homecontrol #117).
+	bool configure_due(const ZigbeeDevice& device, size_t index) const;
 	/// Configures the points of the device whose configuration is not in effect: not sent since the
-	/// start, or unanswered (the refresh); logged. One the stack refuses waits for the device's next frame.
+	/// start, or unanswered (the refresh); logged. One the stack refuses waits for the device's next
+	/// frame, as do those beyond a sleepy device's round.
 	void configure_unsent(ZigbeeDevice& device);
 	/// The watch of the device's loaded point (endpoint, function), nullptr if it is no loaded point.
 	PointWatch* watch_of(Ieee ieee, uint8_t endpoint, Function function);
@@ -628,9 +678,16 @@ private:
 	/// Whether loaded point `index` of the device has a read without an answer for kReadAnswerMs
 	/// (homecontrol #114).
 	bool read_due(const ZigbeeDevice& device, size_t index, uint16_t now) const;
-	/// Sends a Read Attributes per endpoint and cluster of the device's points that are read on start
-	/// (`retry` false), or of those whose read is due (true); the watch of each point records the read.
-	void send_reads(ZigbeeDevice& device, bool retry);
+	/// Which reads send_reads() sends.
+	enum class Reads : uint8_t {
+		start,  ///< Every point read on start (the refresh).
+		wanted, ///< The first reads that waited for their turn (PointWatch::kReadWanted).
+		due,    ///< The reads without an answer for kReadAnswerMs, again.
+	};
+	/// Sends a Read Attributes per endpoint and cluster of the device's points of `which`; the watch of
+	/// each point records the read. A read beyond a sleepy device's round waits for its turn
+	/// (kReadWanted, homecontrol #117).
+	void send_reads(ZigbeeDevice& device, Reads which);
 	/// A read's answer or a report of loaded point `index`: ends its outstanding read, logged.
 	void read_answered(const ZigbeeDevice& device, size_t index, const Value* value, uint8_t status, bool report);
 	/// Binds the cluster(s) point `point` of the device needs (once per round in `bound`).
@@ -641,6 +698,8 @@ private:
 	/// The device's due points: reads again always; the configurations and bindings only with
 	/// `configure` (one device at a time).
 	void check_watches(ZigbeeDevice& device, bool configure);
+	/// check_watches() within the device's round of requests.
+	void check_round(ZigbeeDevice& device, bool configure, uint16_t now, const char* text);
 	/// Marks the configurations without an answer for kReportingAnswerMs as timed out, and keeps the
 	/// watches' times within PointWatch::kMaxAge.
 	void time_out_reporting(uint16_t now);
@@ -789,6 +848,9 @@ private:
 	Ieee watch_ieee_ = 0;
 	uint16_t held_next_ = 0; ///< The model id from which the next held command is looked for.
 	bool hold_logged_ = false;
+	/// The requests left in the current round to a sleepy device (begin_round(); kUnlimited outside one).
+	static constexpr uint8_t kUnlimited = 0xFF;
+	uint8_t round_left_ = kUnlimited;
 
 	/// Whether the point has a command and `value` is in its range (logged when not).
 	bool command_valid(const ZigbeePoint& point, const Datapoint& datapoint, const Value& value) const;

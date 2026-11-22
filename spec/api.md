@@ -695,7 +695,8 @@ Paged by 16 devices: `next` is the `from` of the next page or `null`. `generatio
 changes of the list (every WebSocket `zigbee` event increments it). `datapoints` are the names of
 the device's datapoints (their values come from `/api/datapoints` or the live feed). `left`: the
 device announced its leave (it stays known, rejoining restores it); `stale`: not heard within its
-shortest reporting interval × 3 (doc/zigbee.md "Stale rule"); `seen_ago_s` only once heard since the
+shortest reporting interval × 3, counting only the configurations it confirmed once it confirmed
+one (doc/zigbee.md "Stale rule"); `seen_ago_s` only once heard since the
 start. The radio facts (homecontrol #98; new members, absent until known since the start): `lqi`
 and `rssi` of the last frame received from the device as the coordinator's neighbour; `parent`:
 `"coordinator"` while the device is in the coordinator's child table, then with `timeout_s` (its

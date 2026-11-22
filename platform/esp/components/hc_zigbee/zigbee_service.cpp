@@ -94,6 +94,9 @@ enum class Kind : uint8_t {
 	/// A router's Mgmt_Lqi_rsp: status, total in `device`, start index in `endpoint`, `count`
 	/// records of kNeighborRecord bytes in the payload.
 	neighbor_table,
+	/// A ZCL request of the coordinator the stack could not deliver (homecontrol #117): its transaction
+	/// in `command`, the esp_err_t in `device` (16 bits: ESP_FAIL and the ESP_ERR_* codes fit).
+	undelivered,
 };
 
 /// One neighbour record in an event's payload: IEEE (8), short (2), device type, relationship and
@@ -363,6 +366,10 @@ void deliver(ZigbeeAdapter& adapter, const Event& event) {
 		case Kind::bind:
 			adapter.bind_result(address, event.status, event.endpoint, event.cluster);
 			break;
+		case Kind::undelivered:
+			adapter.request_undelivered(address, event.endpoint, event.command,
+				esp_err_to_name(static_cast<esp_err_t>(static_cast<int16_t>(event.device))));
+			break;
 		case Kind::neighbor_table: {
 			ZigbeeNeighbor entries[kMaxNeighborRecords];
 			size_t count = event.count < kMaxNeighborRecords ? event.count : kMaxNeighborRecords;
@@ -578,6 +585,25 @@ void leave_answer(esp_zb_zdp_status_t status, void* context) {
 	event->short_addr = static_cast<uint16_t>(reinterpret_cast<uintptr_t>(context) >> 8);
 	event->ieee = ieee_by_short(event->short_addr);
 	event->status = static_cast<uint8_t>(status);
+	commit();
+}
+
+/// The stack's APS confirmation of a ZCL request the coordinator sent (homecontrol #117): a failure (the
+/// parent's indirect queue full, the frame dropped before the sleepy device polled, no route) goes to
+/// the adapter, a success is dropped here.
+void send_status(esp_zb_zcl_command_send_status_message_t message) {
+	if (message.status == ESP_OK || message.dst_addr.addr_type != ESP_ZB_ZCL_ADDR_TYPE_SHORT) {
+		return;
+	}
+	Event* event = claim(Kind::undelivered);
+	if (event == nullptr) {
+		return;
+	}
+	event->short_addr = message.dst_addr.u.short_addr;
+	event->ieee = ieee_by_short(event->short_addr);
+	event->endpoint = message.dst_endpoint;
+	event->command = message.tsn;
+	event->device = static_cast<uint16_t>(message.status);
 	commit();
 }
 
@@ -819,6 +845,7 @@ void zigbee_task(void*) {
 		esp_zb_zcl_add_privilege_command(kEndpoint, ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL, command);
 	}
 	esp_zb_core_action_handler_register(&action_handler);
+	esp_zb_zcl_command_send_status_handler_register(&send_status);
 
 	if (esp_zb_start(false) != ESP_OK) {
 		Log::error(kTag, "the Zigbee stack did not start; the coordinator stays off");

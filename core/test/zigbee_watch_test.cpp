@@ -119,12 +119,12 @@ TEST_CASE("ZigbeeWatch: the interview's configuration is requested, then configu
 	f.start_network();
 	join_sml002(f);
 	REQUIRE(temperature(f) != nullptr);
-	CHECK(temperature(f)->state == ReportingState::requested);
+	CHECK(temperature(f)->state() == ReportingState::requested);
 	CHECK(contains(view_of(f.adapter, kSml002), "{\"datapoint\":\"zigbee.0017880106498a49.2.temperature\","
 		"\"function\":\"temperature\",\"endpoint\":2,\"cluster\":1026,\"attribute\":0,\"max_s\":600,"
 		"\"reporting\":\"requested\"}"));
 	answer_all(f);
-	CHECK(temperature(f)->state == ReportingState::configured);
+	CHECK(temperature(f)->state() == ReportingState::configured);
 	report_temperature(f);
 	uint64_t reported_ms = f.clock.now_ms;
 	f.run_for(42 * 1000);
@@ -150,7 +150,7 @@ TEST_CASE("ZigbeeWatch: a refused configuration shows its status and a warning; 
 	join_sml002(f);
 	f.adapter.reporting_configured(ZigbeeFixture::by_short(kSml002Short), kEndpoint, cluster::kTemperatureMeasurement,
 		0x86, attribute::kMeasuredValue); // UNSUPPORTED_ATTRIBUTE
-	CHECK(temperature(f)->state == ReportingState::refused);
+	CHECK(temperature(f)->state() == ReportingState::refused);
 	CHECK(temperature(f)->status == 0x86);
 	CHECK(capture.sink.contains("W hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof) refused the reporting configuration "
 								"of temperature on endpoint 2 (cluster 0x0402, attribute 0x0000): status 0x86; its values "
@@ -159,7 +159,7 @@ TEST_CASE("ZigbeeWatch: a refused configuration shows its status and a warning; 
 		"\"attribute\":0,\"max_s\":600,\"reporting\":\"refused\",\"status\":134}"));
 	// A refusal without the attribute names the cluster's point.
 	f.adapter.reporting_configured(ZigbeeFixture::by_short(kSml002Short), kEndpoint, cluster::kOccupancySensing, 0x8c);
-	CHECK(f.adapter.watch(kSml002, kEndpoint, Function::occupancy)->state == ReportingState::refused);
+	CHECK(f.adapter.watch(kSml002, kEndpoint, Function::occupancy)->state() == ReportingState::refused);
 	CHECK(capture.sink.contains("refused the reporting configuration of occupancy on endpoint 2 (cluster 0x0406, "
 								"attribute 0x0000): status 0x8c"));
 	// The device is heard for hours, the temperature never reports: a refusal is not sent again.
@@ -175,14 +175,14 @@ TEST_CASE("ZigbeeWatch: an unanswered configuration times out, a late answer sti
 	f.start_network();
 	join_sml002(f);
 	f.run_for(ZigbeeAdapter::kReportingAnswerMs - 10000);
-	CHECK(temperature(f)->state == ReportingState::requested);
+	CHECK(temperature(f)->state() == ReportingState::requested);
 	f.run_for(ZigbeeAdapter::kCheckPeriodMs + 10000);
-	CHECK(temperature(f)->state == ReportingState::timed_out);
+	CHECK(temperature(f)->state() == ReportingState::timed_out);
 	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): no answer within 30 s to the "
 								"reporting configuration of temperature on endpoint 2 (cluster 0x0402, attribute 0x0000)"));
 	CHECK(contains(view_of(f.adapter, kSml002), "\"reporting\":\"timed_out\""));
 	answer_all(f);
-	CHECK(temperature(f)->state == ReportingState::configured);
+	CHECK(temperature(f)->state() == ReportingState::configured);
 	CHECK(capture.sink.contains("the reporting configuration of temperature on endpoint 2 answered late: configured"));
 }
 
@@ -218,7 +218,7 @@ TEST_CASE("ZigbeeWatch: a point silent beyond 2 x max while its device sends get
 	CHECK(f.driver.count("configure") == 1); // only the silent point
 	CHECK(f.driver.count("bind") == 1);
 	CHECK(temperature(f)->repeats() == 1);
-	CHECK(temperature(f)->state == ReportingState::requested);
+	CHECK(temperature(f)->state() == ReportingState::requested);
 	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): temperature on endpoint 2 (cluster "
 								"0x0402, attribute 0x0000) has not reported for 1200 s (max 600 s) while the device is "
 								"heard: binding and reporting configuration sent again (1 of 3)"));
@@ -320,14 +320,24 @@ TEST_CASE("ZigbeeWatch: a sleepy device's read on start goes out after its first
 	CHECK(f.driver.count("read 0xaf9e") == 0); // the sensor sleeps: nothing yet
 	CHECK(f.driver.count("configure 0xaf9e") == 0);
 	CHECK(contains(view_of(f.adapter, kSml002), "\"reporting\":\"not_requested\""));
-	// Its first frame (an occupancy report): the reads and the configuration follow at once.
+	// Its first frame (an occupancy report): the reads and the configuration follow, kSleepyBurst
+	// requests per frame of the sensor (homecontrol #117): its answers are its next frames.
 	f.report(kSml002Short, kEndpoint, cluster::kOccupancySensing, attribute::kOccupancy, zcl_type::kBitmap8, 1);
 	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof) heard (short 0xaf9e): reading its "
 								"datapoints and configuring its reporting now"));
 	f.run_for(ZigbeeAdapter::kRefreshSpacingMs);
+	CHECK(f.driver.count("read 0xaf9e") == ZigbeeAdapter::kSleepyBurst);
+	CHECK(f.driver.count("configure 0xaf9e") == 0);
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): the reporting of 0 attribute(s) "
+								"requested, 4 more after its next frames (it sleeps: 3 requests per frame of its own)"));
+	for (int i = 0; i < 4; ++i) {
+		f.report(kSml002Short, kEndpoint, cluster::kBasic, 0x4000, zcl_type::kUint8, 1); // its answers
+		f.run_for(ZigbeeAdapter::kWatchDelayMs);
+		CHECK(f.driver.count("configure 0xaf9e") == static_cast<size_t>(i + 1));
+	}
 	CHECK(f.driver.count("read 0xaf9e 2 0x0402 0") == 1);
 	CHECK(f.driver.count("read 0xaf9e") == 4);
-	CHECK(f.driver.count("configure 0xaf9e") == 4);
+	CHECK(f.driver.count("bind 0xaf9e") == 4);
 	CHECK(f.driver.has(kConfigureTemperature));
 	answer_all(f);
 	std::string view = view_of(f.adapter, kSml002);
@@ -498,8 +508,8 @@ TEST_CASE("ZigbeeWatch probe: the first boot of an old database: a sleepy device
 	// One answer comes; the others time out (and are sent again by the next refresh or after a silence).
 	f.adapter.reporting_configured(ZigbeeFixture::by_short(kSml002Short), kEndpoint, cluster::kTemperatureMeasurement, 0);
 	f.run_for(ZigbeeAdapter::kReportingAnswerMs + ZigbeeAdapter::kCheckPeriodMs);
-	CHECK(f.adapter.watch(kSml002, kEndpoint, Function::battery)->state == ReportingState::timed_out);
-	CHECK(temperature(f)->state == ReportingState::configured);
+	CHECK(f.adapter.watch(kSml002, kEndpoint, Function::battery)->state() == ReportingState::timed_out);
+	CHECK(temperature(f)->state() == ReportingState::configured);
 }
 
 TEST_CASE("ZigbeeWatch probe: the stack refuses the start's configuration: the device's next frame sends it") {

@@ -177,6 +177,15 @@ struct ZigbeeAdapter::BindSet {
 	Bound bound[kMaxBindings];
 	size_t count = 0;
 
+	/// Whether (endpoint, cluster) was bound in this round.
+	bool contains(uint8_t endpoint, uint16_t cluster) const {
+		for (size_t i = 0; i < count; ++i) {
+			if (bound[i].endpoint == endpoint && bound[i].cluster == cluster) {
+				return true;
+			}
+		}
+		return false;
+	}
 	/// Whether (endpoint, cluster) is new in this round (and kept, while there is room).
 	bool add(uint8_t endpoint, uint16_t cluster) {
 		for (size_t i = 0; i < count; ++i) {
@@ -1156,21 +1165,32 @@ uint32_t ZigbeeAdapter::stale_timeout_s(Ieee ieee) const {
 		return 0;
 	}
 	// Every frame of the device counts as heard (touch()), so the most frequent promise is the one to
-	// check: the shortest periodic maximum (homecontrol #98).
-	uint32_t shortest = 0;
+	// check: the shortest periodic maximum (homecontrol #98). Only a promise the device confirmed
+	// counts (homecontrol #117): once it confirmed a configuration in this boot, a point whose
+	// configuration it did not confirm (not answered, timed out) sets no timeout. While it has
+	// confirmed none, every point counts that it did not refuse: a device keeps what it was configured
+	// with before the start, and one that is gone, silent since the start, must still turn stale. A
+	// refused configuration never counts.
+	uint32_t confirmed = 0;
+	uint32_t unanswered = 0;
 	for (size_t i = 0; i < point_count_; ++i) {
 		const ZigbeePoint& point = points_[i];
 		// A function without a periodic report (max 0: on change only, 65535: no reports) promises nothing;
 		// neither does one on an endpoint the device has not described (its reporting is not configured).
-		if (point.ieee == ieee && configures_reporting(point.function) && point.reporting.periodic() &&
-			device->endpoint(point.endpoint) != nullptr) {
-			uint32_t max_s = point.reporting.max_s;
-			if (shortest == 0 || max_s < shortest) {
-				shortest = max_s;
-			}
+		if (point.ieee != ieee || !configures_reporting(point.function) || !point.reporting.periodic() ||
+			device->endpoint(point.endpoint) == nullptr) {
+			continue;
+		}
+		ReportingState state = watches_ != nullptr ? watches_[i].state() : ReportingState::not_requested;
+		uint32_t* shortest = state == ReportingState::configured ? &confirmed
+			: state == ReportingState::refused ? nullptr
+											   : &unanswered;
+		uint32_t max_s = point.reporting.max_s;
+		if (shortest != nullptr && (*shortest == 0 || max_s < *shortest)) {
+			*shortest = max_s;
 		}
 	}
-	return shortest * kStaleFactor;
+	return (confirmed != 0 ? confirmed : unanswered) * kStaleFactor;
 }
 
 long ZigbeeAdapter::find_point(Ieee ieee, uint8_t endpoint, Function function) const {
@@ -1292,12 +1312,16 @@ void ZigbeeAdapter::refresh_due() {
 	device->refresh = false;
 	device->refresh_awake = false;
 	if (device->short_addr != kNoShortAddress) {
-		send_reads(*device, false);
+		// A sleepy device gets its round of kSleepyBurst requests; the rest follow its answers
+		// (homecontrol #117).
+		begin_round(*device);
+		send_reads(*device, Reads::start);
 		// A device whose receiver is not known is read at the start but configured at its first frame:
 		// a configuration lost to a sleeping device would only come back after a silence.
 		if (!device->refresh_on_frame) {
 			configure_unsent(*device);
 		}
+		end_round();
 	}
 	for (size_t i = 0; i < database_.size(); ++i) {
 		if (database_.at(i).refresh) {
@@ -1604,7 +1628,8 @@ const char* ZigbeeAdapter::missing_text(const ZigbeeDevice& device, char* buffer
 	return buffer;
 }
 
-void ZigbeeAdapter::send_reads(ZigbeeDevice& device, bool retry) {
+void ZigbeeAdapter::send_reads(ZigbeeDevice& device, Reads which) {
+	bool retry = which != Reads::start;
 	if (device.short_addr == kNoShortAddress) {
 		return;
 	}
@@ -1618,7 +1643,15 @@ void ZigbeeAdapter::send_reads(ZigbeeDevice& device, bool retry) {
 			device.endpoint(p.endpoint) == nullptr) {
 			return false;
 		}
-		return !retry || (watches_ != nullptr && read_due(device, i, now) && watches_[i].reads() < kReadTries);
+		if (which == Reads::start) {
+			return true;
+		}
+		if (watches_ == nullptr) {
+			return false;
+		}
+		const PointWatch& watch = watches_[i];
+		return which == Reads::wanted ? watch.read_wanted()
+									  : !watch.read_wanted() && read_due(device, i, now) && watch.reads() < kReadTries;
 	};
 	auto same_group = [](const ZigbeePoint& a, const ZigbeePoint& b) {
 		return a.endpoint == b.endpoint && a.cluster() == b.cluster();
@@ -1646,21 +1679,36 @@ void ZigbeeAdapter::send_reads(ZigbeeDevice& device, bool retry) {
 				attributes[count++] = points_[j].attribute();
 			}
 		}
+		if (watches_ != nullptr && !take_round(1)) {
+			// Beyond a sleepy device's round: read after its next frame (homecontrol #117); a due read
+			// stays due.
+			for (size_t k = 0; k < count && which != Reads::due; ++k) {
+				watches_[members[k]].set_read_wanted(true);
+			}
+			Log::debug(kTag, "%s: the read of cluster 0x%04x on endpoint %u waits for its next frame", text,
+				static_cast<unsigned>(first.cluster()), static_cast<unsigned>(first.endpoint));
+			continue;
+		}
 		bool taken = driver_.read_attributes(device.ieee, device.short_addr, first.endpoint, first.cluster(), attributes,
 			count);
+		bool first_reads = !retry;
 		for (size_t k = 0; k < count && watches_ != nullptr; ++k) {
 			PointWatch& watch = watches_[members[k]];
-			uint8_t reads = retry ? static_cast<uint8_t>(watch.reads() + 1) : 1;
+			// A read that waited for its turn is the first of its point; a due one is repeated.
+			bool again = retry && !watch.read_wanted() && watch.reads() > 0;
+			uint8_t reads = again ? static_cast<uint8_t>(watch.reads() + 1) : 1;
+			first_reads = first_reads || !again;
+			watch.set_read_wanted(false);
 			// A read the stack did not take counts as one without an answer: it goes again.
 			watch.set_read(reads, now);
-			if (retry) {
+			if (again) {
 				Log::info(kTag, "%s: no answer to the read of %s on endpoint %u within %u s: read again (%u of %u)%s",
 					text, function_info(points_[members[k]].function).key, static_cast<unsigned>(first.endpoint),
 					static_cast<unsigned>(kReadAnswerMs / 1000), static_cast<unsigned>(reads),
 					static_cast<unsigned>(kReadTries), taken ? "" : ", but the stack did not take it");
 			}
 		}
-		if (!retry) {
+		if (first_reads) {
 			Log::debug(kTag, "%s: read of cluster 0x%04x on endpoint %u (%u attribute(s))%s", text,
 				static_cast<unsigned>(first.cluster()), static_cast<unsigned>(first.endpoint), static_cast<unsigned>(count),
 				taken ? " sent" : " not taken by the stack: read again after its next frame");
@@ -1674,6 +1722,8 @@ void ZigbeeAdapter::read_answered(const ZigbeeDevice& device, size_t index, cons
 		return;
 	}
 	PointWatch& watch = watches_[index];
+	// A value that came before the read's turn makes the read unnecessary (homecontrol #117).
+	watch.set_read_wanted(false);
 	uint8_t reads = watch.reads();
 	if (reads == 0) {
 		return;
@@ -1731,7 +1781,8 @@ void ZigbeeAdapter::setup_reporting(ZigbeeDevice& device) {
 	for (size_t i = 0; watches_ != nullptr && i < point_count_; ++i) {
 		if (points_[i].ieee == device.ieee) {
 			PointWatch& watch = watches_[i];
-			watch.state = ReportingState::not_requested;
+			watch.set_state(ReportingState::not_requested);
+			watch.set_read_wanted(false);
 			watch.status = 0;
 			watch.set_repeats(0);
 			watch.set(PointWatch::kSilent, false);
@@ -1741,41 +1792,85 @@ void ZigbeeAdapter::setup_reporting(ZigbeeDevice& device) {
 	}
 	BindSet bound;
 	size_t configured = 0;
+	size_t deferred = 0;
 	// The device's mapping, not the loaded points: with the image service the model follows later.
 	ZigbeePoint points[kMaxDevicePoints];
 	size_t count = device_points(device, points, kMaxDevicePoints);
+	// A sleepy device gets a round; the configurations beyond it follow its answers (homecontrol #117).
+	begin_round(device);
 	for (size_t i = 0; i < count; ++i) {
 		const ZigbeePoint& point = points[i];
 		if (configures_reporting(point.function)) {
-			configured += send_reporting(device, point.endpoint, point.function, point.reporting, bound) ? 1 : 0;
+			Sent sent = send_reporting(device, point.endpoint, point.function, point.reporting, bound);
+			configured += sent == Sent::sent ? 1 : 0;
+			deferred += sent == Sent::deferred ? 1 : 0;
 		} else {
 			bind_point(device, point, bound);
 		}
 	}
+	end_round();
 	char text[64];
-	Log::info(kTag, "%s: %u binding(s) to the coordinator and the reporting of %u attribute(s) requested "
-		"(each point's answer shows in its reporting state)",
-		device_text(device, text, sizeof(text)), static_cast<unsigned>(bound.count), static_cast<unsigned>(configured));
+	device_text(device, text, sizeof(text));
+	if (deferred > 0) {
+		Log::info(kTag, "%s: %u binding(s) to the coordinator and the reporting of %u attribute(s) requested, %u more "
+			"after its next frames (it sleeps: %u requests per frame of its own)", text,
+			static_cast<unsigned>(bound.count), static_cast<unsigned>(configured), static_cast<unsigned>(deferred),
+			static_cast<unsigned>(kSleepyBurst));
+	} else {
+		Log::info(kTag, "%s: %u binding(s) to the coordinator and the reporting of %u attribute(s) requested "
+			"(each point's answer shows in its reporting state)", text, static_cast<unsigned>(bound.count),
+			static_cast<unsigned>(configured));
+	}
 }
 
-bool ZigbeeAdapter::send_reporting(ZigbeeDevice& device, uint8_t endpoint, Function function, const Reporting& reporting,
-	BindSet& bound) {
+ZigbeeAdapter::Sent ZigbeeAdapter::send_reporting(ZigbeeDevice& device, uint8_t endpoint, Function function,
+	const Reporting& reporting, BindSet& bound) {
 	const FunctionInfo& info = function_info(function);
+	PointWatch* watch = watch_of(device.ieee, endpoint, function);
+	bool bind = !bound.contains(endpoint, info.cluster);
+	// The binding and the configuration go in the same round (homecontrol #117); a point that is not
+	// loaded has no watch to wait in and goes at once.
+	if (watch != nullptr && !take_round(bind ? 2 : 1)) {
+		return Sent::deferred;
+	}
 	if (bound.add(endpoint, info.cluster)) {
 		driver_.bind(device.ieee, device.short_addr, endpoint, info.cluster);
 	}
 	ReportingConfig config{info.attribute, info.zcl_type, reporting.min_s, reporting.max_s, reporting.change};
 	if (!driver_.configure_reporting(device.ieee, device.short_addr, endpoint, info.cluster, config)) {
-		return false;
+		return Sent::refused;
 	}
-	PointWatch* watch = watch_of(device.ieee, endpoint, function);
 	if (watch != nullptr) {
-		watch->state = ReportingState::requested;
+		watch->set_state(ReportingState::requested);
 		watch->status = 0;
 		watch->sent_t = now_t();
 		watch->set(PointWatch::kSent, true);
 	}
+	return Sent::sent;
+}
+
+void ZigbeeAdapter::begin_round(const ZigbeeDevice& device) {
+	round_left_ = device.sleepy() ? kSleepyBurst : kUnlimited;
+}
+
+bool ZigbeeAdapter::take_round(uint8_t count) {
+	if (round_left_ == kUnlimited) {
+		return true;
+	}
+	if (round_left_ < count) {
+		return false; // a smaller request after it may still fit: a read beside a binding and its configuration
+	}
+	round_left_ = static_cast<uint8_t>(round_left_ - count);
 	return true;
+}
+
+bool ZigbeeAdapter::configure_due(const ZigbeeDevice& device, size_t index) const {
+	const ZigbeePoint& point = points_[index];
+	// Only a sleepy device's configurations wait for their turn; before its first frame after the
+	// start (refresh_on_frame) and before its refresh they are not due yet (homecontrol #117).
+	return point.ieee == device.ieee && device.sleepy() && device.has_result() && !device.refresh_on_frame &&
+		!device.refresh && configures_reporting(point.function) && device.endpoint(point.endpoint) != nullptr &&
+		watches_[index].state() == ReportingState::not_requested;
 }
 
 void ZigbeeAdapter::configure_unsent(ZigbeeDevice& device) {
@@ -1785,28 +1880,33 @@ void ZigbeeAdapter::configure_unsent(ZigbeeDevice& device) {
 	BindSet bound;
 	size_t configured = 0;
 	size_t refused = 0;
+	size_t deferred = 0;
 	for (size_t i = 0; i < point_count_; ++i) {
 		const ZigbeePoint& point = points_[i];
 		if (point.ieee != device.ieee || !configures_reporting(point.function) || device.endpoint(point.endpoint) == nullptr) {
 			continue;
 		}
 		const PointWatch* watch = watches_ != nullptr ? &watches_[i] : nullptr;
-		if (watch != nullptr && watch->state != ReportingState::not_requested &&
-			watch->state != ReportingState::timed_out) {
+		if (watch != nullptr && watch->state() != ReportingState::not_requested &&
+			watch->state() != ReportingState::timed_out) {
 			continue;
 		}
-		if (send_reporting(device, point.endpoint, point.function, point.reporting, bound)) {
-			++configured;
-		} else {
-			++refused;
+		switch (send_reporting(device, point.endpoint, point.function, point.reporting, bound)) {
+			case Sent::sent: ++configured; break;
+			case Sent::refused: ++refused; break;
+			case Sent::deferred: ++deferred; break;
 		}
 	}
-	if (configured + refused == 0) {
+	if (configured + refused + deferred == 0) {
 		return;
 	}
 	char text[64];
 	device_text(device, text, sizeof(text));
-	if (refused > 0) {
+	if (deferred > 0 && refused == 0) {
+		Log::info(kTag, "%s: the reporting of %u attribute(s) requested, %u more after its next frames (it sleeps: %u "
+			"requests per frame of its own)", text, static_cast<unsigned>(configured), static_cast<unsigned>(deferred),
+			static_cast<unsigned>(kSleepyBurst));
+	} else if (refused > 0) {
 		device.refresh_on_frame = true;
 		Log::warn(kTag, "%s: the stack refused %u of %u reporting configuration(s): those are sent again after its next "
 			"frame", text, static_cast<unsigned>(refused), static_cast<unsigned>(configured + refused));
@@ -1838,7 +1938,7 @@ bool ZigbeeAdapter::watch_due(const ZigbeeDevice& device, size_t index, uint16_t
 	const PointWatch& watch = watches_[index];
 	// Not configured since the start (the refresh does that), waiting for its answer, refused (sent
 	// again only by a new interview) or warned as silent: nothing to do.
-	if (watch.state == ReportingState::requested || watch.state == ReportingState::refused ||
+	if (watch.state() == ReportingState::requested || watch.state() == ReportingState::refused ||
 		watch.has(PointWatch::kSilent) || !watch.has(PointWatch::kSent)) {
 		return false;
 	}
@@ -1861,7 +1961,7 @@ bool ZigbeeAdapter::resend_due(const ZigbeeDevice& device, size_t index) const {
 		return true;
 	}
 	// A configuration the silence watch sent again keeps the watch's own schedule.
-	return configures_reporting(point.function) && watch.state == ReportingState::timed_out && watch.repeats() == 0 &&
+	return configures_reporting(point.function) && watch.state() == ReportingState::timed_out && watch.repeats() == 0 &&
 		!watch.has(PointWatch::kSilent) && watch.status < kTimeoutResends;
 }
 
@@ -1877,7 +1977,8 @@ bool ZigbeeAdapter::device_watch_due(const ZigbeeDevice& device) const {
 	}
 	uint16_t now = now_t();
 	for (size_t i = 0; i < point_count_; ++i) {
-		if (watch_due(device, i, now) || resend_due(device, i) || read_due(device, i, now)) {
+		if (watch_due(device, i, now) || resend_due(device, i) || read_due(device, i, now) ||
+			(points_[i].ieee == device.ieee && watches_[i].read_wanted()) || configure_due(device, i)) {
 			return true;
 		}
 	}
@@ -1890,7 +1991,7 @@ void ZigbeeAdapter::watch_tick() {
 	// timed out. Its reads go out meanwhile.
 	bool waiting = false;
 	for (size_t i = 0; watch_ieee_ != 0 && watches_ != nullptr && i < point_count_ && !waiting; ++i) {
-		waiting = points_[i].ieee == watch_ieee_ && watches_[i].state == ReportingState::requested;
+		waiting = points_[i].ieee == watch_ieee_ && watches_[i].state() == ReportingState::requested;
 	}
 	if (!waiting) {
 		watch_ieee_ = 0;
@@ -1923,6 +2024,13 @@ void ZigbeeAdapter::check_watches(ZigbeeDevice& device, bool configure) {
 	uint16_t now = now_t();
 	char text[64];
 	device_text(device, text, sizeof(text));
+	// A sleepy device gets a round of requests per frame of its own (homecontrol #117).
+	begin_round(device);
+	check_round(device, configure, now, text);
+	end_round();
+}
+
+void ZigbeeAdapter::check_round(ZigbeeDevice& device, bool configure, uint16_t now, const char* text) {
 	// Reads without an answer (homecontrol #114): given up after kReadTries, else read again now.
 	for (size_t i = 0; i < point_count_; ++i) {
 		if (read_due(device, i, now) && watches_[i].reads() >= kReadTries) {
@@ -1932,15 +2040,18 @@ void ZigbeeAdapter::check_watches(ZigbeeDevice& device, bool configure) {
 				static_cast<unsigned>(points_[i].endpoint));
 		}
 	}
-	send_reads(device, true);
+	// The first reads that waited for their turn, then the configurations and bindings, then the reads
+	// again: a sleepy device's round goes to what is new first (homecontrol #117).
+	send_reads(device, Reads::wanted);
 	if (!configure) {
 		for (size_t i = 0; i < point_count_; ++i) {
-			if (watch_due(device, i, now) || resend_due(device, i)) {
+			if (watch_due(device, i, now) || resend_due(device, i) || configure_due(device, i)) {
 				Log::debug(kTag, "%s: its configuration waits for the answers of another device's (until its next "
 					"frame)", text);
 				break;
 			}
 		}
+		send_reads(device, Reads::due);
 		return;
 	}
 	BindSet bound;
@@ -1953,11 +2064,15 @@ void ZigbeeAdapter::check_watches(ZigbeeDevice& device, bool configure) {
 			// A configuration or binding without an answer goes again while the device listens
 			// (homecontrol #113).
 			bool bind_due = watch.has(PointWatch::kBindDue) && watch.binds() < kTimeoutResends;
-			bool configure_due = configures_reporting(point.function) && watch.state == ReportingState::timed_out &&
+			bool configure_due = configures_reporting(point.function) && watch.state() == ReportingState::timed_out &&
 				watch.repeats() == 0 && !watch.has(PointWatch::kSilent) && watch.status < kTimeoutResends;
 			if (configure_due) {
 				uint8_t resends = static_cast<uint8_t>(watch.status + 1);
-				if (!send_reporting(device, point.endpoint, point.function, point.reporting, bound)) {
+				Sent result = send_reporting(device, point.endpoint, point.function, point.reporting, bound);
+				if (result == Sent::deferred) {
+					continue; // its turn comes after the device's next frame
+				}
+				if (result == Sent::refused) {
 					Log::warn(kTag, "%s: the stack refused to send the unanswered reporting configuration of %s on endpoint "
 						"%u again (tried after its next frame)", text, info.key, static_cast<unsigned>(point.endpoint));
 					continue;
@@ -1968,6 +2083,9 @@ void ZigbeeAdapter::check_watches(ZigbeeDevice& device, bool configure) {
 					"frame (%u of %u)", text, info.key, static_cast<unsigned>(point.endpoint), static_cast<unsigned>(resends),
 					static_cast<unsigned>(kTimeoutResends));
 			} else {
+				if (!take_round(1)) {
+					continue; // the binding stays due for the device's next frame
+				}
 				bind_point(device, point, bound);
 			}
 			if (bind_due) {
@@ -1976,6 +2094,20 @@ void ZigbeeAdapter::check_watches(ZigbeeDevice& device, bool configure) {
 				Log::info(kTag, "%s: the binding of %s on endpoint %u to the coordinator had no answer: sent again after "
 					"its frame (%u of %u)", text, info.key, static_cast<unsigned>(point.endpoint),
 					static_cast<unsigned>(watch.binds()), static_cast<unsigned>(kTimeoutResends));
+			}
+			continue;
+		}
+		if (configure_due(device, i)) {
+			// Its first configuration since the start or since its bindings changed, in its turn
+			// (homecontrol #117).
+			Sent result = send_reporting(device, point.endpoint, point.function, point.reporting, bound);
+			if (result == Sent::sent) {
+				sent = true;
+				Log::info(kTag, "%s: the reporting of %s on endpoint %u requested", text, info.key,
+					static_cast<unsigned>(point.endpoint));
+			} else if (result == Sent::refused) {
+				Log::warn(kTag, "%s: the stack refused the reporting configuration of %s on endpoint %u (tried again after "
+					"its next frame)", text, info.key, static_cast<unsigned>(point.endpoint));
 			}
 			continue;
 		}
@@ -1998,7 +2130,11 @@ void ZigbeeAdapter::check_watches(ZigbeeDevice& device, bool configure) {
 			continue;
 		}
 		uint8_t repeats = watch.repeats();
-		if (!send_reporting(device, point.endpoint, point.function, point.reporting, bound)) {
+		Sent result = send_reporting(device, point.endpoint, point.function, point.reporting, bound);
+		if (result == Sent::deferred) {
+			continue; // still due after the device's next frame
+		}
+		if (result == Sent::refused) {
 			Log::warn(kTag, "%s: %s on endpoint %u has not reported for %u s, but the stack refused to send its "
 				"reporting configuration again (tried after its next frame)", text, info.key,
 				static_cast<unsigned>(point.endpoint), silent_s);
@@ -2016,6 +2152,7 @@ void ZigbeeAdapter::check_watches(ZigbeeDevice& device, bool configure) {
 		watch_ieee_ = device.ieee;
 		notify(ZigbeeEvent::Kind::changed, device.ieee);
 	}
+	send_reads(device, Reads::due);
 }
 
 void ZigbeeAdapter::time_out_reporting(uint16_t now) {
@@ -2037,10 +2174,10 @@ void ZigbeeAdapter::time_out_reporting(uint16_t now) {
 		if (watch.reads() > 0 && watch.read_age(now) > PointWatch::kMaxReadAge) {
 			watch.set_read(watch.reads(), static_cast<uint16_t>(now - PointWatch::kMaxReadAge));
 		}
-		if (watch.state != ReportingState::requested || ticks(now, watch.sent_t) < kAnswerTicks) {
+		if (watch.state() != ReportingState::requested || ticks(now, watch.sent_t) < kAnswerTicks) {
 			continue;
 		}
-		watch.state = ReportingState::timed_out;
+		watch.set_state(ReportingState::timed_out);
 		const ZigbeePoint& point = points_[i];
 		const FunctionInfo& info = function_info(point.function);
 		const ZigbeeDevice* device = database_.find(point.ieee);
@@ -2093,6 +2230,7 @@ void ZigbeeAdapter::reconfigure_reporting(const ZigbeePoint* old_table, size_t o
 		BindSet bound;
 		size_t configured = 0;
 		size_t refused = 0;
+		size_t deferred = 0;
 		auto check = [&](uint8_t endpoint, Function function, const Reporting& now) {
 			if (!configures_reporting(function)) {
 				return;
@@ -2108,7 +2246,14 @@ void ZigbeeAdapter::reconfigure_reporting(const ZigbeePoint* old_table, size_t o
 				watch->set_repeats(0);
 				watch->set(PointWatch::kSilent, false);
 			}
-			if (send_reporting(device, endpoint, function, now, bound)) {
+			// A sleepy device's configuration waits for its turn after its next frame (homecontrol #117):
+			// sent now, it would wait in its parent's queue, which drops it after 7.68 s.
+			if (device.sleepy() && watch != nullptr) {
+				watch->set_state(ReportingState::not_requested);
+				++deferred;
+				return;
+			}
+			if (send_reporting(device, endpoint, function, now, bound) == Sent::sent) {
 				++configured;
 			} else {
 				++refused;
@@ -2133,12 +2278,15 @@ void ZigbeeAdapter::reconfigure_reporting(const ZigbeePoint* old_table, size_t o
 				}
 			}
 		}
-		if (configured + refused == 0) {
+		if (configured + refused + deferred == 0) {
 			continue;
 		}
 		char text[64];
 		device_text(device, text, sizeof(text));
-		if (refused > 0) {
+		if (deferred > 0) {
+			Log::info(kTag, "%s: the new bindings change the reporting of %u attribute(s): configured after its next "
+				"frames (it sleeps)", text, static_cast<unsigned>(deferred));
+		} else if (refused > 0) {
 			Log::warn(kTag, "%s: the new bindings change the reporting of %u attribute(s), the stack refused %u of the "
 				"requests: those keep their previous configuration", text, static_cast<unsigned>(configured + refused),
 				static_cast<unsigned>(refused));
@@ -2657,6 +2805,19 @@ void ZigbeeAdapter::device_left_to_rejoin(NodeAddress address) {
 	}
 }
 
+void ZigbeeAdapter::request_undelivered(NodeAddress address, uint8_t endpoint, uint8_t transaction, const char* status) {
+	const ZigbeeDevice* device = resolve(address, false);
+	char text[64];
+	if (device != nullptr) {
+		device_text(*device, text, sizeof(text));
+	} else {
+		std::snprintf(text, sizeof(text), "an unknown device (short 0x%04x)", static_cast<unsigned>(address.short_addr));
+	}
+	// No frame of the device: it does not count as heard.
+	Log::info(kTag, "%s: a request to endpoint %u (ZCL transaction %u) was not delivered: %s", text,
+		static_cast<unsigned>(endpoint), static_cast<unsigned>(transaction), status != nullptr ? status : "failed");
+}
+
 void ZigbeeAdapter::leave_answered(NodeAddress address, uint8_t status) {
 	ZigbeeDevice* device = resolve(address, false);
 	bool requested = rejoin_.ieee != 0 &&
@@ -2988,19 +3149,19 @@ void ZigbeeAdapter::reporting_configured(NodeAddress address, uint8_t endpoint, 
 	char text[64];
 	device_text(*device, text, sizeof(text));
 	if (status == zcl_status::kSuccess) {
-		if (watch != nullptr && watch->state != ReportingState::configured) {
-			if (watch->state == ReportingState::timed_out) {
+		if (watch != nullptr && watch->state() != ReportingState::configured) {
+			if (watch->state() == ReportingState::timed_out) {
 				Log::info(kTag, "%s: the reporting configuration of %s on endpoint %u answered late: configured", text,
 					info->key, static_cast<unsigned>(endpoint));
 			}
-			watch->state = ReportingState::configured;
+			watch->set_state(ReportingState::configured);
 			watch->status = 0;
 			notify(ZigbeeEvent::Kind::changed, device->ieee);
 		}
 		return;
 	}
 	if (watch != nullptr) {
-		watch->state = ReportingState::refused;
+		watch->set_state(ReportingState::refused);
 		watch->status = status;
 		notify(ZigbeeEvent::Kind::changed, device->ieee);
 	}
@@ -3392,8 +3553,8 @@ void ZigbeeAdapter::write_points_json(JsonWriter& json, const ZigbeeDevice& devi
 		json.member("cluster", static_cast<uint32_t>(info.cluster));
 		json.member("attribute", static_cast<uint32_t>(info.attribute));
 		json.member("max_s", static_cast<uint32_t>(point.reporting.max_s));
-		json.member("reporting", reporting_state_name(watch != nullptr ? watch->state : ReportingState::not_requested));
-		if (watch != nullptr && watch->state == ReportingState::refused) {
+		json.member("reporting", reporting_state_name(watch != nullptr ? watch->state() : ReportingState::not_requested));
+		if (watch != nullptr && watch->state() == ReportingState::refused) {
 			json.member("status", static_cast<uint32_t>(watch->status));
 		}
 		if (watch != nullptr && watch->has(PointWatch::kReported)) {

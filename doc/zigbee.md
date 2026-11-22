@@ -330,7 +330,13 @@ owner that load is refused ("the model holds datapoints of another owner").
 
 A device that has configured reporting must be heard within three times the shortest maximum
 reporting interval of its datapoints (`kStaleFactor`), the effective ones (a binding's override
-over the default). Every frame of the device counts as heard, so the most frequent promise is the
+over the default). Only a promise the device confirmed counts (homecontrol #117): once it answered
+one of its Configure Reporting requests with success in this boot, a point whose configuration it
+did not confirm (not answered yet, timed out) sets no timeout; while it has confirmed none, every
+point counts that it did not refuse (it keeps what it was configured with before the start, and a
+device that is gone, silent since the start, must still turn stale); a refused configuration never
+counts. The house controller (2026-11-22) marked the SML002 `silent for 1800 s (3 reporting
+intervals)` from the 600 s of occupancy, whose configuration had timed out again and again. Every frame of the device counts as heard, so the most frequent promise is the
 one to check (homecontrol #98; before, the largest interval counted, and the Hue motion sensor
 SML002, whose battery reports at most every 21600 s, was stale only after 18 hours although its
 temperature, illuminance and occupancy promise a report every 600 s): a bulb (max 300 s) within 15
@@ -426,6 +432,80 @@ every request then) or to a sleeping device.
   read of illuminance on endpoint 2 within 30 s: read again (2 of 3)`), `kReadTries` (3) reads in
   all, then given up (`no answer to 3 reads of illuminance on endpoint 2: its value comes with its
   next report`). The application's read (a rule's `read` action) is watched the same way.
+
+**Requests to a sleepy device (homecontrol #117).** The house controller (2026-11-22, c8ea5a2): after
+a restart the SML002 (a sleepy child of the coordinator) answered its four reads within 1.5 s of its
+first frame, while the bindings and reporting configurations of occupancy and battery timed out
+again and again (`0x85 TIMEOUT`); the warning `silent for 1800 s` followed. The adapter had handed the
+stack twelve requests for the sensor in one go: four reads, then a binding and a configuration per
+point in the point table's order (temperature, illuminance, occupancy, battery). What the stack does
+with them (esp-zboss-lib for esp-zigbee-lib 1.6.8, the `zczr` debug archive disassembled with its
+symbols, `file.c:line` from its trace calls):
+
+- A frame for a child whose receiver is off waits in the coordinator's MAC indirect queue until the
+  child polls (`zb_mac_put_data_to_pending_queue()`, `mac_cr_data.c`). The queue holds
+  `gc_mac_pending_queue_size` frames for all sleepy children together, a quarter of the packet
+  buffers (`zb_config_io_buffer_size()`: `n >> 2`): **12** with the 48 buffers of
+  `esp_zb_io_buffer_size_set()` (issue #45; 20 with the default 80). A frame beyond it is refused
+  with `TRANSACTION_OVERFLOW` (0xF1, `mac_cr_data.c:784`).
+- Each frame in the queue expires after macTransactionPersistenceTime (`ZB_MAC_INDIRECT_POLL_EXPIRE_TMO`,
+  7680 ms) with `TRANSACTION_EXPIRED` (0xF0, `zb_mac_pending_data_timeout()`, `:708-747`): the sensor
+  must poll for each one within 7.68 s of its queuing; it fetches them one per poll and polls again at
+  once while its parent signals more data.
+- A request sent with an APS acknowledgement is repeated up to `ZB_N_APS_MAX_FRAME_RETRIES` (3) times,
+  every `ZB_N_APS_ACK_WAIT_DURATION_FROM_SLEEPY` (10 s): each repeat is another frame in the same queue.
+
+Twelve requests filled the queue alone, in the order sent, and the last of them (occupancy's and
+battery's binding and configuration) were the ones dropped; their repeats after the sensor's next
+frames (two or four at a time, plus the reads again) met the same queue. **The decision:** a device
+that sleeps gets at most `kSleepyBurst` (3) requests after one frame of its own, a *round*: reads first
+(the values), then a point's binding together with its configuration (2), then reads repeated after a
+timeout; the rest waits for its next frame, which is its answer to these (each answer is a frame of the
+device, and `kWatchDelayMs` after it the next round goes). The start's refresh, the interview's
+configuration (`setup_reporting()`), the watch after a frame (`check_watches()`) and the re-sends of
+bindings and configurations without an answer all take their requests from the round; a read that
+does not fit waits as `PointWatch::kReadWanted` (dropped when the point reports first), a
+configuration as `not_requested` (`configure_due()`), a binding as `kBindDue`, a repeated read stays
+due. A sleepy device's configuration changed by new bindings (`reconfigure_reporting()`) is no longer
+sent at once into the queue, where it would expire before the device polls, but waits for its next
+frame the same way. The log says so (`<device>: the reporting of 0 attribute(s) requested, 4 more after
+its next frames (it sleeps: 3 requests per frame of its own)`, then `<device>: the reporting of
+occupancy on endpoint 2 requested` per round). A device whose receiver is on gets its requests at once,
+as before.
+
+**Undelivered requests.** The stack confirms every ZCL request the coordinator sends (its APS
+confirmation, `esp_zb_zcl_command_send_status_handler_register()`, public API of esp-zigbee-lib): a
+failure (the queue full or expired, no route, no acknowledgement) is one info line `<device>: a request
+to endpoint 2 (ZCL transaction 37) was not delivered: ESP_FAIL` (the wrapper maps the stack's status
+through `zb_ret_to_esp_err()`, which keeps only a few distinct codes). It is no frame of the device (not
+heard), and the request's own watch times out as before. A binding (ZDO) has no such confirmation: its
+`0x85 TIMEOUT` is logged as before.
+
+**A child's frames after a restart (homecontrol #117, the restart case).** The issue suspected the
+stack state restored at a start of dropping the child's frames. The disassembly rules out the
+candidates:
+
+- **The incoming NWK frame counters are not persisted.** The neighbour table's dataset
+  (`zb_nvram_write_neighbour_tbl_dataset()`) writes 16-byte records without the counter, the restore
+  (`zb_nvram_read_neighbour_tbl_dataset()`) sets bytes 0-9 of each 22-byte entry, and the table is
+  allocated with `calloc()` (`zb_memconfig.c`): a restored child's counter is 0.
+  `zb_nwk_unsecure_frame()` (`nwk_secur.c`) drops a frame only when its counter is below the stored one
+  with the same key sequence number, or the stored one is 0xFFFFFFFF (`nwk_secur.c:267`): after a start every counter passes and the next one is
+  stored.
+- **The coordinator's outgoing counters** (NWK and APS) are persisted rounded up to the next multiple of
+  1024 (`zb_nvram_write_counters_dataset()`, written by `zb_nwk_secure_frame()` whenever the NWK counter
+  crosses a multiple of 1024): after a restart they continue above any value used before, so the child
+  does not drop the coordinator's frames either.
+- **The key pairs of #99** are written only for a device without a verified or provisional key
+  (`restore_key()`); the boots of the house controller log `holds a link key for 2 of 2 known device(s)
+  (0 restored)`: nothing was rewritten at those starts, no incoming APS counter reset. HA 1.2 data
+  frames carry no APS security anyway (`zb_nlde_data_indication_continue()` unsecures only frames with
+  the APS security bit).
+
+What stays unexplained is the boot of 32c9e2f, where the sensor polled for 45 minutes (`expires_in_s`
+renewed) and no frame of it reached the adapter: nothing was sent to it in that time (a sleepy device
+gets its requests after its first frame), so the coordinator did not disturb it. Its next occurrence
+shows in the log with the lines above (an undelivered request, a timeout) or their absence.
 
 **Short addresses (homecontrol #109).** Every change of a device's short address (an announce with a
 new one, the trust center's notice of a rejoin, a frame from a known IEEE with another address; a

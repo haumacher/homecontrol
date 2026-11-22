@@ -311,6 +311,7 @@ link quality of the coordinator from its own neighbour table. `rejoin` (homecont
 `POST .../rejoin`, the console's `zigbee rejoin`) is pending: `{"requested_ago_s": 42, "sent": 2,
 "accepted": false}`, the seconds since the request, how many leave requests went out, and whether
 the device took one; it ends with the device's announce or an hour after the request. `stale` turns true when the device was
-not heard within three times its shortest periodic maximum reporting interval ("Stale rule" in
+not heard within three times its shortest periodic maximum reporting interval, among the
+configurations it confirmed once it confirmed one (homecontrol #117; "Stale rule" in
 doc/zigbee.md). `GET /api/zigbee` (spec/api.md) pages the same device objects with `write_device_json()`
 and the network with `write_network_json()`.

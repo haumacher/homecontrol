@@ -89,9 +89,8 @@ TEST_CASE("ZigbeeDiagnostics: the stale timeout is three times the shortest peri
 	f.start_network();
 	join_sml002(f);
 	// Temperature, illuminance and occupancy promise a report every 600 s, the battery every 21600 s:
-	// the sensor is stale after 1800 s, not 18 h.
-	CHECK(f.driver.has("configure 0xaf9e 2 0x0402 0x0000 30..600 10"));
-	CHECK(f.driver.has("configure 0xaf9e 2 0x0001 0x0021 3600..21600 2"));
+	// the sensor is stale after 1800 s, not 18 h (none of its configurations is answered here: every
+	// point counts, homecontrol #117).
 	CHECK(f.adapter.stale_timeout_s(kSml002) == 1800);
 	f.run_for(1790 * 1000);
 	CHECK_FALSE(f.adapter.devices().find(kSml002)->stale);
