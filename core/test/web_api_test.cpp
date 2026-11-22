@@ -726,6 +726,22 @@ TEST_CASE("WebApi.Rules: lastError names the condition and its datapoint without
 	auto& error = r.json["rules"].items[0]["lastError"];
 	CHECK(error["code"].text == "conditionNoValue");
 	CHECK(error["text"].text == "@presence and @lux < 50 – lux has no value");
+	CHECK(error["resolved"].kind == hc_test::Json::Kind::null); // a problem while it holds (#114)
+
+	// The condition evaluates with a value: the error is history with its time, still reported.
+	f.fake.clock.now_ms += 5000;
+	r = f.post("/api/datapoints/" + std::to_string(f.model.find("lux")->id()) + "/command", "{\"value\": 10}", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	r = f.post("/api/datapoints/" + std::to_string(f.model.find("presence")->id()) + "/command", "{\"value\": false}", f.cookie);
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	f.controller.run_once();
+	r = f.get("/api/rules", f.cookie);
+	auto& rule = r.json["rules"].items[0];
+	CHECK(rule["errors"].number == 1);
+	auto& history = rule["lastError"];
+	CHECK(history["code"].text == "conditionNoValue");
+	REQUIRE(history["resolved"].kind == hc_test::Json::Kind::number);
+	CHECK(history["resolved"].number > history["ms"].number);
 }
 
 TEST_CASE("WebApi.Rules: diagnostics, parameters with their ranges, set, reset, refusals") {

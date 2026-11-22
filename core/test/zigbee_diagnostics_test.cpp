@@ -458,8 +458,13 @@ TEST_CASE("ZigbeeDiagnosticsRework: the parent of a router's child comes from th
 	CHECK(lines_with(capture.sink, {"is a child of 00124b0001020304"}) == 1);
 	REQUIRE(next_request(f) == "lqi 0x1a2b 0");
 	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 1, 0, table.data(), 1);
+	// One complete read without it is no proof (homecontrol #114): the parent stays until the next.
+	CHECK_FALSE(capture.sink.contains("is no longer a child of 00124b0001020304"));
+	CHECK(contains(view_of(f.adapter, kSml002), "\"parent\""));
+	REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 1, 0, table.data(), 1);
 	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof) is no longer a child of "
-								"00124b0001020304 (Steckdose)"));
+								"00124b0001020304 (Steckdose) (not in its table twice)"));
 	CHECK_FALSE(contains(view_of(f.adapter, kSml002), "\"parent\""));
 }
 
@@ -532,4 +537,84 @@ TEST_CASE("ZigbeeDiagnosticsRework: a device that turns stale has its parent loo
 	REQUIRE(stale_ms != 0);
 	CHECK_FALSE(f.adapter.devices().find(kBulb)->stale);
 	CHECK(asked_after_stale_ms - stale_ms <= ZigbeeAdapter::kTopologyDelayMs);
+}
+
+// ---- A known parent and the reads of its table (homecontrol #114) ---------------------------------
+
+TEST_CASE("ZigbeeTopology: a partial or changing read of the parent's table keeps the parent; two complete reads "
+		  "without the child drop it") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.start_network();
+	make_router(f);
+	join_sml002(f);
+	char bulb[hc::zigbee::kIeeeText];
+	hc::zigbee::format_ieee(kBulb, bulb);
+	std::string parent = std::string("\"parent\":\"") + bulb + "\"";
+	// In the middle of its rejoin the plug lists the sensor as an unauthenticated child: its child.
+	REQUIRE(next_request(f, ZigbeeAdapter::kTopologyDelayMs + 1000) == "lqi 0x1a2b 0");
+	std::vector<ZigbeeNeighbor> table = plug_table();
+	table[1].relationship = ZigbeeNeighbor::Relationship::unauthenticated_child;
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 0, table.data(), table.size());
+	CHECK(contains(view_of(f.adapter, kSml002), parent + ",\"parent_label\":\"Steckdose\",\"parent_lqi\":120"));
+
+	ZigbeeNeighbor coordinator = plug_table()[0];
+	ZigbeeNeighbor sibling = router_entry(0x2222222222222222ull, 0x2222, ZigbeeNeighbor::Relationship::sibling, 70, 1);
+	std::vector<ZigbeeNeighbor> first_page = {coordinator, sibling};
+	for (int pass = 0; pass < 2; ++pass) {
+		// An empty page before the table's end.
+		REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+		f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 3, 0, nullptr, 0);
+		// A table that changed between its pages: the child's entry moved from the second page to the first.
+		REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+		f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 3, 0, first_page.data(), first_page.size());
+		REQUIRE(f.driver.calls.back() == "lqi 0x1a2b 2");
+		f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 2, nullptr, 0);
+		// A table that claims more than the pages read hand out.
+		REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+		f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 3, 0, first_page.data(), first_page.size());
+		f.run_for(ZigbeeAdapter::kTopologyTimeoutMs); // the second page stays unanswered
+	}
+	CHECK(contains(view_of(f.adapter, kSml002), parent));
+	CHECK_FALSE(capture.sink.contains("is no longer a child of"));
+
+	// The complete table without the sensor: kept after the first read, dropped after the second.
+	REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 0, first_page.data(), first_page.size());
+	CHECK(contains(view_of(f.adapter, kSml002), parent));
+	// Listed again in between: the miss is forgotten.
+	REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 0, table.data(), table.size());
+	REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 0, first_page.data(), first_page.size());
+	CHECK(contains(view_of(f.adapter, kSml002), parent));
+	REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 0, first_page.data(), first_page.size());
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof) is no longer a child of "
+								"00124b0001020304 (Steckdose) (not in its table twice)"));
+	CHECK_FALSE(contains(view_of(f.adapter, kSml002), "\"parent\""));
+}
+
+TEST_CASE("ZigbeeTopology: a rejoin with a new address without a notice keeps the parent until a pass decides") {
+	ZigbeeFixture f;
+	f.start_network();
+	make_router(f);
+	join_sml002(f);
+	REQUIRE(next_request(f, ZigbeeAdapter::kTopologyDelayMs + 1000) == "lqi 0x1a2b 0");
+	std::vector<ZigbeeNeighbor> table = plug_table();
+	table[1].short_addr = kSml002Short;
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 0, table.data(), table.size());
+	char bulb[hc::zigbee::kIeeeText];
+	hc::zigbee::format_ieee(kBulb, bulb);
+	std::string parent = std::string("\"parent\":\"") + bulb + "\",\"parent_label\":\"Steckdose\"";
+	REQUIRE(contains(view_of(f.adapter, kSml002), parent + ",\"parent_lqi\":120"));
+	// The rejoin: the parent stays, unconfirmed (no link quality of it) until the pass that follows.
+	f.adapter.device_announced(ZigbeeFixture::node(kSml002, kSml002NewShort), 0x80);
+	std::string view = view_of(f.adapter, kSml002);
+	CHECK(contains(view, parent));
+	CHECK_FALSE(contains(view, "\"parent_lqi\""));
+	REQUIRE(next_request(f, ZigbeeAdapter::kTopologyDelayMs + 1000) == "lqi 0x1a2b 0");
+	table = plug_table();
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 0, table.data(), table.size());
+	CHECK(contains(view_of(f.adapter, kSml002), parent + ",\"parent_lqi\":120"));
 }

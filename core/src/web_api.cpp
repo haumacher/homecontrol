@@ -2544,8 +2544,15 @@ void WebApi::write_rule(JsonWriter& json, size_t index) {
 		json.begin_object()
 			.member("code", rules::log_code_name(d.last_error_code))
 			.member("text", error_text)
-			.member("ms", d.last_error_ms)
-			.end_object();
+			.member("ms", d.last_error_ms);
+		// History once its site evaluated without the problem (spec/rules.md 9.1, homecontrol #114).
+		json.key("resolved");
+		if (d.resolved) {
+			json.number(d.resolved_ms);
+		} else {
+			json.null();
+		}
+		json.end_object();
 	} else {
 		json.null();
 	}

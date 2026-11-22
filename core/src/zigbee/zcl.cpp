@@ -147,5 +147,27 @@ bool decode_zcl(uint8_t type, const uint8_t* data, size_t length, ZclValue& out,
 	return true;
 }
 
+const char* zdo_status_name(uint8_t status) {
+	switch (status) {
+		case 0x00: return "SUCCESS";
+		case 0x80: return "INV_REQUESTTYPE";
+		case 0x81: return "DEVICE_NOT_FOUND";
+		case 0x82: return "INVALID_EP";
+		case 0x83: return "NOT_ACTIVE";
+		case 0x84: return "NOT_SUPPORTED";
+		case 0x85: return "TIMEOUT";
+		case 0x86: return "NO_MATCH";
+		case 0x88: return "NO_ENTRY";
+		case 0x89: return "NO_DESCRIPTOR";
+		case 0x8A: return "INSUFFICIENT_SPACE";
+		case 0x8B: return "NOT_PERMITTED";
+		case 0x8C: return "TABLE_FULL";
+		case 0x8D: return "NOT_AUTHORIZED";
+		case 0x8E: return "DEVICE_BINDING_TABLE_FULL";
+		case 0x8F: return "INVALID_INDEX";
+		default: return "UNKNOWN";
+	}
+}
+
 } // namespace zigbee
 } // namespace hc

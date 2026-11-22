@@ -1030,8 +1030,11 @@ datapoints (`count`, `from`, `next`):
                             "min": 30000, "max": 3600000, "step": 30000}]}]}
 ```
 
-`lastTrigger`, `lastAction`, `lastError` (`{"code", "text", "ms"}`) are `null` until they happen;
-`*_ms`/`ms` are monotonic like `now_ms`. The `text` of `lastError` is formatted on request; for
+`lastTrigger`, `lastAction`, `lastError` (`{"code", "text", "ms", "resolved"}`) are `null` until they happen;
+`*_ms`/`ms` are monotonic like `now_ms`. `resolved` is `null` while the last error is a problem and
+the monotonic time its site ran without the problem once it is history (`spec/rules.md` 9.1, issue
+#114): a client shows and counts a rule's problem only while `resolved` is `null`; `errors` counts
+every logged error since the start, resolved or not. The `text` of `lastError` is formatted on request; for
 `conditionNoValue`, `valueNoValue` and `evalError` it names the expression and its first datapoint
 without a value (`spec/rules.md` 9.1): `@presence and @lux < 50 – lux has no value`, `division by
 zero in 100 / @count`; for the other codes it is the code's fixed text. `timers` lists the running ones. `parameters` are the

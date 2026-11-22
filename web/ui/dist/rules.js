@@ -122,7 +122,8 @@ function ruleCard(rule, nowMs, commit) {
 	for (const timer of rule.timers || []) {
 		rows.push([t("rules.timer", { id: timer.id }), t("rules.timer_left", { duration: formatDurationShort(timer.remaining_ms / 1000) })]);
 	}
-	if (rule.errors > 0) {
+	// A problem only while the last error holds (`resolved` null, homecontrol #114).
+	if (rule.errors > 0 && !(rule.lastError && rule.lastError.resolved != null)) {
 		rows.push([t("rules.errors"), [h("span", { class: "error-text" }, t("rules.errors_value", { count: rule.errors })), " · ",
 			h("a", { href: "/system", "data-route": "/system", class: "rule-details" }, t("rules.errors_details", { page: t("settings.system") }))]]);
 	}

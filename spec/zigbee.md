@@ -285,7 +285,7 @@ each of the device's points that configures reporting, on the endpoints it descr
 reports), `reporting` the state of its configuration since the start (`not_requested`: not sent yet,
 a sleepy device's waits for its next frame; `requested`: sent, no answer yet; `configured`: the device
 answered with success; `refused`: it answered with the ZCL `status`, decimal; `timed_out`: no answer
-within 30 s), `last_report_ago_s` the seconds since its last report, in steps of 10 s (absent before it reported since
+within 30 s, sent again after the device's next frame up to three times, homecontrol #113), `last_report_ago_s` the seconds since its last report, in steps of 10 s (absent before it reported since
 the start; the answer to a read is not a report), `repeats` how often its configuration was sent again
 after a silence since its last report (absent when 0), `silent` `true` when the repeats are exhausted
 and it still does not report (absent otherwise). On a controller without Zigbee

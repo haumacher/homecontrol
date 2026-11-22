@@ -275,11 +275,15 @@ async function blockCards() {
 
 /// One rule as the engine reports it (spec/rules.md 9.1, GET /api/rules): the printer's texts of
 /// the last trigger, the last action and the last problem with their age; the Rules page shows
-/// the inhabitant only when it was last triggered and the problem count (homecontrol #82).
+/// the inhabitant only when it was last triggered and the problem count (homecontrol #82). A last
+/// error whose site ran cleanly afterwards (`resolved`, homecontrol #114) is history: no problem,
+/// shown muted with the time it was resolved.
 function ruleCard(rule, nowMs) {
 	const ago = (ms) => formatAgo(nowMs - ms);
 	const event = (e) => (e ? `${e.text} · ${ago(e.ms)}` : t("rules.never"));
 	const name = label(rule.name, "");
+	const error = rule.lastError;
+	const problem = rule.errors > 0 && !(error && error.resolved != null);
 	return h("section", { class: "card rule-diag", "data-rule": rule.id },
 		h("div", { class: "card-head" },
 			h("h2", null, name || rule.id, name && name !== rule.id ? h("span", { class: "section-sub" }, rule.id) : null),
@@ -288,10 +292,12 @@ function ruleCard(rule, nowMs) {
 			rule.state ? [t("rules.state"), rule.state] : null,
 			[t("rules.last_trigger"), event(rule.lastTrigger)],
 			[t("rules.last_action"), event(rule.lastAction)],
-			[t("rules.errors"), rule.errors > 0
+			[t("rules.errors"), problem
 				? h("span", { class: "error-text" }, t("rules.errors_value", { count: rule.errors }),
-					rule.lastError ? ` · ${rule.lastError.code}: ${rule.lastError.text} (${ago(rule.lastError.ms)})` : "")
-				: String(rule.errors ?? 0)],
+					error ? ` · ${error.code}: ${error.text} (${ago(error.ms)})` : "")
+				: t("rules.errors_none")],
+			!problem && error ? [t("rules.last_problem"), h("span", { class: "muted" },
+				`${error.code}: ${error.text} (${ago(error.ms)}) · ${t("rules.resolved", { ago: ago(error.resolved) })}`)] : null,
 		]));
 }
 

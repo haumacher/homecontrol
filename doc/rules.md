@@ -368,7 +368,12 @@ The swap is by id (7.6):
 - the last trigger, as monotonic and wall time with a text such as `datapoint hall.presence`,
   `timer off` or `start boot`;
 - the last action (`write hall.light = true`, `restartTimer off 3min`);
-- the last error, with its code and text;
+- the last error, with its code and text, and whether it is resolved (`resolved`, `resolved_ms`):
+  the engine remembers the error's site (its expression, the silence trigger, or the reaction being
+  processed, kNone outside one) and resolves it when that site runs without the problem
+  (`site_clean()` after an evaluation, `reaction_clean()` after a reaction during which no problem
+  occurred, logged or not: `reaction_problem_`, the arming of the silence trigger); 8 bytes more per
+  rule in `RuleRuntime`;
 - the current state;
 - the loop-guard counters.
 

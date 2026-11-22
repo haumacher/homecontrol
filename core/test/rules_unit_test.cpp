@@ -1454,6 +1454,157 @@ TEST_CASE("RulesEngine lastError names the expression and its first datapoint wi
 	CHECK(std::string(text) == "condition has no value – presence has no value");
 }
 
+TEST_CASE("RulesEngine a last error is a problem only until its site evaluates without it (#114)") {
+	// rule-hoflicht on the house controller: three conditionNoValue at the boot while the illuminance
+	// had no value, then eight clean evaluations; the Diagnostics page still showed the problem.
+	EngineBench bench;
+	std::string datapoints = hc_test::datapoint_source("bewegung", "boolean") + "," +
+		hc_test::datapoint_source("helligkeit", "unsigned") + "," + hc_test::datapoint_source("licht", "boolean");
+	std::string reaction = R"({"triggers": [{"kind": "datapoint", "datapoint": "bewegung", "on": "update"}], "condition": )" +
+		bin("and", dp("bewegung"), bin("<", dp("helligkeit"), lit_int(50))) +
+		R"(, "actions": [{"kind": "write", "datapoint": "licht", "value": )" + lit_bool(true) + "}]}";
+	hc_test::ScopedCapture capture(hc::LogLevel::warn);
+	bench.setup(datapoints, rule_json(reaction, "", "hoflicht"));
+	hc::rules::RuleDiagnostics d;
+	for (int i = 0; i < 3; ++i) {
+		bench.clock.now_ms += 1000;
+		bench.report("bewegung", hc::Value::of_bool(true));
+	}
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.has_error);
+	CHECK(d.errors == 1); // "once" until the condition had a value
+	CHECK(d.last_error_code == hc::rules::LogCode::condition_no_value);
+	CHECK_FALSE(d.resolved);
+	uint64_t error_ms = d.last_error_ms;
+
+	// The illuminance arrives: the next evaluation has a value. The error is history from then on.
+	bench.clock.now_ms += 60000;
+	bench.report("helligkeit", hc::Value::of_unsigned(0));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK_FALSE(d.resolved); // nothing evaluated the condition yet
+	bench.report("bewegung", hc::Value::of_bool(true));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.has_error);
+	CHECK(d.resolved);
+	CHECK(d.resolved_ms == bench.clock.now_ms);
+	CHECK(d.last_error_ms == error_ms);
+	CHECK(d.errors == 1);
+	char text[256];
+	bench.engine->last_error_text(0, text, sizeof(text));
+	CHECK(std::string(text) == "@bewegung and @helligkeit < 50 – helligkeit has no value");
+
+	// The same problem again is current again.
+	REQUIRE(bench.model.report_stale(bench.technology, bench.model.find("helligkeit")->id()) == hc::DatapointStatus::ok);
+	bench.settle();
+	bench.clock.now_ms += 1000;
+	bench.report("bewegung", hc::Value::of_bool(true));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK_FALSE(d.resolved);
+	CHECK(d.errors == 2);
+	CHECK(d.last_error_ms == bench.clock.now_ms);
+
+	// An image swap: the expression of the old set is gone, the problem stays one until a reaction of
+	// the rule runs without a problem.
+	hc_test::RuleImage next;
+	REQUIRE(next.compile(hc_test::rules_source(datapoints, rule_json(reaction, "", "hoflicht"))));
+	REQUIRE(bench.engine->adopt(next.bind()).ok());
+	bench.settle();
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.has_error);
+	CHECK_FALSE(d.resolved);
+	bench.report("helligkeit", hc::Value::of_unsigned(10));
+	bench.clock.now_ms += 1000;
+	bench.report("bewegung", hc::Value::of_bool(true));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.resolved);
+	CHECK(d.resolved_ms == bench.clock.now_ms);
+}
+
+TEST_CASE("RulesEngine an error without an expression is resolved by its reaction running cleanly (#114)") {
+	EngineBench bench;
+	std::string datapoints = hc_test::datapoint_source("a", "boolean") + "," + hc_test::datapoint_source("b", "boolean") +
+		"," + hc_test::datapoint_source("out", "boolean") + "," + hc_test::datapoint_source("t", "real");
+	std::string on_a = R"({"triggers": [{"kind": "datapoint", "datapoint": "a", "on": "update"}], "actions": [{"kind": "write", "datapoint": "out", "value": )" +
+		lit_bool(true) + "}]}";
+	std::string on_b = R"({"triggers": [{"kind": "datapoint", "datapoint": "b", "on": "update"}], "actions": [{"kind": "read", "datapoint": "t"}]})";
+	hc_test::ScopedCapture capture(hc::LogLevel::error);
+	bench.setup(datapoints, rule_json(on_a + "," + on_b));
+	hc::rules::RuleDiagnostics d;
+
+	// writeRefused in the reaction on `a`: a clean run of the other reaction does not resolve it.
+	bench.technology.refuse = true;
+	bench.report("a", hc::Value::of_bool(true));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.last_error_code == hc::rules::LogCode::write_refused);
+	CHECK_FALSE(d.resolved);
+	bench.report("b", hc::Value::of_bool(true));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK_FALSE(d.resolved);
+	bench.technology.refuse = false;
+	bench.clock.now_ms += 1000;
+	bench.report("a", hc::Value::of_bool(true));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.resolved);
+	CHECK(d.resolved_ms == bench.clock.now_ms);
+
+	// readRefused is logged once per action: a refusal that persists unlogged is still a problem.
+	bench.technology.refuse_reads = true;
+	bench.report("b", hc::Value::of_bool(true));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.last_error_code == hc::rules::LogCode::read_refused);
+	CHECK_FALSE(d.resolved);
+	bench.report("b", hc::Value::of_bool(true)); // refused again, not logged
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK_FALSE(d.resolved);
+	CHECK(d.errors == 2);
+	bench.technology.refuse_reads = false;
+	bench.report("b", hc::Value::of_bool(true));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.resolved);
+}
+
+TEST_CASE("RulesEngine an evalError is resolved when its expression evaluates without error (#114)") {
+	EngineBench bench;
+	std::string datapoints = hc_test::datapoint_source("go", "boolean") + "," + hc_test::datapoint_source("z", "unsigned") +
+		"," + hc_test::datapoint_source("ratio", "unsigned");
+	std::string reaction = R"({"triggers": [{"kind": "datapoint", "datapoint": "go", "on": "update"}], "actions": [{"kind": "write", "datapoint": "ratio", "value": )" +
+		bin("/", lit_int(10), dp("z")) + "}]}";
+	hc_test::ScopedCapture capture(hc::LogLevel::error);
+	bench.setup(datapoints, rule_json(reaction));
+	bench.report("z", hc::Value::of_unsigned(0));
+	bench.report("go", hc::Value::of_bool(true));
+	hc::rules::RuleDiagnostics d;
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.last_error_code == hc::rules::LogCode::eval_error);
+	CHECK_FALSE(d.resolved);
+	bench.report("z", hc::Value::of_unsigned(5));
+	bench.report("go", hc::Value::of_bool(true));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.resolved);
+}
+
+TEST_CASE("RulesEngine a silence trigger's refusal is resolved when it arms (#114)") {
+	EngineBench bench;
+	std::string rule = R"({"id": "x", "name": "X",
+		"parameters": [{"id": "after", "label": "After", "type": "duration", "default": 50}],
+		"reactions": [{"triggers": [{"kind": "silence", "datapoint": "t", "after": {"kind": "parameter", "id": "after"}}], "actions": []},
+			{"triggers": [{"kind": "datapoint", "datapoint": "t", "on": "update"}], "actions": []}]})";
+	hc_test::ScopedCapture capture(hc::LogLevel::error);
+	bench.setup(hc_test::datapoint_source("t", "real"), rule);
+	hc::rules::RuleDiagnostics d;
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.last_error_code == hc::rules::LogCode::timer_refused);
+	CHECK_FALSE(d.resolved);
+	// The other reaction runs cleanly: the silence trigger is still not armed.
+	bench.report("t", hc::Value::of_real(1));
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK_FALSE(d.resolved);
+	REQUIRE(bench.engine->set_parameter("x", "after", Val::of_duration(1000)) == hc::rules::ParameterStatus::ok);
+	bench.settle();
+	REQUIRE(bench.engine->diagnostics(0, d));
+	CHECK(d.resolved);
+}
+
 TEST_CASE("RulesEngine readRefused is logged once per action until a read is accepted") {
 	EngineBench bench;
 	std::string datapoints = hc_test::datapoint_source("go", "boolean") + "," + hc_test::datapoint_source("t", "real");

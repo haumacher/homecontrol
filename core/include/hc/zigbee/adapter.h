@@ -68,9 +68,11 @@ const char* reporting_state_name(ReportingState state);
 
 /// The adapter's watch of one loaded point (homecontrol #108), beside the point table and of this
 /// boot only: the state of its configuration, its repeats, and when it last reported and when its
-/// configuration last went out. 8 bytes. Times are in ticks of kTickMs since the start, 16 bits wide:
-/// ZigbeeAdapter keeps every elapsed time at most kMaxAge ticks (it moves an older time forward every
-/// check), so the difference modulo 2^16 is exact up to that age.
+/// configuration last went out; its binding when the device did not answer it (homecontrol #113);
+/// the read without an answer yet (homecontrol #114). 8 bytes. Times are in ticks of kTickMs since
+/// the start, 16 bits wide: ZigbeeAdapter keeps every elapsed time at most kMaxAge ticks (it moves an
+/// older time forward every check), so the difference modulo 2^16 is exact up to that age; the
+/// read's time is 6 bits wide and kept at most kMaxReadAge ticks old the same way.
 struct PointWatch {
 	static constexpr uint32_t kTickMs = 10000;
 	/// 32767 ticks (3.8 days): beyond the longest silence the watch waits for (5 x 65534 s).
@@ -82,10 +84,22 @@ struct PointWatch {
 	static constexpr uint8_t kSent = 0x08;
 	/// The re-sends are exhausted and the point is still silent (warned once).
 	static constexpr uint8_t kSilent = 0x10;
+	/// Its binding to the coordinator timed out: it is sent again after the device's next frame.
+	static constexpr uint8_t kBindDue = 0x20;
+	static constexpr uint8_t kBindsShift = 6;
+	static constexpr uint8_t kReadsMask = 0x03;
+	static constexpr uint8_t kReadTimeShift = 2;
+	/// 48 ticks (8 min): beyond the wait for a read's answer (ZigbeeAdapter::kReadAnswerMs).
+	static constexpr uint8_t kMaxReadAge = 48;
 
 	ReportingState state = ReportingState::not_requested;
-	uint8_t status = 0; ///< The ZCL status of a refusal.
-	uint8_t bits = 0;   ///< repeats (kRepeatsMask) and the flags
+	/// The ZCL status of a refusal; while requested or timed out, the re-sends of the configuration
+	/// after a timeout (ZigbeeAdapter::kTimeoutResends).
+	uint8_t status = 0;
+	uint8_t bits = 0; ///< repeats (kRepeatsMask), the flags and the binding's re-sends (from kBindsShift)
+	/// The read without an answer: the reads sent for it (kReadsMask, 0: none outstanding) and the tick
+	/// of the last one modulo 64 (from kReadTimeShift).
+	uint8_t read = 0;
 	uint16_t report_t = 0;
 	uint16_t sent_t = 0;
 
@@ -94,7 +108,20 @@ struct PointWatch {
 	/// Re-sends after a silence since the point last reported (0..3).
 	uint8_t repeats() const { return bits & kRepeatsMask; }
 	void set_repeats(uint8_t n) { bits = static_cast<uint8_t>((bits & ~kRepeatsMask) | (n & kRepeatsMask)); }
+	/// Re-sends of the binding after a timeout (0..3).
+	uint8_t binds() const { return static_cast<uint8_t>(bits >> kBindsShift); }
+	void set_binds(uint8_t n) { bits = static_cast<uint8_t>((bits & ((1u << kBindsShift) - 1)) | ((n & 0x03) << kBindsShift)); }
+	/// Reads sent for the outstanding read (0: none outstanding, 1..3).
+	uint8_t reads() const { return read & kReadsMask; }
+	/// The tick of the last read, modulo 64.
+	uint8_t read_t() const { return static_cast<uint8_t>(read >> kReadTimeShift); }
+	void set_read(uint8_t reads, uint16_t now) {
+		read = static_cast<uint8_t>((reads & kReadsMask) | ((now & 0x3F) << kReadTimeShift));
+	}
+	/// Ticks since the last read (exact up to kMaxReadAge, ZigbeeAdapter keeps it there).
+	uint8_t read_age(uint16_t now) const { return static_cast<uint8_t>((now - read_t()) & 0x3F); }
 };
+static_assert(sizeof(PointWatch) == 8, "a point's watch takes 8 bytes");
 
 /// One frame the adapter handled, for the monitor stream (hc::MonitorFeed).
 struct ZigbeeTraffic {
@@ -206,7 +233,11 @@ protected:
 ///   poll): one device at a time (the next waits until the answers of the one before came or timed
 ///   out), at most kWatchRepeats times until it reports; a point still silent after that is a
 ///   warning naming device, endpoint, cluster and attribute, and stays silent in the view until it
-///   reports. A refused configuration is not sent again (a new interview does).
+///   reports. A refused configuration is not sent again (a new interview does). A configuration that
+///   timed out, and a binding the device did not answer (the stack's ZDO status TIMEOUT, homecontrol
+///   #113: no refusal, logged at info), are sent again right after the device's next frame, at most
+///   kTimeoutResends times each; a binding refused with another ZDO status is a warning naming the
+///   status. Both follow the one-device-at-a-time rule above.
 /// - **Stale.** Every kCheckPeriodMs the adapter compares each device's silence with its stale
 ///   timeout: kStaleFactor times the shortest effective maximum reporting interval of its datapoints
 ///   (every frame of the device counts as heard, so the most frequent promise is the one to check; a
@@ -233,9 +264,14 @@ protected:
 ///   found in the routers' neighbour tables: a pass asks each router (ZDO Mgmt_Lqi_req, paged, one
 ///   request in flight, kTopologyTimeoutMs each, at most kTopologyMaxPages pages per router) every
 ///   kTopologyPeriodMs and kTopologyDelayMs after a device announced itself or turned stale. A
-///   router's child entry gives the device's parent, depth and the router's link quality of it; its
-///   entry of the coordinator gives the router's link quality of the coordinator. A change of parent
-///   is logged; a device the parent router no longer lists (the router answered completely) loses it.
+///   router's child entry (a child, or an unauthenticated child in the middle of its rejoin) gives
+///   the device's parent, depth and the router's link quality of it; its entry of the coordinator
+///   gives the router's link quality of the coordinator. A change of parent is logged. A device keeps
+///   a known parent until two passes in a row read that router's table completely (every page up to
+///   its total, the total unchanged between the pages) without listing it; a silent router, an error,
+///   an empty page before the end or a table that changed while it was read is no proof
+///   (homecontrol #114). A rejoin with a new address keeps the parent unconfirmed until a pass
+///   finds it.
 /// - **Rejoin** (homecontrol #99, doc/zigbee.md "Rejoin policy"). When the network comes up the
 ///   adapter sets the trust center's rejoin policy (trust-center rejoins answered, refused for a
 ///   device without a link key) and makes the trust center hold a link key for every known device
@@ -258,10 +294,14 @@ protected:
 ///   start (it may listen); its configuration waits for the frame. A read the application asks for (read(), a rule's `read`
 ///   action) sends a Read Attributes of the datapoint's attribute at once; refused for a point the
 ///   adapter does not read on start either (a client command of a button, a multistate input's
-///   events) and while the device has not joined.
+///   events) and while the device has not joined. Every read is watched per point (homecontrol
+///   #114): its answer (a value or a failure status) or a report of the point ends it, logged with
+///   the value (info for a device that sleeps or a repeated read, debug otherwise); one without an
+///   answer for kReadAnswerMs is sent again right after the device's next frame, kReadTries reads in
+///   all, then given up at info (the value comes with the point's next report).
 ///
 /// Memory: start(), configure() and the reload allocate the point table (with a PointWatch of 8
-/// bytes per point), the device database is static (DeviceDatabase::kMaxDevices); reports,
+/// bytes per point, which holds the watch of its reads and bindings too), the device database is static (DeviceDatabase::kMaxDevices); reports,
 /// commands, the stale check and the watch allocate nothing.
 /// Threading: the event loop's thread; the platform posts its events there.
 class ZigbeeAdapter : public Technology, public image::DynamicSpecProvider {
@@ -312,6 +352,18 @@ public:
 	static_assert(kWatchRepeats <= PointWatch::kRepeatsMask, "the repeats fit their bits");
 	/// The watches of a device are checked this long after its frame (the frame's own report counts).
 	static constexpr uint32_t kWatchDelayMs = 500;
+	/// A timed-out configuration or binding is sent again after a frame of the device at most this
+	/// often until it is answered (homecontrol #113).
+	static constexpr uint8_t kTimeoutResends = 3;
+	/// A read without an answer this long is sent again after the device's next frame (homecontrol
+	/// #114), kReadTries reads in all (a sleepy device's request waits in its parent's queue for its
+	/// next poll, about 7.7 s).
+	static constexpr uint32_t kReadAnswerMs = 30000;
+	static constexpr uint8_t kReadTries = 3;
+	static_assert(kReadTries <= PointWatch::kReadsMask, "the reads fit their bits");
+	static_assert(kReadAnswerMs / PointWatch::kTickMs + 1 < PointWatch::kMaxReadAge, "the read's age fits its bits");
+	/// bind_result() without the cluster (the platform lost track of the request).
+	static constexpr uint16_t kAnyCluster = 0xFFFF;
 	/// A device's `last_seen` is written at the latest this long after it moved past the stored one
 	/// (by the check every kCheckPeriodMs; one write covers every device): after a restart it is at
 	/// most an hour behind the last frame, and the flash sees at most about one write an hour.
@@ -434,7 +486,10 @@ public:
 	/// (kAnyAttribute when the response names none: then the cluster's configured point).
 	void reporting_configured(NodeAddress address, uint8_t endpoint, uint16_t cluster, uint8_t status,
 		uint16_t attribute = kAnyAttribute);
-	void bind_result(NodeAddress address, uint8_t status);
+	/// The device's answer to ZigbeeDriver::bind() of `cluster` on `endpoint` (kAnyCluster: the platform
+	/// does not know which): ZDO `status` 0 success, zdo_status::kTimeout the stack's own answer when the
+	/// device did not answer (no frame of the device), else its refusal.
+	void bind_result(NodeAddress address, uint8_t status, uint8_t endpoint = 0, uint16_t cluster = kAnyCluster);
 
 	// ---- State ----
 
@@ -562,10 +617,25 @@ private:
 	PointWatch* watch_of(Ieee ieee, uint8_t endpoint, Function function);
 	/// Whether loaded point `index` of the device is due (a re-send or the silence warning).
 	bool watch_due(const ZigbeeDevice& device, size_t index, uint16_t now) const;
+	/// Whether loaded point `index` of the device has a timed-out configuration or binding to send
+	/// again (homecontrol #113).
+	bool resend_due(const ZigbeeDevice& device, size_t index) const;
+	/// Whether loaded point `index` of the device has a read without an answer for kReadAnswerMs
+	/// (homecontrol #114).
+	bool read_due(const ZigbeeDevice& device, size_t index, uint16_t now) const;
+	/// Sends a Read Attributes per endpoint and cluster of the device's points that are read on start
+	/// (`retry` false), or of those whose read is due (true); the watch of each point records the read.
+	void send_reads(ZigbeeDevice& device, bool retry);
+	/// A read's answer or a report of loaded point `index`: ends its outstanding read, logged.
+	void read_answered(const ZigbeeDevice& device, size_t index, const Value* value, uint8_t status, bool report);
+	/// Binds the cluster(s) point `point` of the device needs (once per round in `bound`).
+	void bind_point(const ZigbeeDevice& device, const ZigbeePoint& point, BindSet& bound);
 	bool device_watch_due(const ZigbeeDevice& device) const;
 	/// The deferred check after a frame: one device's due points (watch_check).
 	void watch_tick();
-	void check_watches(ZigbeeDevice& device);
+	/// The device's due points: reads again always; the configurations and bindings only with
+	/// `configure` (one device at a time).
+	void check_watches(ZigbeeDevice& device, bool configure);
 	/// Marks the configurations without an answer for kReportingAnswerMs as timed out, and keeps the
 	/// watches' times within PointWatch::kMaxAge.
 	void time_out_reporting(uint16_t now);
@@ -598,8 +668,11 @@ private:
 		uint16_t router_short = kNoShortAddress;
 		uint8_t start = 0;
 		uint8_t pages = 0;
+		/// The total the router's first page gave: a later page with another total means the table
+		/// changed while it was read (no complete read).
+		uint8_t total = 0;
 		/// Database indices (bits) of the devices a router listed as its child in this pass, and of the
-		/// routers whose table was read to its end.
+		/// routers whose table was read completely: every page to its end, the total unchanged.
 		uint32_t listed = 0;
 		uint32_t answered = 0;
 		/// The delay before a pass, or the timeout of the request in flight.

@@ -169,6 +169,18 @@ struct State {
 	/// Set once the network is formed or restored: requests before are refused.
 	std::atomic<bool> ready{false};
 	uint8_t zone_id = 0;
+
+	/// The bind requests whose answer is outstanding (homecontrol #113): the ZDO answer carries only the
+	/// status, its context the request's slot here. Written by bind() and read by bind_answer(), both
+	/// under the stack's lock; a slot reused before its answer came makes that answer name no cluster.
+	struct PendingBind {
+		uint16_t short_addr = 0;
+		uint16_t cluster = 0;
+		uint8_t endpoint = 0;
+	};
+	static constexpr size_t kPendingBinds = 16;
+	PendingBind binds[kPendingBinds];
+	uint8_t next_bind = 0;
 };
 
 State g_state;
@@ -347,7 +359,7 @@ void deliver(ZigbeeAdapter& adapter, const Event& event) {
 			adapter.reporting_configured(address, event.endpoint, event.cluster, event.status, event.profile);
 			break;
 		case Kind::bind:
-			adapter.bind_result(address, event.status);
+			adapter.bind_result(address, event.status, event.endpoint, event.cluster);
 			break;
 		case Kind::neighbor_table: {
 			ZigbeeNeighbor entries[kMaxNeighborRecords];
@@ -493,10 +505,22 @@ void bind_answer(esp_zb_zdp_status_t status, void* context) {
 	if (event == nullptr) {
 		return;
 	}
-	event->short_addr = static_cast<uint16_t>(reinterpret_cast<uintptr_t>(context) >> 8);
+	uintptr_t packed = reinterpret_cast<uintptr_t>(context);
+	event->short_addr = static_cast<uint16_t>(packed >> 8);
 	event->ieee = ieee_by_short(event->short_addr);
 	event->status = static_cast<uint8_t>(status);
-	add_radio(*event);
+	// The request's endpoint and cluster, unless its slot went to a later request.
+	const State::PendingBind& pending = g_state.binds[(packed & 0xFF) % State::kPendingBinds];
+	if (pending.short_addr == event->short_addr && pending.cluster != ZigbeeAdapter::kAnyCluster) {
+		event->endpoint = pending.endpoint;
+		event->cluster = pending.cluster;
+	} else {
+		event->endpoint = 0;
+		event->cluster = ZigbeeAdapter::kAnyCluster;
+	}
+	if (status != ESP_ZB_ZDP_STATUS_TIMEOUT) {
+		add_radio(*event); // a timeout is the stack's own answer: no frame of the device
+	}
 	commit();
 }
 
@@ -960,7 +984,12 @@ public:
 		esp_zb_get_long_address(request.dst_address_u.addr_long);
 		request.dst_endp = kEndpoint;
 		request.req_dst_addr = short_addr;
-		esp_zb_zdo_device_bind_req(&request, &bind_answer, reinterpret_cast<void*>(context_of(short_addr)));
+		uint8_t slot = g_state.next_bind;
+		g_state.next_bind = static_cast<uint8_t>((slot + 1) % State::kPendingBinds);
+		g_state.binds[slot].short_addr = short_addr;
+		g_state.binds[slot].cluster = cluster;
+		g_state.binds[slot].endpoint = endpoint;
+		esp_zb_zdo_device_bind_req(&request, &bind_answer, reinterpret_cast<void*>(context_of(short_addr, slot)));
 		return true;
 	}
 

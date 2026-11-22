@@ -368,6 +368,39 @@ every request then) or to a sleeping device.
   with the next check (`<device> sleeps (its receiver is off while idle): ...`). A device whose
   receiver is not known yet (a database written before #108) is read at the start and again at its
   first frame.
+- **Configurations and bindings without an answer (homecontrol #113).** A configuration that timed
+  out (`... no answer within 30 s to the reporting configuration of battery ...: sent again after its
+  next frame`) and a binding the device did not answer are sent again right after the device's next
+  frame, at most `kTimeoutResends` (3) times each (`the reporting configuration of battery on
+  endpoint 2 had no answer: sent again after its frame (1 of 3)`; `the binding of occupancy on
+  endpoint 2 to the coordinator had no answer: ...`), under the one-device-at-a-time rule; a
+  configuration the silence watch sent again keeps the watch's own schedule. The answer to a bind
+  request is a ZDO status, logged by its name: 0x85 `TIMEOUT` is the stack's own answer when the
+  device did not answer in time (no frame of the device, so it does not count as heard), an info
+  line `<device>: no answer to the binding of cluster 0x0406 on endpoint 2 to the coordinator (ZDO
+  status 0x85 TIMEOUT): sent again after its next frame`; any other status is the device's refusal, a
+  warning `<device> refused the binding of cluster 0x0400 on endpoint 2 to the coordinator: ZDO
+  status 0x8c TABLE_FULL`, not sent again. The ZDO answer carries only the status: the ESP driver
+  keeps the endpoint and cluster of its last 16 bind requests (a static table, 97 bytes) and passes
+  the request's slot as the answer's context; an answer whose slot a later request took names no
+  cluster (`a binding`), and every binding of the device is then concerned. Until #113 every answer
+  was logged as `refused a binding to the coordinator (status 0x85)`.
+- **Reads (homecontrol #114).** The house controller (2026-11-22): the SML002's first frame after a
+  restart was an occupancy report; its four points were read at once (with the four bindings and
+  configurations: twelve requests that wait in its parent's queue for its polls), the illuminance
+  got its first value 7½ minutes later with its first report, and `rule-hoflicht` logged three
+  `conditionNoValue` meanwhile. The read had gone out and no answer came, and nothing asked again: a
+  read without an answer, and one the stack did not take (its lock busy; the adapter ignored that),
+  was lost until the device reported on its own. Now every read is watched per point (in the same
+  `PointWatch`, its spare byte: the reads sent and the tick of the last one): its answer, a failure
+  status or a report of the point ends it with one line, `<device>: illuminance on endpoint 2 read: 1
+  (read 2 of 3)` (`... answered status 0x86`, `... reported 1 before the answer to its read`), at info
+  for a device that sleeps or a repeated read, at debug for a listening device's first answer (the
+  ring keeps the boot of a sleepy device, not the routine of every lamp). A read without an answer
+  for `kReadAnswerMs` (30 s) is sent again right after the device's next frame (`no answer to the
+  read of illuminance on endpoint 2 within 30 s: read again (2 of 3)`), `kReadTries` (3) reads in
+  all, then given up (`no answer to 3 reads of illuminance on endpoint 2: its value comes with its
+  next report`). The application's read (a rule's `read` action) is watched the same way.
 
 **Short addresses (homecontrol #109).** Every change of a device's short address (an announce with a
 new one, the trust center's notice of a rejoin, a frame from a known IEEE with another address; a
@@ -427,8 +460,17 @@ another pass while one runs starts one after it. From the answers:
 - a router's **child** entry gives the device's `parent` (the router's IEEE, its label as
   `parent_label`), `depth` and `parent_lqi`, the router's link quality of the device: the link the
   coordinator cannot see. A new or changed parent is logged (`<device> is a child of <router> (the
-  router's link quality of it 120, depth 2)`); a device the parent router no longer lists, when that
-  router answered its whole table, loses the parent (`is no longer a child of <router>`).
+  router's link quality of it 120, depth 2)`). An *unauthenticated child* entry (a child in the
+  middle of its join or rejoin) counts as a child. A device keeps a known parent until two passes in
+  a row read that router's table completely without listing it (`is no longer a child of <router>
+  (not in its table twice)`); complete is every page answered up to the table's total, with the total
+  of the first page unchanged in the later ones. A silent router, an error status, an empty page
+  before the end, the page limit and a table whose total changed while it was read (an entry added
+  or aged out moves the following entries between two pages) prove nothing (debug: `neighbour table
+  read up to entry 2 of 3 (the table changed while it was read): its children keep their parent`).
+  Until homecontrol #114 one read decided, and an empty page or the page limit counted as the
+  table's end: the house controller's SML002 lost its parent for a pass although the plug kept
+  being its parent.
 - a router's entry of the **coordinator** gives `coordinator_lqi`, the router's link quality of the
   coordinator's frames (the other direction of the link the coordinator measures as the router's
   `lqi`/`rssi`).
@@ -454,8 +496,9 @@ instead of "announced itself": `<device> rejoined with a new address: short 0xaf
 trust-center notice (its parent is looked up in the routers' tables)`, or, when the trust center's
 Update Device for it came within 10 s before, `... through <parent>, after the trust center's
 secured rejoin notice` (the notice moves the short address first; the announce line still names the
-old one). Without a notice the old parent is dropped and the pass that follows the announce finds
-the new one.
+old one). Without a notice the parent known stays, unconfirmed (no `parent_lqi`), and the pass that
+follows the announce confirms it, names another router or, after two complete reads of its table
+without the device, drops it.
 
 **What the stack signals for a rejoin** (esp-zigbee-lib 1.6.8 headers, the call graph of the prebuilt
 libraries):

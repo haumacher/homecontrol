@@ -298,7 +298,7 @@ are all local).
   live value, a writable boolean toggles on a tap, and a line says why there is no dashboard.
 - **Rules**: one card per rule: the enable switch (or a badge when the image fixes it), the state,
   when it was last triggered ("3 min ago"), running timers, the problem count with a link to the
-  System page; then the adjustable parameters: a slider within min..max (step as declared, arrow
+  System page while the last error is a problem (`resolved` null, homecontrol #114); then the adjustable parameters: a slider within min..max (step as declared, arrow
   keys send once the value rests), a switch for booleans, a select for choices, a time input for a
   time of day, a number input without a range; durations in the parameter's unit (`min`, `s`, `h`).
   A changed parameter shows its default and a "Reset" button; a refusal shows its reason under
@@ -352,7 +352,9 @@ are all local).
   state, priority, stack never used, CPU share). What the platform lacks shows its reason. Then the
   section **Rules** (`GET /api/rules`, nothing without rules): per rule its name and id, on or off,
   the state, the last trigger, the last action and the problem count with the last problem's code
-  and text, each with its age, in the printer's words (spec/rules.md 9.1); and the section
+  and text, each with its age, in the printer's words (spec/rules.md 9.1); a last error whose site
+  ran cleanly afterwards (`resolved`, homecontrol #114) is no problem: "Problems: none" and a muted
+  row "Last problem" with its code, text, age and when it was resolved; and the section
   **Blocks** (doc/blocks.md).
 
 **Names on the inhabitant's pages** (homecontrol #82): the control pages, the Overview, the detail

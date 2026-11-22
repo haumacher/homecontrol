@@ -43,6 +43,10 @@ constexpr uint8_t kMatchMemory = 0x04;
 constexpr uint8_t kMatched = 0x08;
 
 constexpr uint8_t kNoKind = 0xFF;
+/// RuleRuntime::last_error_reaction of a silence trigger's refusal: this bit and the trigger's index
+/// (the reactions of a set stay below it, RuleSet::Limits).
+constexpr uint16_t kSilenceSite = 0x8000;
+static_assert(Limits::kRules * Limits::kReactions < kSilenceSite, "reaction indices stay below the silence sites");
 /// The last trigger of a rule was its timeline (a switching point or an evaluation): "timeline <state>".
 constexpr uint8_t kTimelineKind = 0xF0;
 
@@ -178,11 +182,15 @@ struct Engine::RuleRuntime {
 	uint64_t last_trigger_ms = 0;
 	uint64_t last_action_ms = 0;
 	uint64_t last_error_ms = 0;
+	uint64_t resolved_ms = 0;
 	DateTime last_trigger_wall;
 	Val last_action_value;
 	const char* last_error_text = "";
 	uint16_t last_error_expression = kNone; ///< Root node of the expression (spec 9.1).
 	uint16_t last_error_datapoint = kNone;  ///< Its first datapoint without a value.
+	/// The reaction (index in the set) the last error was logged in; kNone: outside a reaction;
+	/// kSilenceSite | index: the silence trigger `index` that was not armed.
+	uint16_t last_error_reaction = kNone;
 	uint32_t firings = 0;
 	uint32_t errors = 0;
 	uint32_t peak_cascade_firings = 0;
@@ -195,6 +203,7 @@ struct Engine::RuleRuntime {
 	uint8_t last_action_kind = kNoKind;
 	LogCode last_error_code = LogCode::log;
 	bool has_error = false;
+	bool resolved = false; ///< The last error is history (spec 9.1): resolved_ms says since when.
 	bool last_trigger_wall_valid = false;
 	uint8_t state = kNoState;
 	bool has_state = false;
@@ -413,15 +422,55 @@ void Engine::log_code(const char* rule_id, RuleRuntime* rr, LogCode code, LogLev
 			observer_->no_value_datapoint(rule_id, datapoint != kNone ? model_.get(datapoint) : nullptr);
 		}
 	}
+	if (code != LogCode::log && level <= LogLevel::warn) {
+		reaction_problem_ = true;
+	}
 	if (rr && code != LogCode::log && level <= LogLevel::warn) {
 		++rr->errors;
 		rr->has_error = true;
+		rr->resolved = false;
+		// The site of an error without an expression: the reaction of the rule being processed, if any.
+		bool in_reaction = runtime_ && current_reaction_ != kNone && current_rule_ < runtime_->rule_count &&
+			rr == &runtime_->rules[current_rule_];
+		rr->last_error_reaction = in_reaction ? current_reaction_ : kNone;
 		rr->last_error_ms = in_cascade_ ? cascade_ms_ : clock_.monotonic_ms();
 		rr->last_error_code = code;
 		rr->last_error_text = detail;
 		rr->last_error_expression = expression;
 		rr->last_error_datapoint = datapoint;
 	}
+}
+
+void Engine::site_clean(size_t rule, uint16_t root, bool value) {
+	if (!runtime_ || rule >= runtime_->rule_count || root == kNone) {
+		return;
+	}
+	const RuleRuntime& rr = runtime_->rules[rule];
+	if (rr.has_error && !rr.resolved && rr.last_error_expression == root &&
+		(value || rr.last_error_code == LogCode::eval_error)) {
+		resolve(rule);
+	}
+}
+
+void Engine::reaction_clean(size_t rule, uint16_t reaction) {
+	if (!runtime_ || rule >= runtime_->rule_count) {
+		return;
+	}
+	const RuleRuntime& rr = runtime_->rules[rule];
+	// An error with an expression is resolved by its expression only (site_clean()), one of a silence
+	// trigger by its arming (arm_silence()).
+	if (rr.has_error && !rr.resolved && rr.last_error_expression == kNone &&
+		(rr.last_error_reaction == reaction || rr.last_error_reaction == kNone)) {
+		resolve(rule);
+	}
+}
+
+void Engine::resolve(size_t rule) {
+	RuleRuntime& rr = runtime_->rules[rule];
+	rr.resolved = true;
+	rr.resolved_ms = in_cascade_ ? cascade_ms_ : clock_.monotonic_ms();
+	Log::debug(kTag, "%s: the last problem (%s) is resolved", set_.str(set_.rule(rule).id),
+		log_code_name(rr.last_error_code));
 }
 
 // ------------------------------------------------------------------------------------------
@@ -793,8 +842,10 @@ bool Engine::install(RuleSet&& next_set, LoadResult& result, const Carry* carry)
 					nr.last_action_kind = kNoKind;
 				}
 			}
-			// The last error's expression is a node of the old set; its datapoint follows by name.
+			// The last error's expression and reaction are nodes of the old set; its datapoint follows by
+			// name. Unresolved, it is resolved by the next reaction of the rule that runs cleanly.
 			nr.last_error_expression = kNone;
+			nr.last_error_reaction = kNone;
 			if (orr.last_error_datapoint != kNone) {
 				nr.last_error_datapoint = follow(old_rule.error_dp, found);
 				if (!found) {
@@ -1647,8 +1698,16 @@ void Engine::arm_silence(size_t index, uint64_t base) {
 			}
 			log_rule(ref.rule, LogCode::timer_refused, LogLevel::error, "silence duration has no value or lies outside 100ms..30d",
 				"silence trigger of '%s' not armed: the duration %s is not in 100ms..30d", name, text);
+			// Its site is the silence trigger: resolved when it arms (spec 9.1).
+			runtime_->rules[ref.rule].last_error_reaction = static_cast<uint16_t>(kSilenceSite | index);
 		}
 		return;
+	}
+	if (s.refused_logged) {
+		const RuleRuntime& rr = runtime_->rules[ref.rule];
+		if (rr.has_error && !rr.resolved && rr.last_error_reaction == static_cast<uint16_t>(kSilenceSite | index)) {
+			resolve(ref.rule);
+		}
 	}
 	s.refused_logged = false;
 	s.armed = true;
@@ -2077,6 +2136,11 @@ void Engine::process_event(const Event& e, bool derived) {
 			if ((reaction.from_mask & (1u << state)) == 0) {
 				continue;
 			}
+			// The site of the problems of this reaction (spec 9.1): one that runs without any resolves
+			// the rule's last error logged in it.
+			uint16_t reaction_index = static_cast<uint16_t>(rule.first_reaction + i);
+			current_reaction_ = reaction_index;
+			reaction_problem_ = false;
 			bool active = false;
 			for (size_t k = 0; k < reaction.trigger_count && !active; ++k) {
 				active = trigger_matches(set_.trigger(reaction.first_trigger + k), r, e);
@@ -2090,6 +2154,7 @@ void Engine::process_event(const Event& e, bool derived) {
 				Val c = evaluate(reaction.condition, r, error);
 				uint8_t& flags = rt.node_flags[reaction.condition];
 				if (!c.has()) {
+					reaction_problem_ = true;
 					if (!error && (flags & kNoValueLogged) == 0) {
 						flags |= kNoValueLogged;
 						char text[160];
@@ -2100,6 +2165,7 @@ void Engine::process_event(const Event& e, bool derived) {
 					continue;
 				}
 				flags = static_cast<uint8_t>(flags & ~kNoValueLogged);
+				site_clean(r, reaction.condition, true);
 				satisfied = c.u.b;
 			}
 			if (satisfied) {
@@ -2113,13 +2179,20 @@ void Engine::process_event(const Event& e, bool derived) {
 					state_changed(r);
 					publish_state(r);
 					run_actions(r, set_.state(rule.first_state + reaction.to).entry);
+					if (!reaction_problem_) {
+						reaction_clean(r, reaction_index);
+					}
 					break;
 				}
 				run_actions(r, reaction.actions);
 			} else {
 				run_actions(r, reaction.else_actions);
 			}
+			if (!reaction_problem_) {
+				reaction_clean(r, reaction_index);
+			}
 		}
+		current_reaction_ = kNone;
 	}
 
 	for (size_t i = 0; i < matched; ++i) {
@@ -2216,6 +2289,7 @@ void Engine::action_read(size_t rule, const Action& action) {
 		}
 	}
 	if (reason != nullptr) {
+		reaction_problem_ = true;
 		if ((flags & kReadRefusedLogged) == 0) {
 			flags |= kReadRefusedLogged;
 			log_rule(rule, LogCode::read_refused, LogLevel::warn, reason, "read of '%s' refused: %s", dp ? dp->name() : "?",
@@ -2245,6 +2319,7 @@ void Engine::action_write(size_t rule, const Action& action) {
 	const Datapoint* dp = model_.get(action.target);
 	const char* name = dp ? dp->name() : "?";
 	if (!v.has()) {
+		reaction_problem_ = true;
 		if (!error && (flags & kNoValueLogged) == 0) {
 			flags |= kNoValueLogged;
 			log_expression(rule, LogCode::value_no_value, LogLevel::warn, "write value has no value", action.expr,
@@ -2253,6 +2328,7 @@ void Engine::action_write(size_t rule, const Action& action) {
 		return;
 	}
 	flags = static_cast<uint8_t>(flags & ~kNoValueLogged);
+	site_clean(rule, action.expr, true);
 	if (dp == nullptr) {
 		log_rule(rule, LogCode::write_refused, LogLevel::error, "datapoint not in the model",
 			"datapoint %u is not in the model", static_cast<unsigned>(action.target));
@@ -2396,6 +2472,7 @@ Val Engine::evaluate(uint16_t root, size_t rule, bool& error) {
 	uint8_t& flags = runtime_->node_flags[root];
 	if (cx.error) {
 		error = true;
+		reaction_problem_ = true;
 		if ((flags & kEvalErrorLogged) == 0) {
 			flags |= kEvalErrorLogged;
 			char text[160];
@@ -2405,6 +2482,7 @@ Val Engine::evaluate(uint16_t root, size_t rule, bool& error) {
 		}
 	} else {
 		flags = static_cast<uint8_t>(flags & ~kEvalErrorLogged);
+		site_clean(rule, root, false);
 	}
 	return v;
 }
@@ -3180,6 +3258,8 @@ bool Engine::diagnostics(size_t rule, RuleDiagnostics& out) const {
 		out.last_error_text = rr.last_error_text;
 		out.last_error_expression = rr.last_error_expression;
 		out.last_error_datapoint = rr.last_error_datapoint;
+		out.resolved = rr.resolved;
+		out.resolved_ms = rr.resolved_ms;
 	}
 	return true;
 }

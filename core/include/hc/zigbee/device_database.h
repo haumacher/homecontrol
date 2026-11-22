@@ -144,6 +144,9 @@ struct ZigbeeDevice {
 	static constexpr uint8_t kCoordinatorLink = 0x10;
 	/// The router did not answer the last neighbour table request (logged once until it answers).
 	static constexpr uint8_t kTopologySilent = 0x20;
+	/// The last complete read of its parent router's table did not list it: the next one that does not
+	/// either drops the parent (homecontrol #114).
+	static constexpr uint8_t kParentMissed = 0x40;
 
 	bool has(uint8_t flag) const { return (flags & flag) != 0; }
 	void set(uint8_t flag, bool on) { flags = static_cast<uint8_t>(on ? flags | flag : flags & ~flag); }

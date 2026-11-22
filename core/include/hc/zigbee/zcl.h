@@ -101,6 +101,17 @@ constexpr uint8_t kSuccess = 0x00;
 constexpr uint8_t kUnsupportedAttribute = 0x86;
 } // namespace zcl_status
 
+/// ZDO status codes (Zigbee specification 2.4.5) the adapter distinguishes (homecontrol #113).
+namespace zdo_status {
+constexpr uint8_t kSuccess = 0x00;
+/// The stack's own answer when the device did not answer in time: no refusal.
+constexpr uint8_t kTimeout = 0x85;
+} // namespace zdo_status
+
+/// The name of a ZDO status ("SUCCESS", "NOT_SUPPORTED", "TIMEOUT", "TABLE_FULL", ...), "UNKNOWN" for a
+/// code outside the specification's set.
+const char* zdo_status_name(uint8_t status);
+
 /// A decoded ZCL attribute value: a number for the integer, boolean, bitmap and enumeration types,
 /// a text for a character string.
 struct ZclValue {

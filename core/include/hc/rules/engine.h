@@ -195,6 +195,10 @@ struct RuleDiagnostics {
 	const char* last_error_text = "";    ///< The fixed text of the code; the full one is Engine::last_error_text().
 	uint16_t last_error_expression = kNone; ///< conditionNoValue, valueNoValue, evalError: the expression's root node.
 	uint16_t last_error_datapoint = kNone;  ///< Its first datapoint without a value (spec 9.1).
+	/// The last error is history (spec 9.1, homecontrol #114): its site evaluated without the problem
+	/// afterwards, at `resolved_ms` (monotonic cascade time). A resolved error is not a problem.
+	bool resolved = false;
+	uint64_t resolved_ms = 0;
 	const char* state = nullptr;         ///< Current state id; nullptr without states.
 	uint32_t peak_cascade_firings = 0;   ///< Most derived firings of this rule in one cascade (loop-guard culprit).
 	uint32_t loop_guards = 0;            ///< Cascades refused while this rule fired.
@@ -544,6 +548,13 @@ private:
 		const char* fmt, ...) HC_PRINTF_FORMAT(7, 8);
 	void log_code(const char* rule_id, RuleRuntime* runtime, LogCode code, LogLevel level, const char* detail,
 		const char* text, bool site = false, uint16_t expression = kNone, uint16_t datapoint = kNone);
+	/// The expression rooted at `root` evaluated without an error and, with `value`, with a value: the
+	/// rule's last error at this site is resolved (spec 9.1).
+	void site_clean(size_t rule, uint16_t root, bool value);
+	/// Reaction `reaction` of the rule ran without a problem: the rule's last error without an
+	/// expression, logged in this reaction or outside any, is resolved (spec 9.1).
+	void reaction_clean(size_t rule, uint16_t reaction);
+	void resolve(size_t rule);
 
 	// Swap.
 	bool install(RuleSet&& next, LoadResult& result, const Carry* carry);
@@ -610,6 +621,11 @@ private:
 	mutable int64_t sun_utc_ = 0;
 	mutable SunPosition sun_;
 	size_t current_rule_ = 0; ///< The rule whose actions run (for queueOverflow).
+	/// The reaction (index in the set) being processed, kNone outside one: the site of an error logged
+	/// meanwhile that has no expression (spec 9.1).
+	uint16_t current_reaction_ = kNone;
+	/// A problem occurred in the current reaction, logged or not ("once" sites): it did not run cleanly.
+	bool reaction_problem_ = false;
 
 	TimerHandle loop_timer_;
 	uint64_t loop_deadline_ = 0;
