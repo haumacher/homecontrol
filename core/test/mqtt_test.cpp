@@ -295,6 +295,50 @@ TEST_CASE("MqttDefaultBaseTopicAndUserFromTheSettings") {
 	CHECK(f.client.under("homeassistant/").size() == 9);
 }
 
+TEST_CASE("MqttOverTlsWaitsForTheTlsGateAndHoldsItWhileItConnects") {
+	// homecontrol #110/#112: an mqtts:// connect is one more TLS session; a plain mqtt:// one passes.
+	struct Holder : hc::TlsGateClient {
+		void tls_gate_opened() override { ++opened; }
+		int opened = 0;
+	};
+	Fixture f;
+	hc::TlsGate gate(f.loop, f.clock, nullptr);
+	f.mqtt->set_gate(&gate);
+	Holder fetch;
+	REQUIRE(gate.acquire(fetch, hc::TlsGate::Kind::session));
+	f.load(example(), "{\"broker\": \"mqtts://broker.example:8883\"}");
+	f.settle();
+	CHECK(f.client.connects == 0);
+	CHECK(f.mqtt->state() == MqttState::waiting);
+	CHECK(f.capture.sink.contains("waiting for room for a TLS session"));
+	f.run_for(Mqtt::kReadyPollMs * 2); // its own poll asks again: still one place
+	CHECK(f.client.connects == 0);
+	CHECK(gate.waiting() == 1);
+	gate.release(fetch);
+	f.settle();
+	CHECK(f.client.connects == 1);
+	CHECK(f.mqtt->state() == MqttState::connecting);
+	CHECK(gate.busy()); // held while the TLS session starts
+	f.client.accept();
+	f.settle();
+	CHECK(f.mqtt->state() == MqttState::connected);
+	CHECK_FALSE(gate.busy());
+
+	// A failed connect gives it back as well.
+	f.client.drop("transport: ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT");
+	CHECK_FALSE(gate.busy());
+
+	// A plain broker does not ask.
+	Fixture g;
+	hc::TlsGate gate2(g.loop, g.clock, nullptr);
+	g.mqtt->set_gate(&gate2);
+	Holder blocker;
+	REQUIRE(gate2.acquire(blocker, hc::TlsGate::Kind::session));
+	g.load(example(), kMember);
+	g.settle();
+	CHECK(g.client.connects == 1);
+}
+
 TEST_CASE("MqttWaitsForTheNetwork") {
 	Fixture f;
 	f.connectivity.link_down("test");

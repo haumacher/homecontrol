@@ -138,6 +138,8 @@ list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/external_values.cpp")
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/fetch_body.cpp")
 # One fetch worker for every HTTP request (issue #45 item 13, doc/external.md).
 list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/fetch_queue.cpp")
+# One TLS session start at a time, with room in the DMA-capable memory (homecontrol #110/#112, doc/core.md).
+list(APPEND HC_CORE_SOURCES "${HC_CORE_DIR}/src/tls_gate.cpp")
 # The Zigbee coordinator's portable half: device database, cluster mapping, adapter (issue #15, doc/zigbee.md).
 list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/zigbee/zcl.cpp"

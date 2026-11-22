@@ -94,6 +94,10 @@ bool EspSystemInfo::heap_low(char* out, size_t size) const {
 	return heap_watch::low(out, size);
 }
 
+bool EspSystemInfo::heap_window_low(char* out, size_t size) const {
+	return heap_watch::take_window(out, size);
+}
+
 uint32_t EspSystemInfo::failed_allocations(char* out, size_t size) const {
 	return heap_watch::take_failures(out, size);
 }

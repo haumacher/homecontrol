@@ -88,7 +88,7 @@ bool FetchQueue::Lane::submit(const char* url, const char* body, size_t length, 
 	}
 	cancelled_ = false;
 	bool has_body = body != nullptr;
-	if (!queue_.worker_busy_ && !queue_.worker_.busy() && queue_.waiting() == 0) {
+	if (!queue_.worker_busy_ && !queue_.worker_.busy() && queue_.waiting() == 0 && queue_.gate_admits(url)) {
 		return queue_.start(*this, url, body, length, has_body, receiver, error);
 	}
 	url_ = copy_of(url, url_length, true);
@@ -132,6 +132,7 @@ FetchQueue::FetchQueue(EventLoop& loop, const Clock& clock, HttpFetcher& worker)
 	: loop_(loop), clock_(clock), worker_(worker) {}
 
 FetchQueue::~FetchQueue() {
+	release_gate();
 	loop_.cancel(expiry_);
 	loop_.cancel(retry_);
 }
@@ -173,6 +174,7 @@ bool FetchQueue::start(Lane& lane, const char* url, const char* body, size_t len
 		worker_busy_ = false;
 		lane.state_ = Lane::State::idle;
 		lane.receiver_ = nullptr;
+		release_gate();
 		return false;
 	}
 	++lane.runs_;
@@ -238,7 +240,11 @@ void FetchQueue::run_next() {
 			}
 		}
 		if (next == nullptr) {
+			release_gate(); // admitted (or waiting) for a request that is gone
 			break;
+		}
+		if (!gate_admits(next->url_)) {
+			break; // tls_gate_opened() runs the queue again
 		}
 		if (worker_.busy()) {
 			// Freed right after the end it is delivering returns: a moment later.
@@ -301,12 +307,42 @@ void FetchQueue::expire() {
 		}
 		lane->free_copies();
 		lane->state_ = Lane::State::ending;
-		std::snprintf(lane->end_error_, sizeof(lane->end_error_), "waited %u s for the fetch worker (busy with '%s')",
-			static_cast<unsigned>(lane->wait_ms_ / 1000), running_ != nullptr ? running_->name_ : "-");
+		if (running_ == nullptr && gate_ != nullptr && gate_->waits(*this) && gate_->memory_reason()[0] != '\0') {
+			std::snprintf(lane->end_error_, sizeof(lane->end_error_), "waited %u s for memory for TLS (%s)",
+				static_cast<unsigned>(lane->wait_ms_ / 1000), gate_->memory_reason());
+		} else if (running_ == nullptr && gate_ != nullptr && gate_->waits(*this)) {
+			std::snprintf(lane->end_error_, sizeof(lane->end_error_), "waited %u s for another TLS session to start",
+				static_cast<unsigned>(lane->wait_ms_ / 1000));
+		} else {
+			std::snprintf(lane->end_error_, sizeof(lane->end_error_), "waited %u s for the fetch worker (busy with '%s')",
+				static_cast<unsigned>(lane->wait_ms_ / 1000), running_ != nullptr ? running_->name_ : "-");
+		}
 		Log::warn(kTag, "fetch '%s' not run: %s", lane->name_, lane->end_error_);
 	}
 	deliver_ends();
+	if (waiting() == 0 && running_ == nullptr) {
+		release_gate();
+	}
 	arm_expiry();
+}
+
+// ---- The TLS gate -----------------------------------------------------------------------------
+
+bool FetchQueue::gate_admits(const char* url) {
+	if (gate_ == nullptr || url == nullptr || std::strncmp(url, "https://", 8) != 0) {
+		return true;
+	}
+	return gate_->acquire(*this, TlsGate::Kind::session);
+}
+
+void FetchQueue::release_gate() {
+	if (gate_ != nullptr) {
+		gate_->release(*this);
+	}
+}
+
+void FetchQueue::tls_gate_opened() {
+	kick(); // the waiting request starts (or, gone meanwhile, the gate goes back)
 }
 
 // ---- The worker's receiver --------------------------------------------------------------------
@@ -331,6 +367,7 @@ void FetchQueue::fetch_end(const FetchResult& result) {
 	Lane* lane = running_;
 	running_ = nullptr;
 	worker_busy_ = false;
+	release_gate(); // the session is over; the next request asks again (the E-Home link may go first)
 	if (lane != nullptr) {
 		FetchReceiver* receiver = lane->receiver_;
 		lane->receiver_ = nullptr;

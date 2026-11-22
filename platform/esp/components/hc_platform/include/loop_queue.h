@@ -51,6 +51,11 @@ public:
 	/// literal. Wakes the loop's task at the end of the interrupt if it was waiting.
 	bool post_from_isr(LoopMessage::Handler handler, void* context, int32_t number, const char* what);
 
+	/// Queues a message from inside the heap's free hook (homecontrol #112, EspMemoryWatch): no text,
+	/// never blocks, nothing logged (a log line could allocate); false when the queue is full. A task,
+	/// not an ISR, not inside a critical section.
+	bool post_quiet(LoopMessage::Handler handler, void* context, int32_t number, const char* what);
+
 	/// Event-loop task only: waits up to `ticks` for a message, then runs the waiting messages (at
 	/// most kDepth, the rest in the next call).
 	void dispatch(TickType_t ticks);

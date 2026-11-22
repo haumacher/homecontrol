@@ -306,3 +306,146 @@ TEST_CASE("FetchQueue: a request waits at most its limit; a refusal of the worke
 	CHECK_FALSE(f.image.fetch("ftp://192.0.2.5/image.json", img, &error));
 	CHECK(std::string(error) == "not an http:// or https:// URL");
 }
+
+// ---- The TLS gate (homecontrol #110/#112) -------------------------------------------------------
+
+namespace {
+
+/// The DMA-capable memory the gate asks about; the test frees memory by hand.
+class GateMemory : public hc::MemoryWatch {
+public:
+	bool dma_room(hc::DmaRoom& out) const override {
+		out = room;
+		return true;
+	}
+	void notify_at(uint32_t free_bytes, hc::MemoryListener& l) override {
+		at = free_bytes;
+		listener = &l;
+	}
+	void cancel_notify() override { listener = nullptr; }
+	void free_to(uint32_t free_bytes) {
+		room.free_bytes = free_bytes;
+		if (listener != nullptr && free_bytes >= at) {
+			hc::MemoryListener* l = listener;
+			listener = nullptr;
+			l->memory_freed();
+		}
+	}
+	hc::DmaRoom room{60000, 24000};
+	uint32_t at = 0;
+	hc::MemoryListener* listener = nullptr;
+};
+
+struct GateClient : hc::TlsGateClient {
+	void tls_gate_opened() override { ++opened; }
+	int opened = 0;
+};
+
+struct GatedRig : Rig {
+	GateMemory memory;
+	hc::TlsGate gate{loop, clock, &memory};
+	GatedRig() { queue.set_gate(&gate); }
+};
+
+} // namespace
+
+TEST_CASE("FetchQueue: an https request holds the TLS gate until its end; plain http passes it") {
+	GatedRig f;
+	Consumer lang(f.order, "language");
+	const char* error = nullptr;
+	REQUIRE(f.language.fetch("https://haumacher.github.io/homecontrol/stable/1.5.0/i18n/manifest.json", lang, &error));
+	CHECK(f.language.running());
+	CHECK(f.queue.holds_gate());
+	f.worker.answer(200, "{}");
+	f.run();
+	CHECK_FALSE(f.queue.holds_gate());
+	CHECK_FALSE(f.gate.busy());
+
+	Consumer ext(f.order, "external");
+	f.memory.room = {1000, 500}; // no room for TLS: plain http does not need it
+	REQUIRE(f.external.fetch("http://weather.example/now", ext, &error));
+	CHECK(f.external.running());
+	CHECK_FALSE(f.gate.busy());
+	f.worker.answer(200, "{}");
+	f.run();
+}
+
+TEST_CASE("FetchQueue: without room for TLS the request waits, starts when memory is freed, and ends at its limit") {
+	// The boot of 2026-11-22: the language-pack fetch beside the E-Home session and a browser.
+	GatedRig f;
+	Consumer lang(f.order, "language");
+	const char* error = nullptr;
+	f.memory.room = {38120, 24064};
+	REQUIRE(f.language.fetch("https://haumacher.github.io/homecontrol/stable/1.5.0/i18n/manifest.json", lang, &error));
+	f.run();
+	CHECK(f.language.waiting());
+	CHECK(f.worker.requests.empty());
+	CHECK(f.queue.waits_for_gate());
+	CHECK(f.capture.sink.contains("I hc.tls: a TLS session waits for memory: HP 38120 B free of 49152 B, largest block "
+		"24064 B of 8448 B"));
+	f.advance(60000);
+	CHECK(f.worker.requests.empty());
+	// The browser goes: memory freed, the fetch starts.
+	f.memory.free_to(50000);
+	f.run();
+	CHECK(f.language.running());
+	REQUIRE(f.worker.requests.size() == 1);
+	CHECK(f.queue.holds_gate());
+	f.worker.answer(200, "{}");
+	f.run();
+	CHECK(lang.ok);
+
+	// Never enough: the request ends at its wait limit with the memory named; the gate is free.
+	f.memory.room = {30000, 24064};
+	Consumer ext(f.order, "external");
+	REQUIRE(f.external.fetch("https://api.open-meteo.example/forecast", ext, &error));
+	f.advance(30000);
+	CHECK(ext.ends == 1);
+	CHECK(ext.error == "waited 30 s for memory for TLS (HP 30000 B free of 49152 B, largest block 24064 B of 8448 B)");
+	CHECK_FALSE(f.queue.waits_for_gate());
+	CHECK(f.memory.listener == nullptr);
+}
+
+TEST_CASE("FetchQueue: the E-Home link's connect goes before a waiting fetch and the fetch follows it") {
+	GatedRig f;
+	GateClient link;
+	Consumer lang(f.order, "language");
+	Consumer upd(f.order, "update");
+	const char* error = nullptr;
+	REQUIRE(f.update.fetch("https://haumacher.github.io/homecontrol/stable/manifest.json", upd, &error));
+	REQUIRE(f.queue.holds_gate());
+	// The link wants to connect while the update check's session runs: it waits, then a language
+	// fetch comes too.
+	CHECK_FALSE(f.gate.acquire(link, hc::TlsGate::Kind::link));
+	REQUIRE(f.language.fetch("https://haumacher.github.io/homecontrol/stable/1.5.0/i18n/manifest.json", lang, &error));
+	f.worker.answer(200, "{}");
+	f.run();
+	CHECK(link.opened == 1); // the link first
+	CHECK(f.gate.holds(link));
+	CHECK(f.language.waiting());
+	CHECK(f.worker.requests.size() == 1);
+	// The link's socket is open: the fetch goes on.
+	f.gate.release(link);
+	f.run();
+	CHECK(f.language.running());
+	CHECK(f.worker.requests.size() == 2);
+}
+
+TEST_CASE("FetchQueue: a cancelled request that waited for the gate gives its place back") {
+	GatedRig f;
+	Consumer lang(f.order, "language");
+	const char* error = nullptr;
+	f.memory.room = {1000, 500};
+	REQUIRE(f.language.fetch("https://haumacher.github.io/homecontrol/stable/1.5.0/i18n/manifest.json", lang, &error));
+	f.run();
+	REQUIRE(f.queue.waits_for_gate());
+	CHECK(f.language.cancel());
+	f.run();
+	CHECK(lang.ends == 1);
+	CHECK_FALSE(f.queue.waits_for_gate());
+	CHECK(f.memory.listener == nullptr);
+	// Memory freed later: nothing starts.
+	f.memory.free_to(60000);
+	f.run();
+	CHECK(f.worker.requests.empty());
+}

@@ -48,7 +48,9 @@
 // ---- end runtime image ----
 // ---- diagnostics (issue #4) ----
 #include "esp_diagnostics.h"
+#include "esp_memory_watch.h"
 #include "heap_watch.h"
+#include "hc/tls_gate.h"
 // ---- end diagnostics ----
 
 namespace {
@@ -144,6 +146,15 @@ int zigbee_console(void*, int argc, char** argv) {
 }
 // ---- end Zigbee ----
 
+// ---- the TLS gate (homecontrol #110/#112, doc/core.md "The TLS gate"): one TLS session start at a
+// time, the E-Home link first, a further session only with room in the DMA-capable memory ----
+hc::esp::EspMemoryWatch g_memory_watch(g_queue);
+
+hc::TlsGate& tls_gate() {
+	static hc::TlsGate instance(controller().loop(), g_clock, &g_memory_watch);
+	return instance;
+}
+
 // ---- the one fetch worker (issue #45 item 13): every HTTP(S) request, one at a time by priority ----
 hc::esp::FetchService& fetches() {
 	return hc::esp::fetch_service(controller(), g_queue);
@@ -198,6 +209,7 @@ void loop_task(void*) {
 	network_name().start(ctl.connectivity()); // reads net.hostname: the first DHCP host name
 	g_wifi.init(ctl.connectivity(), network_name().name());
 	g_services.init(ctl.connectivity(), g_wifi);
+	fetches().set_gate(&tls_gate()); // before the first fetch
 	g_ota.set_fetcher(&fetches().update());
 	g_ota.init(ctl);
 	bool serial_ready = g_serial.init();
@@ -216,6 +228,7 @@ void loop_task(void*) {
 	g_slot.start(); // the partition `image` (logged); the service maps it at start()
 	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services, "net.restart_sntp"));
 	image().set_external(&external().values());
+	mqtt().mqtt().set_gate(&tls_gate()); // before the image configures it
 	image().set_mqtt(&mqtt().mqtt());
 	image().set_load_probe(&g_load_probe);
 	image().start();
@@ -248,6 +261,7 @@ void loop_task(void*) {
 	// ---- E-Home connection (issue #41, doc/ehome.md): outbound to the owner's E-Home, switched on
 	// in the Settings ----
 	static hc::esp::EhomeService ehome(g_queue, web, fetches().enrollment());
+	ehome.link().set_gate(&tls_gate());
 	ehome.start();
 	// ---- end E-Home connection ----
 	if (serial_ready) {

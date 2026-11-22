@@ -13,6 +13,8 @@ const char* FetchService::describe(char* buffer, size_t size) const {
 	if (running != nullptr) {
 		std::snprintf(buffer, size, "one worker, running '%s', %u waiting", running->name(),
 			static_cast<unsigned>(queue_.waiting()));
+	} else if (queue_.waits_for_gate()) {
+		std::snprintf(buffer, size, "one worker, %u waiting for room for TLS", static_cast<unsigned>(queue_.waiting()));
 	} else {
 		std::snprintf(buffer, size, "one worker, idle (%s)", worker_.allocated() ? "allocated" : "free");
 	}

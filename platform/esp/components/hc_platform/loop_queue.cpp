@@ -54,6 +54,19 @@ bool LoopQueue::post(LoopMessage::Handler handler, void* context, int32_t number
 	return true;
 }
 
+bool LoopQueue::post_quiet(LoopMessage::Handler handler, void* context, int32_t number, const char* what) {
+	if (queue_ == nullptr) {
+		return false;
+	}
+	LoopMessage message;
+	message.handler = handler;
+	message.context = context;
+	message.number = number;
+	message.what = what;
+	message.text[0] = '\0';
+	return xQueueSend(queue_, &message, 0) == pdTRUE;
+}
+
 bool LoopQueue::post_from_isr(LoopMessage::Handler handler, void* context, int32_t number, const char* what) {
 	if (queue_ == nullptr) {
 		return false;

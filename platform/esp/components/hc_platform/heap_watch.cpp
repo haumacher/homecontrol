@@ -44,11 +44,23 @@ portMUX_TYPE g_lock = portMUX_INITIALIZER_UNLOCKED;
 std::atomic<bool> g_started{false};
 uint32_t g_walk_below = 0;
 
-/// The lowest free heap an allocation left; UINT32_MAX until the first.
-std::atomic<uint32_t> g_low_free{UINT32_MAX};
-/// The free heap of the last walk (UINT32_MAX: none yet).
-std::atomic<uint32_t> g_walked_at{UINT32_MAX};
-Moment g_low;          ///< Under g_lock.
+/// A lowest point: since boot, or of the heartbeat's window.
+struct Track {
+	/// The lowest free heap an allocation left; UINT32_MAX until the first.
+	std::atomic<uint32_t> low_free{UINT32_MAX};
+	/// The free heap of the last walk (UINT32_MAX: none yet).
+	std::atomic<uint32_t> walked_at{UINT32_MAX};
+	Moment low; ///< Under g_lock.
+};
+
+Track g_boot;
+/// The window since the last take_window(); only lows below g_walk_below are tracked.
+Track g_window;
+
+/// The free-memory notification (notify_free_at()): the DMA-capable free memory to reach (0: none).
+std::atomic<uint32_t> g_notify_at{0};
+void (*g_notify_fn)(void*) = nullptr;
+void* g_notify_context = nullptr;
 
 uint32_t g_failures = 0; ///< Under g_lock: failures since the last take.
 Moment g_failure;      ///< Under g_lock: the first of them.
@@ -136,22 +148,17 @@ void start(uint32_t walk_below) {
 	g_started.store(true);
 }
 
-bool low(char* out, size_t size) {
-	portENTER_CRITICAL(&g_lock);
-	Moment m = g_low;
-	portEXIT_CRITICAL(&g_lock);
-	if (m.at_us == 0) {
-		return false;
-	}
+/// The account of a lowest point (low(), take_window()).
+void describe_low(const Moment& m, char* out, size_t size) {
 	char at[24];
 	seconds(m.at_us, at, sizeof(at));
 	int n = std::snprintf(out, size, "lowest %u B at %s: ", static_cast<unsigned>(m.free), at);
 	if (n < 0 || static_cast<size_t>(n) >= size) {
-		return true;
+		return;
 	}
 	int r = describe_regions(m, out + n, size - static_cast<size_t>(n));
 	if (r < 0) {
-		return true;
+		return;
 	}
 	n += r;
 	if (static_cast<size_t>(n) < size && m.blocks_at != 0 && m.blocks_at != m.free) {
@@ -163,7 +170,48 @@ bool low(char* out, size_t size) {
 		std::snprintf(out + n, size - static_cast<size_t>(n), "; %s took %u B%s", m.task,
 			static_cast<unsigned>(m.request), kind(m.caps));
 	}
+}
+
+bool low(char* out, size_t size) {
+	portENTER_CRITICAL(&g_lock);
+	Moment m = g_boot.low;
+	portEXIT_CRITICAL(&g_lock);
+	if (m.at_us == 0) {
+		return false;
+	}
+	describe_low(m, out, size);
 	return true;
+}
+
+bool take_window(char* out, size_t size) {
+	portENTER_CRITICAL(&g_lock);
+	Moment m = g_window.low;
+	g_window.low = Moment();
+	g_window.low_free.store(UINT32_MAX, std::memory_order_relaxed);
+	g_window.walked_at.store(UINT32_MAX, std::memory_order_relaxed);
+	portEXIT_CRITICAL(&g_lock);
+	if (m.at_us == 0) {
+		return false;
+	}
+	describe_low(m, out, size);
+	return true;
+}
+
+bool dma_room(uint32_t& free, uint32_t& largest) {
+	free = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_DMA));
+	largest = static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+	return heap_caps_get_total_size(MALLOC_CAP_DMA) > 0;
+}
+
+void notify_free_at(uint32_t dma_free, void (*fn)(void*), void* context) {
+	g_notify_at.store(0);
+	g_notify_fn = fn;
+	g_notify_context = context;
+	g_notify_at.store(dma_free > 0 ? dma_free : 1);
+}
+
+void cancel_free_notify() {
+	g_notify_at.store(0);
 }
 
 uint32_t take_failures(char* out, size_t size) {
@@ -207,6 +255,45 @@ void describe_now(char* out, size_t size) {
 } // namespace hc
 
 #if CONFIG_HEAP_USE_HOOKS
+namespace hc {
+namespace esp {
+namespace heap_watch {
+namespace {
+
+/// Whether `free` is a new low of `track` (for the window only below the mark), and whether that
+/// track wants the blocks measured there.
+IRAM_ATTR bool new_low(const Track& track, uint32_t free, bool window, bool& walk) {
+	if (free >= track.low_free.load(std::memory_order_relaxed) || (window && free >= g_walk_below)) {
+		return false;
+	}
+	uint32_t walked_at = track.walked_at.load(std::memory_order_relaxed);
+	walk = walk || (free < g_walk_below && (walked_at == UINT32_MAX || free + kWalkStep <= walked_at));
+	return true;
+}
+
+/// Records `m` in `track` if it is still a new low there (under g_lock).
+IRAM_ATTR void record(Track& track, const Moment& measured, bool walked) {
+	if (measured.free >= track.low_free.load(std::memory_order_relaxed)) {
+		return;
+	}
+	Moment m = measured;
+	track.low_free.store(m.free, std::memory_order_relaxed);
+	if (walked) {
+		track.walked_at.store(m.free, std::memory_order_relaxed);
+	} else {
+		// Keep the blocks of the track's last walk (named with the heap they were measured at).
+		m.block_dma = track.low.block_dma;
+		m.block_lp = track.low.block_lp;
+		m.blocks_at = track.low.blocks_at;
+	}
+	track.low = m;
+}
+
+} // namespace
+} // namespace heap_watch
+} // namespace esp
+} // namespace hc
+
 // Called by the heap after every successful allocation, in the allocating task (or interrupt).
 // IRAM through the declaration's HEAP_IRAM_ATTR (esp_heap_caps.h).
 extern "C" void esp_heap_trace_alloc_hook(void* ptr, size_t size, uint32_t caps) {
@@ -216,7 +303,10 @@ extern "C" void esp_heap_trace_alloc_hook(void* ptr, size_t size, uint32_t caps)
 		return;
 	}
 	uint32_t free = static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
-	if (free >= g_low_free.load(std::memory_order_relaxed)) {
+	bool walk = false;
+	bool boot = new_low(g_boot, free, false, walk);
+	bool window = new_low(g_window, free, true, walk);
+	if (!boot && !window) {
 		return;
 	}
 	Moment m;
@@ -226,24 +316,32 @@ extern "C" void esp_heap_trace_alloc_hook(void* ptr, size_t size, uint32_t caps)
 	m.request = static_cast<uint32_t>(size);
 	m.caps = caps;
 	copy_task_name(m.task);
-	uint32_t walked_at = g_walked_at.load(std::memory_order_relaxed);
-	bool walk = free < g_walk_below && (walked_at == UINT32_MAX || free + kWalkStep <= walked_at) && xPortCanYield();
+	walk = walk && xPortCanYield();
 	if (walk) {
 		measure_blocks(m);
 	}
 	portENTER_CRITICAL(&g_lock);
-	if (free < g_low_free.load(std::memory_order_relaxed)) {
-		g_low_free.store(free, std::memory_order_relaxed);
-		if (!walk) {
-			// Keep the blocks of the last walk (named with the heap they were measured at).
-			m.block_dma = g_low.block_dma;
-			m.block_lp = g_low.block_lp;
-			m.blocks_at = g_low.blocks_at;
-		} else {
-			g_walked_at.store(free, std::memory_order_relaxed);
-		}
-		g_low = m;
+	if (boot) {
+		record(g_boot, m, walk);
+	}
+	if (window) {
+		record(g_window, m, walk);
 	}
 	portEXIT_CRITICAL(&g_lock);
+}
+
+// Called by the heap after every free: the free-memory notification of the TLS gate (EspMemoryWatch).
+// One atomic load while none is asked for.
+extern "C" void esp_heap_trace_free_hook(void* ptr) {
+	using namespace hc::esp::heap_watch;
+	(void)ptr;
+	uint32_t at = g_notify_at.load(std::memory_order_relaxed);
+	if (at == 0 || !in_task() || !xPortCanYield()) {
+		return;
+	}
+	if (static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_DMA)) < at || g_notify_at.exchange(0) == 0) {
+		return;
+	}
+	g_notify_fn(g_notify_context);
 }
 #endif

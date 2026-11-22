@@ -123,6 +123,12 @@ fetch 'external' runs after 840 ms waiting
 fetch 'external' not run: waited 120 s for the fetch worker (busy with 'language')
 ```
 
+An `https://` request also needs the TLS gate (homecontrol #110/#112, doc/core.md "The TLS gate"): it
+starts only while no other TLS session starts, the E-Home link's connect first, and with 48 KB of the
+DMA-capable memory free; it holds the gate until its end. Until then it waits as behind a busy
+worker, and its wait limit ends it with the memory named (`fetch 'language' not run: waited 120 s
+for memory for TLS (HP 38120 B free of 49152 B, ...)`). Plain `http://` requests pass the gate.
+
 The worker's task is `hc_fetch` (the System page's tasks and `/api/system/diagnostics` list it while
 a request runs). POSIX runs the same queue over its one `HttplibFetcher` (lanes `enrollment`,
 `external`, `language`).

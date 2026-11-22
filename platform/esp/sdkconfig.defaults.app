@@ -97,6 +97,10 @@ CONFIG_ESP_WIFI_RX_IRAM_OPT=y
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+# Static transmit buffers (CONFIG_ESP_WIFI_STATIC_TX_BUFFER) would reserve the transmit copies, at about
+# 1.6 KB each for good (9.6 to 25.6 KB), and the receive copies cannot be reserved at all (homecontrol
+# #112, doc/diagnostics.md "Can the WiFi driver's DMA memory be reserved?"): the TLS gate's reserve and
+# the E-Home send queue in the LP SRAM keep HP SRAM free for them instead.
 # TCP send buffer (homecontrol #74): what each socket may hold of sent, unacknowledged data. Each such
 # segment sits twice on the heap until it is acknowledged or on the air: in lwIP's pbuf and in the
 # WiFi driver's copy (esp_wifi_internal_tx copies into a dynamic transmit buffer; no PSRAM, so no

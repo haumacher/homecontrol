@@ -47,6 +47,21 @@ void start(uint32_t walk_below);
 /// watched.
 bool low(char* out, size_t size);
 
+/// The lowest point since the previous call, when it was below `walk_below` (the heartbeat's
+/// window, homecontrol #110): the same account as low(). Starts a new window. False: none below.
+/// Lows above `walk_below` are not tracked for the window (the hook's cost stays one figure per
+/// allocation in steady state); its walks follow the same rule as the boot-wide low's, per window.
+bool take_window(char* out, size_t size);
+
+/// The DMA-capable memory now (free, largest block; a walk). False: no such memory.
+bool dma_room(uint32_t& free, uint32_t& largest);
+
+/// Calls `fn(context)` once, from the task that frees, as soon as a free leaves at least `dma_free`
+/// bytes of DMA-capable memory (the free hook; not in an interrupt or a critical section). `fn` must
+/// not block, allocate or log. Replaces an earlier request.
+void notify_free_at(uint32_t dma_free, void (*fn)(void*), void* context);
+void cancel_free_notify();
+
 /// The failed allocations since the previous call; the first of them described in `out`: "1600 B
 /// DMA for hc_ehome_tx at 20.94 s; free 1840 B: HP 0 B (block 0 B), LP 1840 B (block 1840 B)".
 /// Returns 0 (and leaves `out` alone) when none failed.

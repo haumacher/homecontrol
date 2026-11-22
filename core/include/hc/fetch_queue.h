@@ -10,6 +10,7 @@
 #include "hc/event_loop.h"
 #include "hc/platform/clock.h"
 #include "hc/platform/http_fetcher.h"
+#include "hc/tls_gate.h"
 
 namespace hc {
 
@@ -32,9 +33,13 @@ namespace hc {
 /// - Cancellation: a receiver that returns false aborts its request as with any fetcher; cancel()
 ///   drops a waiting request or aborts a running one at its next piece. Either way exactly one
 ///   fetch_end() follows, never from within fetch(), post() or cancel().
+/// - With a TlsGate (set_gate(), homecontrol #110/#112), an https:// request starts only when the
+///   gate admits a TLS session (Kind::session: no other session starting, the E-Home link first,
+///   room in the DMA-capable memory); it holds the gate until its end. Until then it waits like a
+///   request behind a busy worker, within its wait limit, whose end then names the memory.
 ///
 /// Threading: the event loop's thread, as every HttpFetcher.
-class FetchQueue : private FetchReceiver {
+class FetchQueue : private FetchReceiver, private TlsGateClient {
 public:
 	static constexpr size_t kMaxLanes = 8;
 	/// How long a request waits for the worker by default (the others' timeouts bound the wait anyway).
@@ -89,7 +94,7 @@ public:
 		uint32_t sequence_ = 0;
 		bool cancelled_ = false;
 		/// Why an ending (unrun) request ends: "cancelled" or the wait's text.
-		char end_error_[80] = {};
+		char end_error_[144] = {};
 		uint32_t runs_ = 0;
 		uint32_t waits_ = 0;
 	};
@@ -107,6 +112,13 @@ public:
 	bool worker_busy() const { return worker_busy_; }
 	/// The most requests that waited at once since the start.
 	size_t most_waiting() const { return most_waiting_; }
+
+	/// Orders the https:// requests with the other TLS sessions (nullptr: no gate). Before the first
+	/// request.
+	void set_gate(TlsGate* gate) { gate_ = gate; }
+	/// Whether the queue holds the gate, or waits for it.
+	bool holds_gate() const { return gate_ != nullptr && gate_->holds(*this); }
+	bool waits_for_gate() const { return gate_ != nullptr && gate_->waits(*this); }
 
 private:
 	bool add(Lane& lane);
@@ -128,6 +140,14 @@ private:
 	bool fetch_chunk(const char* data, size_t size) override;
 	void fetch_end(const FetchResult& result) override;
 
+	// TlsGateClient.
+	void tls_gate_opened() override;
+	/// Whether `url` may start now as far as the gate is concerned (it then holds the gate); false
+	/// when it waits for the gate.
+	bool gate_admits(const char* url);
+	/// Gives the gate back (or withdraws the wait) when nothing needs it any more.
+	void release_gate();
+
 	EventLoop& loop_;
 	const Clock& clock_;
 	HttpFetcher& worker_;
@@ -139,6 +159,7 @@ private:
 	size_t most_waiting_ = 0;
 	TimerHandle expiry_;
 	TimerHandle retry_;
+	TlsGate* gate_ = nullptr;
 };
 
 } // namespace hc

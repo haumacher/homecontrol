@@ -247,6 +247,13 @@ void Controller::heartbeat() {
 	// the low-water mark.
 	bool low = memory.free_bytes != 0 && memory.min_free_bytes < kHeapLowWaterBytes &&
 		(heap_low_warned_ == 0 || memory.min_free_bytes < heap_low_warned_);
+	// The lowest point of this beat's window (homecontrol #110): a low below the mark that is not a
+	// new low since boot still names its moment and its task. Taken every beat (a new window).
+	char window[kHeapDetail];
+	bool window_low = system_.heap_window_low(window, sizeof(window));
+	if (window_low && !low) {
+		Log::warn(kTag, "heap low in the last %u s: %s", static_cast<unsigned>(kHeartbeatPeriodMs / 1000), window);
+	}
 	if (!changed && !low) {
 		return; // steady state: nothing new for the log ring
 	}

@@ -292,11 +292,22 @@ that needs DMA-capable memory fails while LP RAM is still free. The IDF's minimu
 region's own minimum, which need not have been reached at the same moment: it can be lower than the
 heap ever was. The recorded low is one real moment.
 
+- **The window's low.** The boot-wide low says nothing about a later shortage above it (at 900 s
+  the house controller lost WiFi frames at 1880 B of HP SRAM, above the boot's low). The hook keeps a
+  second record, the lowest point since the last heartbeat, but only below 16 KB (so in steady state
+  it costs nothing more), with the same walks per window; the heartbeat takes it every 10 s and logs
+  it when it is no new low since boot: `heap low in the last 10 s: lowest ...` with the same fields.
+- **The free notification** of the TLS gate (doc/core.md "The TLS gate"): while a TLS session waits
+  for memory, the heap's free hook (`esp_heap_trace_free_hook`) checks after each free whether the
+  DMA-capable memory reached the gate's figure and then posts one message to the loop; otherwise it
+  is one atomic load per free.
+
 In the log (`GET /api/log`, the System page's log):
 
 ```
 W hc.ctl: heartbeat: uptime 21 s, network up 192.168.178.86, free heap 48120 B (min 2084 B): the minimum is a new low below 16384 B; lowest 1840 B at 20.94 s: HP 0 B (block 0 B), LP 1840 B (block 1840 B); hc_ehome_tx took 1600 B DMA
 W hc.ctl: 3 allocation(s) failed since the last heartbeat, the first: 1600 B DMA for hc_ehome_tx at 20.94 s; free 1840 B: HP 0 B (block 0 B), LP 1840 B (block 1840 B)
+W hc.ctl: heap low in the last 10 s: lowest 10024 B at 900.58 s: HP 1880 B (block 512 B), LP 8144 B (block 8064 B); tiT took 1682 B DMA
 ```
 
 How to read them:
@@ -314,6 +325,24 @@ How to read them:
   record that lies in LP RAM), a few dozen bytes with `DMA` (its descriptors: the DMA-capable RAM is
   exhausted).
 - E-Home's connection ends with the heap of that moment in brackets (doc/ehome.md "In the log").
+- A failure `for wifi` (the WiFi task's copy of a received frame) or `for tiT` with about 1.7 KB `DMA`
+  (lwIP's frame handed to the WiFi driver, which copies it for transmission) is a lost frame.
+
+**Can the WiFi driver's DMA memory be reserved?** (homecontrol #112, ESP-IDF 5.5.6, `esp_wifi` Kconfig.)
+
+| Buffer | Option | Can it be reserved? |
+|---|---|---|
+| Received frames, as the hardware writes them | `CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM` (6, about 1.6 KB each) | static already: 9.6 KB allocated at `esp_wifi_init()` |
+| The copy of each received frame handed to lwIP (the 180 B failure `for wifi` at 20.76 s) | `CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM` (16) | no: always allocated per frame at its size; the option only caps their number |
+| The copy of each transmitted frame (the 1682 B failure `for tiT` at 900.58 s) | `CONFIG_ESP_WIFI_TX_BUFFER` static, `CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM` | yes, at about 1.6 KB per buffer for good: 16 (the default) 25.6 KB, 6 still 9.6 KB |
+| Management frames received | `CONFIG_ESP_WIFI_STATIC_RX_MGMT_BUFFER` | static already (the default, 5 of about 500 B) |
+
+Static transmit buffers would take 9.6 to 25.6 KB of the heap for good: the steady state (about
+50 KB free) would lose a fifth to a half, the TLS gate would admit a second session even more rarely,
+and the receive copies, which failed first, could not be reserved anyway. The firmware keeps them
+dynamic. What protects the WiFi driver instead: the TLS gate's 8 KB reserve of HP SRAM beside a
+session, and long-lived buffers that no DMA touches kept out of the HP SRAM (the E-Home send queue,
+7 KB, in the LP SRAM; doc/ehome.md "Memory on the device").
 
 ## Testing on the board
 

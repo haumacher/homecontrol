@@ -403,6 +403,9 @@ Mqtt::Mqtt(EventLoop& loop, const Clock& clock, const Settings& settings, const 
 }
 
 Mqtt::~Mqtt() {
+	if (gate_ != nullptr) {
+		gate_->release(*this);
+	}
 	loop_.cancel(timer_);
 	if (listening_) {
 		model_.remove_listener(*this);
@@ -1007,6 +1010,19 @@ void Mqtt::status(MqttStatus& out) const {
 
 void Mqtt::set_state(MqttState state) {
 	state_ = state;
+	// The gate is held while a connect runs (the TLS handshake); waiting keeps a wait for it.
+	if (gate_ != nullptr && state != MqttState::connecting &&
+		(gate_->holds(*this) || state != MqttState::waiting)) {
+		gate_->release(*this);
+	}
+}
+
+void Mqtt::tls_gate_opened() {
+	if (state_ == MqttState::waiting && table_ != nullptr && table_->config.enabled) {
+		attempt();
+	} else if (gate_ != nullptr) {
+		gate_->release(*this);
+	}
 }
 
 void Mqtt::attempt() {
@@ -1026,6 +1042,16 @@ void Mqtt::attempt() {
 		return;
 	}
 	const MemberConfig& c = table_->config;
+	if (gate_ != nullptr && std::strncmp(c.broker, "mqtts://", 8) == 0 &&
+		!gate_->acquire(*this, TlsGate::Kind::session)) {
+		if (state_ != MqttState::waiting) {
+			Log::info(kTag, "waiting for room for a TLS session (another one starts, or the memory is short)");
+		}
+		state_ = MqttState::waiting; // keeps the wait: tls_gate_opened() goes on
+		attempt_at_ = now + kReadyPollMs;
+		arm();
+		return;
+	}
 	char user[Settings::kMaxStringLength + 1] = {};
 	if (c.username[0] != '\0') {
 		std::snprintf(user, sizeof(user), "%s", c.username);

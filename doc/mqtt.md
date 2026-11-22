@@ -85,7 +85,9 @@ waits for a synchronized wall clock.
 
 ## Connection behaviour
 
-Connects when the network is up; a failed attempt or a lost connection is retried after 5 s,
+Connects when the network is up (with an `mqtts://` broker also only when the TLS gate admits the
+session, doc/core.md "The TLS gate": it waits in state `waiting` while another TLS session starts or
+the DMA-capable memory is short, and holds the gate while it connects); a failed attempt or a lost connection is retried after 5 s,
 doubling up to 5 minutes; an attempt without an answer after 30 s counts as failed; keepalive 60 s.
 An image swap that keeps the broker, the user name and the base topic keeps the connection and
 republishes; any other change retires it (the configs cleared when the broker or prefix changes or

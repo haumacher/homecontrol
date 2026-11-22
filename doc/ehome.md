@@ -39,7 +39,11 @@ settings), one request at a time.
 | connected | `connected` | the socket closes, a pong is late, the owner switches off |
 | backoff | `failed` | the retry timer: 1 s, doubling to 60 s; reset by `ready` |
 
-The handshake must complete within 30 s. Connected, the controller pings every 30 s and closes the
+Before it opens the socket the link asks the TLS gate (homecontrol #110/#112, doc/core.md "The TLS
+gate"): while another TLS session starts (a fetch's, an `mqtts://` broker's) it waits (`waiting for
+another TLS session to start (the link goes first)`, state `connecting`), ahead of every other
+waiting session and without a memory check, and it holds the gate until the socket is open or the
+attempt failed, so no second TLS handshake runs beside its own. The handshake must complete within 30 s. Connected, the controller pings every 30 s and closes the
 socket when the pong is 10 s late; the backoff reconnects. After `ready` the socket joins the
 `LiveFeed` as one more client (an extra slot beside the four browser slots, `LiveFeed::attach_ehome`),
 already authenticated; its commands show in the monitor with `"via": "ehome"`.
@@ -243,7 +247,7 @@ Nothing is allocated while the controller is not enrolled or the connection is o
 | Session: the text reassembly buffer and the hand-over slot (heap) | about 4400 |
 | Client receive and send buffers (`buffer_size` 1024 each) | 2048 |
 | Client task stack (issue #45: 2612 B used against the development CA) | 5120 |
-| Send queue (issue #55, heap per session; 6144 before homecontrol #92) | 7168 |
+| Send queue (issue #55, heap per session; 6144 before homecontrol #92; in the LP SRAM while it has room, homecontrol #112) | 7168 |
 | Sender task stack (issue #55: 1572 B used, a session with the snapshot) and its TCB | 3072 + about 350 |
 | Client structure, configuration, its event loop, locks | about 1500 |
 | TLS steady state with dynamic buffers (context, session, record buffers per record) | 3000 to 5000 |
@@ -262,6 +266,13 @@ steady state for a second, with the largest block typically 6 KB and 17 KB in th
 handshake. These options are set for the whole application (`sdkconfig.defaults.app`): the OTA
 check, the HTTP fetcher and MQTT over TLS allocate their record buffers per record too, instead of
 16 KB + 4 KB for the whole of each connection.
+
+**The send queue in the LP SRAM** (homecontrol #112). Only the CPU touches the send queue (the
+library copies each piece into its own 1 KB buffer before TLS encrypts it), so the ESP client
+allocates it in the 16 KB LP SRAM while that has a 7 KB block (`heap_caps_malloc_prefer`, else in
+the HP SRAM as before): the HP SRAM keeps those 7 KB for what DMA needs. On the house controller at
+900 s the WiFi driver's 1682 B frame copy failed with 1880 B of HP SRAM free while the LP SRAM had
+8144 B free in a block of 8064 B.
 
 **The record buffers and the two kinds of RAM** (homecontrol #110, #112). With the dynamic buffers
 every `mbedtls_ssl_write()` allocates a whole outgoing record buffer, `OUT_CONTENT_LEN` plus 341

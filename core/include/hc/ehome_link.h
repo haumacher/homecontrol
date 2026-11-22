@@ -17,6 +17,7 @@
 #include "hc/platform/settings.h"
 #include "hc/platform/websocket_client.h"
 #include "hc/signature.h"
+#include "hc/tls_gate.h"
 #include "hc/web_api.h"
 
 namespace hc {
@@ -99,7 +100,7 @@ const char* ehome_state_name(EhomeState state);
 /// Every state change is one log line under the tag "hc.ehome"; the secret never reaches the log.
 ///
 /// Threading: the event loop's thread.
-class EhomeLink : public WebSocketClientListener, public WsTransport, public FetchReceiver {
+class EhomeLink : public WebSocketClientListener, public WsTransport, public FetchReceiver, private TlsGateClient {
 public:
 	static constexpr uint32_t kTickMs = 1000;
 	static constexpr uint32_t kBackoffInitialMs = Backoff::kDefaultInitialMs;
@@ -143,6 +144,11 @@ public:
 	/// Registers with the API (WebApi::set_ehome) and starts the tick; connects when enrolled and
 	/// switched on.
 	void start();
+
+	/// Orders the link's connects with the other TLS sessions (homecontrol #110/#112): a connect waits
+	/// while another session starts (the link goes first among the waiting) and holds the gate until
+	/// the socket is open or the attempt failed. nullptr: no gate. Before start().
+	void set_gate(TlsGate* gate) { gate_ = gate; }
 
 	/// ehome.enabled changed (WebApi stores it): connects at once or closes at once.
 	void enabled_changed();
@@ -206,9 +212,13 @@ public:
 	void fetch_end(const FetchResult& result) override;
 
 private:
-	/// Where the socket is: off, waiting for the network, backoff, opening (connect() called),
-	/// awaiting the challenge, awaiting ready (auth sent), connected.
-	enum class Phase : uint8_t { idle, waiting, backoff, opening, challenge, authenticating, connected };
+	/// Where the socket is: off, waiting for the network, waiting for the TLS gate, backoff, opening
+	/// (connect() called), awaiting the challenge, awaiting ready (auth sent), connected.
+	enum class Phase : uint8_t { idle, waiting, gated, backoff, opening, challenge, authenticating, connected };
+
+	void tls_gate_opened() override;
+	/// Gives the TLS gate back (or withdraws the wait for it).
+	void release_gate();
 
 	void tick();
 	void retry();
@@ -255,6 +265,7 @@ private:
 
 	EhomeState state_ = EhomeState::off;
 	Phase phase_ = Phase::idle;
+	TlsGate* gate_ = nullptr;
 	uint64_t since_ms_ = 0;     ///< When state_ began.
 	uint64_t phase_ms_ = 0;     ///< When phase_ began (the handshake's timeout).
 	uint64_t retry_at_ms_ = 0;  ///< Backoff: the next attempt.

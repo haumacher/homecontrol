@@ -230,6 +230,7 @@ EhomeLink::EhomeLink(WebApi& api, LiveFeed& feed, WebSocketClient& client, HttpF
 	  bus_(api.controller().loop(), api.controller().clock(), client) {}
 
 EhomeLink::~EhomeLink() {
+	release_gate();
 	loop_.cancel(tick_timer_);
 	loop_.cancel(retry_timer_);
 	loop_.cancel(enroll_timer_);
@@ -317,6 +318,7 @@ void EhomeLink::attempt() {
 	}
 	uint64_t now = api_.controller().clock().monotonic_ms();
 	if (!api_.controller().connectivity().is_up()) {
+		release_gate();
 		if (phase_ != Phase::waiting) {
 			Log::info(kTag, "waiting for the network");
 		}
@@ -327,6 +329,14 @@ void EhomeLink::attempt() {
 	char socket[Settings::kMaxStringLength + 1];
 	if (api_.controller().settings().get_string(setting::kEhomeSocket, socket, sizeof(socket)) != SettingsStatus::ok) {
 		fail("the socket address (setting %s) is unreadable", setting::kEhomeSocket);
+		return;
+	}
+	if (gate_ != nullptr && !gate_->acquire(*this, TlsGate::Kind::link)) {
+		if (phase_ != Phase::gated) {
+			Log::info(kTag, "waiting for another TLS session to start (the link goes first)");
+		}
+		phase_ = Phase::gated;
+		set_state(EhomeState::connecting);
 		return;
 	}
 	const char* error = nullptr;
@@ -348,7 +358,22 @@ void EhomeLink::attempt() {
 	Log::info(kTag, "connecting to %s", socket);
 }
 
+void EhomeLink::tls_gate_opened() {
+	if (phase_ == Phase::gated) {
+		attempt();
+	} else {
+		release_gate(); // switched off or gone meanwhile
+	}
+}
+
+void EhomeLink::release_gate() {
+	if (gate_ != nullptr) {
+		gate_->release(*this);
+	}
+}
+
 void EhomeLink::stop_socket(uint16_t code, const char* reason) {
+	release_gate();
 	bus_.connection_ended();
 	drop_request();
 	drop_pending_key("the connection ended");
@@ -404,6 +429,8 @@ void EhomeLink::tick() {
 				attempt();
 			}
 			break;
+		case Phase::gated:
+			break; // tls_gate_opened() goes on
 		case Phase::backoff:
 			if (!retry_timer_.valid() && now >= retry_at_ms_) {
 				attempt(); // the retry timer could not be scheduled
@@ -456,6 +483,7 @@ void EhomeLink::ws_client_opened() {
 	if (phase_ != Phase::opening) {
 		return;
 	}
+	release_gate(); // the TLS handshake is over: the next session may start
 	phase_ = Phase::challenge;
 	Log::info(kTag, "socket open, awaiting E-Home's challenge");
 }

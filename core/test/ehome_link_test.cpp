@@ -259,9 +259,15 @@ struct EhomeFixture : WebFixture {
 	FakeWsClient client;
 	FakeFetcher fetcher;
 	EhomeLink link{api, feed, client, fetcher};
+	/// The TLS gate (homecontrol #110/#112), by order alone; the link uses it when `gated`.
+	hc::TlsGate gate{controller.loop(), fake.clock, nullptr};
 	std::string cookie;
 
-	explicit EhomeFixture(bool enrolled = true, bool enabled = true) {
+	explicit EhomeFixture(bool enrolled = true, bool enabled = true, hc::TlsGateClient* gate_holder = nullptr) {
+		if (gate_holder != nullptr) {
+			link.set_gate(&gate);
+			REQUIRE(gate.acquire(*gate_holder, hc::TlsGate::Kind::session));
+		}
 		controller.start();
 		controller.connectivity().link_up("192.0.2.100");
 		service.start();
@@ -516,6 +522,58 @@ TEST_CASE("E-Home: a reason that differs only in the platform's bracketed detail
 	f.client.drop("socket: Connection reset by peer (errno 104)");
 	CHECK(f.capture.sink.contains("W hc.ehome: cannot connect: socket: Connection reset by peer (errno 104); retry in 8 s "
 		"(failure 4)"));
+}
+
+namespace {
+struct SessionHolder : hc::TlsGateClient {
+	void tls_gate_opened() override { ++opened; }
+	int opened = 0;
+};
+} // namespace
+
+TEST_CASE("E-Home: the connect waits while another TLS session starts, then holds the gate until the socket is open") {
+	SessionHolder fetch;
+	EhomeFixture f(true, true, &fetch); // a fetch's session holds the gate at the start
+	CHECK(f.client.connects == 0);
+	CHECK(f.link.state() == EhomeState::connecting);
+	CHECK(f.capture.sink.contains("I hc.ehome: waiting for another TLS session to start (the link goes first)"));
+	f.advance(5000);
+	CHECK(f.client.connects == 0);
+	// A second fetch arrives meanwhile; the link stays first.
+	SessionHolder later;
+	CHECK_FALSE(f.gate.acquire(later, hc::TlsGate::Kind::session));
+	f.gate.release(fetch);
+	f.run();
+	CHECK(f.client.connects == 1);
+	CHECK(f.gate.busy()); // the link holds it
+	CHECK(f.gate.waits(later));
+	CHECK(later.opened == 0);
+	// The socket is open: the handshake's peak is over, the next session starts.
+	f.client.open();
+	f.run();
+	CHECK(later.opened == 1);
+	CHECK(f.gate.holds(later));
+	f.gate.release(later);
+
+	// A failed attempt gives the gate back too; the retry asks again.
+	f.client.drop("TLS connect ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME (mbedTLS -0x0000, errno 0)");
+	CHECK_FALSE(f.gate.busy());
+	f.advance(1100);
+	CHECK(f.client.connects == 2);
+	CHECK(f.gate.busy());
+	f.client.drop("socket: Connection reset by peer (errno 104)");
+	CHECK_FALSE(f.gate.busy());
+	// Switched off while waiting for the gate: the wait is withdrawn.
+	SessionHolder blocker;
+	REQUIRE(f.gate.acquire(blocker, hc::TlsGate::Kind::session));
+	f.advance(2100);
+	CHECK(f.gate.waiting() == 1);
+	auto r = f.put("/api/settings/ehome.enabled", "{\"value\":\"false\"}");
+	CHECK(r.status == 200);
+	CHECK(f.gate.waiting() == 0);
+	f.gate.release(blocker);
+	f.run();
+	CHECK(f.client.connects == 2);
 }
 
 TEST_CASE("E-Home: ehome.enabled false closes at once and never reconnects") {

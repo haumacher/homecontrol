@@ -57,6 +57,16 @@ public:
 		return true;
 	}
 
+	bool heap_window_low(char* out, size_t size) const override {
+		std::string text = window_detail;
+		window_detail.clear();
+		if (text.empty()) {
+			return false;
+		}
+		std::snprintf(out, size, "%s", text.c_str());
+		return true;
+	}
+
 	uint32_t failed_allocations(char* out, size_t size) const override {
 		uint32_t count = failures;
 		failures = 0;
@@ -107,6 +117,8 @@ public:
 	/// next heartbeat takes, with the first one's account.
 	std::string low_detail;
 	mutable uint32_t failures = 0;
+	/// The window's low the next heartbeat takes (empty: none below the mark).
+	mutable std::string window_detail;
 	std::string failure_detail;
 	bool list_tasks = false;
 	std::vector<hc::TaskInfo> tasks;

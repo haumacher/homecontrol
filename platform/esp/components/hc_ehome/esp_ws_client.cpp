@@ -10,6 +10,7 @@
 
 #include "sdkconfig.h"
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_websocket_client.h"
@@ -452,7 +453,7 @@ void EspWebSocketClient::sender(void* context) {
 		static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)),
 		static_cast<unsigned>(kSenderStack));
 	EspWebSocketClient* owner = s->owner;
-	delete[] s->queue;
+	heap_caps_free(s->queue);
 	delete s;
 	owner->alive_.fetch_sub(1);
 	vTaskDelete(nullptr);
@@ -484,11 +485,17 @@ bool EspWebSocketClient::connect(const char* url, WebSocketClientListener& liste
 		return false;
 	}
 	Session* s = new (std::nothrow) Session();
-	uint8_t* queue = new (std::nothrow) uint8_t[kSendQueueBytes];
+	// The send queue is read and written by the CPU only (the library copies each piece into its own
+	// buffer before TLS encrypts it): it goes into the LP SRAM while that has room, so the 7 KB stay in
+	// the HP SRAM for what DMA needs, the WiFi driver's frame copies and the AES engine's buffers
+	// (homecontrol #110/#112: at 900 s the WiFi driver's 1682 B copy failed with 1880 B of HP SRAM free
+	// while the LP SRAM had 8144 B, a block of 8064 B).
+	uint8_t* queue = static_cast<uint8_t*>(heap_caps_malloc_prefer(kSendQueueBytes, 2, MALLOC_CAP_RTCRAM,
+		MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 	if (s == nullptr || queue == nullptr) {
 		delete s;
-		delete[] queue;
-		*error = "no memory for the connection (4.5 KB and the 6 KB send queue)";
+		heap_caps_free(queue);
+		*error = "no memory for the connection (4.5 KB and the 7 KB send queue)";
 		return false;
 	}
 	s->queue = queue;
@@ -518,7 +525,7 @@ bool EspWebSocketClient::connect(const char* url, WebSocketClientListener& liste
 #endif
 	s->client = esp_websocket_client_init(&config);
 	if (s->client == nullptr) {
-		delete[] s->queue;
+		heap_caps_free(s->queue);
 		delete s;
 		*error = "WebSocket client not created (memory)";
 		return false;
@@ -529,7 +536,7 @@ bool EspWebSocketClient::connect(const char* url, WebSocketClientListener& liste
 		pdPASS) {
 		alive_.fetch_sub(1);
 		esp_websocket_client_destroy(s->client); // not started: no task to stop
-		delete[] s->queue;
+		heap_caps_free(s->queue);
 		delete s;
 		*error = "cannot create the WebSocket sender task (memory)";
 		return false;

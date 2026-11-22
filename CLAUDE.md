@@ -34,7 +34,7 @@ The working method is the skill `homecontrol-workflow` in `.claude/skills/`.
   providers such as the Zigbee adapter through `DynamicSpecProvider`; `doc/image.md`), the Zigbee
   adapter (`hc::zigbee`: `ZigbeeAdapter`, `DeviceDatabase`, the cluster mapping, over the platform's
   `ZigbeeDriver`; `doc/zigbee.md`), external values from HTTP JSON sources (`ExternalValues`,
-  `doc/external.md`), the one fetch worker of every HTTP request (`FetchQueue`, `doc/external.md`), the language packs of the web UI (`LanguagePacks`, the `ui.lang` setting;
+  `doc/external.md`), the one fetch worker of every HTTP request (`FetchQueue`, `doc/external.md`), the TLS gate that starts one TLS session at a time with room in the DMA-capable memory (`TlsGate` over the platform's `MemoryWatch`, `doc/core.md`), the language packs of the web UI (`LanguagePacks`, the `ui.lang` setting;
   `doc/i18n.md`), the MQTT client (`Mqtt`: states, commands, Home Assistant discovery, history
   export over the platform's `MqttClient`; `spec/mqtt.md`, `doc/mqtt.md`), and the E-Home
   connection (`EhomeLink`: enrollment, the outbound WebSocket over the platform's

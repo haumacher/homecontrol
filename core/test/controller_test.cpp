@@ -325,6 +325,32 @@ TEST_CASE("Controller.HeartbeatReportsFailedAllocationsOncePerBeat") {
 	CHECK(std::string(text) == "untouched");
 }
 
+TEST_CASE("Controller.HeartbeatNamesTheLowOfItsWindowWhenItIsNoNewLowSinceBoot") {
+	// homecontrol #110: at 900 s the house controller fell to 1880 B of HP SRAM without a new low
+	// since boot; the window's low names that moment and its task, once per beat.
+	FakePlatform p;
+	Controller controller(p.platform());
+	controller.start();
+	controller.connectivity().link_up("192.0.2.10");
+	p.system.min_free_bytes = 1144;
+	p.system.low_detail = "lowest 2140 B at 21.05 s: HP 1136 B (block 448 B), LP 1004 B (block 640 B); hc_fetch took 516 B";
+	run_until(controller, p.clock, 1000 + 30000);
+	REQUIRE(p.sink.count("new low below") == 1);
+	CHECK(p.sink.count("heap low in the last") == 0); // the boot-wide line names it already
+
+	p.system.window_detail = "lowest 10024 B at 900.58 s: HP 1880 B (block 512 B), LP 8144 B (block 8064 B); tiT took "
+		"1682 B DMA";
+	run_until(controller, p.clock, 1000 + 40000);
+	CHECK(p.sink.count("heap low in the last") == 1);
+	CHECK(p.sink.lines.back() == "W hc.ctl: heap low in the last 10 s: lowest 10024 B at 900.58 s: HP 1880 B (block "
+		"512 B), LP 8144 B (block 8064 B); tiT took 1682 B DMA");
+	CHECK(p.sink.count("new low below") == 1); // the boot-wide line stays as it is
+
+	// A window without a low below the mark: nothing.
+	run_until(controller, p.clock, 1000 + 100000);
+	CHECK(p.sink.count("heap low in the last") == 1);
+}
+
 TEST_CASE("Controller.HeartbeatWarnsNothingWithoutAMeasuredHeap") {
 	FakePlatform p;
 	p.system.free_bytes = 0; // the POSIX platform has no heap figure

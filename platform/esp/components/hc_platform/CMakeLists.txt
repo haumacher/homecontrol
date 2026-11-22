@@ -12,7 +12,7 @@
 
 idf_component_register(
 	SRCS "esp_platform.cpp" "loop_queue.cpp" "esp_diagnostics.cpp" "esp_system_info.cpp"
-		"console_output.cpp" "esp_worker.cpp" "planned_restart.cpp" "heap_watch.cpp"
+		"console_output.cpp" "esp_worker.cpp" "planned_restart.cpp" "heap_watch.cpp" "esp_memory_watch.cpp"
 	INCLUDE_DIRS "include"
 	REQUIRES hc_core hc_settings hc_status_light esp_timer esp_system log freertos nvs_flash
 	PRIV_REQUIRES espcoredump esp_partition spi_flash esp_driver_tsens app_update

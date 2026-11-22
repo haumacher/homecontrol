@@ -18,6 +18,7 @@
 #include "hc/platform/clock.h"
 #include "hc/platform/mqtt_client.h"
 #include "hc/platform/settings.h"
+#include "hc/tls_gate.h"
 
 namespace hc {
 
@@ -117,7 +118,7 @@ struct MqttStatus {
 /// configuration does (an image without `mqtt` costs nothing beyond the object, issue #44). A
 /// configuration without the memory for them is refused. Nothing is allocated in steady state. One event-loop timer, one
 /// datapoint listener (while configured). Threading: the event loop's thread.
-class Mqtt : public DatapointListener, public MqttClientListener {
+class Mqtt : public DatapointListener, public MqttClientListener, private TlsGateClient {
 public:
 	static constexpr uint32_t kRetryInitialMs = 5000;
 	static constexpr uint32_t kRetryCapMs = 300000;
@@ -199,6 +200,11 @@ public:
 	/// off.
 	bool publish_discovery(const char** error = nullptr);
 
+	/// Orders the connects to an mqtts:// broker with the other TLS sessions (homecontrol #110/#112,
+	/// TlsGate::Kind::session): a connect waits for the gate (state waiting) and holds it while it
+	/// connects. nullptr: no gate.
+	void set_gate(TlsGate* gate) { gate_ = gate; }
+
 	MqttState state() const { return state_; }
 	/// Whether the payload and history buffers are allocated (only while configured or retiring).
 	bool has_buffers() const { return buffers_ != nullptr; }
@@ -233,6 +239,7 @@ private:
 
 	void set_state(MqttState state);
 	void attempt();
+	void tls_gate_opened() override;
 	void fail(const char* reason);
 	void begin_retire(Table* next);
 	void finish_retire();
@@ -286,6 +293,7 @@ private:
 	bool offline_sent_ = false;
 
 	MqttState state_ = MqttState::disabled;
+	TlsGate* gate_ = nullptr;
 	Backoff backoff_;
 	TimerHandle timer_;
 	uint64_t attempt_at_ = 0;

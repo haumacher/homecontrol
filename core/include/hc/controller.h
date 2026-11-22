@@ -71,8 +71,9 @@ protected:
 /// logs the uptime, the network state and the heap only when the network's state, mode or address
 /// changed since the last line, and warns once per new low when the free heap's minimum falls below
 /// kHeapLowWaterBytes, with the platform's account of that low (SystemInfo::heap_low(), homecontrol
-/// #110); it warns once per beat when allocations failed since the last one, with the first of them
-/// (SystemInfo::failed_allocations()). In steady state it writes nothing (the figures are in GET
+/// #110), and once per beat whose own lowest point was below it without being a new low since boot
+/// (SystemInfo::heap_window_low()); it warns once per beat when allocations failed since the last
+/// one, with the first of them (SystemInfo::failed_allocations()). In steady state it writes nothing (the figures are in GET
 /// /api/status), so the log ring reaches back hours.
 /// With a status light it shows led_status() (hc::StatusLed): checked after every run_once(), a
 /// blinking pattern ticked every StatusLed::kTickMs, a steady one set once without a timer.

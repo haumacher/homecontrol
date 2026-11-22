@@ -53,6 +53,9 @@ public:
 	HttpFetcher& external() { return external_; }
 	HttpFetcher& language() { return language_; }
 
+	/// Orders the https:// requests with the other TLS sessions (homecontrol #110/#112; main.cpp).
+	void set_gate(TlsGate* gate) { queue_.set_gate(gate); }
+
 	/// "free" / "allocated" / "running '<lane>', <n> waiting" for the consoles' status lines.
 	const char* describe(char* buffer, size_t size) const;
 

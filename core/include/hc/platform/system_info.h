@@ -108,6 +108,16 @@ public:
 		return false;
 	}
 
+	/// The lowest point since the previous call (homecontrol #110), when it was below the platform's
+	/// low-water mark (the heartbeat's kHeapLowWaterBytes): the same account as heap_low(). Each call
+	/// starts a new window. False: none below the mark, or the platform does not track it (the
+	/// default). The heartbeat is the one caller.
+	virtual bool heap_window_low(char* out, size_t size) const {
+		(void)out;
+		(void)size;
+		return false;
+	}
+
 	/// The allocations that failed since the previous call (homecontrol #110), with an account of
 	/// the first of them in `out` (its size and kind, the task, the heap at that moment). 0: none, or
 	/// the platform does not count them (the default). The heartbeat is the one caller.

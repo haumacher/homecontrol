@@ -152,6 +152,57 @@ worker of its own, so a write never waits for a measurement. A job touches only 
 the loop: its own data, the BlobStore on blobs nobody else writes meanwhile (doc/persistence.md
 "Threads"), the log.
 
+## The TLS gate
+
+`hc::TlsGate` (`core/include/hc/tls_gate.h`, homecontrol #110/#112) orders the controller's TLS
+sessions. On the house controller (2026-11-22) the boot's language-pack fetch opened a second TLS
+session beside the E-Home session and a browser's WebSocket: it took the free heap from 41728 B
+(13.59 s) to 2140 B (21.05 s), the HP SRAM to 140 B; the WiFi driver's frame copies (DMA) failed,
+frames were lost, and the fetch failed as well (`ESP_ERR_HTTP_CONNECT`).
+
+| Client | Kind | Holds the gate |
+|---|---|---|
+| `EhomeLink` | `link`: admitted whenever no session holds the gate, ahead of every waiting session, without a memory check | from its connect until the socket is open, or the attempt failed |
+| `FetchQueue` (every `https://` request: the update check, the language packs, the external values, the enrollment, the console's image download) | `session` | for the whole request |
+| `Mqtt` with an `mqtts://` broker | `session` | while it connects |
+
+A session is admitted only when nobody holds the gate, no link waits, and the memory DMA reaches (the
+C6's HP SRAM: `MemoryWatch::dma_room()`) has `session + reserve` bytes free and a block of `block`
+bytes (`TlsGate::kDeviceNeeds`, measured on the house controller):
+
+| Need | Bytes | From |
+|---|---|---|
+| session | 40960 | the boot's fetch took the free heap from 41728 B to 2140 B and failed before its handshake ended: at least 39588 B. The heap hands out the HP SRAM first, so the HP SRAM must hold all of it |
+| reserve | 8192 | an E-Home write in flight beside it: a 2389 B record buffer and the 2880 B TCP send buffer held twice (lwIP's and the WiFi driver's copy), 8149 B; the WiFi copies that failed (180 B, 1682 B) did so at 140 B and 1880 B of HP SRAM |
+| block | 8448 | the fetch worker's task stack (8192 B, `EspHttpFetcher::kTaskStack`) with the heap's overhead, a fetch's largest single allocation |
+
+So a fetch starts with at least 49152 B of HP SRAM free and leaves at least 8 KB of it. A client that
+is not admitted waits, one place per client. Nothing polls: the gate goes on when the holder releases
+it, and when the platform reports that a free left enough DMA-capable memory (`MemoryWatch::notify_at()`;
+on the ESP the heap's free hook, `heap_watch::notify_free_at()`, one atomic load per free while
+nobody waits). When the free memory suffices but the largest block does not, it asks again a second
+later at the earliest (`kBlockRetryMs`), so frees do not flood the loop. A fetch that is not admitted
+within the lane's wait limit (120 s) ends without having run (`waited 120 s for memory for TLS (HP
+38120 B free of 49152 B, largest block 24064 B of 8448 B)`), and its consumer retries on its own
+schedule (the language packs after 1 minute, doubling to 1 hour; the external values at their next
+interval; the update check at its next check). Without a `MemoryWatch` (the host) sessions go by the
+order alone. The log (tag `hc.tls`):
+
+```
+I hc.tls: a TLS session waits for memory: HP 38120 B free of 49152 B, largest block 24064 B of 8448 B
+I hc.tls: a TLS session is admitted: the memory was freed
+I hc.ehome: waiting for another TLS session to start (the link goes first)
+I hc.mqtt: waiting for room for a TLS session (another one starts, or the memory is short)
+```
+
+**Does the fetch need TLS?** The update manifest is signed with the release key (`manifest.sig`,
+doc/ota.md "Manifest signature") and the firmware is guarded by the manifest's SHA-256, so the
+update's authenticity does not rest on TLS; the language-pack manifest is not signed, and the packs'
+SHA-256 in it protects only against a truncated transfer, so their authenticity does rest on TLS
+(doc/i18n.md); the external values' sources use what the image names. And the release site,
+haumacher.github.io, serves HTTPS only (GitHub Pages redirects `http://` on `github.io`), so plain
+HTTP would not save the session even for the signed manifest. TLS stays.
+
 ## Tests
 
 The core's unit tests (`core/test/`, doctest vendored in `third_party/doctest/`) run on the host
