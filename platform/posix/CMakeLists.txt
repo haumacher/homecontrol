@@ -199,6 +199,7 @@ target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_test.cpp")
 # Probe: every accepted image is safe to use in place (issue #87, spec/runtime-image.md I7).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/image_probe_test.cpp")
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/storage_stats_test.cpp")
+target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/blob_queue_test.cpp")
 # The control pages of the image (issue #54, schema 1.1).
 target_sources(hc_tests PRIVATE "${HC_REPO_DIR}/core/test/pages_test.cpp")
 # The roles and the anonymous pages (homecontrol #91, spec/api.md "Roles", spec/runtime-image.md 9.16).

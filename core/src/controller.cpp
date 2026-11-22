@@ -84,7 +84,7 @@ void Controller::start() {
 		static_cast<unsigned>(memory.min_free_bytes));
 
 	loop_.schedule_periodic(start_ms_ + kHeartbeatPeriodMs, kHeartbeatPeriodMs,
-		Callback::member<Controller, &Controller::heartbeat>(this));
+		Callback::member<Controller, &Controller::heartbeat>(this, "controller.heartbeat"));
 
 	bool quiet = false;
 	SettingsStatus quiet_status = settings_.get_bool(setting::kLedQuiet, quiet);
@@ -100,7 +100,7 @@ void Controller::start() {
 
 	if (status_light_ != nullptr) {
 		status_light_->set(false);
-		loop_.schedule_periodic(start_ms_, StatusLed::kTickMs, Callback::member<Controller, &Controller::led_tick>(this));
+		update_led();
 	}
 
 	improv_.start();
@@ -120,9 +120,36 @@ LedStatus Controller::led_status() const {
 	return led_input_->image_degraded() ? LedStatus::degraded : LedStatus::ready;
 }
 
+void Controller::update_led() {
+	if (status_light_ == nullptr) {
+		return;
+	}
+	LedStatus status = led_status();
+	bool quiet = status_led_.quiet();
+	if (led_shown_ && status == status_led_.status() && quiet == led_quiet_shown_) {
+		return;
+	}
+	led_shown_ = true;
+	led_quiet_shown_ = quiet;
+	// A new pattern starts at its first tick, now; a blinking one gets its tick timer on the grid of
+	// this moment, a steady one none (homecontrol #101: no tick while nothing blinks).
+	status_led_.set_status(status);
+	if (led_timer_.valid()) {
+		loop_.cancel(led_timer_);
+		led_timer_ = TimerHandle();
+	}
+	show_led(status_led_.tick());
+	if (!status_led_.steady()) {
+		led_timer_ = loop_.schedule_periodic(clock_.monotonic_ms() + StatusLed::kTickMs, StatusLed::kTickMs,
+			Callback::member<Controller, &Controller::led_tick>(this, "controller.led_tick"));
+	}
+}
+
 void Controller::led_tick() {
-	status_led_.set_status(led_status());
-	bool on = status_led_.tick();
+	show_led(status_led_.tick());
+}
+
+void Controller::show_led(bool on) {
 	if (on != light_on_) {
 		light_on_ = on;
 		status_light_->set(on);
@@ -146,6 +173,12 @@ bool Controller::set_led_quiet(bool quiet, const char** error) {
 
 void Controller::run_once() {
 	loop_.run_once(clock_.monotonic_ms());
+	// The LED's status is a function of state that only the loop's work changes (the network, the
+	// provisioning, the image): checked after every turn, it follows each change at once without a
+	// tick. A message of another task (the ESP's LoopQueue) is followed by the next turn.
+	if (started_) {
+		update_led();
+	}
 }
 
 uint64_t Controller::uptime_ms() const {

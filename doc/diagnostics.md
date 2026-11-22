@@ -118,8 +118,8 @@ timeout is 10 s, and a timeout panics (`CONFIG_ESP_TASK_WDT_TIMEOUT_S=10`,
 task's backtrace and starts again with the reason `task watchdog`. The idle task stays watched (a task
 that never yields starves it). The start-up before the loop (WiFi, LittleFS, the runtime image, the
 web server) is not watched; the line `event loop running <n> ms after the controller started` tells
-how long it held the loop's timers back (the LED tick and the button poll report missed periods when
-it exceeds their periods).
+how long it held the loop's timers back (the LED tick, `controller.led_tick`, reports missed
+periods when it exceeds 50 ms: 23 at 1281 ms on the house controller, 2026-11-20).
 
 **The console no longer stalls the loop.** The console's start used to block the event loop for about
 half a second (the line editor's terminal probe waits up to 500 ms for an answer): the LED tick and the

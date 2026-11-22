@@ -63,7 +63,7 @@ void StorageStats::refresh() {
 		return;
 	}
 	const char* error = nullptr;
-	if (!worker_->run(Callback{&StorageStats::job, this}, Callback::member<StorageStats, &StorageStats::done>(this),
+	if (!worker_->run(Callback{&StorageStats::job, this, "storage_stats.job"}, Callback::member<StorageStats, &StorageStats::done>(this, "storage_stats.done"),
 			&error)) {
 		if (!start_failed_) {
 			Log::warn(kTag, "the storage figures are not measured again (%s): the status shows the last ones",

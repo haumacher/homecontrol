@@ -16,6 +16,7 @@
 #include "console_output.h"
 #include "esp_platform.h"
 #include "esp_status_light.h"
+#include "hc/blob_queue.h"
 #include "hc/controller.h"
 #include "hc/network_name.h"
 #include "external_service.h"
@@ -88,6 +89,9 @@ hc::DatapointModel g_model(g_clock);
 // `image`, used in place (issue #87, spec/runtime-image.md 7) ----
 hc::esp::LittleFsBlobStore g_blobs;
 hc::esp::EspImageSlot g_slot;
+// The loop's blob writes off the loop (homecontrol #101, doc/persistence.md "Writing off the loop"):
+// a write queue in front of g_blobs, performed by a worker of its own (`hc_flash`).
+hc::esp::EspWorker g_flash_worker(g_queue, "hc_flash", hc::esp::EspWorker::kStack, true);
 // ---- end runtime image ----
 // ---- diagnostics (issue #4): reset reason, boot record, core dump, task watchdog (doc/diagnostics.md) ----
 hc::esp::EspDiagnostics g_diag;
@@ -97,6 +101,12 @@ hc::Controller& controller() {
 	// Constructed on first use, from app_main, after the IDF is up.
 	static hc::Controller instance(hc::Platform{g_clock, g_sink, g_system, g_settings, g_time_zone, g_wifi,
 		g_light_ready ? &g_light : nullptr, &g_serial, &g_wifi, &g_diag});
+	return instance;
+}
+
+hc::BlobQueue& flash_queue() {
+	// Constructed on first use, from app_main (it allocates its arena).
+	static hc::BlobQueue instance(controller().loop(), g_clock, g_blobs, &g_flash_worker);
 	return instance;
 }
 
@@ -116,7 +126,8 @@ int knx_console(void*, int argc, char** argv) {
 // ---- runtime image (issue #8): the loader, the rules, the schedules, persistence and history of
 // the image, and the console command `image` ----
 hc::image::ImageService& image() {
-	static hc::image::ImageService instance(controller(), g_model, g_blobs, g_slot, knx().adapter(), &knx().tunnel());
+	static hc::image::ImageService instance(controller(), g_model, flash_queue(), g_slot, knx().adapter(),
+		&knx().tunnel());
 	return instance;
 }
 
@@ -146,7 +157,7 @@ hc::esp::ExternalService& external() {
 
 // ---- language packs (issue #24): the release's pack of ui.lang from the update server ----
 hc::esp::I18nService& i18n() {
-	static hc::esp::I18nService instance(controller(), fetches().language(), g_blobs);
+	static hc::esp::I18nService instance(controller(), fetches().language(), flash_queue());
 	return instance;
 }
 // ---- end language packs ----
@@ -198,10 +209,11 @@ void loop_task(void*) {
 	zigbee().init(image()); // the adapter becomes a dynamic spec provider of the image service
 	// ---- runtime image ----
 	g_blobs.start(); // mounts /storage (shared with the web server's UI files) and opens /storage/state
+	ctl.shutdown().add(flash_queue()); // a planned restart waits for the queued writes (at most 1 s)
 	g_storage.set_worker(&g_storage_worker);
 	g_storage.measure_now(); // once here; after that off the loop when the store changed
 	g_slot.start(); // the partition `image` (logged); the service maps it at start()
-	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services));
+	image().set_ntp_changed(hc::Callback::member<hc::esp::NetServices, &hc::esp::NetServices::restart_sntp>(&g_services, "net.restart_sntp"));
 	image().set_external(&external().values());
 	image().set_mqtt(&mqtt().mqtt());
 	image().set_load_probe(&g_load_probe);
@@ -214,7 +226,7 @@ void loop_task(void*) {
 		g_serial.start_improv(g_queue, ctl.improv(), g_wifi.device_name(), network_name());
 	}
 
-	static hc::esp::WpsButton button(ctl.loop(), g_clock, ctl.connectivity());
+	static hc::esp::WpsButton button(ctl.loop(), g_clock, g_queue, ctl.connectivity());
 	button.start();
 	// ---- web server (issue #5) ----
 	static hc::esp::WebServer web(ctl, g_model, g_queue, g_services, g_ota, g_wifi.device_name());

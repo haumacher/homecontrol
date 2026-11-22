@@ -144,7 +144,7 @@ void Improv::rpc_wifi_settings(const uint8_t* payload, size_t length) {
 	provisioning_ = true;
 	cancel(provision_timer_);
 	provision_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kProvisionTimeoutMs,
-		Callback::member<Improv, &Improv::provision_timeout_due>(this));
+		Callback::member<Improv, &Improv::provision_timeout_due>(this, "improv.provision_timeout_due"));
 	send_state();
 	connectivity_.request_connect("Improv: new WiFi credentials");
 }
@@ -185,9 +185,9 @@ void Improv::rpc_get_networks() {
 	scanning_ = true;
 	network_count_ = 0;
 	uint64_t now = clock_.monotonic_ms();
-	scan_timeout_ = loop_.schedule_at(now + kScanTimeoutMs, Callback::member<Improv, &Improv::scan_timeout_due>(this));
+	scan_timeout_ = loop_.schedule_at(now + kScanTimeoutMs, Callback::member<Improv, &Improv::scan_timeout_due>(this, "improv.scan_timeout_due"));
 	uint64_t at = connectivity_.station_free_at();
-	scan_timer_ = loop_.schedule_at(at > now ? at : now, Callback::member<Improv, &Improv::scan_start_due>(this));
+	scan_timer_ = loop_.schedule_at(at > now ? at : now, Callback::member<Improv, &Improv::scan_start_due>(this, "improv.scan_start_due"));
 	if (!scan_timer_.valid() || !scan_timeout_.valid()) {
 		finish_scan(false, "no timer for the scan");
 	}
@@ -384,7 +384,7 @@ void Improv::set_end(uint64_t at, const char* reason) {
 	end_at_ = at;
 	end_reason_ = reason;
 	cancel(end_timer_);
-	end_timer_ = loop_.schedule_at(at, Callback::member<Improv, &Improv::end_due>(this));
+	end_timer_ = loop_.schedule_at(at, Callback::member<Improv, &Improv::end_due>(this, "improv.end_due"));
 	if (!end_timer_.valid()) {
 		end("no timer for the Improv window");
 	}

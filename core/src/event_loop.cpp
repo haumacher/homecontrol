@@ -85,9 +85,8 @@ bool EventLoop::post(Callback callback) {
 	return true;
 }
 
-/// A handler that holds the loop longer than this is logged with the address of its function
-/// (homecontrol #50: the 20 ms timers miss a period when one does; addr2line on the firmware's ELF
-/// names the handler).
+/// A handler that holds the loop longer than this is logged with its name (homecontrol #50, #101: the
+/// 20 ms timers miss a period when one does).
 constexpr uint64_t kSlowHandlerMs = 25;
 
 void EventLoop::invoke(const Callback& callback, const char* what) {
@@ -96,8 +95,13 @@ void EventLoop::invoke(const Callback& callback, const char* what) {
 	if (clock_ != nullptr) {
 		uint64_t took = clock_->monotonic_ms() - start;
 		if (took > kSlowHandlerMs) {
-			Log::warn(kTag, "slow %s handler %p took %llu ms", what, reinterpret_cast<void*>(callback.fn),
-				static_cast<unsigned long long>(took));
+			if (callback.name != nullptr) {
+				Log::warn(kTag, "slow %s handler %s took %llu ms", what, callback.name,
+					static_cast<unsigned long long>(took));
+			} else {
+				Log::warn(kTag, "slow %s handler %p (unnamed) took %llu ms", what,
+					reinterpret_cast<void*>(callback.fn), static_cast<unsigned long long>(took));
+			}
 		}
 	}
 }
@@ -175,9 +179,15 @@ void EventLoop::fire(uint8_t index, uint32_t generation, uint64_t now_ms) {
 		uint64_t missed = (now_ms - slot.deadline) / slot.period;
 		next = slot.deadline + (missed + 1) * slot.period;
 		missed_periods_ += missed;
-		Log::warn(kTag, "periodic timer %08x (period %u ms) missed %llu period(s), next at %llu ms",
-			static_cast<unsigned>(handle_of(index).value()), static_cast<unsigned>(slot.period),
-			static_cast<unsigned long long>(missed), static_cast<unsigned long long>(next));
+		if (callback.name != nullptr) {
+			Log::warn(kTag, "periodic timer %s (period %u ms) missed %llu period(s), next at %llu ms", callback.name,
+				static_cast<unsigned>(slot.period), static_cast<unsigned long long>(missed),
+				static_cast<unsigned long long>(next));
+		} else {
+			Log::warn(kTag, "periodic timer %08x (period %u ms) missed %llu period(s), next at %llu ms",
+				static_cast<unsigned>(handle_of(index).value()), static_cast<unsigned>(slot.period),
+				static_cast<unsigned long long>(missed), static_cast<unsigned long long>(next));
+		}
 	}
 	slot.deadline = next;
 	slot.sequence = next_sequence_++;

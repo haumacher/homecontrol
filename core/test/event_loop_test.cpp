@@ -24,7 +24,7 @@ struct Action {
 
 	void run() { body(); }
 
-	Callback callback() { return Callback::member<Action, &Action::run>(this); }
+	Callback callback() { return Callback::member<Action, &Action::run>(this, "action.run"); }
 };
 
 /// Records the order in which named handlers run. Actions live in a deque, so their addresses
@@ -447,9 +447,10 @@ TEST_CASE("EventLoop.NextDeadline") {
 	CHECK(loop.next_deadline() == 1400);
 }
 
-TEST_CASE("EventLoop.LogsASlowHandlerWithItsFunction") {
-	// homecontrol #50: a handler that holds the loop longer than 25 ms is logged with the address of
-	// its function (addr2line names it), a posted callback, a timer and a periodic timer alike.
+TEST_CASE("EventLoop.LogsASlowHandlerWithItsName") {
+	// homecontrol #50, #101: a handler that holds the loop longer than 25 ms is logged with the name
+	// it was registered with, a posted callback, a timer and a periodic timer alike; an unnamed one
+	// with the address of its function.
 	ScopedCapture capture;
 	hc_test::FakeClock clock;
 	clock.now_ms = 0;
@@ -457,15 +458,40 @@ TEST_CASE("EventLoop.LogsASlowHandlerWithItsFunction") {
 	loop.set_clock(&clock);
 	Action quick{[&]() { clock.advance(25); }};
 	Action slow{[&]() { clock.advance(26); }};
+	auto named = [&](const char* name) {
+		Callback c = slow.callback();
+		c.name = name;
+		return c;
+	};
 	loop.post(quick.callback());
 	loop.run_once(clock.now_ms);
 	CHECK_FALSE(capture.sink.contains("slow"));
-	loop.post(slow.callback());
-	loop.schedule_at(clock.now_ms, slow.callback());
-	loop.schedule_periodic(clock.now_ms, 1000, slow.callback());
+	loop.post(named("test.posted"));
+	loop.schedule_at(clock.now_ms, named("test.once"));
+	loop.schedule_periodic(clock.now_ms, 1000, named("test.periodic"));
+	loop.run_once(clock.now_ms);
+	CHECK(capture.sink.contains("slow posted handler test.posted took 26 ms"));
+	CHECK(capture.sink.contains("slow timer handler test.once took 26 ms"));
+	CHECK(capture.sink.contains("slow periodic handler test.periodic took 26 ms"));
+	CHECK_FALSE(capture.sink.contains("0x"));
+
+	Callback unnamed = slow.callback();
+	unnamed.name = nullptr;
+	loop.post(unnamed);
 	loop.run_once(clock.now_ms);
 	CHECK(capture.sink.contains("slow posted handler 0x"));
-	CHECK(capture.sink.contains("slow timer handler 0x"));
-	CHECK(capture.sink.contains("slow periodic handler 0x"));
-	CHECK(capture.sink.contains(" took 26 ms"));
+	CHECK(capture.sink.contains("(unnamed) took 26 ms"));
+}
+
+TEST_CASE("EventLoop.MissedPeriodNamesTheTimer") {
+	// homecontrol #101: the warning of a missed period stays and says which timer it was.
+	ScopedCapture capture;
+	EventLoop loop;
+	Action tick{[]() {}};
+	Callback c = tick.callback();
+	c.name = "led.tick";
+	loop.schedule_periodic(100, 50, c);
+	loop.run_once(370);
+	CHECK(capture.sink.contains("periodic timer led.tick (period 50 ms) missed 5 period(s), next at 400 ms"));
+	CHECK(loop.missed_periods() == 5);
 }

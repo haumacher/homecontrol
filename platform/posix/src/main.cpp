@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "hc/blob_queue.h"
 #include "hc/controller.h"
 #include "hc/datapoint.h"
 #include "hc/demo.h"
@@ -258,7 +259,23 @@ int main(int argc, char** argv) {
 	hc::posix::FileBlobStore blobs(hc::posix::FileBlobStore::directory_for_settings(settings_path));
 	// The image slot (spec/runtime-image.md 7): a file beside the settings, 512 KB at most.
 	hc::posix::FileImageSlot slot(hc::posix::FileImageSlot::path_for_settings(settings_path));
-	hc::image::ImageService image(controller, model, blobs, slot, adapter, &tunnel);
+	// The loop's blob writes go through a write queue to a worker of its own (homecontrol #101). The
+	// worker is the later member, so it is destroyed first: its destructor waits for a job that
+	// still reads the queue's copy.
+	struct FlashWrites {
+		hc::BlobQueue queue;
+		hc::posix::ThreadWorker worker;
+		FlashWrites(hc::EventLoop& loop, const hc::Clock& clock, hc::BlobStore& store,
+			hc::posix::LoopExecutor& executor, const hc::BlobQueueLimits& limits)
+			: queue(loop, clock, store, &worker, limits), worker(executor) {}
+	};
+	hc::BlobQueueLimits flash_limits;
+	flash_limits.arena_bytes = 64 * 1024;
+	flash_limits.entries = 64;
+	FlashWrites flash(controller.loop(), clock, blobs, executor, flash_limits);
+	hc::BlobQueue& flash_queue = flash.queue;
+	controller.shutdown().add(flash_queue); // a planned restart waits for the queued writes
+	hc::image::ImageService image(controller, model, flash_queue, slot, adapter, &tunnel);
 	// The storage figures of the status, measured off the loop after a change (#74).
 	hc::StorageStats storage(blobs);
 	hc::posix::ThreadWorker storage_worker(executor);
@@ -372,16 +389,24 @@ int main(int argc, char** argv) {
 	}
 	// The connections close (homecontrol #103): the KNX tunnel's DISCONNECT_REQUEST, its answer awaited
 	// at most Shutdown::kMaxWaitMs, so the gateway frees the slot before the process ends.
+	image.flush(); // pending value and history writes, into the write queue
 	controller.shutdown().begin(g_restart ? "restart over the API" : "stop", hc::Callback());
 	while (!controller.shutdown().finished()) {
 		controller.run_once();
 		sleep_until_work(executor, udp, 50, controller.loop(), clock);
 	}
+	// The queue's writes (also when a restart over the API ran the closing phase already).
+	for (int i = 0; i < 100 && !flash_queue.idle(); ++i) {
+		controller.run_once();
+		sleep_until_work(executor, udp, 20, controller.loop(), clock);
+	}
+	if (!flash_queue.idle()) {
+		hc::Log::warn(kTag, "stopping with %u blob change(s) not written", static_cast<unsigned>(flash_queue.pending()));
+	}
 	executor.stop();
 	if (web) {
 		web->stop();
 	}
-	image.flush(); // pending value and history writes
 	hc::Log::info(kTag, "stopping on %s after %llu s", g_restart ? "a restart over the API" :
 		hc::posix::PosixDiagnostics::signal_name(g_stop).c_str(),
 		static_cast<unsigned long long>(controller.uptime_ms() / 1000));

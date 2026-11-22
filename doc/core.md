@@ -111,9 +111,12 @@ time it began (`longest_turn_ms()`, `longest_turn_at_ms()`), measured on the clo
 hands it (`set_clock()`). A turn is one `run_once`, or a batch of messages the platform runs on the
 loop's thread outside it (`account_turn()`: the ESP's `LoopQueue::dispatch()`, where web requests and
 console commands run; POSIX's web jobs and KNX datagrams after its `poll()`). A handler that holds the
-loop longer than 25 ms is logged with the address of its function (`slow timer|periodic|posted
-handler 0x… took N ms`, and `slow message handler` for the ESP's `LoopQueue`): `addr2line -C -f -e
-homecontrol.elf 0x…` names it, typically `Callback::invoke_member<hc::X, &hc::X::method>`. That is
+loop longer than 25 ms is logged with its name (`slow timer|periodic|posted handler blocks.on_persist
+took N ms`, and `slow message handler <what>` for the ESP's `LoopQueue`, with the text its poster
+gave the message); a periodic timer that skipped periods is named the same way (`periodic timer
+controller.led_tick (period 50 ms) missed 3 period(s)`). Every callback carries a short static name
+(`Callback::member<T, &T::m>(this, "component.handler")`, homecontrol #101); one built without a
+name is logged by its function's address, for `addr2line -C -f -e homecontrol.elf 0x…`. That is
 how #50 found the scheduler's 333 ms evaluation (the sun computed for ten dates per astro entry,
 now cached by the TimeService, and since #57 computed only for the two or so dates that can hold
 the next firing), and #55 the live feed's `pump` holding the loop 111 and 164 ms when
@@ -134,11 +137,11 @@ writes (a sender task), and since #68 a generic job through `hc::Worker`
 `hc_work` (4 KB stack, priority 2) for each job and deletes it after, as the fetchers do, so its
 stack is heap only while it runs, and posts `done` through the `LoopQueue`; POSIX's `ThreadWorker`
 runs a thread per job and brings `done` over the `LoopExecutor`; the tests' `ManualWorker`
-(`core/test/fake_worker.h`) runs the job and `done` when the test says. Two workers run jobs: the
-runtime image's store (doc/image.md "Storing off the loop") and, since #74, the measurement of the
-storage figures the polled endpoints report (`StorageStats`, doc/persistence.md "The storage
-figures"; `hc_stat` on the ESP). Each has a worker of its own, so a deploy never finds the store's
-worker busy with a measurement. A job touches only what is safe beside
+(`core/test/fake_worker.h`) runs the job and `done` when the test says. Workers run jobs for
+the measurement of the storage figures the polled endpoints report (since #74: `StorageStats`,
+doc/persistence.md "The storage figures"; `hc_stat` on the ESP) and, since #101, the loop's blob
+writes (`BlobQueue`, doc/persistence.md "Writing off the loop"; `hc_flash` on the ESP). Each has a
+worker of its own, so a write never waits for a measurement. A job touches only what is safe beside
 the loop: its own data, the BlobStore on blobs nobody else writes meanwhile (doc/persistence.md
 "Threads"), the log.
 

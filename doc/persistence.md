@@ -57,19 +57,57 @@ namespace of the store's own (a directory nobody else writes); a name is never a
 return a status and are logged by the implementation, never abort. Writes may take milliseconds;
 the callers rate-limit them.
 
-**Threads.** The core calls the store on the event loop's thread, with one exception (#68): the
-image store's write of a deployed image (`ImageStore::write`: its chunks `image.<g>.<n>`, the
-manifest `image.idx`, the removal of the old generation) runs on the platform's `Worker` while the
-loop goes on with its own blobs (values, rings, archives, language packs) and reads the image's
-(`GET /api/image`, `ImageStore::stored()`). So an implementation must take calls on *different*
-blobs from two threads at once and keep no per-call state in the object; calls on the same blob
-never overlap (the image service refuses a second store, an unload and a deploy while one runs).
-LittleFS (`LittleFsBlobStore`: paths on the stack, the file system's own lock around each call;
-littlefs fixes up open directories when another call commits, so `visit()` beside a write is safe)
-and POSIX files (`FileBlobStore`) do; the tests' `FakeBlobStore` and `MemoryBlobStore` are not
-thread-safe and are only used with the stepped `ManualWorker`, on one thread. The storage figures'
-measurement (below) reads the store from a second worker (`visit()`, `free_space()`, `usage()`),
-beside both.
+**Threads.** The loop's writers (the value store, the history and its archives, the blocks'
+managed state, the inhabitant's timelines, the language packs) reach the store through the write
+queue (`BlobQueue`, below, homecontrol #101), whose worker performs their changes while the loop
+goes on reading; the storage figures' measurement (below) walks the store from a worker of its own
+(`visit()`, `free_space()`, `usage()`). So an implementation takes calls from several threads at
+once and keeps no per-call state in the object. Calls on the same blob do not overlap, with one
+exception: the loop may read a blob while the queue's worker patches or writes it, and gets the
+complete old or the complete new content (the queue overlays the patch it has in flight, so the
+loop reads the new). LittleFS (`LittleFsBlobStore`: paths on the stack, the file system's own lock
+around each call, an atomic rename for a write, a patch committed at the file's sync; littlefs
+fixes up open directories when another call commits, so `visit()` beside a write is safe) and POSIX
+files (`FileBlobStore`: writes and patches through a temporary file renamed over the blob) do; the
+tests' `FakeBlobStore` and `MemoryBlobStore` are not thread-safe and are only used with the stepped
+`ManualWorker`, on one thread.
+
+**Writing off the loop (#101).** On the house controller (firmware 1.5.0, 2026-11-20) the flash
+writers held the loop 26 to 182 ms: the blocks' records (`BlockRuntime::on_persist`, 26 to 44 ms
+about every minute, 143 to 182 ms every 8 to 12 minutes, LittleFS erasing and compacting behind
+the write), the value store (`ValueStore::on_post`, `on_tick`, 35 to 41 ms) and the uptime record in
+NVS (43 ms); the 20 ms timers missed periods for each. #102 removed the periodic writers (no block
+state but the managed one, no uptime record); what remains is written on change, and #101 takes it
+off the loop. `BlobQueue` (`core/include/hc/blob_queue.h`) is a `BlobStore` in front of the
+platform's: a write, patch or removal is copied into its arena and returns at once; a worker of its
+own (`hc_flash` on the ESP, 4 KB stack, priority 2 below the loop's 5, its job logged at debug
+level of `hc.worker`; a thread on POSIX) performs the changes one after the other, in the order they
+came. A read, size or visit answers from the queued changes where there are any (read your
+writes: a deploy's load reads the records its flush has just queued); a new write or removal of a
+blob replaces its waiting changes (not the one in flight), a patch of a waiting write goes into its
+copy. A change the store refuses is tried again after 30 s (the other blobs' changes go first, the
+same blob's wait behind it), at most five times, then dropped with an error line. When the arena
+(8 KB on the C6, 64 KB on POSIX) or its 24 entries (64) are full, or a blob is larger than the
+arena, the change goes to the store at once on the loop as before, with a warning once per streak
+(`write queue full ...`) — the history's rings above 8 KB (about 1000 samples) are such writes,
+and they show as `slow ... handler history.on_tick`; the house controller has no history. A planned
+restart waits for the queue (a `Shutdown` participant, at most 1 s); the POSIX build also drains
+it before it exits. The arena costs 8 KB of RAM and the entry table 1.3 KB, allocated at start.
+
+What the worker cannot take away: on the single-core C6 a flash erase or program runs with the
+cache off and the scheduler suspended (`CONFIG_SPI_FLASH_AUTO_SUSPEND` is not set), so every task
+waits for one sector erase (tens of ms; the IDF yields between sectors,
+`CONFIG_SPI_FLASH_YIELD_DURING_ERASE`). Since the worker runs only when the loop sleeps, such a
+pause delays the loop's next wakeup by at most one erase and is not a turn of the loop: no slow
+handler line, and no missed period for a timer whose period is longer than the erase. The file
+system's lock is shared: a read of the loop beside the worker's write waits for the write's current
+call (LittleFS's mutex, with priority inheritance).
+
+Not through the queue: the streaming write of a language pack (`open_writer()`, a download, rare;
+refused with `busy` while a queued change of the same blob waits), the Zigbee device database in
+NVS (`hc_zigbee`'s `NvsBlobStore`, on a device's join), and the settings in NVS (`Settings`: the
+rules' states, the overrides, written on a change; a write is a few ms, an NVS page erase more;
+their `visit()` beside a write of another task is not safe on the IDF's NVS iterator).
 
 **The storage figures (#74).** What the status and the System page show of the store (the
 partition's size, use and free space, the files and their bytes) and the free space of the image's

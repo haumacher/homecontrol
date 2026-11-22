@@ -1103,7 +1103,7 @@ void ExternalValues::arm() {
 		next = in_flight_deadline_;
 	}
 	if (next != EventLoop::kNever) {
-		timer_ = loop_.schedule_at(next, Callback::member<ExternalValues, &ExternalValues::timer_due>(this));
+		timer_ = loop_.schedule_at(next, Callback::member<ExternalValues, &ExternalValues::timer_due>(this, "external.timer_due"));
 	}
 }
 

@@ -356,7 +356,7 @@ void WebServer::system_action(SystemAction action) {
 	// factory reset's erase, then the restart.
 	if (action == SystemAction::factory_reset) {
 		planned_restart(controller_, "factory reset over the API",
-			Callback{[](void* blobs) { factory_reset_and_restart(static_cast<BlobStore*>(blobs), "over the API"); }, blobs_});
+			Callback{[](void* blobs) { factory_reset_and_restart(static_cast<BlobStore*>(blobs), "over the API"); }, blobs_, "web.factory_reset"});
 		return;
 	}
 	Log::warn(kTag, "restart requested over the API: restarting");

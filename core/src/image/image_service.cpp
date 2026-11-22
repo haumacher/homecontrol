@@ -1102,7 +1102,7 @@ void ImageService::dynamic_specs_changed(DynamicSpecProvider& provider) {
 	if (model_loaded_once_ && last_model_load_ms_ + kReloadSpacingMs > now) {
 		at = last_model_load_ms_ + kReloadSpacingMs;
 	}
-	reload_timer_ = controller_.loop().schedule_at(at, Callback::member<ImageService, &ImageService::reload_due>(this));
+	reload_timer_ = controller_.loop().schedule_at(at, Callback::member<ImageService, &ImageService::reload_due>(this, "image.reload_due"));
 	reload_pending_ = reload_timer_.valid();
 	if (!reload_pending_) {
 		Log::error(kTag, "the datapoints of '%s' changed but no timer is free for the reload", provider.provider_name());

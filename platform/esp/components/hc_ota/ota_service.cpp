@@ -65,9 +65,9 @@ bool OtaService::init(Controller& controller) {
 	}
 	EventLoop& loop = controller.loop();
 	uint64_t now = controller.clock().monotonic_ms();
-	loop.schedule_at(now + kConfirmAfterMs, Callback::member<OtaService, &OtaService::confirm_timeout>(this));
+	loop.schedule_at(now + kConfirmAfterMs, Callback::member<OtaService, &OtaService::confirm_timeout>(this, "ota.confirm_timeout"));
 	next_check_ms_ = now + kFirstCheckMs;
-	loop.schedule_periodic(next_check_ms_, kCheckPeriodMs, Callback::member<OtaService, &OtaService::periodic_check>(this));
+	loop.schedule_periodic(next_check_ms_, kCheckPeriodMs, Callback::member<OtaService, &OtaService::periodic_check>(this, "ota.periodic_check"));
 
 	if (const char* channel = migrate_update_source(controller.settings())) {
 		ESP_LOGI(kTag, "update.url of an older firmware replaced by the update channel %s", channel);
@@ -385,7 +385,7 @@ void OtaService::begin_update(const UpdateManifest& manifest, const char* image_
 		static_cast<unsigned long>(manifest.size), image_url, static_cast<unsigned>(kRestartGraceMs / 1000));
 	set_last("updating to %s", manifest.version);
 	controller_->loop().schedule_at(controller_->clock().monotonic_ms() + kRestartGraceMs,
-		Callback::member<OtaService, &OtaService::restart_into_updater>(this));
+		Callback::member<OtaService, &OtaService::restart_into_updater>(this, "ota.restart_into_updater"));
 }
 
 bool OtaService::start_upload(const char* token, const char** error) {

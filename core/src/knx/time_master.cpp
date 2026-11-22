@@ -133,7 +133,7 @@ bool TimeMaster::configure(const TimeMasterConfig& config, const char** error) {
 		static_cast<unsigned>(interval_s_), at_midnight_ ? ", at midnight" : "",
 		on_synchronized_ ? ", on synchronization" : "");
 	if (count_ > 0 && time_.synchronized()) {
-		kick_ = loop_.schedule_at(time_.monotonic_ms(), Callback::member<TimeMaster, &TimeMaster::kick>(this));
+		kick_ = loop_.schedule_at(time_.monotonic_ms(), Callback::member<TimeMaster, &TimeMaster::kick>(this, "knx.time_master.kick"));
 	}
 	return true;
 }
@@ -251,7 +251,7 @@ void TimeMaster::arm() {
 		wait_ms = kMaxTimerMs;
 	}
 	tick_ = loop_.schedule_at(time_.monotonic_ms() + static_cast<uint64_t>(wait_ms),
-		Callback::member<TimeMaster, &TimeMaster::tick>(this));
+		Callback::member<TimeMaster, &TimeMaster::tick>(this, "knx.time_master.tick"));
 }
 
 void TimeMaster::broadcast(const char* why) {

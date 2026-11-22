@@ -246,7 +246,7 @@ void EhomeLink::start() {
 	api_.set_ehome(this);
 	bus_.set_tunnel(api_.knx_tunnel());
 	since_ms_ = api_.controller().clock().monotonic_ms();
-	tick_timer_ = loop_.schedule_periodic(since_ms_ + kTickMs, kTickMs, Callback::member<EhomeLink, &EhomeLink::tick>(this));
+	tick_timer_ = loop_.schedule_periodic(since_ms_ + kTickMs, kTickMs, Callback::member<EhomeLink, &EhomeLink::tick>(this, "ehome.tick"));
 	if (!tick_timer_.valid()) {
 		Log::error(kTag, "no timer for the E-Home connection: it will not connect");
 	}
@@ -362,7 +362,7 @@ void EhomeLink::fail(const char* fmt, ...) {
 	phase_ = Phase::backoff;
 	retry_at_ms_ = api_.controller().clock().monotonic_ms() + delay;
 	loop_.cancel(retry_timer_);
-	retry_timer_ = loop_.schedule_at(retry_at_ms_, Callback::member<EhomeLink, &EhomeLink::retry>(this));
+	retry_timer_ = loop_.schedule_at(retry_at_ms_, Callback::member<EhomeLink, &EhomeLink::retry>(this, "ehome.retry"));
 	set_state(EhomeState::failed);
 	if (std::strcmp(last_logged_, error_) == 0) {
 		Log::info(kTag, "%s; retry in %u s (failure %u)", error_, static_cast<unsigned>(delay / 1000),
@@ -1065,7 +1065,7 @@ void EhomeLink::send_response(WebResponse& response) {
 		deferred_kind_ = response.deferred_kind;
 		deferred_token_ = response.deferred_token;
 		deferred_timer_ = loop_.schedule_at(api_.controller().clock().monotonic_ms() + WebApi::kDeferredLimitMs,
-			Callback::member<EhomeLink, &EhomeLink::deferred_timeout>(this));
+			Callback::member<EhomeLink, &EhomeLink::deferred_timeout>(this, "ehome.deferred_timeout"));
 		Log::info(kTag, "request %s: %s runs, its answer follows when it is stored", request_id_, path_);
 		return;
 	}
@@ -1135,11 +1135,11 @@ void EhomeLink::send_response(WebResponse& response) {
 
 void EhomeLink::schedule_stream() {
 	if (!stream_posted_) {
-		stream_posted_ = loop_.post(Callback::member<EhomeLink, &EhomeLink::stream_next>(this));
+		stream_posted_ = loop_.post(Callback::member<EhomeLink, &EhomeLink::stream_next>(this, "ehome.stream_next"));
 		if (!stream_posted_) {
 			// The loop's queue is full: try again in a moment.
 			stream_timer_ = loop_.schedule_at(api_.controller().clock().monotonic_ms() + 10,
-				Callback::member<EhomeLink, &EhomeLink::stream_next>(this));
+				Callback::member<EhomeLink, &EhomeLink::stream_next>(this, "ehome.stream_next"));
 		}
 	}
 }
@@ -1283,7 +1283,7 @@ void EhomeLink::enroll(const WebRequest& request, WebResponse& response) {
 	copy(enroll_url_, sizeof(enroll_url_), url);
 	enroll_ = Enroll::running;
 	enroll_timer_ = loop_.schedule_at(api_.controller().clock().monotonic_ms() + kEnrollTimeoutMs,
-		Callback::member<EhomeLink, &EhomeLink::enroll_timeout>(this));
+		Callback::member<EhomeLink, &EhomeLink::enroll_timeout>(this, "ehome.enroll_timeout"));
 	Log::info(kTag, "enrolling with %s (the code from E-Home, entered by %s)", url, request.source);
 	response.deferred = true;
 	response.deferred_kind = WebApi::kDeferredEnroll;

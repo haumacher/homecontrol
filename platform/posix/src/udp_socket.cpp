@@ -73,7 +73,7 @@ bool PosixUdpSocket::resolve(const char* host, UdpReceiver& receiver, const char
 	resolve_receiver_ = &receiver;
 	resolve_ok_ = bsd::resolve_ipv4(host, resolve_address_, resolve_error_, sizeof(resolve_error_));
 	resolve_posted_ = resolve_generation_;
-	if (!loop_.post(Callback::member<PosixUdpSocket, &PosixUdpSocket::deliver_resolution>(this))) {
+	if (!loop_.post(Callback::member<PosixUdpSocket, &PosixUdpSocket::deliver_resolution>(this, "udp.deliver_resolution"))) {
 		*error = "event loop queue full";
 		return false;
 	}

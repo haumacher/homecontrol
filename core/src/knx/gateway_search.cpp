@@ -123,13 +123,13 @@ bool GatewaySearch::start(const char** error, bool* started) {
 		return refuse(*error, error);
 	}
 	uint64_t now = clock_.monotonic_ms();
-	window_timer_ = loop_.schedule_at(now + kWindowMs, Callback::member<GatewaySearch, &GatewaySearch::window_closed>(this));
+	window_timer_ = loop_.schedule_at(now + kWindowMs, Callback::member<GatewaySearch, &GatewaySearch::window_closed>(this, "knx.search.window_closed"));
 	if (!window_timer_.valid()) {
 		// Without the timer the window would never close.
 		free_table();
 		return refuse("no timer left for the search window", error);
 	}
-	repeat_timer_ = loop_.schedule_at(now + kRepeatMs, Callback::member<GatewaySearch, &GatewaySearch::repeat_due>(this));
+	repeat_timer_ = loop_.schedule_at(now + kRepeatMs, Callback::member<GatewaySearch, &GatewaySearch::repeat_due>(this, "knx.search.repeat_due"));
 	state_ = SearchState::running;
 	started_ms_ = now;
 	char target[Ipv4Endpoint::kMaxText];

@@ -107,7 +107,7 @@ bool KnxService::read(const char* address_text, const char* dpt_text, const char
 	read_dpt_ = *dpt;
 	controller_.loop().cancel(read_timer_);
 	read_timer_ = controller_.loop().schedule_at(controller_.clock().monotonic_ms() + kReadTimeoutMs,
-		Callback::member<KnxService, &KnxService::read_timeout>(this));
+		Callback::member<KnxService, &KnxService::read_timeout>(this, "knx.service.read_timeout"));
 	return true;
 }
 

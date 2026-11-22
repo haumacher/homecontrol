@@ -63,7 +63,7 @@ bool DemoTechnology::load() {
 	loaded_ = true;
 	report();
 	loop_.schedule_periodic(clock_.monotonic_ms() + kReportMs, kReportMs,
-		Callback::member<DemoTechnology, &DemoTechnology::report>(this));
+		Callback::member<DemoTechnology, &DemoTechnology::report>(this, "demo.report"));
 	Log::info(kTag, "%u demo datapoints loaded (simulated values every %u s)", static_cast<unsigned>(kCount),
 		static_cast<unsigned>(kReportMs / 1000));
 	return true;

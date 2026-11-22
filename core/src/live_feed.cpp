@@ -138,12 +138,12 @@ bool LiveFeed::start() {
 		return false;
 	}
 	uint64_t now = api_.controller().clock().monotonic_ms();
-	if (!loop_.schedule_periodic(now + kTickMs, kTickMs, Callback::member<LiveFeed, &LiveFeed::tick>(this)).valid()) {
+	if (!loop_.schedule_periodic(now + kTickMs, kTickMs, Callback::member<LiveFeed, &LiveFeed::tick>(this, "live_feed.tick")).valid()) {
 		Log::error(kTag, "live feed: no timer for the status push (heartbeat missing)");
 	}
 	api_.set_feed(this);
 	monitor_.start();
-	monitor_.set_appended(Callback::member<LiveFeed, &LiveFeed::schedule_monitor_flush>(this));
+	monitor_.set_appended(Callback::member<LiveFeed, &LiveFeed::schedule_monitor_flush>(this, "live_feed.schedule_monitor_flush"));
 	attach_monitor();
 	if (api_.image() != nullptr && api_.image()->loaded()) {
 		monitor_.model_changed(api_.image()); // the image loaded before the feed started
@@ -654,7 +654,7 @@ void LiveFeed::queue_datapoint(uint16_t id) {
 	}
 	pending_[pending_count_++] = id;
 	if (!flush_posted_) {
-		flush_posted_ = loop_.post(Callback::member<LiveFeed, &LiveFeed::flush>(this));
+		flush_posted_ = loop_.post(Callback::member<LiveFeed, &LiveFeed::flush>(this, "live_feed.flush"));
 		if (!flush_posted_) {
 			flush();
 		}
@@ -718,7 +718,7 @@ void LiveFeed::flush() {
 
 void LiveFeed::schedule_pump() {
 	if (!pump_posted_) {
-		pump_posted_ = loop_.post(Callback::member<LiveFeed, &LiveFeed::pump>(this));
+		pump_posted_ = loop_.post(Callback::member<LiveFeed, &LiveFeed::pump>(this, "live_feed.pump"));
 	}
 }
 
@@ -892,7 +892,7 @@ void LiveFeed::monitor_message(Client& client, const JsonSpan& message) {
 
 void LiveFeed::schedule_monitor_flush() {
 	if (!monitor_posted_) {
-		monitor_posted_ = loop_.post(Callback::member<LiveFeed, &LiveFeed::monitor_flush>(this));
+		monitor_posted_ = loop_.post(Callback::member<LiveFeed, &LiveFeed::monitor_flush>(this, "live_feed.monitor_flush"));
 	}
 }
 

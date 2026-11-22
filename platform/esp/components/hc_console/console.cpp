@@ -550,7 +550,7 @@ int cmd_factory(ConsoleContext& c, int argc, char** argv) {
 	}
 	// The connections close first (homecontrol #103), then the erase and the restart.
 	planned_restart(c.controller, "factory reset on the console",
-		Callback{[](void* blobs) { factory_reset_and_restart(static_cast<BlobStore*>(blobs), "on the console"); }, c.blobs});
+		Callback{[](void* blobs) { factory_reset_and_restart(static_cast<BlobStore*>(blobs), "on the console"); }, c.blobs, "console.factory_reset"});
 	return 0;
 }
 

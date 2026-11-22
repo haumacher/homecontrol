@@ -12,15 +12,21 @@ namespace hc {
 class Clock;
 
 /// A function to run on the event loop: a plain function pointer plus an opaque context, so that
-/// scheduling never allocates. Use Callback::member<T, &T::method>(object) for member functions.
+/// scheduling never allocates, and a short static name that the loop's warnings use (homecontrol
+/// #101: `slow timer handler blocks.on_persist took 38 ms`, `periodic timer led.tick ... missed`).
+/// Use Callback::member<T, &T::method>(object, "area.what") for member functions; a callback built
+/// as an aggregate names itself the same way (`Callback{fn, context, "area.what"}`). Names are
+/// `<component>.<handler>` in lower case; one without a name is logged by its function's address.
 struct Callback {
 	void (*fn)(void* context) = nullptr;
 	void* context = nullptr;
+	/// Static text (a literal): the handler's name in the loop's log lines; nullptr: unnamed.
+	const char* name = nullptr;
 
-	/// A callback that invokes `(object->*Method)()`.
+	/// A callback that invokes `(object->*Method)()`, named `name` (a literal).
 	template <class T, void (T::*Method)()>
-	static Callback member(T* object) {
-		return Callback{&invoke_member<T, Method>, object};
+	static Callback member(T* object, const char* name) {
+		return Callback{&invoke_member<T, Method>, object, name};
 	}
 
 	explicit operator bool() const { return fn != nullptr; }

@@ -120,7 +120,7 @@ bool Connectivity::pause_pairing(const char* why) {
 	std::snprintf(pause_reason_, sizeof(pause_reason_), "%s", why);
 	uint64_t now = clock_.monotonic_ms();
 	station_free_at_ = now;
-	pause_timer_ = loop_.schedule_at(now + kMaxPauseMs, Callback::member<Connectivity, &Connectivity::pause_due>(this));
+	pause_timer_ = loop_.schedule_at(now + kMaxPauseMs, Callback::member<Connectivity, &Connectivity::pause_due>(this, "connectivity.pause_due"));
 	if (pairing_) {
 		cancel_timeout();
 		end_pairing();
@@ -186,7 +186,7 @@ void Connectivity::link_connecting() {
 	cancel_action();
 	cancel_timeout();
 	timeout_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kConnectTimeoutMs,
-		Callback::member<Connectivity, &Connectivity::timeout_due>(this));
+		Callback::member<Connectivity, &Connectivity::timeout_due>(this, "connectivity.timeout_due"));
 	set_state(LinkState::connecting, "driver started connecting");
 }
 
@@ -330,7 +330,7 @@ void Connectivity::attempt() {
 	switch (driver_connect()) {
 	case ConnectResult::started: {
 		timeout_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kConnectTimeoutMs,
-			Callback::member<Connectivity, &Connectivity::timeout_due>(this));
+			Callback::member<Connectivity, &Connectivity::timeout_due>(this, "connectivity.timeout_due"));
 		char reason[kMaxReason];
 		std::snprintf(reason, sizeof(reason), "attempt %u", static_cast<unsigned>(attempts_));
 		set_state(LinkState::connecting, reason);
@@ -390,7 +390,7 @@ void Connectivity::enter_failsafe() {
 	driver_disconnect();
 	cancel_phase();
 	phase_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kFailsafePhaseMs,
-		Callback::member<Connectivity, &Connectivity::phase_due>(this));
+		Callback::member<Connectivity, &Connectivity::phase_due>(this, "connectivity.phase_due"));
 	set_mode(NetworkMode::failsafe_pairing, "stored credentials failing");
 	backoff_.reset();
 	schedule(Action::start_pairing, kSettleMs);
@@ -413,7 +413,7 @@ void Connectivity::phase_due() {
 	char phase[32];
 	format_delay(phase, sizeof(phase), kFailsafePhaseMs);
 	phase_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kFailsafePhaseMs,
-		Callback::member<Connectivity, &Connectivity::phase_due>(this));
+		Callback::member<Connectivity, &Connectivity::phase_due>(this, "connectivity.phase_due"));
 	cancel_timeout();
 	cancel_action();
 	if (mode_ == NetworkMode::failsafe_pairing) {
@@ -445,7 +445,7 @@ void Connectivity::schedule(Action action, uint32_t delay_ms) {
 		return;
 	}
 	action_at_ = clock_.monotonic_ms() + delay_ms;
-	action_timer_ = loop_.schedule_at(action_at_, Callback::member<Connectivity, &Connectivity::action_due>(this));
+	action_timer_ = loop_.schedule_at(action_at_, Callback::member<Connectivity, &Connectivity::action_due>(this, "connectivity.action_due"));
 	if (!action_timer_.valid()) {
 		Log::error(kTag, "network: next step not scheduled (no timer)");
 		action_ = Action::none;
@@ -474,7 +474,7 @@ void Connectivity::action_due() {
 		if (driver_start_pairing()) {
 			pairing_ = true;
 			timeout_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kPairingTimeoutMs,
-				Callback::member<Connectivity, &Connectivity::timeout_due>(this));
+				Callback::member<Connectivity, &Connectivity::timeout_due>(this, "connectivity.timeout_due"));
 			Log::info(kTag, "network pairing (%s): press the pairing (WPS) button on the router",
 				network_mode_name(mode_));
 		} else {

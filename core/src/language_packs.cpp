@@ -169,7 +169,7 @@ bool LanguagePacks::sync_now(const char** error) {
 
 void LanguagePacks::arm(uint64_t at) {
 	loop_.cancel(timer_);
-	timer_ = loop_.schedule_at(at, Callback::member<LanguagePacks, &LanguagePacks::timer_due>(this));
+	timer_ = loop_.schedule_at(at, Callback::member<LanguagePacks, &LanguagePacks::timer_due>(this, "lang.timer_due"));
 }
 
 void LanguagePacks::timer_due() {

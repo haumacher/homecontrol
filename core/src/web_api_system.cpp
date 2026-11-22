@@ -218,7 +218,7 @@ void WebApi::system_action(SystemAction action, const WebRequest& request, WebRe
 	pending_ = reset ? Pending::factory_reset : Pending::restart;
 	controller_.loop().cancel(action_timer_);
 	action_timer_ = controller_.loop().schedule_at(controller_.clock().monotonic_ms() + kActionDelayMs,
-		Callback::member<WebApi, &WebApi::action_due>(this));
+		Callback::member<WebApi, &WebApi::action_due>(this, "web_api.action_due"));
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object()
 		.member("ok", true)
@@ -309,7 +309,7 @@ void WebApi::system_upload(const WebRequest& request, WebResponse& response) {
 	pending_ = Pending::upload;
 	controller_.loop().cancel(action_timer_);
 	action_timer_ = controller_.loop().schedule_at(controller_.clock().monotonic_ms() + kActionDelayMs,
-		Callback::member<WebApi, &WebApi::action_due>(this));
+		Callback::member<WebApi, &WebApi::action_due>(this, "web_api.action_due"));
 	JsonWriter json(response.body, response.capacity);
 	json.begin_object()
 		.member("ok", true)
@@ -407,7 +407,7 @@ void WebApi::wifi(const WebRequest& request, WebResponse& response) {
 	pending_ = Pending::wifi;
 	controller_.loop().cancel(action_timer_);
 	action_timer_ = controller_.loop().schedule_at(controller_.clock().monotonic_ms() + kActionDelayMs,
-		Callback::member<WebApi, &WebApi::action_due>(this));
+		Callback::member<WebApi, &WebApi::action_due>(this, "web_api.action_due"));
 	char mdns[80];
 	std::snprintf(mdns, sizeof(mdns), "%s.local", network_name());
 	JsonWriter json(response.body, response.capacity);

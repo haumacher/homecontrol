@@ -50,10 +50,10 @@ TEST_CASE("ThreadWorker: the job runs off the loop while the loop goes on; done 
 		hc::posix::ThreadWorker worker(executor);
 		g_worker = &worker;
 		const char* error = nullptr;
-		REQUIRE(worker.run(hc::Callback{&Probe::job, &probe}, hc::Callback{&on_done, &probe}, &error));
+		REQUIRE(worker.run(hc::Callback{&Probe::job, &probe, "test.job"}, hc::Callback{&on_done, &probe, "test.done"}, &error));
 		CHECK(worker.busy());
 		// A second job while one runs is refused with the reason.
-		CHECK_FALSE(worker.run(hc::Callback{&Probe::job, &probe}, hc::Callback{&on_done, &probe}, &error));
+		CHECK_FALSE(worker.run(hc::Callback{&Probe::job, &probe, "test.job"}, hc::Callback{&on_done, &probe, "test.done"}, &error));
 		CHECK(std::string(error) == "a job runs already");
 		// The loop runs while the job waits: nothing is done yet.
 		executor.wait(20);
@@ -71,7 +71,7 @@ TEST_CASE("ThreadWorker: the job runs off the loop while the loop goes on; done 
 		CHECK_FALSE(worker.busy());
 		// The next job starts at once.
 		probe.done = false;
-		REQUIRE(worker.run(hc::Callback{&Probe::job, &probe}, hc::Callback{&on_done, &probe}, &error));
+		REQUIRE(worker.run(hc::Callback{&Probe::job, &probe, "test.job"}, hc::Callback{&on_done, &probe, "test.done"}, &error));
 		until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 		while (!probe.done && std::chrono::steady_clock::now() < until) {
 			executor.wait(20);

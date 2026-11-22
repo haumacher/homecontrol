@@ -1296,7 +1296,7 @@ void Mqtt::arm() {
 	loop_.cancel(timer_);
 	timer_ = TimerHandle();
 	if (at != EventLoop::kNever) {
-		timer_ = loop_.schedule_at(at, Callback::member<Mqtt, &Mqtt::timer_due>(this));
+		timer_ = loop_.schedule_at(at, Callback::member<Mqtt, &Mqtt::timer_due>(this, "mqtt.timer_due"));
 	}
 }
 
@@ -1355,7 +1355,7 @@ void Mqtt::request_pump() {
 	if (pump_posted_) {
 		return;
 	}
-	pump_posted_ = loop_.post(Callback::member<Mqtt, &Mqtt::pump_due>(this));
+	pump_posted_ = loop_.post(Callback::member<Mqtt, &Mqtt::pump_due>(this, "mqtt.pump_due"));
 	if (!pump_posted_) {
 		// The loop's queue is full: try with the timer.
 		retry_publish_at_ = clock_.monotonic_ms() + kRetryPublishMs;

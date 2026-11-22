@@ -49,7 +49,7 @@ bool Shutdown::begin(const char* reason, Callback then) {
 	}
 	Log::info(kTag, "%s: closing the connections first (at most %u ms)", reason, static_cast<unsigned>(kMaxWaitMs));
 	if (outstanding_ > 0) {
-		timer_ = loop_.schedule_at(started_ms_ + kMaxWaitMs, Callback::member<Shutdown, &Shutdown::timeout>(this));
+		timer_ = loop_.schedule_at(started_ms_ + kMaxWaitMs, Callback::member<Shutdown, &Shutdown::timeout>(this, "shutdown.timeout"));
 	}
 	// A participant may finish within its shutdown_begin(); the last one then runs `then`.
 	for (size_t i = 0; i < count_ && running_; ++i) {

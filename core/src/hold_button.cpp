@@ -3,30 +3,71 @@
  */
 #include "hc/hold_button.h"
 
+#include "hc/log.h"
+
 namespace hc {
 
-HoldButton::HoldButton(uint32_t hold_ms, uint32_t debounce_ms) : hold_ms_(hold_ms), debounce_ms_(debounce_ms) {}
+namespace {
 
-bool HoldButton::sample(bool pressed, uint64_t now_ms) {
-	if (!have_sample_ || pressed != raw_) {
-		have_sample_ = true;
-		raw_ = pressed;
-		raw_since_ = now_ms;
+constexpr const char* kTag = "hc.button";
+
+} // namespace
+
+HoldButton::HoldButton(EventLoop& loop, const Clock& clock, const ButtonPin& pin, Callback held, uint32_t hold_ms,
+	uint32_t debounce_ms)
+	: loop_(loop), clock_(clock), pin_(pin), held_(held), hold_ms_(hold_ms), debounce_ms_(debounce_ms) {}
+
+HoldButton::~HoldButton() {
+	loop_.cancel(settle_);
+	loop_.cancel(hold_);
+}
+
+void HoldButton::start() {
+	pressed_ = pin_.pressed();
+	armed_ = !pressed_;
+}
+
+bool HoldButton::edge() {
+	if (settle_.valid()) {
+		return true; // a bounce: the settle timer reads the level the pin ends with
 	}
-	if (now_ms - raw_since_ >= debounce_ms_ && (!stable_known_ || stable_ != raw_)) {
-		stable_known_ = true;
-		stable_ = raw_;
-		stable_since_ = raw_since_;
-		if (!stable_) {
-			armed_ = true;
-			fired_ = false;
+	first_edge_ms_ = clock_.monotonic_ms();
+	settle_ = loop_.schedule_at(first_edge_ms_ + debounce_ms_,
+		Callback::member<HoldButton, &HoldButton::settled>(this, "button.settled"));
+	if (!settle_.valid()) {
+		Log::error(kTag, "button edge ignored: no timer left");
+		return false;
+	}
+	return true;
+}
+
+void HoldButton::settled() {
+	settle_ = TimerHandle();
+	bool pressed = pin_.pressed();
+	if (pressed == pressed_) {
+		return; // a glitch: back where it was
+	}
+	pressed_ = pressed;
+	if (!pressed) {
+		armed_ = true;
+		if (hold_.valid()) {
+			loop_.cancel(hold_);
+			hold_ = TimerHandle();
 		}
+		return;
 	}
-	if (armed_ && stable_known_ && stable_ && !fired_ && now_ms - stable_since_ >= hold_ms_) {
-		fired_ = true;
-		return true;
+	if (!armed_) {
+		return;
 	}
-	return false;
+	hold_ = loop_.schedule_at(first_edge_ms_ + hold_ms_, Callback::member<HoldButton, &HoldButton::hold_due>(this, "button.hold"));
+	if (!hold_.valid()) {
+		Log::error(kTag, "button press ignored: no timer left");
+	}
+}
+
+void HoldButton::hold_due() {
+	hold_ = TimerHandle();
+	held_();
 }
 
 } // namespace hc

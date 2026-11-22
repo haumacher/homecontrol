@@ -40,6 +40,7 @@ set(HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/sha.cpp"
 	"${HC_CORE_DIR}/src/shutdown.cpp"
 	"${HC_CORE_DIR}/src/storage_stats.cpp"
+	"${HC_CORE_DIR}/src/blob_queue.cpp"
 	"${HC_CORE_DIR}/src/value_json.cpp"
 	"${HC_CORE_DIR}/src/web_api.cpp"
 	"${HC_CORE_DIR}/src/web_api_system.cpp"

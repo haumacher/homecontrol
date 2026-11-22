@@ -25,7 +25,7 @@ namespace {
 struct Probe {
 	std::function<void()> body;
 	void run() { body(); }
-	Callback callback() { return Callback::member<Probe, &Probe::run>(this); }
+	Callback callback() { return Callback::member<Probe, &Probe::run>(this, "probe.run"); }
 };
 
 struct Probes {
@@ -176,12 +176,13 @@ TEST_CASE("ControllerProbe.HeartbeatSurvivesClockJumpWithOneBeatAndRightUptime")
 	controller.run_once();
 	p.clock.advance(25000);
 	controller.run_once();
-	CHECK(p.sink.count("heartbeat") == 1);
+	CHECK(p.sink.count("heartbeat: uptime") == 1);
 	CHECK(p.sink.contains("heartbeat: uptime 25 s"));
 	CHECK(controller.uptime_ms() == 25000);
 	CHECK(p.sink.count("W hc.loop") == 1); // the missed period is visible, not silent
+	CHECK(p.sink.contains("periodic timer controller.heartbeat (period 10000 ms) missed 1 period(s)"));
 	CHECK(controller.next_deadline() == p.clock.now_ms + 5000); // back on the 10 s grid
 	p.clock.advance(5000);
 	controller.run_once();
-	CHECK(p.sink.count("heartbeat") == 2);
+	CHECK(p.sink.count("heartbeat: uptime") == 2);
 }

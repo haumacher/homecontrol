@@ -271,7 +271,7 @@ struct ShutdownFixture : RestartFixture {
 	}
 
 	bool begin() {
-		return shutdown.begin("restart over the API", hc::Callback::member<Restarted, &Restarted::restart>(&restarted));
+		return shutdown.begin("restart over the API", hc::Callback::member<Restarted, &Restarted::restart>(&restarted, "restarted.restart"));
 	}
 };
 
@@ -391,7 +391,7 @@ TEST_CASE("Shutdown.WaitsForEveryParticipantAtMostTheLimit") {
 	hc_test::FakeUdpSocket socket{clock};
 	Restarted restarted;
 	restarted.socket = &socket;
-	REQUIRE(shutdown.begin("test", hc::Callback::member<Restarted, &Restarted::restart>(&restarted)));
+	REQUIRE(shutdown.begin("test", hc::Callback::member<Restarted, &Restarted::restart>(&restarted, "restarted.restart")));
 	CHECK(silent.begun == 1);
 	uint64_t begun = clock.now_ms;
 	loop.run_once(clock.now_ms = begun + Shutdown::kMaxWaitMs - 1);
@@ -409,6 +409,6 @@ TEST_CASE("Shutdown.WithoutParticipantsRunsAtOnce") {
 	hc_test::FakeUdpSocket socket{clock};
 	Restarted restarted;
 	restarted.socket = &socket;
-	REQUIRE(shutdown.begin("test", hc::Callback::member<Restarted, &Restarted::restart>(&restarted)));
+	REQUIRE(shutdown.begin("test", hc::Callback::member<Restarted, &Restarted::restart>(&restarted, "restarted.restart")));
 	CHECK(restarted.done);
 }

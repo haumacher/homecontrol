@@ -149,7 +149,7 @@ void KnxTunnel::shutdown_begin(Shutdown& shutdown) {
 			return;
 		}
 		close_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kDisconnectTimeoutMs,
-			Callback::member<KnxTunnel, &KnxTunnel::close_timeout>(this));
+			Callback::member<KnxTunnel, &KnxTunnel::close_timeout>(this, "knx.tunnel.close_timeout"));
 		if (up) {
 			Log::info(kTag, "knx tunnel closing for a restart: DISCONNECT_REQUEST sent, waiting at most %u ms for the answer",
 				static_cast<unsigned>(kDisconnectTimeoutMs));
@@ -282,7 +282,7 @@ void KnxTunnel::evaluate() {
 void KnxTunnel::schedule_attempt(uint32_t delay_ms) {
 	loop_.cancel(retry_timer_);
 	retry_at_ = clock_.monotonic_ms() + delay_ms;
-	retry_timer_ = loop_.schedule_at(retry_at_, Callback::member<KnxTunnel, &KnxTunnel::retry_due>(this));
+	retry_timer_ = loop_.schedule_at(retry_at_, Callback::member<KnxTunnel, &KnxTunnel::retry_due>(this, "knx.tunnel.retry_due"));
 	if (!retry_timer_.valid()) {
 		retry_at_ = EventLoop::kNever;
 	}
@@ -307,7 +307,7 @@ void KnxTunnel::attempt() {
 	Log::info(kTag, "knx tunnel connecting to %s%s (attempt %u)", text, nat_ ? " in NAT mode" : "",
 		static_cast<unsigned>(attempts_));
 	connect_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kConnectTimeoutMs,
-		Callback::member<KnxTunnel, &KnxTunnel::connect_timeout>(this));
+		Callback::member<KnxTunnel, &KnxTunnel::connect_timeout>(this, "knx.tunnel.connect_timeout"));
 	set_state(TunnelState::connecting, reason_);
 	uint32_t address = 0;
 	if (parse_ipv4(gateway_.host, address)) {
@@ -471,7 +471,7 @@ void KnxTunnel::handle_connect_response(const uint8_t* data, size_t length, cons
 	phase_ = Phase::up;
 	backoff_.reset();
 	heartbeat_timer_ = loop_.schedule_periodic(clock_.monotonic_ms() + kHeartbeatPeriodMs, kHeartbeatPeriodMs,
-		Callback::member<KnxTunnel, &KnxTunnel::heartbeat_due>(this));
+		Callback::member<KnxTunnel, &KnxTunnel::heartbeat_due>(this, "knx.tunnel.heartbeat_due"));
 	char address[IndividualAddress::kMaxText];
 	char control[ip::Endpoint::kMaxText];
 	char endpoint[ip::Endpoint::kMaxText];
@@ -656,7 +656,7 @@ void KnxTunnel::handle_tunneling_ack(const uint8_t* data, size_t length) {
 	}
 	awaiting_confirm_ = true;
 	confirm_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kConfirmTimeoutMs,
-		Callback::member<KnxTunnel, &KnxTunnel::confirm_timeout>(this));
+		Callback::member<KnxTunnel, &KnxTunnel::confirm_timeout>(this, "knx.tunnel.confirm_timeout"));
 }
 
 // ---- Heartbeat -----------------------------------------------------------------------------
@@ -675,7 +675,7 @@ void KnxTunnel::send_heartbeat() {
 	transmit(control_, frame, "CONNECTIONSTATE_REQUEST");
 	heartbeat_outstanding_ = true;
 	heartbeat_timeout_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kHeartbeatTimeoutMs,
-		Callback::member<KnxTunnel, &KnxTunnel::heartbeat_timeout>(this));
+		Callback::member<KnxTunnel, &KnxTunnel::heartbeat_timeout>(this, "knx.tunnel.heartbeat_timeout"));
 }
 
 void KnxTunnel::heartbeat_timeout() {
@@ -776,7 +776,7 @@ void KnxTunnel::send_head() {
 		transmit(data_, frame, "TUNNELING_REQUEST");
 	}
 	ack_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kAckTimeoutMs,
-		Callback::member<KnxTunnel, &KnxTunnel::ack_timeout>(this));
+		Callback::member<KnxTunnel, &KnxTunnel::ack_timeout>(this, "knx.tunnel.ack_timeout"));
 }
 
 void KnxTunnel::ack_timeout() {

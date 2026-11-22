@@ -325,7 +325,7 @@ uint8_t WebApi::ehome_signature() const {
 void WebApi::set_network_name(NetworkName* name) {
 	network_name_ = name;
 	if (network_name_ != nullptr) {
-		network_name_->set_rename_listener(Callback::member<WebApi, &WebApi::rename_checked>(this));
+		network_name_->set_rename_listener(Callback::member<WebApi, &WebApi::rename_checked>(this, "web_api.rename_checked"));
 	}
 }
 
@@ -1676,7 +1676,7 @@ bool WebApi::poll_rename(WebResponse& response) {
 void WebApi::set_image(image::ImageService* image) {
 	image_ = image;
 	if (image_ != nullptr) {
-		image_->set_changed(Callback::member<WebApi, &WebApi::image_changed>(this));
+		image_->set_changed(Callback::member<WebApi, &WebApi::image_changed>(this, "web_api.image_changed"));
 	}
 }
 

@@ -1339,7 +1339,7 @@ void Scheduler::evaluate_soon() {
 	if (timer_.valid()) {
 		loop_.cancel(timer_);
 	}
-	timer_ = loop_.schedule_at(time_.monotonic_ms(), Callback::member<Scheduler, &Scheduler::on_timer>(this));
+	timer_ = loop_.schedule_at(time_.monotonic_ms(), Callback::member<Scheduler, &Scheduler::on_timer>(this, "scheduler.on_timer"));
 }
 
 std::optional<int64_t> Scheduler::firing_on(const Entry& entry, const Date& date) const {
@@ -1805,7 +1805,7 @@ void Scheduler::evaluate() {
 		if (timer_.valid()) {
 			loop_.cancel(timer_);
 		}
-		timer_ = loop_.schedule_at(time_.monotonic_ms(), Callback::member<Scheduler, &Scheduler::on_timer>(this));
+		timer_ = loop_.schedule_at(time_.monotonic_ms(), Callback::member<Scheduler, &Scheduler::on_timer>(this, "scheduler.on_timer"));
 		return;
 	}
 	arm(now.seconds);
@@ -1831,7 +1831,7 @@ void Scheduler::arm(int64_t now) {
 		uint64_t seconds = static_cast<uint64_t>(earliest - now);
 		delay_ms = seconds > kMaxTimerMs / 1000 ? kMaxTimerMs : seconds * 1000;
 	}
-	timer_ = loop_.schedule_at(time_.monotonic_ms() + delay_ms, Callback::member<Scheduler, &Scheduler::on_timer>(this));
+	timer_ = loop_.schedule_at(time_.monotonic_ms() + delay_ms, Callback::member<Scheduler, &Scheduler::on_timer>(this, "scheduler.on_timer"));
 }
 
 void Scheduler::format_local(int64_t utc, char* buffer, size_t size) const {

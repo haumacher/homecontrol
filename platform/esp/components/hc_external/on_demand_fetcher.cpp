@@ -103,7 +103,7 @@ void OnDemandFetcher::fetch_end(const FetchResult& result) {
 	// receiver fetches again meanwhile.
 	loop_.cancel(release_timer_);
 	release_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kReleaseDelayMs,
-		Callback::member<OnDemandFetcher, &OnDemandFetcher::release>(this));
+		Callback::member<OnDemandFetcher, &OnDemandFetcher::release>(this, "fetcher.release"));
 }
 
 void OnDemandFetcher::release() {
@@ -113,7 +113,7 @@ void OnDemandFetcher::release() {
 	}
 	if (impl_->busy()) {
 		release_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kReleaseDelayMs,
-			Callback::member<OnDemandFetcher, &OnDemandFetcher::release>(this));
+			Callback::member<OnDemandFetcher, &OnDemandFetcher::release>(this, "fetcher.release"));
 		return;
 	}
 	destroy_fetcher(impl_);

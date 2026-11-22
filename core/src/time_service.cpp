@@ -282,7 +282,7 @@ void TimeService::update_watch() {
 	bool needed = !synchronized_ || wants_continuous();
 	if (needed && !watch_.valid()) {
 		watch_ = loop_.schedule_periodic(clock_.monotonic_ms() + kWatchPeriodMs, kWatchPeriodMs,
-			Callback::member<TimeService, &TimeService::tick>(this));
+			Callback::member<TimeService, &TimeService::tick>(this, "time.tick"));
 	} else if (!needed && watch_.valid()) {
 		loop_.cancel(watch_);
 		watch_ = TimerHandle();

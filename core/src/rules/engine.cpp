@@ -1079,7 +1079,7 @@ void Engine::post_drain() {
 	if (drain_posted_) {
 		return;
 	}
-	if (loop_.post(Callback::member<Engine, &Engine::drain>(this))) {
+	if (loop_.post(Callback::member<Engine, &Engine::drain>(this, "rules.drain"))) {
 		drain_posted_ = true;
 	} else {
 		Log::error(kTag, "cannot post the rule engine's event processing; it runs with the next event");
@@ -1261,7 +1261,7 @@ void Engine::reschedule() {
 		loop_.cancel(loop_timer_);
 	}
 	loop_deadline_ = earliest;
-	loop_timer_ = loop_.schedule_at(earliest, Callback::member<Engine, &Engine::on_timer>(this));
+	loop_timer_ = loop_.schedule_at(earliest, Callback::member<Engine, &Engine::on_timer>(this, "rules.on_timer"));
 	if (!loop_timer_.valid()) {
 		Log::error(kTag, "cannot schedule the rule timers; they run with the next event");
 	}
@@ -1503,7 +1503,7 @@ void Engine::state_changed(size_t rule) {
 		return;
 	}
 	persist_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kStatePersistDelayMs,
-		Callback::member<Engine, &Engine::on_persist>(this));
+		Callback::member<Engine, &Engine::on_persist>(this, "rules.on_persist"));
 	persist_pending_ = persist_timer_.valid();
 	if (!persist_pending_) {
 		Log::error(kTag, "cannot delay the write of a rule state; written now");
@@ -3583,7 +3583,7 @@ void Engine::persist_timeline(size_t rule) {
 		return;
 	}
 	persist_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kStatePersistDelayMs,
-		Callback::member<Engine, &Engine::on_persist>(this));
+		Callback::member<Engine, &Engine::on_persist>(this, "rules.on_persist"));
 	persist_pending_ = persist_timer_.valid();
 	if (!persist_pending_) {
 		persist_now();

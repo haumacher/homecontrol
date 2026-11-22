@@ -68,8 +68,8 @@ protected:
 /// At start it logs the version with the reset reason and the platform's boot facts (Diagnostics), applies the time zone setting, logs the wall clock state and
 /// starts connecting. Its TimeService watches the wall clock; the controller logs the local time
 /// once it is synchronized, and logs a heartbeat every kHeartbeatPeriodMs with the uptime, the network state and the heap.
-/// With a status light it drives the LED pattern (hc::StatusLed) every StatusLed::kTickMs from
-/// led_status().
+/// With a status light it shows led_status() (hc::StatusLed): checked after every run_once(), a
+/// blinking pattern ticked every StatusLed::kTickMs, a steady one set once without a timer.
 class Controller : private TimeListener {
 public:
 	static constexpr uint32_t kHeartbeatPeriodMs = 10000;
@@ -152,7 +152,11 @@ private:
 	void heartbeat();
 	void time_changed(uint8_t events) override;
 	void log_clock_synchronized();
+	/// Shows led_status() when it (or the quiet mode) changed since it was last shown: starts the
+	/// pattern, ticks it every StatusLed::kTickMs while it blinks, cancels the tick when it is steady.
+	void update_led();
 	void led_tick();
+	void show_led(bool on);
 
 	const Clock& clock_;
 	LogSink& sink_;
@@ -162,6 +166,11 @@ private:
 	TimeZone& time_zone_platform_;
 	StatusLight* status_light_;
 	StatusLed status_led_;
+	/// The tick of a blinking pattern (invalid while the pattern is steady).
+	TimerHandle led_timer_;
+	/// Whether update_led() showed a status yet, and the quiet mode it showed it with.
+	bool led_shown_ = false;
+	bool led_quiet_shown_ = false;
 	bool light_on_ = false;
 	EventLoop loop_;
 	Connectivity connectivity_;

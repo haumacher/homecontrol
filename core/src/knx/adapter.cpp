@@ -467,7 +467,7 @@ void KnxAdapter::schedule_read() {
 		return;
 	}
 	read_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kReadSpacingMs,
-		Callback::member<KnxAdapter, &KnxAdapter::read_due>(this));
+		Callback::member<KnxAdapter, &KnxAdapter::read_due>(this, "knx.adapter.read_due"));
 }
 
 void KnxAdapter::read_due() {

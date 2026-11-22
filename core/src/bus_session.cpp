@@ -390,7 +390,7 @@ bool BusSession::queue_text(const char* text, size_t length) {
 
 void BusSession::schedule_flush() {
 	if (!flush_posted_) {
-		flush_posted_ = loop_.post(Callback::member<BusSession, &BusSession::flush>(this));
+		flush_posted_ = loop_.post(Callback::member<BusSession, &BusSession::flush>(this, "bus_session.flush"));
 	}
 }
 

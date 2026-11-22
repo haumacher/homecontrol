@@ -138,7 +138,7 @@ TEST_CASE("DatapointProbe.AListenerReactsThroughTheEventLoopNotSynchronously") {
 	rec.react = [&](const DatapointUpdate& u) {
 		if (u.datapoint.id() == 0 && u.datapoint.value().as_bool()) {
 			rule.sync_result = model.command(1, Value::of_bool(true)); // wrong: inside the notification
-			loop.post(hc::Callback::member<Rule, &Rule::fire>(&rule));   // right
+			loop.post(hc::Callback::member<Rule, &Rule::fire>(&rule, "rule.fire"));   // right
 		}
 	};
 	REQUIRE(model.add_listener(rec) == DatapointStatus::ok);

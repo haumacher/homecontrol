@@ -36,7 +36,7 @@ void planned_restart(Controller& controller, const char* reason, Callback before
 		return;
 	}
 	g_before = before;
-	controller.shutdown().begin(reason, Callback{&restart_now, nullptr});
+	controller.shutdown().begin(reason, Callback{&restart_now, nullptr, "ota.planned_restart"});
 }
 
 } // namespace esp

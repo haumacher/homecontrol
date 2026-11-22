@@ -51,7 +51,7 @@ public:
 		}
 		if (echo && pending_count_ < kPending) {
 			pending_[pending_count_++] = {datapoint.id(), value};
-			loop_.post(hc::Callback::member<LoopbackTechnology, &LoopbackTechnology::deliver>(this));
+			loop_.post(hc::Callback::member<LoopbackTechnology, &LoopbackTechnology::deliver>(this, "loopback_technology.deliver"));
 		}
 		return true;
 	}
@@ -457,7 +457,7 @@ struct PostingRule : DatapointListener {
 
 	void datapoint_updated(const DatapointUpdate& update) override {
 		if (update.datapoint.id() == 0 && update.changed()) {
-			loop.post(hc::Callback::member<PostingRule, &PostingRule::act>(this));
+			loop.post(hc::Callback::member<PostingRule, &PostingRule::act>(this, "posting_rule.act"));
 		}
 	}
 

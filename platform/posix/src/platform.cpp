@@ -106,7 +106,7 @@ ConnectResult PosixNetworkDriver::connect() {
 		Log::warn(kNetTag, "no running non-loopback IPv4 interface found, reporting 127.0.0.1");
 	}
 	if (!pending_) {
-		if (!loop_->post(Callback::member<PosixNetworkDriver, &PosixNetworkDriver::report_up>(this))) {
+		if (!loop_->post(Callback::member<PosixNetworkDriver, &PosixNetworkDriver::report_up>(this, "net_driver.report_up"))) {
 			return ConnectResult::failed;
 		}
 		pending_ = true;

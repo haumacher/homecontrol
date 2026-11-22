@@ -186,7 +186,7 @@ bool ZigbeeAdapter::start(const char** error) {
 		database_.at(i).saved_seen_s = database_.at(i).last_seen_s;
 	}
 	check_timer_ = loop_.schedule_periodic(start_ms_ + kCheckPeriodMs, kCheckPeriodMs,
-		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::check_stale>(this));
+		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::check_stale>(this, "zigbee.check_stale"));
 	bool ok = rebuild(error);
 	schedule_refresh();
 	return ok;
@@ -937,7 +937,7 @@ void ZigbeeAdapter::schedule_refresh() {
 		return;
 	}
 	refresh_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kRefreshSpacingMs,
-		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::refresh_due>(this));
+		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::refresh_due>(this, "zigbee.refresh_due"));
 }
 
 void ZigbeeAdapter::refresh_due() {
@@ -1096,7 +1096,7 @@ void ZigbeeAdapter::send_step() {
 			step_name(static_cast<uint8_t>(interview_.step)));
 	}
 	interview_.timer = loop_.schedule_at(clock_.monotonic_ms() + kInterviewTimeoutMs,
-		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::step_timeout>(this));
+		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::step_timeout>(this, "zigbee.step_timeout"));
 }
 
 void ZigbeeAdapter::step_timeout() {
@@ -1923,7 +1923,7 @@ void ZigbeeAdapter::send_held() {
 			Log::info(kTag, "sent the held command %s for '%s'", text, dp->name());
 		}
 		held_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kHeldSpacingMs,
-			Callback::member<ZigbeeAdapter, &ZigbeeAdapter::send_held>(this));
+			Callback::member<ZigbeeAdapter, &ZigbeeAdapter::send_held>(this, "zigbee.send_held"));
 		return;
 	}
 	hold_logged_ = false;

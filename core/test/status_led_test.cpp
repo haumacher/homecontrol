@@ -273,3 +273,80 @@ TEST_CASE("Controller.HeartbeatNamesAnUnusualNetworkMode") {
 	controller.run_once();
 	CHECK(p.sink.contains("heartbeat: uptime 10 s, network down, unprovisioned, free heap"));
 }
+
+namespace {
+
+struct FakeLedInput : hc::LedInput {
+	bool loaded = false;
+	bool degraded = false;
+	bool image_loaded() const override { return loaded; }
+	bool image_degraded() const override { return degraded; }
+};
+
+} // namespace
+
+TEST_CASE("Controller.TicksTheStatusLedOnlyWhileItBlinks") {
+	// homecontrol #101: a steady light (ready: on, or dark when quiet) is set once and has no timer;
+	// a blinking pattern has its tick, cancelled when the light becomes steady again.
+	hc_test::FakePlatform p;
+	p.clock.synchronized = true;
+	hc_test::FakeStatusLight light(p.clock);
+	hc::Platform platform = p.platform();
+	platform.status_light = &light;
+	FakeLedInput input;
+	hc::Controller controller(platform);
+	controller.set_led_input(&input);
+	controller.start();
+	controller.connectivity().link_up("192.0.2.10");
+	controller.run_once();
+	CHECK(controller.led_status() == LedStatus::setup);
+	size_t blinking = controller.loop().timer_count();
+
+	// Ready: solid on, one timer fewer, and no change of the light while time passes.
+	input.loaded = true;
+	controller.run_once();
+	CHECK(controller.led_status() == LedStatus::ready);
+	CHECK(controller.loop().timer_count() == blinking - 1);
+	REQUIRE_FALSE(light.changes.empty());
+	CHECK(light.changes.back().second);
+	light.changes.clear();
+	for (int i = 0; i < 100; ++i) {
+		p.clock.advance(StatusLed::kTickMs);
+		controller.run_once();
+	}
+	CHECK(light.changes.empty());
+
+	// Degraded: the dropout pattern blinks, so its tick runs again; it starts lit at once.
+	input.degraded = true;
+	controller.run_once();
+	CHECK(controller.loop().timer_count() == blinking);
+	for (int i = 0; i < 20; ++i) {
+		p.clock.advance(StatusLed::kTickMs);
+		controller.run_once();
+	}
+	REQUIRE(light.changes.size() == 2); // 900 ms on, 100 ms off, on again
+	CHECK_FALSE(light.changes[0].second);
+	CHECK(light.changes[1].second);
+
+	// Ready and quiet: dark, set once, no tick.
+	input.degraded = false;
+	REQUIRE(controller.set_led_quiet(true));
+	controller.run_once();
+	CHECK(controller.loop().timer_count() == blinking - 1);
+	CHECK_FALSE(light.changes.back().second);
+	light.changes.clear();
+	for (int i = 0; i < 40; ++i) {
+		p.clock.advance(StatusLed::kTickMs);
+		controller.run_once();
+	}
+	CHECK(light.changes.empty());
+}
+
+TEST_CASE("StatusLed.OnlyReadyIsSteady") {
+	CHECK(StatusLed::steady(StatusLed::pattern(LedStatus::ready)));
+	CHECK(StatusLed::steady(StatusLed::pattern(LedStatus::ready, true)));
+	CHECK_FALSE(StatusLed::steady(StatusLed::pattern(LedStatus::pairing)));
+	CHECK_FALSE(StatusLed::steady(StatusLed::pattern(LedStatus::connecting)));
+	CHECK_FALSE(StatusLed::steady(StatusLed::pattern(LedStatus::setup)));
+	CHECK_FALSE(StatusLed::steady(StatusLed::pattern(LedStatus::degraded)));
+}

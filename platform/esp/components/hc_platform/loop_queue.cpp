@@ -36,6 +36,7 @@ bool LoopQueue::post(LoopMessage::Handler handler, void* context, int32_t number
 	message.handler = handler;
 	message.context = context;
 	message.number = number;
+	message.what = what;
 	// A plain bounded copy: post() runs on foreign tasks with small stacks (the IDF's sys_evt among
 	// them), where the ROM's snprintf (newlib's full _svfprintf_r) once overflowed the stack (#48).
 	size_t length = 0;
@@ -53,6 +54,24 @@ bool LoopQueue::post(LoopMessage::Handler handler, void* context, int32_t number
 	return true;
 }
 
+bool LoopQueue::post_from_isr(LoopMessage::Handler handler, void* context, int32_t number, const char* what) {
+	if (queue_ == nullptr) {
+		return false;
+	}
+	LoopMessage message;
+	message.handler = handler;
+	message.context = context;
+	message.number = number;
+	message.what = what;
+	message.text[0] = '\0';
+	BaseType_t woken = pdFALSE;
+	bool queued = xQueueSendFromISR(queue_, &message, &woken) == pdTRUE;
+	if (woken == pdTRUE) {
+		portYIELD_FROM_ISR();
+	}
+	return queued;
+}
+
 void LoopQueue::dispatch(TickType_t ticks) {
 	LoopMessage message;
 	if (xQueueReceive(queue_, &message, ticks) != pdTRUE) {
@@ -64,11 +83,11 @@ void LoopQueue::dispatch(TickType_t ticks) {
 	do {
 		uint64_t one = static_cast<uint64_t>(esp_timer_get_time()) / 1000u;
 		message.handler(message.context, message);
-		// As the event loop's handlers (EventLoop::invoke, homecontrol #50): a message that holds the
-		// loop longer than 25 ms is logged with the address of its handler.
+		// As the event loop's handlers (EventLoop::invoke, homecontrol #50, #101): a message that holds
+		// the loop longer than 25 ms is logged with its name (what the poster called it).
 		uint64_t took = static_cast<uint64_t>(esp_timer_get_time()) / 1000u - one;
 		if (took > 25) {
-			ESP_LOGW(kTag, "slow message handler %p took %llu ms", reinterpret_cast<void*>(message.handler),
+			ESP_LOGW(kTag, "slow message handler %s took %llu ms", message.what != nullptr ? message.what : "?",
 				static_cast<unsigned long long>(took));
 		}
 	} while (++handled < kDepth && xQueueReceive(queue_, &message, 0) == pdTRUE);

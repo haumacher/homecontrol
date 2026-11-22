@@ -267,7 +267,7 @@ HistoryStatus History::validate(const HistorySpec* specs, size_t count, size_t b
 
 HistoryStatus History::start(uint32_t save_interval_s) {
 	uint64_t now = clock_.monotonic_ms();
-	Callback save = Callback::member<History, &History::flush>(this);
+	Callback save = Callback::member<History, &History::flush>(this, "history.flush");
 	if (listening_) {
 		if (save_interval_s != save_interval_s_) {
 			// Re-armed with the new interval (the slot just freed is taken again: cannot fail).
@@ -282,7 +282,7 @@ HistoryStatus History::start(uint32_t save_interval_s) {
 		return HistoryStatus::capacity;
 	}
 	listening_ = true;
-	tick_ = loop_.schedule_periodic(now + kTickMs, kTickMs, Callback::member<History, &History::on_tick>(this));
+	tick_ = loop_.schedule_periodic(now + kTickMs, kTickMs, Callback::member<History, &History::on_tick>(this, "history.on_tick"));
 	save_timer_ = loop_.schedule_periodic(now + save_interval_s * 1000ull, save_interval_s * 1000, save);
 	save_interval_s_ = save_interval_s;
 	if (!tick_.valid() || !save_timer_.valid()) {

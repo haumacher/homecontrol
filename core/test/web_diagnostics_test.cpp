@@ -202,7 +202,7 @@ TEST_CASE("WebDiagnostics: the loop's counters, the link's reconnects, the stora
 	f.controller.run_once(); // the controller's own timers catch up with the 12 s (their skips counted here)
 	uint64_t missed_before = f.controller.loop().missed_periods();
 	uint64_t start = f.fake.clock.now_ms;
-	f.controller.loop().schedule_periodic(start, 100, hc::Callback::member<Slow, &Slow::run>(&slow));
+	f.controller.loop().schedule_periodic(start, 100, hc::Callback::member<Slow, &Slow::run>(&slow, "slow.run"));
 	f.controller.run_once();
 	f.controller.run_once();
 	REQUIRE(slow.runs == 2);

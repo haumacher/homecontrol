@@ -362,7 +362,7 @@ TEST_CASE("NetworkName.AFreeNameIsStoredAndAnnouncedAtOnce") {
 		int* count;
 		void hit() { ++*count; }
 	} counter{&checked};
-	f.name.set_rename_listener(hc::Callback::member<Counter, &Counter::hit>(&counter));
+	f.name.set_rename_listener(hc::Callback::member<Counter, &Counter::hit>(&counter, "counter.hit"));
 	bool ok = false;
 	std::string code, error;
 	CHECK(f.rename("  Kitchen ", ok, code, error) == NetworkName::Begin::checking);

@@ -695,7 +695,7 @@ void BlockRuntime::schedule_persist() {
 		loop_.cancel(persist_timer_);
 	}
 	persist_deadline_ = earliest;
-	persist_timer_ = loop_.schedule_at(earliest, Callback::member<BlockRuntime, &BlockRuntime::on_persist>(this));
+	persist_timer_ = loop_.schedule_at(earliest, Callback::member<BlockRuntime, &BlockRuntime::on_persist>(this, "blocks.on_persist"));
 	if (!persist_timer_.valid()) {
 		Log::error(kTag, "cannot schedule the write of the block states; they are written at the next change");
 	}

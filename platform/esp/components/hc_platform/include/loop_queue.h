@@ -25,6 +25,9 @@ struct LoopMessage {
 	Handler handler;
 	void* context;
 	int32_t number;
+	/// What the message is (post()'s `what`, a literal): the name of its handler in the slow-handler
+	/// line (homecontrol #101).
+	const char* what;
 	char text[kMaxText];
 };
 
@@ -42,6 +45,11 @@ public:
 	/// Queues a message (any task, not from an ISR). Never blocks; when the queue is full the
 	/// message is dropped and an error logged with `what`.
 	bool post(LoopMessage::Handler handler, void* context, int32_t number, const char* text, const char* what);
+
+	/// Queues a message from an interrupt handler (homecontrol #101: the WPS button's edge): no text,
+	/// never blocks, nothing logged (an ISR must not); false when the queue is full. `what` must be a
+	/// literal. Wakes the loop's task at the end of the interrupt if it was waiting.
+	bool post_from_isr(LoopMessage::Handler handler, void* context, int32_t number, const char* what);
 
 	/// Event-loop task only: waits up to `ticks` for a message, then runs the waiting messages (at
 	/// most kDepth, the rest in the next call).

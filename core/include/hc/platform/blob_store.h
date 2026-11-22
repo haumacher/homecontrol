@@ -102,10 +102,12 @@ protected:
 /// - read() returns the bytes at `offset` (fewer at the end of the blob; 0 at or past the end).
 /// - Failures return a status, never abort; the implementation logs their cause.
 ///
-/// Threading: the core calls it on the event loop's thread, except the image store's write of a
-/// deployed image, which runs on the platform's Worker meanwhile (homecontrol #68, doc/persistence.md
-/// "Threads"): calls on *different* blobs may come from two threads at once, so an implementation
-/// keeps no per-call state in the object; calls on the same blob never overlap. A write may take
+/// Threading (doc/persistence.md "Threads"): the loop's writers reach the store through the BlobQueue
+/// (homecontrol #101), whose worker performs their writes, patches and removals while the loop reads
+/// and the storage figures' worker walks the store: calls may come from several threads at once, so
+/// an implementation keeps no per-call state in the object. Calls on the same blob do not overlap,
+/// except a read beside the worker's patch or write of it, which sees the complete old or the
+/// complete new content (the queue overlays its patch, so the loop reads the new). A write may take
 /// milliseconds (flash erase); the callers rate-limit and batch their writes.
 class BlobStore {
 public:

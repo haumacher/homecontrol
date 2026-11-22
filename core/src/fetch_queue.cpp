@@ -194,9 +194,9 @@ void FetchQueue::kick() {
 	if (kicked_) {
 		return;
 	}
-	kicked_ = loop_.post(Callback::member<FetchQueue, &FetchQueue::run_next>(this));
+	kicked_ = loop_.post(Callback::member<FetchQueue, &FetchQueue::run_next>(this, "fetch_queue.run_next"));
 	if (!kicked_) {
-		retry_ = loop_.schedule_at(clock_.monotonic_ms() + kRetryMs, Callback::member<FetchQueue, &FetchQueue::run_next>(this));
+		retry_ = loop_.schedule_at(clock_.monotonic_ms() + kRetryMs, Callback::member<FetchQueue, &FetchQueue::run_next>(this, "fetch_queue.run_next"));
 		kicked_ = retry_.valid();
 		if (!kicked_) {
 			Log::error(kTag, "the fetch queue cannot schedule its next request: it starts with the next fetch");
@@ -243,7 +243,7 @@ void FetchQueue::run_next() {
 		if (worker_.busy()) {
 			// Freed right after the end it is delivering returns: a moment later.
 			retry_ = loop_.schedule_at(clock_.monotonic_ms() + kRetryMs,
-				Callback::member<FetchQueue, &FetchQueue::run_next>(this));
+				Callback::member<FetchQueue, &FetchQueue::run_next>(this, "fetch_queue.run_next"));
 			kicked_ = retry_.valid();
 			return;
 		}
@@ -288,7 +288,7 @@ void FetchQueue::arm_expiry() {
 		}
 	}
 	if (any) {
-		expiry_ = loop_.schedule_at(earliest, Callback::member<FetchQueue, &FetchQueue::expire>(this));
+		expiry_ = loop_.schedule_at(earliest, Callback::member<FetchQueue, &FetchQueue::expire>(this, "fetch_queue.expire"));
 	}
 }
 

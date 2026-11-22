@@ -171,20 +171,31 @@ TEST_CASE("NetworkProbe.ButtonHoldWhileOnlineShowsPairingAndFallsBackToSetup") {
 	controller.connectivity().link_up("192.0.2.40");
 	CHECK(controller.led_status() == LedStatus::setup);
 
-	// The platform polls the button every 20 ms; held from 5 s to 8.1 s.
-	hc::HoldButton button;
-	bool fired = false;
+	// The button's edges reach the loop (the ESP's interrupt); held from 5 s to 8.1 s.
+	struct Pin : hc::ButtonPin {
+		bool level = false;
+		bool pressed() const override { return level; }
+	} pin;
+	struct Target {
+		hc::Controller* controller;
+		int fired = 0;
+		void held() {
+			++fired;
+			CHECK(controller->connectivity().request_pairing("button held"));
+		}
+	} target{&controller};
+	hc::HoldButton button(controller.loop(), p.clock, pin, hc::Callback::member<Target, &Target::held>(&target, "test.held"));
+	button.start();
 	for (uint64_t t = 0; t < 10000; t += 20) {
 		bool pressed = t >= 5000 && t < 8100;
-		if (button.sample(pressed, p.clock.now_ms)) {
-			CHECK_FALSE(fired); // exactly once
-			fired = true;
-			CHECK(controller.connectivity().request_pairing("button held"));
+		if (pressed != pin.level) {
+			pin.level = pressed;
+			button.edge();
 		}
 		p.clock.advance(20);
 		controller.run_once();
 	}
-	CHECK(fired);
+	CHECK(target.fired == 1); // exactly once
 	CHECK(controller.led_status() == LedStatus::pairing);
 	CHECK(controller.connectivity().is_up());
 

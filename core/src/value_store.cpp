@@ -496,7 +496,7 @@ DatapointStatus ValueStore::load() {
 		}
 		listening_ = true;
 		uint64_t now = clock_.monotonic_ms();
-		tick_ = loop_.schedule_periodic(now + kTickMs, kTickMs, Callback::member<ValueStore, &ValueStore::on_tick>(this));
+		tick_ = loop_.schedule_periodic(now + kTickMs, kTickMs, Callback::member<ValueStore, &ValueStore::on_tick>(this, "value_store.on_tick"));
 		if (!tick_.valid()) {
 			model_.remove_listener(*this);
 			listening_ = false;
@@ -687,7 +687,7 @@ void ValueStore::datapoint_updated(const DatapointUpdate& update) {
 	uint64_t now = clock_.monotonic_ms();
 	bool due = !s->written || now - s->written_ms >= static_cast<uint64_t>(limits_.min_interval_s) * 1000;
 	if (due && !posted_) {
-		posted_ = loop_.post(Callback::member<ValueStore, &ValueStore::on_post>(this));
+		posted_ = loop_.post(Callback::member<ValueStore, &ValueStore::on_post>(this, "value_store.on_post"));
 	}
 }
 

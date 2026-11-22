@@ -97,7 +97,7 @@ bool NetworkName::start_lookup(const char* name, Lookup kind, const char** reaso
 	lookup_deadline_ = clock_.monotonic_ms() + kLookupMs + kLookupGraceMs;
 	loop_.cancel(poll_timer_);
 	poll_timer_ = loop_.schedule_periodic(clock_.monotonic_ms() + kPollMs, kPollMs,
-		Callback::member<NetworkName, &NetworkName::poll>(this));
+		Callback::member<NetworkName, &NetworkName::poll>(this, "net_name.poll"));
 	return true;
 }
 
@@ -160,7 +160,7 @@ void NetworkName::apply() {
 	settling_ = true;
 	loop_.cancel(settle_timer_);
 	settle_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kSettleMs,
-		Callback::member<NetworkName, &NetworkName::settle_due>(this));
+		Callback::member<NetworkName, &NetworkName::settle_due>(this, "net_name.settle_due"));
 	Log::info(kTag, "network name %s.local announced (mDNS; DHCP host name with the next request)", name_);
 }
 

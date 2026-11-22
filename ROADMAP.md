@@ -352,3 +352,14 @@ outside world (weather, external services).
   the boot record is written once per start. The diagnostics count the writes per writer. Rejected:
   a resolution per persisted field (it still writes recomputable state); the house mode's mode as a
   `persist` datapoint (an unbound output would lose it).
+- **2026-11-22 — The loop names its handlers, writes the flash through a queue and polls nothing
+  idle (homecontrol #101, the owner: "Und das wird alle 20ms abgefragt????? Wofür soll das gut
+  sein?").** Every callback carries a short name, which the slow-handler and the missed-period
+  warnings print (the warning for a missed period stays: "sonst wäre dieser Schwachsinn nie
+  aufgefallen"). The loop's blob writes go through `BlobQueue`, a write queue in front of the blob
+  store whose own worker performs them (read your writes; a full queue writes on the loop with a
+  warning); the settings in NVS stay on the loop. The BOOT button raises an interrupt per edge,
+  handed to the loop, which waits out the bounce and times the hold with one-shot timers; the
+  status LED is ticked only while its pattern blinks. Rejected: polling at a lower rate; a copy
+  buffer sized for the largest blob (20 KB of RAM for the history's rings, which the house
+  controller does not have).

@@ -42,7 +42,11 @@ The credentials are stored in the settings exactly as `wifi set` stores them (`w
 
 **Re-pairing** a device that already has credentials (a new router): hold the BOOT button for about
 3 s (a short press does nothing), or type `wifi wps` on the console, then press the router's WPS
-button. The current connection stays up while the device waits for the router; only when the
+button. The button is not polled (homecontrol #101): its pin interrupts on both edges, the
+interrupt only hands the edge to the event loop and stays off until the button settled; there
+`hc::HoldButton` reads the level 50 ms after the first edge (shorter bounces and glitches count
+as nothing) and times the hold with a one-shot timer of 3 s that the release cancels. While nobody
+touches the button no timer runs. The current connection stays up while the device waits for the router; only when the
 router answers does the WPS exchange leave the old access point for a few seconds (a WiFi station
 can be associated with one access point only). If nobody answers within the WPS walk time (about
 2 minutes) or the exchange fails, the device keeps or restores its old connection.
@@ -196,8 +200,11 @@ again in 1 s`. The heartbeat line names the link state and, if it is not `normal
 | solid | ready |
 | dark | ready with `led.quiet` on, or no power |
 
-The core derives the pattern (`Controller::led_status()`, `hc::StatusLed`, 50 ms ticks; with
-`led.quiet` on the pattern of `ready` is dark, see above) and switches the light; the board's LED is chosen in menuconfig under *HomeControl status LED*: a WS2812 pixel
+The core derives the pattern (`Controller::led_status()`, `hc::StatusLed`; with
+`led.quiet` on the pattern of `ready` is dark, see above) and switches the light. The status is
+checked after every turn of the event loop, whose work is all that changes it (homecontrol #101): a
+blinking pattern is ticked every 50 ms by a timer, a steady one (`ready`, lit or dark) is set once
+and has no timer; the board's LED is chosen in menuconfig under *HomeControl status LED*: a WS2812 pixel
 on GPIO8 (default on the ESP32-C6 devkits, dim cyan), a plain GPIO LED (optionally active low), or
 none (default for the S3 build; component `hc_status_light`, shared with the OTA updater).
 The OTA updater shows its own patterns on the same LED, each distinguishable from these by its

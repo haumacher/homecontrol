@@ -31,9 +31,11 @@ const char* led_status_name(LedStatus status);
 
 /// The blink patterns of the status LED, ported from the phoneblock dongle: a pattern is a bit mask
 /// over ticks of kTickMs (bit n set: lit during tick n, least significant bit first) and a period
-/// in ticks. tick() is called every kTickMs and returns the level for the current tick; a status
-/// change restarts the pattern at its first tick, so a new state is visible at once. In quiet mode
-/// (the setting led.quiet) the pattern of `ready` is dark; the other states are unchanged.
+/// in ticks. tick() is called every kTickMs while the pattern blinks and returns the level for the
+/// current tick; a status change restarts the pattern at its first tick, so a new state is visible
+/// at once. A steady pattern (solid on or dark: `ready`) needs no tick (homecontrol #101): its
+/// level is set once. In quiet mode (the setting led.quiet) the pattern of `ready` is dark; the
+/// other states are unchanged.
 class StatusLed {
 public:
 	static constexpr uint32_t kTickMs = 50;
@@ -58,6 +60,16 @@ public:
 
 	/// The level for the current tick; advances to the next tick.
 	bool tick();
+
+	/// Whether `pattern` shows one level all the time (no tick needed).
+	static bool steady(Pattern pattern) {
+		uint32_t all = pattern.ticks >= 32 ? 0xFFFFFFFFu : ((1u << pattern.ticks) - 1u);
+		uint32_t mask = pattern.on_mask & all;
+		return mask == 0 || mask == all;
+	}
+
+	/// Whether the current pattern is steady (status and quiet mode).
+	bool steady() const { return steady(pattern(status_, quiet_)); }
 
 private:
 	LedStatus status_ = LedStatus::connecting;
