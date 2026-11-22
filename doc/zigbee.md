@@ -316,39 +316,108 @@ turns the periodic report off promises no report and does not count: `max` 65535
 issues no reports of the attribute) and `max` 0 (ZCL: reports on a change only). A device whose
 every function has it off never goes stale, like a pure button.
 
-## Radio facts and the join log (homecontrol #98)
+## Radio facts, topology and the join log (homecontrol #98)
 
 To tell a lost parent from an empty battery or a dead device (homecontrol #99), the adapter keeps
-per device what the stack knows of its radio link, for this boot only (not persisted), and shows it
-in the adapter view (`GET /api/zigbee`, spec/zigbee.md "Adapter view") and on the Zigbee page:
+per device what the stack knows of its radio link and its place in the mesh, for this boot only (not
+persisted), and shows it in the adapter view (`GET /api/zigbee`, spec/zigbee.md "Adapter view") and
+on the Zigbee page.
 
-- **`lqi`, `rssi`**: with each frame the stack hands over (reports, read responses, commands, ZDO
-  answers, announces), the platform asks ZBOSS for the sender's last LQI and RSSI
-  (`zb_zdo_get_diag_data()`, ZBOSS's own API of the managed `esp-zboss-lib`; the esp-zigbee-lib's
-  report callback carries neither) and puts them into the event. ZBOSS keeps them per neighbour: a
-  device behind a router has none (the router's link is its neighbour entry), so the members stay
-  absent for it.
-- **The child table**: every 10 s (with the stale check) the adapter reads the coordinator's
-  neighbour table through the driver (`ZigbeeDriver::read_neighbors()`, on the ESP
-  `esp_zb_nwk_get_next_neighbor()` under the stack's lock, waiting at most 20 ms for it: a busy stack
-  skips one read). A device listed as a child shows `parent: "coordinator"`, its end-device timeout
-  `timeout_s` (`device_timeout`) and the remaining time of its entry at the read `expires_in_s`
-  (`timeout_counter`); a polling sleepy device keeps restarting it. A router (from the table or its
-  announce's capability) has no parent. A device that joined or rejoined through a router names it
-  (the trust center's Update Device carries the parent).
-- **The log**: the first read names every child (`<device> is a child of the coordinator (short
-  0xaf9e, end-device timeout 15360 s, 9 s left)`), later reads every change (`became a child`, `is no
-  longer a child of the coordinator: removed from its child table (end-device timeout ..., N s were
-  left 10 s before; last heard M s ago)`). Every Update Device of the trust center (unsecured join,
-  secured rejoin, trust center rejoin, leave) is one info line with the parent and the trust
-  center's decision (`<device>: secured rejoin (short 0xaf9e) through the coordinator, trust center:
-  authorize`), every authorization (`authorization (legacy device): success`, a failure at warn) and
-  every MAC association (`associated with the coordinator`) too.
+**`lqi`, `rssi`.** With each frame the stack hands over (reports, read responses, commands, ZDO
+answers, announces), the platform asks ZBOSS for the sender's values (`zb_zdo_get_diag_data()`,
+ZBOSS's own API of the managed `esp-zboss-lib`; the esp-zigbee-lib's report callback carries
+neither) and puts them into the event. What they are, read from the prebuilt libraries of
+esp-zigbee-lib 1.6.8 / esp-zboss-lib (the debug archives disassemble with their symbols; there is
+no source):
 
-What the stack does not signal stays invisible: a NWK rejoin request it refuses below the trust
-center (no Update Device follows) leaves no line; the absence of a rejoin line while the device's
-LED says it searches is then the evidence. A device's own child table entry at a router is not read
-(no Mgmt_Lqi request).
+- `zb_zdo_get_diag_data()` looks the short address up in the **coordinator's neighbour table**
+  (`zb_nwk_neighbor_get_by_short()`) and copies that entry's `lqi` and `rssi`; without an entry it
+  gives LQI 0 and RSSI 127 (`ZB_MAC_LQI_UNDEFINED`, `ZB_MAC_RSSI_UNDEFINED`), and the adapter takes
+  RSSI 127 as "none". So a device behind a router has no values (it is no neighbour), and a router's
+  values are those of its own frames.
+- The entry is written on the MAC data indication path (`zb_mcps_data_indication_cont`), i.e. by
+  every NWK frame the neighbour sends (data and NWK commands): `lqi` and `rssi` of **that last
+  frame**, not an average (`zb_nwk_neighbour_rssi_store()` would smooth the RSSI by a third per
+  frame, but the field is set to the new value right before, so the stored value is the last one).
+  The data polls of a sleepy child are MAC commands, not data indications: as far as the
+  disassembly shows, they do not update it (they restart `expires_in_s`).
+- The **LQI is derived from the RSSI** by the ESP port (`esp_zb_rssi_to_lqi()` in `libzboss_port`):
+  0 below -80 dBm, 255 from -29 dBm, linear in between ((RSSI + 80) × 255 / 50). LQI 0 with RSSI
+  -90 dBm is therefore a real value: a link below -80 dBm, near the radio's sensitivity (the house
+  controller's plug, 2026-11-21: RSSI -94 and -90 dBm, LQI 0). That LQI 0 coincides with
+  `ZB_MAC_LQI_UNDEFINED` is why the RSSI, not the LQI, tells "none".
+
+**The coordinator's child table.** Every 10 s (with the stale check) the adapter reads the
+coordinator's neighbour table through the driver (`ZigbeeDriver::read_neighbors()`, on the ESP
+`esp_zb_nwk_get_next_neighbor()` under the stack's lock, waiting at most 20 ms for it: a busy stack
+skips one read). A device listed as a child shows `parent: "coordinator"`, its end-device timeout
+`timeout_s` (`device_timeout`) and the remaining time of its entry at the read `expires_in_s`
+(`timeout_counter`); a polling sleepy device keeps restarting it. A router (from the table or its
+announce's capability) has no parent.
+
+**The routers' tables.** The parent of a device that is not the coordinator's child is in a
+router's neighbour table, which the coordinator cannot read locally: the adapter asks each router
+with the ZDO request Mgmt_Lqi_req (`esp_zb_zdo_mgmt_lqi_req()`, `ZigbeeDriver::request_neighbor_table()`)
+in a pass over the known routers (a device the announce's capability or a neighbour table names a
+router). The pass runs every 5 minutes and 3 s after a device announced itself or turned stale
+(time for the router to list a rejoined child); one request is in flight, a router has 5 s per page,
+a table is read in pages (about three entries each, at most 16 pages per router), a request for
+another pass while one runs starts one after it. From the answers:
+
+- a router's **child** entry gives the device's `parent` (the router's IEEE, its label as
+  `parent_label`), `depth` and `parent_lqi`, the router's link quality of the device: the link the
+  coordinator cannot see. A new or changed parent is logged (`<device> is a child of <router> (the
+  router's link quality of it 120, depth 2)`); a device the parent router no longer lists, when that
+  router answered its whole table, loses the parent (`is no longer a child of <router>`).
+- a router's entry of the **coordinator** gives `coordinator_lqi`, the router's link quality of the
+  coordinator's frames (the other direction of the link the coordinator measures as the router's
+  `lqi`/`rssi`).
+- a router that does not answer is logged once (`did not answer the request for its neighbour table
+  ...`) until it answers again; its children keep the parent known. A rejected request (status not
+  0, e.g. a router without Mgmt_Lqi) moves on to the next router (debug).
+
+A parent also comes from the trust center's Update Device (`parent_short`), without `parent_lqi`
+and `depth` until a router's table confirms it.
+
+**The log.** The first read of the child table names every child (`<device> is a child of the
+coordinator (short 0xaf9e, end-device timeout 15360 s, 9 s left)`), later reads every change
+(`became a child`, `is no longer a child of the coordinator: removed from its child table
+(end-device timeout ..., N s were left 10 s before; last heard M s ago)`). Every Update Device of the
+trust center (unsecured join, secured rejoin, trust center rejoin, leave) is one info line with the
+parent and the trust center's decision (`<device>: secured rejoin (short 0xaf9e) through the
+coordinator, trust center: authorize`), every authorization (`authorization (legacy device):
+success`, a failure at warn) and every MAC association (`associated with the coordinator`) too.
+
+**A rejoin with a new address.** A device that announces itself with another short address than the
+one known (the database keeps it across restarts) rejoined with a new address; that is one info line
+instead of "announced itself": `<device> rejoined with a new address: short 0xaf9e -> 0x5025, no
+trust-center notice (its parent is looked up in the routers' tables)`, or, when the trust center's
+Update Device for it came within 10 s before, `... through <parent>, after the trust center's
+secured rejoin notice` (the notice moves the short address first; the announce line still names the
+old one). Without a notice the old parent is dropped and the pass that follows the announce finds
+the new one.
+
+**What the stack signals for a rejoin** (esp-zigbee-lib 1.6.8 headers, the call graph of the prebuilt
+libraries):
+
+- `ESP_ZB_ZDO_SIGNAL_DEVICE_ANNCE`: every device announce the coordinator receives (broadcast by the
+  device after any join or rejoin); the only signal that comes for every rejoin.
+- `ESP_ZB_ZDO_SIGNAL_DEVICE_UPDATE`: raised by the trust center in two places only:
+  `zb_authenticate_dev()`/`zb_apsme_update_device_request()`, when a device joins or rejoins **the
+  coordinator itself** as its parent; and `zb_apsme_update_device_indication()`, when **a router sends
+  the trust center an APS Update Device** for a device that joined or rejoined through it (with a
+  duplicate filter). A secured NWK rejoin through a router produces the signal only if that router
+  sends Update Device; the house controller's Signify plug (LOM007) sent none for the SML002
+  (2026-11-21: the announce with the new address 0x5025 was the only trace).
+- `ESP_ZB_NWK_SIGNAL_DEVICE_ASSOCIATED`: only a MAC association at the coordinator
+  (`zb_mlme_comm_status_indication()`), i.e. a join while the network is open, never a NWK rejoin.
+- `ESP_ZB_ZDO_SIGNAL_DEVICE_AUTHORIZED`: the trust center's authorization of a joining device.
+- `ZB_SE_SIGNAL_CHILD_REJOIN` (ZBOSS) exists for Smart Energy builds only; the esp-zigbee-lib maps no
+  signal for a rejoin at a router.
+
+What the stack does not signal stays invisible: a NWK rejoin request the coordinator refuses below
+the trust center leaves no line; the absence of a rejoin line while the device's LED says it
+searches is then the evidence.
 
 ## Threading
 
@@ -358,7 +427,8 @@ one drain message through the `LoopQueue`; the event loop delivers them to the a
 drops the frame, counts it (`zigbee status`: "events N dropped") and logs the first drop of a burst
 (`hc.zigbee: Zigbee event dropped: the ring to the event loop is full ...`). The adapter's requests run on
 the event loop's task: the driver takes the stack's lock (at most 500 ms; the periodic read of the
-neighbour table at most 20 ms) and calls the SDK directly. Allocation happens at `init()` (the adapter, the driver, the task) and at the model
+neighbour table at most 20 ms) and calls the SDK directly. A router's Mgmt_Lqi_rsp comes back through
+the ring like every ZDO answer (at most 4 neighbour records per event). Allocation happens at `init()` (the adapter, the driver, the task) and at the model
 reloads (the adapter's point tables, the specs it states); reports, commands and the stale check
 allocate nothing.
 
@@ -370,8 +440,9 @@ The **Zigbee** page (doc/web.md, "Pages") does what the console does, over the A
 `interviewing`, `interviewed`, `interview_failed`, `interview_incomplete`, `left`, ...) appear in a list under the network
 card as they happen, and the device cards follow (the page reads `GET /api/zigbee` again on each
 event). Each device card shows the state (an incomplete interview with what did not answer),
-manufacturer and model, IEEE, last seen, the radio link (LQI and RSSI of the last frame, the parent,
-the child entry's timeout and remaining time, where known) and its
+manufacturer and model, IEEE, last seen, the radio link (LQI and RSSI of the last frame, the parent
+with the router's link quality of it and the depth, a router's link quality of the coordinator, the
+child entry's timeout and remaining time, where known) and its
 datapoints' live values, with **Identify** (10 s), **Rename** (the label), **Interview again** and
 **Remove** (after a confirmation; asks the device to leave and forgets it). The adapter reports
 every change of its device list through `ZigbeeEventListener` (one listener, the `WebApi`, which

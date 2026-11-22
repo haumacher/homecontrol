@@ -97,26 +97,45 @@ struct ZigbeeDevice {
 	/// next interview the device's own frames trigger waits kInterviewRetryMs from it.
 	uint64_t interview_ms = 0;
 
-	// Radio facts of this boot (homecontrol #98, spec/zigbee.md "Adapter view"), not persisted; ordered
-	// to pack into 16 bytes.
+	// Radio facts and topology of this boot (homecontrol #98, spec/zigbee.md "Adapter view"), not
+	// persisted; packed into 16 bytes (the flags share one byte).
 
 	/// The device's end-device timeout in the coordinator's child table, in seconds, and the
-	/// remaining time of its entry at the last read of the table, in milliseconds (valid while
-	/// `child`).
+	/// remaining time of its entry at the last read of the table, in milliseconds (valid with kChild).
 	uint32_t child_timeout_s = 0;
 	uint32_t child_expires_ms = 0;
-	/// The parent the trust center named in the device's last join or rejoin (kNoShortAddress: none).
+	/// Its parent router (kNoShortAddress: none known; 0x0000 the coordinator), from the trust
+	/// center's notice of its join or rejoin, or from a router's neighbour table (kParentListed).
 	uint16_t parent_short = kNoShortAddress;
-	/// Link quality (0..255) and signal strength (dBm) of the device's last frame (valid while
-	/// `radio_known`: the stack gave them with a frame since the start).
+	/// Link quality (0..255) and signal strength (dBm) of the device's last frame as the coordinator's
+	/// neighbour table holds them (valid with kRadioKnown).
 	uint8_t lqi = 0;
 	int8_t rssi = 0;
-	bool radio_known = false;
-	/// The device is a router (its announce's capability, or the coordinator's neighbour table): it
-	/// has no parent.
-	bool router = false;
+	/// From the parent router's neighbour table (valid with kParentListed): the router's link quality
+	/// of the device and the device's depth in the network.
+	uint8_t parent_lqi = 0;
+	uint8_t depth = 0;
+	/// A router's link quality of the coordinator, from its own neighbour table (valid with
+	/// kCoordinatorLink).
+	uint8_t coordinator_lqi = 0;
+	/// kRadioKnown, kRouter, ...
+	uint8_t flags = 0;
+
+	/// `lqi` and `rssi` hold what the stack gave with a frame of the device since the start.
+	static constexpr uint8_t kRadioKnown = 0x01;
+	/// The device is a router (its announce's capability, or a neighbour table): it has no parent.
+	static constexpr uint8_t kRouter = 0x02;
 	/// The device was in the coordinator's child table at the last read of the table.
-	bool child = false;
+	static constexpr uint8_t kChild = 0x04;
+	/// `parent_short` comes from the router's neighbour table, with `parent_lqi` and `depth`.
+	static constexpr uint8_t kParentListed = 0x08;
+	/// `coordinator_lqi` is known.
+	static constexpr uint8_t kCoordinatorLink = 0x10;
+	/// The router did not answer the last neighbour table request (logged once until it answers).
+	static constexpr uint8_t kTopologySilent = 0x20;
+
+	bool has(uint8_t flag) const { return (flags & flag) != 0; }
+	void set(uint8_t flag, bool on) { flags = static_cast<uint8_t>(on ? flags | flag : flags & ~flag); }
 
 	/// The interview ended incomplete: its partial result (endpoints() is not empty) is kept and
 	/// mapped, the device is not interviewed and is interviewed again when it is next heard.

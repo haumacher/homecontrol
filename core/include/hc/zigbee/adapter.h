@@ -170,9 +170,17 @@ protected:
 ///   (ZigbeeDriver::read_neighbors()) and keeps, per device, whether it is a child of the coordinator
 ///   with its end-device timeout and the remaining time of its entry, and whether it is a router.
 ///   A device that enters or leaves the child table is logged at info, as is every join, rejoin and
-///   leave the trust center reports (device_updated()), every authorization (device_authorized())
-///   and every association (device_associated()), so that a device's loss and its return show in the
-///   log with their time and kind.
+///   leave the trust center reports (device_updated()), every authorization (device_authorized()),
+///   every association (device_associated()) and every announce with a new short address (a rejoin
+///   with a new address, whether the trust center reported it or not), so that a device's loss and
+///   its return show in the log with their time and kind.
+/// - **Topology** (homecontrol #98). The parent of a device that is not the coordinator's child is
+///   found in the routers' neighbour tables: a pass asks each router (ZDO Mgmt_Lqi_req, paged, one
+///   request in flight, kTopologyTimeoutMs each, at most kTopologyMaxPages pages per router) every
+///   kTopologyPeriodMs and kTopologyDelayMs after a device announced itself or turned stale. A
+///   router's child entry gives the device's parent, depth and the router's link quality of it; its
+///   entry of the coordinator gives the router's link quality of the coordinator. A change of parent
+///   is logged; a device the parent router no longer lists (the router answered completely) loses it.
 /// - **Reads.** After start() and after a silence, the server attributes of each device are read,
 ///   one device every kRefreshSpacingMs. A read the application asks for (read(), a rule's `read`
 ///   action) sends a Read Attributes of the datapoint's attribute at once; refused for a point the
@@ -200,6 +208,16 @@ public:
 	/// An announce heard this shortly before the trust center's join notice belongs to that join.
 	static constexpr uint64_t kAnnounceBeforeJoinMs = 5000;
 	static constexpr uint32_t kCheckPeriodMs = 10000;
+	/// The routers' neighbour tables are read every kTopologyPeriodMs, and kTopologyDelayMs after a
+	/// device announced itself or turned stale (the router has the rejoined child in its table then).
+	static constexpr uint32_t kTopologyPeriodMs = 300000;
+	static constexpr uint32_t kTopologyDelayMs = 3000;
+	/// How long a router has to answer one Mgmt_Lqi_req.
+	static constexpr uint32_t kTopologyTimeoutMs = 5000;
+	/// Pages of one router's table read in a pass (a Mgmt_Lqi_rsp carries about three entries).
+	static constexpr uint8_t kTopologyMaxPages = 16;
+	/// An announce this shortly after the trust center's notice of the device belongs to it.
+	static constexpr uint64_t kNoticeBeforeAnnounceMs = 10000;
 	static constexpr uint32_t kStaleFactor = 3;
 	/// A device's `last_seen` is written at the latest this long after it moved past the stored one
 	/// (by the check every kCheckPeriodMs; one write covers every device): after a restart it is at
@@ -280,6 +298,10 @@ public:
 	/// The link quality and signal strength the stack gives for the device's last frame; told before
 	/// the frame's own event. Kept for the adapter view, not a sign of life by itself.
 	void radio(NodeAddress address, uint8_t lqi, int8_t rssi);
+	/// A router's answer to ZigbeeDriver::request_neighbor_table(): `status` (0 success), the
+	/// router's `total` entries, the page from `start_index` (the entries valid during the call).
+	void neighbor_table(NodeAddress router, uint8_t status, uint8_t total, uint8_t start_index,
+		const ZigbeeNeighbor* entries, size_t count);
 	void device_left(NodeAddress address);
 	void active_endpoints(NodeAddress address, uint8_t status, const uint8_t* endpoints, size_t count);
 	void simple_descriptor(NodeAddress address, uint8_t status, const SimpleDescriptor& descriptor);
@@ -410,6 +432,44 @@ private:
 	/// left the child table.
 	void read_child_table();
 	class ChildTableReader;
+	/// A pass over the routers' neighbour tables (homecontrol #98).
+	struct Topology {
+		bool active = false;
+		/// Another pass is due when this one ends.
+		bool again = false;
+		/// The router asked now (database index), its address and the page asked for.
+		size_t router = 0;
+		Ieee router_ieee = 0;
+		uint16_t router_short = kNoShortAddress;
+		uint8_t start = 0;
+		uint8_t pages = 0;
+		/// Database indices (bits) of the devices a router listed as its child in this pass, and of the
+		/// routers whose table was read to its end.
+		uint32_t listed = 0;
+		uint32_t answered = 0;
+		/// The delay before a pass, or the timeout of the request in flight.
+		TimerHandle timer;
+	};
+	static_assert(DeviceDatabase::kMaxDevices <= 32, "Topology's bit sets hold one bit per device");
+	Topology topology_;
+	TimerHandle topology_period_;
+	/// The trust center's last notice (device_updated()), for the announce that follows it.
+	Ieee notice_ieee_ = 0;
+	uint8_t notice_status_ = 0;
+	uint64_t notice_ms_ = 0;
+	/// The device's short address before that notice (kNoShortAddress: it was not known).
+	uint16_t notice_old_short_ = kNoShortAddress;
+	/// Schedules a pass in kTopologyDelayMs (or after the running one).
+	void request_topology();
+	void topology_tick();
+	void topology_start();
+	/// Asks the next router from database index `from`; ends the pass when there is none.
+	void topology_next_router(size_t from);
+	void topology_send();
+	void topology_timeout();
+	void topology_finish();
+	/// Ends a running pass without its conclusions (the database indices changed).
+	void topology_abort();
 	/// Whether the child table was read since the start (the first read logs every child it finds).
 	bool children_read_ = false;
 	void refresh_due();

@@ -694,10 +694,12 @@ the device's datapoints (their values come from `/api/datapoints` or the live fe
 device announced its leave (it stays known, rejoining restores it); `stale`: not heard within its
 shortest reporting interval × 3 (doc/zigbee.md "Stale rule"); `seen_ago_s` only once heard since the
 start. The radio facts (homecontrol #98; new members, absent until known since the start): `lqi`
-and `rssi` of the last frame received from the device; `parent`: `"coordinator"` while the device
-is in the coordinator's child table, then with `timeout_s` (its end-device timeout) and
-`expires_in_s` (the remaining time of its entry), otherwise the IEEE of the router it joined
-through, with `parent_label`, where known; absent for a router (spec/zigbee.md "Adapter view"). An incomplete interview (a sleepy
+and `rssi` of the last frame received from the device as the coordinator's neighbour; `parent`:
+`"coordinator"` while the device is in the coordinator's child table, then with `timeout_s` (its
+end-device timeout) and `expires_in_s` (the remaining time of its entry), otherwise the IEEE of its
+parent router with `parent_label`, and `parent_lqi` (the router's link quality of it) and `depth`
+when the router's neighbour table listed it; a router has no `parent` but `coordinator_lqi`, its
+link quality of the coordinator (spec/zigbee.md "Adapter view"). An incomplete interview (a sleepy
 device did not answer every request; `interviewed` false, its datapoints in use) adds
 `"missing": {"endpoints": [2], "names": false}` and the English reason
 `"incomplete": "endpoint 2 did not answer"` (spec/zigbee.md "Adapter view"); the export's device

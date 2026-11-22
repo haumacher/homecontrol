@@ -49,7 +49,8 @@ function stateBadge(d) {
 }
 
 /// The radio rows of a device (spec/zigbee.md "Adapter view"): link quality and signal strength of
-/// its last frame, its parent, and its entry in the coordinator's child table; each only where known.
+/// its last frame, its parent (with the router's link quality of it and its depth), a router's link
+/// quality of the coordinator, and its entry in the coordinator's child table; each only where known.
 function radioRows(d, all) {
 	const rows = [];
 	if (d.lqi !== undefined) {
@@ -59,7 +60,12 @@ function radioRows(d, all) {
 		rows.push([t("zigbee.parent"), t("zigbee.parent.coordinator")]);
 	} else if (d.parent) {
 		const router = all.find((other) => other.ieee === d.parent);
-		rows.push([t("zigbee.parent"), d.parent_label || (router && deviceTitle(router)) || d.parent]);
+		const name = d.parent_label || (router && deviceTitle(router)) || d.parent;
+		rows.push([t("zigbee.parent"), d.parent_lqi !== undefined
+			? t("zigbee.parent.value", { name, lqi: d.parent_lqi, depth: d.depth }) : name]);
+	}
+	if (d.coordinator_lqi !== undefined) {
+		rows.push([t("zigbee.uplink"), t("zigbee.uplink.value", { lqi: d.coordinator_lqi })]);
 	}
 	if (d.timeout_s !== undefined) {
 		rows.push([t("zigbee.child"), t("zigbee.child.value", { timeout: formatDuration(d.timeout_s),

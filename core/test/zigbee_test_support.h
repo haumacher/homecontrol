@@ -68,6 +68,9 @@ public:
 		return record("identify " + hex4(short_addr) + " " + std::to_string(endpoint) + " " + std::to_string(seconds));
 	}
 	bool leave(hc::zigbee::Ieee, uint16_t short_addr) override { return record("leave " + hex4(short_addr)); }
+	bool request_neighbor_table(hc::zigbee::Ieee, uint16_t short_addr, uint8_t start_index) override {
+		return record("lqi " + hex4(short_addr) + " " + std::to_string(start_index));
+	}
 	/// Hands `neighbors` to the visitor (not recorded in `calls`: the adapter reads the table at every
 	/// check); `neighbors_readable` false refuses.
 	bool read_neighbors(hc::ZigbeeNeighborVisitor& visitor) override {

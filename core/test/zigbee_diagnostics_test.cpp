@@ -324,3 +324,212 @@ TEST_CASE("ZigbeeDiagnosticsProbe: a child that moved to a router keeps that par
 	CHECK(contains(view, expected));
 	CHECK_FALSE(contains(view, "\"timeout_s\""));
 }
+
+// ---- Rework from the house controller: a rejoin with a new address, the routers' tables ----------
+
+namespace {
+
+constexpr uint16_t kSml002NewShort = 0x5025;
+
+/// The plug of the house as a router: its announce names it one.
+void make_router(ZigbeeFixture& f) {
+	f.join_bulb();
+	REQUIRE(f.adapter.set_label(kBulb, "Steckdose"));
+	f.adapter.device_announced(ZigbeeFixture::node(kBulb, kBulbShort), 0x8e);
+}
+
+ZigbeeNeighbor router_entry(hc::zigbee::Ieee ieee, uint16_t short_addr, ZigbeeNeighbor::Relationship relation,
+	uint8_t lqi, uint8_t depth, bool coordinator = false) {
+	ZigbeeNeighbor n = neighbor(ieee, short_addr, coordinator, relation);
+	n.coordinator = coordinator;
+	n.lqi = lqi;
+	n.depth = depth;
+	return n;
+}
+
+/// The plug's table: the coordinator (its parent) and the sensor as its child.
+std::vector<ZigbeeNeighbor> plug_table() {
+	return {router_entry(0x60554bfffe010203ull, 0x0000, ZigbeeNeighbor::Relationship::parent, 40, 0, true),
+		router_entry(kSml002, kSml002NewShort, ZigbeeNeighbor::Relationship::child, 120, 2)};
+}
+
+/// Runs the loop in steps of 100 ms until the adapter asks a router for its table (at most
+/// `limit_ms`); the request's line, or "" when none came.
+std::string next_request(ZigbeeFixture& f, uint64_t limit_ms = ZigbeeAdapter::kTopologyPeriodMs + 10000) {
+	size_t before = f.driver.count("lqi");
+	for (uint64_t waited = 0; waited < limit_ms; waited += 100) {
+		f.run_for(100);
+		if (f.driver.count("lqi") > before) {
+			return f.driver.calls.back();
+		}
+	}
+	return "";
+}
+
+/// Answers the pass the joins asked for with an empty table.
+void settle(ZigbeeFixture& f) {
+	REQUIRE(next_request(f, ZigbeeAdapter::kTopologyDelayMs + 1000) == "lqi 0x1a2b 0");
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 0, 0, nullptr, 0);
+}
+
+} // namespace
+
+TEST_CASE("ZigbeeDiagnosticsRework: an announce with a new short address is one rejoin line, without a notice") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.start_network();
+	join_sml002(f);
+	f.adapter.device_announced(ZigbeeFixture::node(kSml002, kSml002NewShort), 0x80);
+	CHECK(lines_with(capture.sink, {"0017880106498a49", "0xaf9e -> 0x5025"}) == 1);
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof) rejoined with a new address: short "
+								"0xaf9e -> 0x5025, no trust-center notice (its parent is looked up in the routers' "
+								"tables)"));
+	CHECK_FALSE(capture.sink.contains("announced itself (short 0x5025)"));
+	CHECK(f.adapter.devices().find(kSml002)->short_addr == kSml002NewShort);
+	// The same address again is no rejoin.
+	f.adapter.device_announced(ZigbeeFixture::node(kSml002, kSml002NewShort), 0x80);
+	CHECK(lines_with(capture.sink, {"rejoined with a new address"}) == 1);
+	CHECK(capture.sink.contains("(Bewegungsmelder Hof) announced itself (short 0x5025)"));
+}
+
+TEST_CASE("ZigbeeDiagnosticsRework: a rejoin the trust center reported names the notice and the parent once") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.start_network();
+	make_router(f);
+	join_sml002(f);
+	// The notice moves the short address first; the announce that follows still knows the old one.
+	f.adapter.device_updated(ZigbeeFixture::node(kSml002, kSml002NewShort), ZigbeeAdapter::kUpdateSecuredRejoin, 0,
+		kBulbShort);
+	f.adapter.device_announced(ZigbeeFixture::node(kSml002, kSml002NewShort), 0x80);
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof) rejoined with a new address: short "
+								"0xaf9e -> 0x5025 through 00124b0001020304 (Steckdose), after the trust center's "
+								"secured rejoin notice"));
+	// Its second announce (the SML002 sends two) is no second rejoin.
+	f.adapter.device_announced(ZigbeeFixture::node(kSml002, kSml002NewShort), 0x80);
+	CHECK(lines_with(capture.sink, {"rejoined with a new address"}) == 1);
+	// A notice long before the announce is not its notice.
+	f.adapter.device_updated(ZigbeeFixture::node(kSml002, kSml002NewShort), ZigbeeAdapter::kUpdateSecuredRejoin, 0,
+		kBulbShort);
+	f.run_for(ZigbeeAdapter::kNoticeBeforeAnnounceMs + 1000);
+	f.adapter.device_announced(ZigbeeFixture::node(kSml002, 0x6161), 0x80);
+	CHECK(capture.sink.contains("short 0x5025 -> 0x6161, no trust-center notice"));
+}
+
+TEST_CASE("ZigbeeDiagnosticsRework: the parent of a router's child comes from the router's paged neighbour table") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.start_network();
+	make_router(f);
+	join_sml002(f);
+	settle(f);
+	f.driver.calls.clear();
+	f.adapter.device_announced(ZigbeeFixture::node(kSml002, kSml002NewShort), 0x80);
+	f.run_for(ZigbeeAdapter::kTopologyDelayMs - 1);
+	CHECK(f.driver.count("lqi") == 0);
+	f.run_for(1);
+	REQUIRE(f.driver.count("lqi") == 1);
+	REQUIRE(f.driver.calls.back() == "lqi 0x1a2b 0");
+	// Page 1 of 2: the coordinator and the sensor.
+	std::vector<ZigbeeNeighbor> table = plug_table();
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 4, 0, table.data(), table.size());
+	REQUIRE(f.driver.calls.back() == "lqi 0x1a2b 2");
+	CHECK(f.driver.count("lqi") == 2);
+	// Page 2: two devices the controller does not know.
+	std::vector<ZigbeeNeighbor> rest = {
+		router_entry(0x1111111111111111ull, 0x1111, ZigbeeNeighbor::Relationship::child, 90, 2),
+		router_entry(0x2222222222222222ull, 0x2222, ZigbeeNeighbor::Relationship::sibling, 70, 1)};
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 4, 2, rest.data(), rest.size());
+	CHECK(f.driver.count("lqi") == 2); // the table is read to its end
+
+	char bulb[hc::zigbee::kIeeeText];
+	hc::zigbee::format_ieee(kBulb, bulb);
+	std::string view = view_of(f.adapter, kSml002);
+	CHECK(contains(view, std::string("\"parent\":\"") + bulb +
+		"\",\"parent_label\":\"Steckdose\",\"parent_lqi\":120,\"depth\":2"));
+	CHECK(contains(view_of(f.adapter, kBulb), "\"coordinator_lqi\":40"));
+	CHECK_FALSE(contains(view_of(f.adapter, kBulb), "\"parent\""));
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof) is a child of 00124b0001020304 "
+								"(Steckdose) (the router's link quality of it 120, depth 2)"));
+
+	// The next pass (every 5 min) finds it there again: no new line. Then it is gone from the table.
+	REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 0, table.data(), table.size());
+	CHECK(lines_with(capture.sink, {"is a child of 00124b0001020304"}) == 1);
+	REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 1, 0, table.data(), 1);
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof) is no longer a child of "
+								"00124b0001020304 (Steckdose)"));
+	CHECK_FALSE(contains(view_of(f.adapter, kSml002), "\"parent\""));
+}
+
+TEST_CASE("ZigbeeDiagnosticsRework: one request in flight, a timeout, late answers ignored, pages bounded") {
+	hc_test::ScopedCapture capture;
+	ZigbeeFixture f;
+	f.start_network();
+	make_router(f);
+	join_sml002(f);
+	REQUIRE(next_request(f, ZigbeeAdapter::kTopologyDelayMs + 1000) == "lqi 0x1a2b 0");
+	size_t asked = f.driver.count("lqi");
+	// More reasons for a pass while one runs: no second request in flight.
+	f.adapter.device_announced(ZigbeeFixture::node(kSml002, kSml002NewShort), 0x80);
+	f.run_for(ZigbeeAdapter::kTopologyTimeoutMs - 1);
+	CHECK(f.driver.count("lqi") == asked);
+	// No answer: one line, the parent known stays, the pass that was asked for follows.
+	f.run_for(1);
+	CHECK(capture.sink.contains("I hc.zigbee: 00124b0001020304 (Steckdose) did not answer the request for its neighbour "
+								"table (entries from 0) within 5 s"));
+	f.run_for(ZigbeeAdapter::kTopologyDelayMs);
+	CHECK(f.driver.count("lqi") == asked + 1);
+	f.run_for(ZigbeeAdapter::kTopologyTimeoutMs);
+	CHECK(lines_with(capture.sink, {"did not answer the request for its neighbour table"}) == 1); // once
+	// A late answer is ignored.
+	std::vector<ZigbeeNeighbor> table = plug_table();
+	f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 2, 0, table.data(), table.size());
+	CHECK_FALSE(contains(view_of(f.adapter, kSml002), "\"parent_lqi\""));
+
+	// A table that claims 255 entries and hands one per page: at most kTopologyMaxPages requests.
+	f.driver.calls.clear();
+	REQUIRE(next_request(f) == "lqi 0x1a2b 0");
+	for (unsigned page = 0; page < 40 && f.driver.calls.back() == "lqi 0x1a2b " + std::to_string(page); ++page) {
+		f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 255, static_cast<uint8_t>(page),
+			table.data() + 1, 1);
+	}
+	CHECK(f.driver.count("lqi") == ZigbeeAdapter::kTopologyMaxPages);
+	CHECK(capture.sink.contains("00124b0001020304 (Steckdose) answers the requests for its neighbour table again"));
+	CHECK(contains(view_of(f.adapter, kSml002), "\"parent_lqi\":120"));
+}
+
+TEST_CASE("ZigbeeDiagnosticsRework: a device that turns stale has its parent looked up") {
+	ZigbeeFixture f;
+	f.start_network();
+	make_router(f);
+	// The sensor joins half-way between two periodic passes, so that its stale moment (1800 s later) is
+	// not one of theirs.
+	f.run_for(ZigbeeAdapter::kTopologyPeriodMs / 2);
+	join_sml002(f);
+	// Every request is answered at once (an empty table); the bulb keeps reporting, the sensor falls
+	// silent and turns stale after 1800 s; a pass follows kTopologyDelayMs later.
+	uint64_t stale_ms = 0;
+	uint64_t asked_after_stale_ms = 0;
+	size_t answered = 0;
+	for (uint64_t t = 0; t < 2000 * 1000 && asked_after_stale_ms == 0; t += 100) {
+		f.run_for(100);
+		if (t % (60 * 1000) == 0) {
+			f.report(kBulbShort, 11, hc::zigbee::cluster::kOnOff, 0x0000, hc::zigbee::zcl_type::kBool, 1);
+		}
+		if (stale_ms == 0 && f.adapter.devices().find(kSml002)->stale) {
+			stale_ms = f.clock.now_ms;
+		}
+		if (f.driver.count("lqi") > answered) {
+			answered = f.driver.count("lqi");
+			if (stale_ms != 0) {
+				asked_after_stale_ms = f.clock.now_ms;
+			}
+			f.adapter.neighbor_table(ZigbeeFixture::node(kBulb, kBulbShort), 0, 0, 0, nullptr, 0);
+		}
+	}
+	REQUIRE(stale_ms != 0);
+	CHECK_FALSE(f.adapter.devices().find(kBulb)->stale);
+	CHECK(asked_after_stale_ms - stale_ms <= ZigbeeAdapter::kTopologyDelayMs);
+}

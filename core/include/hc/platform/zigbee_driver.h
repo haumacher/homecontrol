@@ -29,7 +29,9 @@ struct ReportingConfig {
 	uint32_t change;
 };
 
-/// One entry of the coordinator's neighbour table as the stack keeps it (ZigbeeDriver::read_neighbors()).
+/// One entry of a neighbour table: the coordinator's own as the stack keeps it
+/// (ZigbeeDriver::read_neighbors()), or a router's from its Mgmt_Lqi_rsp
+/// (ZigbeeAdapter::neighbor_table()).
 struct ZigbeeNeighbor {
 	/// The neighbour's relationship to the coordinator (Zigbee nwkNeighborTable).
 	enum class Relationship : uint8_t {
@@ -44,6 +46,8 @@ struct ZigbeeNeighbor {
 	uint16_t short_addr = zigbee::kNoShortAddress;
 	/// The neighbour is a router (a full-function device that routes; an end device is not).
 	bool router = false;
+	/// The neighbour is the coordinator (only in a router's table).
+	bool coordinator = false;
 	Relationship relationship = Relationship::none;
 	/// The end-device timeout of a child in seconds: how long the coordinator keeps it in its child
 	/// table without hearing from it (negotiated with an End Device Timeout Request, else the stack's
@@ -52,6 +56,10 @@ struct ZigbeeNeighbor {
 	/// The stack's aging counter of a child in milliseconds: how long it stays in the child table
 	/// unless it is heard (each poll of a sleepy child restarts it).
 	uint32_t expires_ms = 0;
+	/// The table owner's link quality of the neighbour (0..255; a router's table).
+	uint8_t lqi = 0;
+	/// The neighbour's depth in the network (0: the coordinator; a router's table).
+	uint8_t depth = 0;
 };
 
 /// Told about every entry of the neighbour table (ZigbeeDriver::read_neighbors()).
@@ -122,6 +130,10 @@ public:
 	/// it must not call the driver). False when the table could not be read now (stack not running, or
 	/// busy longer than the platform waits for it); the visitor was not called then.
 	virtual bool read_neighbors(ZigbeeNeighborVisitor& visitor) = 0;
+
+	/// ZDO Mgmt_Lqi_req to a router: its neighbour table from entry `start_index` (homecontrol #98).
+	/// The answer arrives as ZigbeeAdapter::neighbor_table().
+	virtual bool request_neighbor_table(zigbee::Ieee ieee, uint16_t short_addr, uint8_t start_index) = 0;
 
 protected:
 	~ZigbeeDriver() = default;

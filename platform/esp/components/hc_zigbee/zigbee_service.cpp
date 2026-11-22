@@ -78,7 +78,17 @@ enum class Kind : uint8_t {
 	command,
 	reporting,
 	bind,
+	/// A router's Mgmt_Lqi_rsp: status, total in `device`, start index in `endpoint`, `count`
+	/// records of kNeighborRecord bytes in the payload.
+	neighbor_table,
 };
+
+/// One neighbour record in an event's payload: IEEE (8), short (2), device type and relationship
+/// (1: type in bits 0-1, relationship in bits 2-4), depth (1), LQI (1).
+constexpr size_t kNeighborRecord = 13;
+/// Records kept of one Mgmt_Lqi_rsp (one frame carries three of 22 bytes; the rest of a table comes
+/// with the next page): bounds the array the delivery builds on the loop's stack.
+constexpr size_t kMaxNeighborRecords = 4;
 
 /// One frame or state change of the stack, copied out of the stack's buffers.
 struct Event {
@@ -320,6 +330,24 @@ void deliver(ZigbeeAdapter& adapter, const Event& event) {
 		case Kind::bind:
 			adapter.bind_result(address, event.status);
 			break;
+		case Kind::neighbor_table: {
+			ZigbeeNeighbor entries[kMaxNeighborRecords];
+			size_t count = event.count < kMaxNeighborRecords ? event.count : kMaxNeighborRecords;
+			for (size_t i = 0; i < count; ++i) {
+				const uint8_t* r = event.payload.bytes + i * kNeighborRecord;
+				entries[i].ieee = ieee_of(r);
+				entries[i].short_addr = static_cast<uint16_t>(r[8] | (r[9] << 8));
+				uint8_t type = r[10] & 0x03;
+				entries[i].router = type == ESP_ZB_DEVICE_TYPE_ROUTER;
+				entries[i].coordinator = type == ESP_ZB_DEVICE_TYPE_COORDINATOR;
+				entries[i].relationship = static_cast<ZigbeeNeighbor::Relationship>((r[10] >> 2) & 0x07);
+				entries[i].depth = r[11];
+				entries[i].lqi = r[12];
+			}
+			adapter.neighbor_table(address, event.status, static_cast<uint8_t>(event.device), event.endpoint, entries,
+				count);
+			break;
+		}
 	}
 }
 
@@ -445,6 +473,48 @@ void bind_answer(esp_zb_zdp_status_t status, void* context) {
 	event->short_addr = static_cast<uint16_t>(reinterpret_cast<uintptr_t>(context) >> 8);
 	event->ieee = ieee_by_short(event->short_addr);
 	event->status = static_cast<uint8_t>(status);
+	add_radio(*event);
+	commit();
+}
+
+/// A router's Mgmt_Lqi_rsp (homecontrol #98): the page of its neighbour table, copied into the event
+/// (records beyond the payload's room are dropped; a response carries about three).
+void neighbor_table_answer(const esp_zb_zdo_mgmt_lqi_rsp_t* response, void* context) {
+	Event* event = claim(Kind::neighbor_table);
+	if (event == nullptr) {
+		return;
+	}
+	uintptr_t packed = reinterpret_cast<uintptr_t>(context);
+	event->short_addr = static_cast<uint16_t>(packed >> 8);
+	event->endpoint = static_cast<uint8_t>(packed & 0xFF);
+	event->ieee = ieee_by_short(event->short_addr);
+	if (response == nullptr) {
+		event->status = 0xFF; // no answer
+		commit();
+		return;
+	}
+	event->status = response->status;
+	event->device = response->neighbor_table_entries;
+	event->endpoint = response->start_index;
+	size_t count = response->neighbor_table_list != nullptr ? response->neighbor_table_list_count : 0;
+	constexpr size_t kMax = kMaxNeighborRecords;
+	static_assert(kMaxNeighborRecords * kNeighborRecord <= Event::kPayload, "neighbour records fit the payload");
+	if (count > kMax) {
+		Log::debug(kTag, "neighbour table page of 0x%04x: %u records, %u kept", static_cast<unsigned>(event->short_addr),
+			static_cast<unsigned>(count), static_cast<unsigned>(kMax));
+		count = kMax;
+	}
+	for (size_t i = 0; i < count; ++i) {
+		const esp_zb_zdo_neighbor_table_list_record_t& record = response->neighbor_table_list[i];
+		uint8_t* r = event->payload.bytes + i * kNeighborRecord;
+		std::memcpy(r, record.extended_addr, 8);
+		r[8] = static_cast<uint8_t>(record.network_addr & 0xFF);
+		r[9] = static_cast<uint8_t>(record.network_addr >> 8);
+		r[10] = static_cast<uint8_t>((record.device_type & 0x03) | ((record.relationship & 0x07) << 2));
+		r[11] = record.depth;
+		r[12] = record.lqi;
+	}
+	event->count = static_cast<uint8_t>(count);
 	add_radio(*event);
 	commit();
 }
@@ -915,6 +985,19 @@ public:
 		request.remove_children = 0;
 		request.rejoin = 0;
 		esp_zb_zdo_device_leave_req(&request, &leave_answer, reinterpret_cast<void*>(context_of(short_addr)));
+		return true;
+	}
+
+	bool request_neighbor_table(Ieee, uint16_t short_addr, uint8_t start_index) override {
+		Lock lock;
+		if (!lock) {
+			return false;
+		}
+		esp_zb_zdo_mgmt_lqi_req_param_t request = {};
+		request.dst_addr = short_addr;
+		request.start_index = start_index;
+		esp_zb_zdo_mgmt_lqi_req(&request, &neighbor_table_answer,
+			reinterpret_cast<void*>(context_of(short_addr, start_index)));
 		return true;
 	}
 

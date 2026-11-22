@@ -171,6 +171,8 @@ ZigbeeAdapter::~ZigbeeAdapter() {
 	loop_.cancel(refresh_timer_);
 	loop_.cancel(held_timer_);
 	loop_.cancel(interview_.timer);
+	loop_.cancel(topology_.timer);
+	loop_.cancel(topology_period_);
 	delete[] points_;
 	delete[] ids_;
 	free_overrides();
@@ -253,6 +255,8 @@ bool ZigbeeAdapter::start(const char** error) {
 	}
 	check_timer_ = loop_.schedule_periodic(start_ms_ + kCheckPeriodMs, kCheckPeriodMs,
 		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::check_stale>(this, "zigbee.check_stale"));
+	topology_period_ = loop_.schedule_periodic(start_ms_ + kTopologyPeriodMs, kTopologyPeriodMs,
+		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::topology_tick>(this, "zigbee.topology_tick"));
 	bool ok = rebuild(error);
 	schedule_refresh();
 	return ok;
@@ -763,6 +767,7 @@ bool ZigbeeAdapter::remove(Ieee ieee, const char** error) {
 	if (interview_.active && interview_.ieee == ieee) {
 		end_interview();
 	}
+	topology_abort(); // the database indices change
 	database_.remove(ieee);
 	save_database();
 	Log::info(kTag, "%s removed", text);
@@ -990,6 +995,7 @@ void ZigbeeAdapter::check_stale() {
 		char text[64];
 		Log::warn(kTag, "%s silent for %u s (3 reporting intervals): its datapoints are stale",
 			device_text(device, text, sizeof(text)), static_cast<unsigned>((now - since) / 1000));
+		request_topology(); // where is it now?
 		if (loaded_) {
 			for (size_t p = 0; p < point_count_; ++p) {
 				if (points_[p].ieee == device.ieee && ids_[p] != kNoId) {
@@ -1534,16 +1540,40 @@ void ZigbeeAdapter::device_announced(NodeAddress address) {
 			static_cast<unsigned>(address.short_addr));
 		return;
 	}
-	bool known = database_.find(address.ieee) != nullptr;
+	const ZigbeeDevice* before = database_.find(address.ieee);
+	bool known = before != nullptr;
+	// The trust center's notice of this device just before (it moved the short address already).
+	bool notice = known && notice_ieee_ == address.ieee && clock_.monotonic_ms() - notice_ms_ <= kNoticeBeforeAnnounceMs;
+	uint16_t old_short = notice ? notice_old_short_ : known ? before->short_addr : kNoShortAddress;
+	if (notice) {
+		notice_ieee_ = 0; // one announce belongs to a notice
+	}
 	ZigbeeDevice* device = resolve(address, true);
 	if (device == nullptr) {
 		return;
 	}
 	char text[64];
-	if (known) {
+	if (known && old_short != kNoShortAddress && old_short != address.short_addr) {
+		// A rejoin with a new address (homecontrol #98): a NWK rejoin through a router that sends the
+		// trust center no Update Device leaves the announce as its only trace.
+		char parent[64] = "";
+		if (notice && device->parent_short != kNoShortAddress) {
+			char named[64];
+			std::snprintf(parent, sizeof(parent), " through %s", parent_text(device->parent_short, named, sizeof(named)));
+		}
+		Log::info(kTag, "%s rejoined with a new address: short 0x%04x -> 0x%04x%s, %s%s%s", device_text(*device, text,
+			sizeof(text)), static_cast<unsigned>(old_short), static_cast<unsigned>(address.short_addr), parent,
+			notice ? "after the trust center's " : "no trust-center notice (its parent is looked up in the routers' tables)",
+			notice ? update_status_name(notice_status_) : "", notice ? " notice" : "");
+		if (!notice) {
+			device->parent_short = kNoShortAddress; // the old parent is history
+			device->set(ZigbeeDevice::kParentListed, false);
+		}
+	} else if (known) {
 		Log::info(kTag, "%s announced itself (short 0x%04x)", device_text(*device, text, sizeof(text)),
 			static_cast<unsigned>(address.short_addr));
 	}
+	request_topology();
 	if (device->left && device->has_result()) {
 		// It left (a factory reset) and joined again: its endpoints may have changed.
 		device->interview_pending = true;
@@ -1562,7 +1592,7 @@ void ZigbeeAdapter::device_announced(NodeAddress address, uint8_t capability) {
 	device_announced(address);
 	ZigbeeDevice* device = address.ieee != 0 ? database_.find(address.ieee) : nullptr;
 	if (device != nullptr) {
-		device->router = (capability & kCapabilityRouter) != 0;
+		device->set(ZigbeeDevice::kRouter, (capability & kCapabilityRouter) != 0);
 	}
 }
 
@@ -1572,6 +1602,8 @@ void ZigbeeAdapter::device_updated(NodeAddress address, uint8_t status, uint8_t 
 			static_cast<unsigned>(address.short_addr));
 		return;
 	}
+	const ZigbeeDevice* before = database_.find(address.ieee);
+	notice_old_short_ = before != nullptr ? before->short_addr : kNoShortAddress;
 	ZigbeeDevice* device = resolve(address, false);
 	char text[64];
 	char parent[64];
@@ -1581,7 +1613,11 @@ void ZigbeeAdapter::device_updated(NodeAddress address, uint8_t status, uint8_t 
 		static_cast<unsigned>(address.short_addr), parent, tc_action_name(tc_action));
 	if (device != nullptr) {
 		device->parent_short = status == kUpdateLeft ? kNoShortAddress : parent_short;
+		device->set(ZigbeeDevice::kParentListed, false);
 	}
+	notice_ieee_ = address.ieee;
+	notice_status_ = status;
+	notice_ms_ = clock_.monotonic_ms();
 	if (status == kUpdateUnsecuredJoin) {
 		device_joined(address);
 	}
@@ -1607,7 +1643,7 @@ void ZigbeeAdapter::radio(NodeAddress address, uint8_t lqi, int8_t rssi) {
 	if (device == nullptr) {
 		return;
 	}
-	device->radio_known = true;
+	device->set(ZigbeeDevice::kRadioKnown, true);
 	device->lqi = lqi;
 	device->rssi = rssi;
 }
@@ -1627,7 +1663,7 @@ public:
 				continue;
 			}
 			if (neighbor.router) {
-				device.router = true;
+				device.set(ZigbeeDevice::kRouter, true);
 			}
 			if (neighbor.relationship == ZigbeeNeighbor::Relationship::child) {
 				child[i] = true;
@@ -1664,7 +1700,7 @@ void ZigbeeAdapter::read_child_table() {
 	for (size_t i = 0; i < database_.size(); ++i) {
 		ZigbeeDevice& device = database_.at(i);
 		bool child = reader.child[i];
-		if (child == device.child && children_read_) {
+		if (child == device.has(ZigbeeDevice::kChild) && children_read_) {
 			continue;
 		}
 		char text[64];
@@ -1673,7 +1709,7 @@ void ZigbeeAdapter::read_child_table() {
 			Log::info(kTag, "%s %s a child of the coordinator (short 0x%04x, end-device timeout %u s, %u s left)", text,
 				children_read_ ? "became" : "is", static_cast<unsigned>(device.short_addr),
 				static_cast<unsigned>(device.child_timeout_s), static_cast<unsigned>(device.child_expires_ms / 1000));
-		} else if (device.child) {
+		} else if (device.has(ZigbeeDevice::kChild)) {
 			char seen[48] = "not heard since the start";
 			if (device.seen_ms != 0) {
 				std::snprintf(seen, sizeof(seen), "last heard %u s ago",
@@ -1683,12 +1719,193 @@ void ZigbeeAdapter::read_child_table() {
 				"%u s, %u s were left %u s before; %s)", text, static_cast<unsigned>(device.child_timeout_s),
 				static_cast<unsigned>(before_ms[i] / 1000), static_cast<unsigned>(kCheckPeriodMs / 1000), seen);
 		}
-		if (child != device.child) {
-			device.child = child;
+		if (child != device.has(ZigbeeDevice::kChild)) {
+			device.set(ZigbeeDevice::kChild, child);
 			notify(ZigbeeEvent::Kind::changed, device.ieee);
 		}
 	}
 	children_read_ = true;
+}
+
+// ---- The routers' neighbour tables ----------------------------------------------------------
+
+void ZigbeeAdapter::request_topology() {
+	if (!network_.up || !started_) {
+		return;
+	}
+	if (topology_.active) {
+		topology_.again = true;
+		return;
+	}
+	if (topology_.timer.valid()) {
+		return; // a pass is about to start
+	}
+	topology_.timer = loop_.schedule_at(clock_.monotonic_ms() + kTopologyDelayMs,
+		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::topology_start>(this, "zigbee.topology_start"));
+}
+
+void ZigbeeAdapter::topology_tick() {
+	request_topology();
+}
+
+void ZigbeeAdapter::topology_start() {
+	topology_.timer = TimerHandle();
+	if (!network_.up) {
+		return;
+	}
+	topology_.active = true;
+	topology_.again = false;
+	topology_.listed = 0;
+	topology_.answered = 0;
+	topology_next_router(0);
+}
+
+void ZigbeeAdapter::topology_next_router(size_t from) {
+	for (size_t i = from; i < database_.size(); ++i) {
+		const ZigbeeDevice& device = database_.at(i);
+		if (device.has(ZigbeeDevice::kRouter) && !device.left && device.short_addr != kNoShortAddress &&
+			device.short_addr != 0x0000) {
+			topology_.router = i;
+			topology_.router_ieee = device.ieee;
+			topology_.router_short = device.short_addr;
+			topology_.start = 0;
+			topology_.pages = 0;
+			topology_send();
+			return;
+		}
+	}
+	topology_finish();
+}
+
+void ZigbeeAdapter::topology_send() {
+	if (!driver_.request_neighbor_table(topology_.router_ieee, topology_.router_short, topology_.start)) {
+		char text[64];
+		Log::debug(kTag, "neighbour table request to %s refused by the stack",
+			device_text(database_.at(topology_.router), text, sizeof(text)));
+		topology_next_router(topology_.router + 1);
+		return;
+	}
+	topology_.timer = loop_.schedule_at(clock_.monotonic_ms() + kTopologyTimeoutMs,
+		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::topology_timeout>(this, "zigbee.topology_timeout"));
+}
+
+void ZigbeeAdapter::topology_timeout() {
+	topology_.timer = TimerHandle();
+	ZigbeeDevice& router = database_.at(topology_.router);
+	if (!router.has(ZigbeeDevice::kTopologySilent)) {
+		router.set(ZigbeeDevice::kTopologySilent, true);
+		char text[64];
+		Log::info(kTag, "%s did not answer the request for its neighbour table (entries from %u) within %u s: its "
+			"children keep the parent known", device_text(router, text, sizeof(text)),
+			static_cast<unsigned>(topology_.start), static_cast<unsigned>(kTopologyTimeoutMs / 1000));
+	}
+	topology_next_router(topology_.router + 1);
+}
+
+void ZigbeeAdapter::neighbor_table(NodeAddress router, uint8_t status, uint8_t total, uint8_t start_index,
+	const ZigbeeNeighbor* entries, size_t count) {
+	bool ours = topology_.active && topology_.timer.valid() && start_index == topology_.start &&
+		(router.ieee != 0 ? router.ieee == topology_.router_ieee : router.short_addr == topology_.router_short);
+	if (!ours) {
+		Log::debug(kTag, "neighbour table of 0x%04x (from %u) outside a request ignored",
+			static_cast<unsigned>(router.short_addr), static_cast<unsigned>(start_index));
+		return;
+	}
+	loop_.cancel(topology_.timer);
+	topology_.timer = TimerHandle();
+	ZigbeeDevice& owner = database_.at(topology_.router);
+	char text[64];
+	if (status != 0) {
+		Log::debug(kTag, "%s answered the request for its neighbour table with status 0x%02x",
+			device_text(owner, text, sizeof(text)), static_cast<unsigned>(status));
+		topology_next_router(topology_.router + 1);
+		return;
+	}
+	if (owner.has(ZigbeeDevice::kTopologySilent)) {
+		owner.set(ZigbeeDevice::kTopologySilent, false);
+		Log::info(kTag, "%s answers the requests for its neighbour table again", device_text(owner, text, sizeof(text)));
+	}
+	for (size_t e = 0; e < count; ++e) {
+		const ZigbeeNeighbor& entry = entries[e];
+		if (entry.coordinator || entry.short_addr == 0x0000) {
+			owner.coordinator_lqi = entry.lqi; // the router's view of its link to the coordinator
+			owner.set(ZigbeeDevice::kCoordinatorLink, true);
+			continue;
+		}
+		if (entry.relationship != ZigbeeNeighbor::Relationship::child) {
+			continue;
+		}
+		for (size_t i = 0; i < database_.size(); ++i) {
+			ZigbeeDevice& child = database_.at(i);
+			if (entry.ieee != 0 ? child.ieee != entry.ieee : child.short_addr != entry.short_addr) {
+				continue;
+			}
+			if (child.ieee == owner.ieee) {
+				break;
+			}
+			topology_.listed |= 1u << i;
+			bool moved = child.parent_short != owner.short_addr;
+			child.parent_short = owner.short_addr;
+			child.parent_lqi = entry.lqi;
+			child.depth = entry.depth;
+			if (moved || !child.has(ZigbeeDevice::kParentListed)) {
+				char name[64];
+				Log::info(kTag, "%s is a child of %s (the router's link quality of it %u, depth %u)",
+					device_text(child, text, sizeof(text)), device_text(owner, name, sizeof(name)),
+					static_cast<unsigned>(entry.lqi), static_cast<unsigned>(entry.depth));
+				notify(ZigbeeEvent::Kind::changed, child.ieee);
+			}
+			child.set(ZigbeeDevice::kParentListed, true);
+			break;
+		}
+	}
+	++topology_.pages;
+	unsigned next = static_cast<unsigned>(start_index) + static_cast<unsigned>(count);
+	if (count > 0 && next < total && next <= 0xFF && topology_.pages < kTopologyMaxPages) {
+		topology_.start = static_cast<uint8_t>(next);
+		topology_send();
+		return;
+	}
+	topology_.answered |= 1u << topology_.router;
+	topology_next_router(topology_.router + 1);
+}
+
+void ZigbeeAdapter::topology_finish() {
+	// A device whose parent router answered completely without listing it has left that router.
+	for (size_t i = 0; i < database_.size(); ++i) {
+		ZigbeeDevice& device = database_.at(i);
+		if (!device.has(ZigbeeDevice::kParentListed) || (topology_.listed & (1u << i)) != 0) {
+			continue;
+		}
+		for (size_t p = 0; p < database_.size(); ++p) {
+			if (database_.at(p).short_addr == device.parent_short && (topology_.answered & (1u << p)) != 0) {
+				char text[64];
+				char name[64];
+				Log::info(kTag, "%s is no longer a child of %s", device_text(device, text, sizeof(text)),
+					device_text(database_.at(p), name, sizeof(name)));
+				device.parent_short = kNoShortAddress;
+				device.set(ZigbeeDevice::kParentListed, false);
+				notify(ZigbeeEvent::Kind::changed, device.ieee);
+				break;
+			}
+		}
+	}
+	topology_.active = false;
+	if (topology_.again) {
+		topology_.again = false;
+		request_topology();
+	}
+}
+
+void ZigbeeAdapter::topology_abort() {
+	if (!topology_.active) {
+		return;
+	}
+	loop_.cancel(topology_.timer);
+	topology_.timer = TimerHandle();
+	topology_.active = false;
+	topology_.again = false;
+	request_topology(); // a fresh pass over the new indices
 }
 
 void ZigbeeAdapter::device_joined(NodeAddress address) {
@@ -1728,6 +1945,7 @@ void ZigbeeAdapter::device_left(NodeAddress address) {
 	}
 	device->left = true;
 	device->parent_short = kNoShortAddress;
+	device->set(ZigbeeDevice::kParentListed, false);
 	char text[64];
 	Log::info(kTag, "%s left the network (it stays in the database; `zigbee remove` deletes it)",
 		device_text(*device, text, sizeof(text)));
@@ -2252,14 +2470,17 @@ void ZigbeeAdapter::write_device_json(JsonWriter& json, size_t index) const {
 }
 
 void ZigbeeAdapter::write_radio_json(JsonWriter& json, const ZigbeeDevice& device) const {
-	if (device.radio_known) {
+	if (device.has(ZigbeeDevice::kRadioKnown)) {
 		json.member("lqi", static_cast<uint32_t>(device.lqi));
 		json.member("rssi", static_cast<int32_t>(device.rssi));
 	}
-	if (device.router) {
+	if (device.has(ZigbeeDevice::kRouter)) {
+		if (device.has(ZigbeeDevice::kCoordinatorLink)) {
+			json.member("coordinator_lqi", static_cast<uint32_t>(device.coordinator_lqi));
+		}
 		return; // a router has no parent
 	}
-	if (device.child) {
+	if (device.has(ZigbeeDevice::kChild)) {
 		json.member("parent", "coordinator");
 		json.member("timeout_s", device.child_timeout_s);
 		json.member("expires_in_s", device.child_expires_ms / 1000);
@@ -2276,6 +2497,10 @@ void ZigbeeAdapter::write_radio_json(JsonWriter& json, const ZigbeeDevice& devic
 			json.member("parent", ieee);
 			if (parent.label[0] != '\0') {
 				json.member("parent_label", parent.label);
+			}
+			if (device.has(ZigbeeDevice::kParentListed)) {
+				json.member("parent_lqi", static_cast<uint32_t>(device.parent_lqi));
+				json.member("depth", static_cast<uint32_t>(device.depth));
 			}
 			return;
 		}
