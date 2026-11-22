@@ -209,6 +209,19 @@ public:
 		}
 	}
 
+	/// Drops the connection without a close frame and without reading what the client sent (the
+	/// unread bytes make the kernel answer with a reset).
+	void drop() {
+#ifdef HC_POSIX_TLS
+		if (tls_ != nullptr) {
+			SSL_free(tls_);
+			tls_ = nullptr;
+		}
+#endif
+		::close(fd_);
+		fd_ = -1;
+	}
+
 	uint16_t port = 0;
 
 private:
@@ -330,7 +343,53 @@ void full_exchange(TestServer& server) {
 	}
 }
 
+/// homecontrol #106: the server drops the connection while the loop's send is in the middle of its
+/// write (the server reads nothing, so the write waits for room in the socket). The write ends with
+/// the drop, not with its timeout; the reader closes the connection under the session's mutex, so
+/// only after the write has failed: the send returns false, the end is reported once, the session
+/// takes no further send, and the reader's close does not deadlock with the write it waits for.
+void drop_during_send(TestServer& server) {
+	std::atomic<bool> upgraded{false};
+	std::atomic<bool> dropped{false};
+	std::thread script([&] {
+		server.accept_upgrade();
+		upgraded = true;
+		std::this_thread::sleep_for(std::chrono::milliseconds(300)); // the client's write fills the socket
+		server.drop();
+		dropped = true;
+	});
+	hc::posix::LoopExecutor executor;
+	Recorder rec;
+	{
+		hc::posix::PosixWebSocketClient client(executor);
+		const char* error = nullptr;
+		REQUIRE(client.connect(server.url("/socket").c_str(), rec, &error));
+		REQUIRE(pump(executor, [&] { return rec.opened == 1; }));
+		// Larger than what the loopback connection buffers (the send and receive buffers, a few MB).
+		std::vector<uint8_t> big(32 * 1024 * 1024, 0x5A);
+		CHECK_FALSE(client.send_binary(big.data(), big.size()));
+		CHECK(dropped);
+		REQUIRE(pump(executor, [&] { return !rec.reasons.empty(); }));
+		script.join();
+		executor.wait(100); // nothing more is reported
+		CHECK(rec.reasons.size() == 1);
+		CHECK_FALSE(client.send_text("x", 1));
+	}
+	CHECK(upgraded);
+}
+
 } // namespace
+
+TEST_CASE("PosixWebSocketClient: the server drops the connection while a send writes: the close waits for the write") {
+	TestServer server;
+	drop_during_send(server);
+#ifdef HC_POSIX_TLS
+	TestCertificate certificate("127.0.0.1");
+	TrustOnly trust(certificate.pem);
+	TestServer secure(certificate);
+	drop_during_send(secure);
+#endif
+}
 
 TEST_CASE("PosixWebSocketClient: upgrade, text both ways, binary, ping and pong, the server's close") {
 	TestServer server;

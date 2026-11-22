@@ -32,9 +32,11 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 # uxTaskGetSystemState() for the console's task list (name, priority, stack high-water mark).
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 
-# The E-Home connection (issue #41, doc/ehome.md): the event loop sends on the WebSocket while the client
-# task waits for the loop to take a received message, so sending must not need the client's main lock.
-CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK=y
+# The E-Home connection (doc/ehome.md): every send holds the client's one lock, under which the client task
+# closes the transport after a failed read or a lost network. With the separate send lock (on from #41, when
+# the event loop sent while the client task waited for it) the client task freed the TLS session under the
+# sender task's write (homecontrol #106); the sender task (#55) may wait for the lock, the loop never does.
+# CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK is not set
 # TLS memory for the E-Home connection next to the other TLS clients (OTA check, HTTP fetcher, MQTT): the
 # heap's largest free block (about 24 KB on a busy C6) rules out the static 16 KB + 4 KB record buffers per
 # connection. Dynamic buffers allocate each record buffer at the size of the record and free it after use;

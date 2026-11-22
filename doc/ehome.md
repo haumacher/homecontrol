@@ -154,10 +154,10 @@ after the TLS handshake and the heap at that moment.
   and the `EhomeLink`. The client task reassembles a text message (at most 4096 bytes) and hands
   binary pieces (1 KB, straight from the client's receive buffer) to the loop through the
   `LoopQueue`, waiting until the loop consumed each, so one slot carries everything in order.
-  Sending (issue #55): the loop copies each message whole into the session's 6 KB send queue (a
+  Sending (issue #55): the loop copies each message whole into the session's 7 KB send queue (a
   ring, a 4-byte header per message) or the send is refused (`send_room()`); the session's sender
   task `hc_ehome_tx` (priority 3, below the loop and the network tasks) drains it in order under
-  the client's separate send lock (`CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK`) with a 10 s timeout (2 s before #66, which ended
+  the client's lock with a 10 s timeout for the lock and the socket (2 s before #66, which ended
   the session at a single lost TCP segment while a 32 KB image streamed to E-Home), a
   message that wraps around the ring's end as two fragments of one message, and posts
   `ws_client_writable()` after a message when the core asked (`want_writable()`). The write is
@@ -168,9 +168,20 @@ after the TLS handshake and the heap at that moment.
   admitted only while they leave `EhomeLink::kBulkReserve` (a whole answer and 256 B) free; an
   answer that finds no room is held in the response envelope and sent first on writable or the
   next tick (the feed waits behind it; after `kHoldMs`, 10 s, the link gives up on the
-  connection), a streamed answer's next piece and a ping wait for room the same way. Closing hands
-  the session to its sender task, which drops what is still queued, sends the close frame, stops
-  the client task and frees everything, so the loop never waits for the network. Until that
+  connection), a streamed answer's next piece and a ping wait for room the same way. No write is
+  in flight when the transport is closed (#106: at a planned restart the WiFi stop broke the TCP
+  connection, the client task closed the transport and freed the TLS session under the sender's
+  write, a panic in `hc_ehome_tx`). The library closes the transport under its lock (after a
+  failed read, write or connect, the lost network), at the end of its task without a lock, and in
+  the teardown. The client's separate send lock (`CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK`, on since
+  #41, when the loop itself sent) is off, so every send holds that lock; the end of the task
+  (`WEBSOCKET_EVENT_FINISH`) waits for the sender's write in flight and lets none start after it;
+  the teardown runs on the sender after its writes. The sender may now wait for the lock while
+  the client task reads a frame and hands it to the loop; a send that gets neither the lock nor
+  the socket within 10 s ends the session (`a message could not be sent within 10 s`). Closing
+  hands the session to its sender task, which drops what is still queued, sends the close frame
+  (within 2 s), stops the client task after its current read (in which the server's answer to the
+  close frame usually arrives) and frees everything, so the loop never waits for the network. Until that
   teardown has ended a new connection is refused (`the previous connection is still closing`, the
   core backs off and retries): E-Home replaces the old session of a controller that connects again
   (`ehome.replaced`), and two TLS sessions at once cost about 30 KB and fragmented the heap so that

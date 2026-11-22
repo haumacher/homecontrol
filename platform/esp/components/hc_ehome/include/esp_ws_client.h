@@ -24,17 +24,26 @@ namespace esp {
 ///   copied twice. A generation number drops events of an ended session.
 /// - Sending (issue #55): the loop copies each message whole into the session's send queue
 ///   (kSendQueueBytes, a ring) or refuses it when it does not fit; the session's sender task
-///   (below the loop's priority) drains the queue in order through the library under its separate
-///   send lock (CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK) with kSendTimeoutMs, so the loop never waits
-///   for the TLS write, its CPU time (about 6 ms per 1.3 KB on the C6) or the server's ACKs. A
-///   message that wraps around the ring end goes out as two fragments of one message. After a sent
-///   message the sender posts ws_client_writable() when the loop asked (want_writable()). A failed
-///   write ends the session. The library's own ping is off: the core pings (send_ping) and judges
-///   the pong.
+///   (below the loop's priority) drains the queue in order through the library with kSendTimeoutMs,
+///   so the loop never waits for the TLS write, its CPU time (about 6 ms per 1.3 KB on the C6) or
+///   the server's ACKs. A message that wraps around the ring end goes out as two fragments of one
+///   message. After a sent message the sender posts ws_client_writable() when the loop asked
+///   (want_writable()). A failed write ends the session. The library's own ping is off: the core
+///   pings (send_ping) and judges the pong.
+/// - No write is in flight when the transport is closed (homecontrol #106: the client task freed
+///   the TLS session under the sender's write at a planned restart). The library closes the
+///   transport in three places: under its lock (a failed read or write, a lost network, a failed
+///   connect), which every send holds too, because the separate send lock is off
+///   (CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK, whose send holds only a lock the closes do not take);
+///   at the end of its task without a lock, after WEBSOCKET_EVENT_FINISH, whose handler waits for
+///   the sender's write in flight under the session's `io` mutex and lets none start after it; and
+///   in the teardown on the sender task, after its writes. The client task never reconnects by
+///   itself (no close or error reconnect), so its connection and the transport end together.
 /// - Ending: close() hands the session to its sender task, which drops what is still queued, sends
-///   the close frame, stops the client task and frees everything, so the loop never waits for the
-///   network. A new connection is refused until that teardown has ended (the core retries). A session the server or the network ended is reported once through
-///   ws_client_closed() and torn down the same way.
+///   the close frame (within kCloseTimeoutMs), stops the client task after its current read and
+///   frees everything, so the loop never waits for the network. A new connection is refused until
+///   that teardown has ended (the core retries). A session the server or the network ended is
+///   reported once through ws_client_closed() and torn down the same way.
 class EspWebSocketClient : public WebSocketClient {
 public:
 	/// The client's receive and send buffer (each); messages are sent and received in frames of
@@ -60,9 +69,11 @@ public:
 	/// How long one message may wait for room in the socket: longer than TCP needs to recover a
 	/// lost segment (lwIP's retransmission timeout is a second or more), so a single loss on WiFi
 	/// does not end the session (homecontrol #66: 2000 ms ended it while a 32 KB image streamed
-	/// to E-Home). A dead peer is still found by the core's ping (EhomeLink::kPongTimeoutMs).
+	/// to E-Home). A dead peer is still found by the core's ping (EhomeLink::kPongTimeoutMs). It
+	/// also bounds the wait for the client's lock, which the client task holds while it reads a frame
+	/// and hands its pieces to the loop (homecontrol #106); a send that gets neither ends the session.
 	static constexpr int kSendTimeoutMs = 10000;
-	/// How long the teardown waits for the server's answer to the close frame.
+	/// How long the teardown's close frame may wait for the client's lock and the socket.
 	static constexpr int kCloseTimeoutMs = 2000;
 	static constexpr int kNetworkTimeoutMs = 10000;
 

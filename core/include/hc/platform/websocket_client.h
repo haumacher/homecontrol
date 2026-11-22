@@ -54,6 +54,12 @@ protected:
 /// room for it now (send_room()). want_writable() then asks for ws_client_writable() once the
 /// queue has sent a message. A platform that sends synchronously (POSIX) never runs out of room.
 ///
+/// The connection is never closed under a write (homecontrol #106): whoever ends it (close(), the
+/// server, a lost network, a failed write, a restart's network stop), a write in flight completes or
+/// fails first, and none starts after the close. The ESP client holds the library's one lock for
+/// every write and waits for its sender at the client task's end; the POSIX client writes and
+/// closes under the session's mutex.
+///
 /// Every call is made on the event loop's thread.
 class WebSocketClient {
 public:

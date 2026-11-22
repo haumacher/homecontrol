@@ -22,8 +22,10 @@
 #include "esp_crt_bundle.h"
 #endif
 
-#if !CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK
-#error "the E-Home client sends from the event loop while the client task waits for it: CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK"
+#if CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK
+// With the separate send lock the client task closes the transport under a lock the send does not
+// hold, while the sender task writes (homecontrol #106).
+#error "the E-Home client needs CONFIG_ESP_WS_CLIENT_SEPARATE_TX_LOCK off (sdkconfig.defaults.app; delete the build directory's sdkconfig)"
 #endif
 
 namespace hc {
@@ -74,6 +76,13 @@ struct EspWebSocketClient::Session {
 	/// The sender task: drains the send queue, then tears the session down.
 	TaskHandle_t sender = nullptr;
 
+	/// Held by the sender around every write and taken by the client task when it ends
+	/// (WEBSOCKET_EVENT_FINISH), right before the library closes the transport without its lock: that
+	/// close waits for a write in flight, and no write starts after it (homecontrol #106).
+	SemaphoreHandle_t io = nullptr;
+	StaticSemaphore_t io_storage;
+	bool transport_ended = false; ///< Under `io`: the client task ended, the transport is closed.
+
 	/// The end was reported (by the client task, or by the sender when a write failed): once.
 	std::atomic<bool> closed_reported{false};
 	char closed_reason[128] = {}; ///< Written by the reporter before it posts on_closed.
@@ -107,7 +116,10 @@ struct EspWebSocketClient::Session {
 	bool deliver(Kind what);
 	void post_closed();
 	void report_closed(const esp_websocket_event_data_t* event, bool clean);
+	void report_failed_send();
+	bool write(uint8_t opcode, uint32_t at, uint32_t length);
 	bool transmit(uint8_t opcode, uint32_t at, uint32_t length);
+	void send_close_frame();
 	static void handler(void* arg, esp_event_base_t base, int32_t id, void* event_data);
 };
 
@@ -195,6 +207,14 @@ void EspWebSocketClient::Session::handler(void* arg, esp_event_base_t, int32_t i
 		case WEBSOCKET_EVENT_CLOSED:
 			s.report_closed(event, true);
 			break;
+		case WEBSOCKET_EVENT_FINISH:
+			// The client task ends; the library closes the transport next, without its lock (after the
+			// server's close, or after its own close of a broken connection). Waits for the sender's
+			// write in flight (its lock and write timeouts bound it) and lets none start after.
+			xSemaphoreTake(s.io, portMAX_DELAY);
+			s.transport_ended = true;
+			xSemaphoreGive(s.io);
+			break;
 		case WEBSOCKET_EVENT_DATA: {
 			uint8_t opcode = event->op_code & 0x0F;
 			if (opcode == 0x0A) {
@@ -262,6 +282,43 @@ void EspWebSocketClient::Session::handler(void* arg, esp_event_base_t, int32_t i
 
 // ---- The sender task --------------------------------------------------------------------------
 
+void EspWebSocketClient::Session::report_failed_send() {
+	// A write that fails on the socket makes the library end the connection, and its DISCONNECTED
+	// event reports it; so does the client task when the connection ended meanwhile. A send the
+	// library refused without either (its lock not free within the timeout) leaves the connection
+	// open with a message missing: the session ends here.
+	if (!esp_websocket_client_is_connected(client) || closed_reported.exchange(true)) {
+		return;
+	}
+	std::snprintf(closed_reason, sizeof(closed_reason), "connection lost: a message could not be sent within %d s",
+		kSendTimeoutMs / 1000);
+	post_closed();
+}
+
+bool EspWebSocketClient::Session::write(uint8_t opcode, uint32_t at, uint32_t length) {
+	xSemaphoreTake(io, portMAX_DELAY); // the client task holds it only to mark its end
+	bool ok = !transport_ended && transmit(opcode, at, length);
+	xSemaphoreGive(io);
+	return ok;
+}
+
+void EspWebSocketClient::Session::send_close_frame() {
+	// Under `io` like every write, with a bounded wait (the library's own close waits without
+	// limit for its lock and the socket, and then for the client task, which the FINISH handler
+	// would make wait for `io`).
+	xSemaphoreTake(io, portMAX_DELAY);
+	if (!transport_ended && esp_websocket_client_is_connected(client)) {
+		uint8_t body[2 + sizeof(close_reason)];
+		size_t length = std::strlen(close_reason);
+		body[0] = static_cast<uint8_t>(close_code >> 8);
+		body[1] = static_cast<uint8_t>(close_code & 0xFF);
+		std::memcpy(body + 2, close_reason, length);
+		esp_websocket_client_send_with_opcode(client, WS_TRANSPORT_OPCODES_CLOSE, body, static_cast<int>(2 + length),
+			pdMS_TO_TICKS(kCloseTimeoutMs));
+	}
+	xSemaphoreGive(io);
+}
+
 bool EspWebSocketClient::Session::transmit(uint8_t opcode, uint32_t at, uint32_t length) {
 	TickType_t timeout = pdMS_TO_TICKS(kSendTimeoutMs);
 	const uint8_t* data = queue + at;
@@ -300,7 +357,10 @@ void EspWebSocketClient::sender(void* context) {
 		uint32_t at = static_cast<uint32_t>((s->out + kQueueHeader) % kSendQueueBytes);
 		if (header[0] != kSkipEntry && !s->failed && esp_websocket_client_is_connected(s->client)) {
 			// A failed write aborts the connection here; its DISCONNECTED event reports the end.
-			s->failed = !s->transmit(header[0], at, length);
+			s->failed = !s->write(header[0], at, length);
+			if (s->failed) {
+				s->report_failed_send();
+			}
 		}
 		s->out = static_cast<uint32_t>((at + length) % kSendQueueBytes);
 		s->used.fetch_sub(static_cast<uint32_t>(kQueueHeader + length), std::memory_order_release);
@@ -311,12 +371,10 @@ void EspWebSocketClient::sender(void* context) {
 			s->writable_wanted.store(true); // the next message tries again; the core's ticks retry anyway
 		}
 	}
-	// The loop let go: what is still queued is dropped. The close frame, then the teardown.
-	if (esp_websocket_client_is_connected(s->client)) {
-		// Sends the close frame and waits (bounded) for the server's answer and the task's end.
-		esp_websocket_client_close_with_code(s->client, s->close_code, s->close_reason,
-			static_cast<int>(std::strlen(s->close_reason)), pdMS_TO_TICKS(kCloseTimeoutMs));
-	}
+	// The loop let go: what is still queued is dropped. The close frame, then the teardown: the
+	// client task ends after its current read (it reads the server's answer to the close frame if
+	// that comes within it), the library closes the transport, and everything is freed.
+	s->send_close_frame();
 	esp_websocket_client_destroy(s->client); // stops the client task first if it still runs
 	ESP_LOGI(kTag, "WebSocket session ended: sender task stack %u of %u B unused",
 		static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)),
@@ -365,9 +423,13 @@ bool EspWebSocketClient::connect(const char* url, WebSocketClientListener& liste
 	s->owner = this;
 	s->generation = ++generation_;
 	s->consumed = xSemaphoreCreateBinaryStatic(&s->consumed_storage);
+	s->io = xSemaphoreCreateMutexStatic(&s->io_storage);
 
 	esp_websocket_client_config_t config = {};
 	config.uri = url;
+	// No reconnect by the client task (the core reconnects with a new session) and no reconnect after
+	// the server's close (enable_close_reconnect stays off): the client task ends with its connection,
+	// and its FINISH event comes before the transport's last close.
 	config.disable_auto_reconnect = true;
 	config.task_prio = kTaskPriority;
 	config.task_name = "hc_ehome_ws";
