@@ -16,6 +16,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "hc/log.h"
+#include "hc/zigbee/key_table.h"
 #include "nvs_blob_store.h"
 #include "sdkconfig.h"
 // The esp-zigbee-lib's key-table access (esp_zb_secur_has_link_key_pair_set(), esp_zb_secur_update_key_pair(),
@@ -814,6 +815,42 @@ void basic_command(esp_zb_zcl_basic_cmd_t& basic, uint16_t short_addr, uint8_t e
 	basic.src_endpoint = kEndpoint;
 }
 
+/// The trust center's key table over the esp-zigbee-lib (homecontrol #99, doc/zigbee.md "Rejoin policy"); the
+/// caller holds the stack's lock.
+class EspKeyTable : public zigbee::KeyTable {
+public:
+	/// A verified or provisional key (zb_secur_get_link_key_pair_set(address, 1)): the lookup of a trust-center
+	/// rejoin (zb_secur_get_verified_or_provisional_link_key()).
+	bool has_key(Ieee ieee) override {
+		uint8_t address[8];
+		bytes_of(ieee, address);
+		return esp_zb_secur_has_link_key_pair_set(address);
+	}
+
+	/// What zb_secur_create_best_suitable_link_key_pair_set() gives a joining device without an install code:
+	/// the trust center's standard key (ZigBeeAlliance09) as a global, provisional key. The wrapper's answer is
+	/// inverted: zb_secur_update_key_pair() returns the written key pair (non-null) on success and null on a
+	/// failed write (zdo_secur.c:1764), and esp_zb_secur_update_key_pair() maps non-null to ESP_FAIL, null to
+	/// ESP_OK; restore_key() therefore judges by has_key().
+	int add_standard_key(Ieee ieee) override {
+		static const uint8_t kStandardKey[ESP_ZB_CCM_KEY_SIZE] = {0x5A, 0x69, 0x67, 0x42, 0x65, 0x65, 0x41, 0x6C, 0x6C,
+			0x69, 0x61, 0x6E, 0x63, 0x65, 0x30, 0x39};
+		esp_zb_secur_update_key_pair_params_t key = {};
+		bytes_of(ieee, key.address);
+		std::memcpy(key.key, kStandardKey, sizeof(kStandardKey));
+		key.key_type = ESP_ZB_SECUR_GLOBAL_KEY;
+		key.key_attr = ESP_ZB_SECUR_PROVISIONAL_KEY;
+		key.key_source = ESP_ZB_SECUR_KEY_SRC_UNKNOWN;
+		return esp_zb_secur_update_key_pair(&key);
+	}
+
+	void delete_keys(Ieee ieee) override {
+		uint8_t address[8];
+		bytes_of(ieee, address);
+		zb_secur_delete_link_keys_by_long_addr(address);
+	}
+};
+
 class EspZigbeeDriver : public ZigbeeDriver {
 public:
 	bool permit_join(uint8_t seconds) override {
@@ -1039,26 +1076,14 @@ public:
 		return true;
 	}
 
-	Trust trust_device(Ieee ieee) override {
+	Trust trust_device(Ieee ieee, int& stack_answer) override {
+		stack_answer = 0;
 		Lock lock;
 		if (!lock) {
 			return Trust::refused;
 		}
-		esp_zb_secur_update_key_pair_params_t key = {};
-		bytes_of(ieee, key.address);
-		// A verified or provisional key: what zb_authenticate_dev() looks for at a trust-center rejoin.
-		if (esp_zb_secur_has_link_key_pair_set(key.address)) {
-			return Trust::kept;
-		}
-		// What zb_secur_create_best_suitable_link_key_pair_set() gives a joining device without an install
-		// code: the trust center's standard key (ZigBeeAlliance09) as a global, provisional key.
-		static const uint8_t kStandardKey[ESP_ZB_CCM_KEY_SIZE] = {0x5A, 0x69, 0x67, 0x42, 0x65, 0x65, 0x41, 0x6C, 0x6C,
-			0x69, 0x61, 0x6E, 0x63, 0x65, 0x30, 0x39};
-		std::memcpy(key.key, kStandardKey, sizeof(kStandardKey));
-		key.key_type = ESP_ZB_SECUR_GLOBAL_KEY;
-		key.key_attr = ESP_ZB_SECUR_PROVISIONAL_KEY;
-		key.key_source = ESP_ZB_SECUR_KEY_SRC_UNKNOWN;
-		return esp_zb_secur_update_key_pair(&key) == ESP_OK ? Trust::restored : Trust::refused;
+		EspKeyTable table;
+		return zigbee::restore_key(table, ieee, stack_answer);
 	}
 
 	bool forget_device(Ieee ieee) override {
@@ -1066,11 +1091,8 @@ public:
 		if (!lock) {
 			return false;
 		}
-		uint8_t address[8];
-		bytes_of(ieee, address);
-		zb_secur_delete_link_keys_by_long_addr(address);
-		// What a trust-center rejoin would find (zb_secur_get_verified_or_provisional_link_key()): nothing.
-		return !esp_zb_secur_has_link_key_pair_set(address);
+		EspKeyTable table;
+		return zigbee::forget_key(table, ieee);
 	}
 
 	bool request_neighbor_table(Ieee, uint16_t short_addr, uint8_t start_index) override {

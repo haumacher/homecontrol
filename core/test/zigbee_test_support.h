@@ -15,6 +15,7 @@
 #include "hc/event_loop.h"
 #include "hc/platform/zigbee_driver.h"
 #include "hc/zigbee/adapter.h"
+#include "hc/zigbee/key_table.h"
 #include "test_support.h"
 
 namespace hc_test {
@@ -81,21 +82,17 @@ public:
 		return record(std::string("rejoin-policy tc ") + (trust_center_rejoin ? "on" : "off") + ", without key " +
 			(without_link_key ? "on" : "off"));
 	}
-	/// Records "trust <ieee>"; answers from `keys`: a device listed there is kept, any other is restored
-	/// (and listed from then on) unless `accept` is false.
-	Trust trust_device(hc::zigbee::Ieee ieee) override {
+	/// Records "trust <ieee>" and restores over `table` as the ESP driver does (hc::zigbee::restore_key()):
+	/// a device in `keys` is kept, any other gets a key unless `table_full`; `accept` false refuses
+	/// without touching the table (the stack does not run).
+	Trust trust_device(hc::zigbee::Ieee ieee, int& stack_answer) override {
 		char text[hc::zigbee::kIeeeText];
 		hc::zigbee::format_ieee(ieee, text);
+		stack_answer = 0;
 		if (!record(std::string("trust ") + text)) {
 			return Trust::refused;
 		}
-		for (hc::zigbee::Ieee key : keys) {
-			if (key == ieee) {
-				return Trust::kept;
-			}
-		}
-		keys.push_back(ieee);
-		return Trust::restored;
+		return hc::zigbee::restore_key(table, ieee, stack_answer);
 	}
 	bool request_neighbor_table(hc::zigbee::Ieee, uint16_t short_addr, uint8_t start_index) override {
 		return record("lqi " + hex4(short_addr) + " " + std::to_string(start_index));
@@ -137,17 +134,14 @@ public:
 		return false;
 	}
 
-	/// Records "forget <ieee>" and drops the device from `keys` (refused with `accept` false).
+	/// Records "forget <ieee>" and drops the device from `keys` over `table` (refused with `accept` false).
 	bool forget_device(hc::zigbee::Ieee ieee) override {
 		char text[hc::zigbee::kIeeeText];
 		hc::zigbee::format_ieee(ieee, text);
 		if (!record(std::string("forget ") + text)) {
 			return false;
 		}
-		for (auto it = keys.begin(); it != keys.end();) {
-			it = *it == ieee ? keys.erase(it) : it + 1;
-		}
-		return true;
+		return hc::zigbee::forget_key(table, ieee);
 	}
 
 	/// The trust center's answer to a trust-center rejoin of `ieee`, as zb_authenticate_dev() decides
@@ -169,6 +163,36 @@ public:
 	bool accept = true;
 	/// Refuses leave() alone (the stack could not send the leave request).
 	bool refuse_leave = false;
+	/// The key table writes nothing (a full table).
+	bool table_full = false;
+
+	/// The trust center's key table over `keys`, answering as the esp-zigbee-lib 1.6.8 does
+	/// (esp_zb_secur_update_key_pair(): ESP_FAIL, -1, when the key was written, ESP_OK when not).
+	struct Table : hc::zigbee::KeyTable {
+		explicit Table(FakeZigbeeDriver& owner) : driver(owner) {}
+		bool has_key(hc::zigbee::Ieee ieee) override {
+			for (hc::zigbee::Ieee key : driver.keys) {
+				if (key == ieee) {
+					return true;
+				}
+			}
+			return false;
+		}
+		int add_standard_key(hc::zigbee::Ieee ieee) override {
+			if (driver.table_full) {
+				return 0;
+			}
+			driver.keys.push_back(ieee);
+			return -1;
+		}
+		void delete_keys(hc::zigbee::Ieee ieee) override {
+			for (auto it = driver.keys.begin(); it != driver.keys.end();) {
+				it = *it == ieee ? driver.keys.erase(it) : it + 1;
+			}
+		}
+		FakeZigbeeDriver& driver;
+	};
+	Table table{*this};
 	/// The devices the trust center holds a link key for (trust_device()).
 	std::vector<hc::zigbee::Ieee> keys;
 	/// The rejoin policy the last set_rejoin_policy() set (the stack's defaults before).

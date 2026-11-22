@@ -149,8 +149,10 @@ public:
 	/// it accepts the device's trust-center rejoin while the rejoin policy refuses devices without one:
 	/// a device without a key (a legacy device, whose provisional key the stack deletes after its
 	/// authorization; any device the stack forgot when it left) gets the well-known key it joined
-	/// with, as the stack itself gives a joining device.
-	virtual Trust trust_device(zigbee::Ieee ieee) = 0;
+	/// with, as the stack itself gives a joining device. `stack_answer` is the stack's answer to the
+	/// write (0 when nothing was written), for the log; the result comes from the key table
+	/// (hc/zigbee/key_table.h), not from that answer.
+	virtual Trust trust_device(zigbee::Ieee ieee, int& stack_answer) = 0;
 
 	/// Drops every link key the trust center holds for a device that is no longer known (removed, or
 	/// left without rejoin; homecontrol #99), so that it refuses the device's trust-center rejoin,

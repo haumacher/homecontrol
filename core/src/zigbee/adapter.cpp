@@ -984,14 +984,15 @@ ZigbeeDriver::Trust ZigbeeAdapter::trust(const ZigbeeDevice& device, const char*
 	if (device.left) {
 		return ZigbeeDriver::Trust::kept; // a device that left is no longer known to the trust center
 	}
-	ZigbeeDriver::Trust result = driver_.trust_device(device.ieee);
+	int stack_answer = 0;
+	ZigbeeDriver::Trust result = driver_.trust_device(device.ieee, stack_answer);
 	char text[64];
 	if (result == ZigbeeDriver::Trust::restored) {
 		Log::info(kTag, "%s: the trust center holds its link key again %s (the well-known key it joined with): its "
 			"trust-center rejoin is accepted", device_text(device, text, sizeof(text)), why);
 	} else if (result == ZigbeeDriver::Trust::refused) {
-		Log::warn(kTag, "%s: the trust center holds no link key for it and did not take one %s: its trust-center rejoin "
-			"is refused", device_text(device, text, sizeof(text)), why);
+		Log::warn(kTag, "%s: the trust center holds no link key for it and did not take one %s (stack answer %d): its "
+			"trust-center rejoin is refused", device_text(device, text, sizeof(text)), why, stack_answer);
 	}
 	return result;
 }

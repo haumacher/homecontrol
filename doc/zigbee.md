@@ -489,7 +489,13 @@ refusal.
   looks for a verified or provisional key (`esp_zb_secur_has_link_key_pair_set()`, the lookup of
   `:828`) and gives a device without one what the stack gives a joiner: the standard key
   `ZigBeeAlliance09`, global, provisional (`esp_zb_secur_update_key_pair()`, written to the stack's
-  NVRAM). At the network's start for every known device, and again where the stack drops the key:
+  NVRAM). The outcome is read from the table (`esp_zb_secur_has_link_key_pair_set()` after the write,
+  `hc::zigbee::restore_key()` in `hc/zigbee/key_table.h`), never from the write's answer: the wrapper
+  `esp_zb_secur_update_key_pair()` inverts it. `zb_secur_update_key_pair()` returns the written key
+  pair (non-null) on success and null on a failed NVRAM write (`zdo_secur.c:1764`), and the wrapper
+  answers ESP_FAIL for non-null, ESP_OK for null (`bnez a0` → -1 in `esp_zigbee_test_utils.c`). The
+  first test build (f19ec7b) took that ESP_FAIL for a refusal and logged `did not take one` for a key
+  it had written; a refusal now names the stack's answer (`stack answer N`). At the network's start for every known device, and again where the stack drops the key:
   after a legacy device's authorization, a router's Update Device "left", the coordinator's child
   leaving to rejoin. Each restored key is one info line (`<device>: the trust center holds its link
   key again after its authorization (the well-known key it joined with): its trust-center rejoin is

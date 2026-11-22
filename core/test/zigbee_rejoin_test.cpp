@@ -11,6 +11,7 @@
 
 #include "doctest.h"
 #include "hc/zigbee/adapter.h"
+#include "hc/zigbee/key_table.h"
 #include "test_support.h"
 #include "zigbee_test_support.h"
 
@@ -128,7 +129,8 @@ TEST_CASE("ZigbeeRejoin: a device that left is not trusted; a key the stack does
 	CHECK(capture.sink.contains("W hc.zigbee: trust center: the rejoin policy was not set (the stack does not run): its "
 								"defaults apply"));
 	CHECK(capture.sink.contains("W hc.zigbee: 001788010f069a57 (Schaltsteckdose Zigbee): the trust center holds no link key "
-								"for it and did not take one at the network's start: its trust-center rejoin is refused"));
+								"for it and did not take one at the network's start (stack answer 0): its trust-center "
+								"rejoin is refused"));
 	CHECK(capture.sink.contains("holds a link key for 0 of 1 known device(s) (0 restored)"));
 }
 
@@ -410,4 +412,67 @@ TEST_CASE("ZigbeeRejoin: a device that left without rejoin loses its key; one th
 	f.adapter.device_left(ZigbeeFixture::node(kPlug, kPlugShort));
 	CHECK(capture.sink.contains("W hc.zigbee: 001788010f069a57 (Schaltsteckdose Zigbee): the trust center's link key for "
 								"it could not be dropped: its trust-center rejoin is still accepted"));
+}
+
+// ---- The key table's answers (the house controller, v1.5.0-14-gf19ec7b) ----------------------
+
+TEST_CASE("ZigbeeRejoin: the stack's inverted answer to a written key is no refusal; the table decides") {
+	// The house controller's boot (f19ec7b): "the trust center holds no link key for it and did not take
+	// one at the network's start": esp_zb_secur_update_key_pair() answered ESP_FAIL for a key it wrote.
+	HouseFixture f;
+	f.driver.keys = {kPlug};
+	hc_test::ScopedCapture capture;
+	f.adapter.network_state(true, 0x1a62, 20, 0xddddddddddddddddull);
+	CHECK_FALSE(capture.sink.contains("did not take one"));
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): the trust center holds its link key "
+								"again at the network's start"));
+	CHECK(capture.sink.contains("holds a link key for 2 of 2 known device(s) (1 restored)"));
+	CHECK(f.driver.tc_rejoin_accepted(kSml002));
+}
+
+TEST_CASE("ZigbeeRejoin: a write the stack answers with success but does not keep is a refusal with that answer") {
+	HouseFixture f;
+	f.driver.keys = {kPlug};
+	f.driver.table_full = true; // the key pair table takes nothing; the wrapper answers ESP_OK (0)
+	hc_test::ScopedCapture capture;
+	f.adapter.network_state(true, 0x1a62, 20, 0xddddddddddddddddull);
+	CHECK(capture.sink.contains("W hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): the trust center holds no link key "
+								"for it and did not take one at the network's start (stack answer 0): its trust-center "
+								"rejoin is refused"));
+	CHECK(capture.sink.contains("holds a link key for 1 of 2 known device(s) (0 restored)"));
+	CHECK_FALSE(f.driver.tc_rejoin_accepted(kSml002));
+}
+
+TEST_CASE("ZigbeeRejoin: restore_key and forget_key judge by the table alone") {
+	struct Table : hc::zigbee::KeyTable {
+		bool present = false;
+		bool writes = true;
+		int answer = 0;
+		int adds = 0;
+		bool has_key(hc::zigbee::Ieee) override { return present; }
+		int add_standard_key(hc::zigbee::Ieee) override {
+			++adds;
+			present = present || writes;
+			return answer;
+		}
+		void delete_keys(hc::zigbee::Ieee) override { present = !writes; }
+	} table;
+	int answer = 99;
+	table.present = true;
+	CHECK(hc::zigbee::restore_key(table, kSml002, answer) == hc::ZigbeeDriver::Trust::kept);
+	CHECK(answer == 0);
+	CHECK(table.adds == 0);
+	table.present = false;
+	table.answer = -1; // ESP_FAIL for a written key
+	CHECK(hc::zigbee::restore_key(table, kSml002, answer) == hc::ZigbeeDriver::Trust::restored);
+	CHECK(answer == -1);
+	table.present = false;
+	table.writes = false;
+	table.answer = 0; // ESP_OK for a key not written
+	CHECK(hc::zigbee::restore_key(table, kSml002, answer) == hc::ZigbeeDriver::Trust::refused);
+	CHECK(answer == 0);
+	table.present = true;
+	CHECK_FALSE(hc::zigbee::forget_key(table, kSml002)); // the delete kept it
+	table.writes = true;
+	CHECK(hc::zigbee::forget_key(table, kSml002));
 }
