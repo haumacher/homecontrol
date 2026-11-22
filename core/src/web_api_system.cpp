@@ -610,6 +610,14 @@ void WebApi::zigbee(const char* rest, const WebRequest& request, WebResponse& re
 			return;
 		}
 		done = zigbee_->interview(ieee, &error);
+	} else if (std::strcmp(op, "rejoin") == 0) {
+		if (!method_is(request, response, HttpMethod::post)) {
+			return;
+		}
+		done = zigbee_->request_rejoin(ieee, &error);
+		if (done) {
+			Log::info(kTag, "Zigbee device %s asked to leave and rejoin over the API from %s", text, request.source);
+		}
 	} else if (std::strcmp(op, "label") == 0) {
 		if (!method_is(request, response, HttpMethod::put)) {
 			return;

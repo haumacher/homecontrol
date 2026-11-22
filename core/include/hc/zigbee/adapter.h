@@ -181,6 +181,19 @@ protected:
 ///   router's child entry gives the device's parent, depth and the router's link quality of it; its
 ///   entry of the coordinator gives the router's link quality of the coordinator. A change of parent
 ///   is logged; a device the parent router no longer lists (the router answered completely) loses it.
+/// - **Rejoin** (homecontrol #99, doc/zigbee.md "Rejoin policy"). When the network comes up the
+///   adapter sets the trust center's rejoin policy (trust-center rejoins answered, refused for a
+///   device without a link key) and makes the trust center hold a link key for every known device
+///   (in the database and not left): ZigbeeDriver::trust_device(). It does so again for a device
+///   whose key the stack drops: after a legacy device's authorization, and after a leave the trust
+///   center hears of (a router's Update Device "left", the coordinator's child leaving to rejoin).
+///   A device that stops being known (remove(), a leave without rejoin) has its keys dropped
+///   (ZigbeeDriver::forget_device()), whatever became of its leave.
+///   So a known device that lost its parent comes back by any rejoin while the network is closed,
+///   and an unknown one is not given the network key. request_rejoin() forces a device's loss
+///   (ZDO Mgmt_Leave with rejoin): one request at a time, sent again when the device is heard while
+///   it has not taken it (a sleepy device listens right after its own frames), at most kRejoinSends
+///   times; the device's announce ends it ("came back"), kRejoinWaitMs without one ends it at warn.
 /// - **Reads.** After start() and after a silence, the server attributes of each device are read,
 ///   one device every kRefreshSpacingMs. A read the application asks for (read(), a rule's `read`
 ///   action) sends a Read Attributes of the datapoint's attribute at once; refused for a point the
@@ -201,6 +214,11 @@ public:
 	static constexpr uint8_t kUpdateUnsecuredJoin = 0x01;
 	static constexpr uint8_t kUpdateLeft = 0x02;
 	static constexpr uint8_t kUpdateTrustCenterRejoin = 0x03;
+	/// The trust center's decision on an Update Device (device_updated()): it took the device.
+	static constexpr uint8_t kTcAuthorize = 0x00;
+	/// The authorization type of a legacy device (device_authorized()), one that never asks for a
+	/// trust-center link key of its own.
+	static constexpr uint8_t kAuthorizationLegacy = 0x00;
 
 	static constexpr uint32_t kInterviewTimeoutMs = 10000;
 	static constexpr uint8_t kInterviewAttempts = 3;
@@ -231,6 +249,14 @@ public:
 	static constexpr uint16_t kIdentifySeconds = 10;
 	/// Longest permit-join time the stack accepts (255 would mean "forever" in Zigbee 2006).
 	static constexpr uint32_t kMaxPermitJoinS = 254;
+	/// A requested rejoin (request_rejoin()) is sent again when the device is heard, at the earliest
+	/// kRejoinResendMs after the last send, at most kRejoinSends times in all; it ends kRejoinWaitMs
+	/// after the request when the device has not announced itself by then.
+	static constexpr uint32_t kRejoinResendMs = 30000;
+	static constexpr uint8_t kRejoinSends = 5;
+	static constexpr uint32_t kRejoinWaitMs = 3600000;
+	/// Mgmt_Leave_rsp status: the device takes the request.
+	static constexpr uint8_t kLeaveSuccess = 0x00;
 	/// Endpoints of one device the interview asks for (it keeps ZigbeeDevice::kMaxEndpoints).
 	static constexpr size_t kMaxQueriedEndpoints = 8;
 	static constexpr size_t kMaxOverrides = 512;
@@ -262,7 +288,9 @@ public:
 
 	/// Opens the network for `seconds` (1..kMaxPermitJoinS), 0 closes it.
 	bool permit_join(uint32_t seconds, const char** error = nullptr);
-	/// Asks the device to leave, deletes it from the database and reloads the datapoints.
+	/// Drops the trust center's link keys for the device (refused, with nothing changed, when the stack
+	/// cannot: a removed device must not come back by a trust-center rejoin), asks the device to leave,
+	/// deletes it from the database and reloads the datapoints.
 	bool remove(Ieee ieee, const char** error = nullptr);
 	/// Makes the device identify itself for kIdentifySeconds.
 	bool identify(Ieee ieee, const char** error = nullptr);
@@ -271,6 +299,13 @@ public:
 	bool set_label(Ieee ieee, const char* label, const char** error = nullptr);
 	/// Interviews a known device again (after a firmware update changed its endpoints).
 	bool interview(Ieee ieee, const char** error = nullptr);
+	/// Forces the device's loss (homecontrol #99): asks it to leave and rejoin at once (ZDO
+	/// Mgmt_Leave with rejoin), so that its return shows whether the trust center takes it back.
+	/// Refused while the network is not up, for an unknown or left device, one without a short
+	/// address, and while another device's requested rejoin is pending.
+	bool request_rejoin(Ieee ieee, const char** error = nullptr);
+	/// The device whose requested rejoin is pending, 0 if none.
+	Ieee rejoin_pending() const { return rejoin_.ieee; }
 
 	// ---- Platform events (on the event loop) ----
 
@@ -303,6 +338,12 @@ public:
 	void neighbor_table(NodeAddress router, uint8_t status, uint8_t total, uint8_t start_index,
 		const ZigbeeNeighbor* entries, size_t count);
 	void device_left(NodeAddress address);
+	/// The coordinator's child left with rejoin set (it comes back at once): the stack forgot its
+	/// link key, the adapter makes the trust center hold one again.
+	void device_left_to_rejoin(NodeAddress address);
+	/// A device's answer to a leave request (ZigbeeDriver::leave(), leave_and_rejoin()): `status` 0
+	/// it takes it, anything else (the stack's timeout included) it did not.
+	void leave_answered(NodeAddress address, uint8_t status);
 	void active_endpoints(NodeAddress address, uint8_t status, const uint8_t* endpoints, size_t count);
 	void simple_descriptor(NodeAddress address, uint8_t status, const SimpleDescriptor& descriptor);
 	/// An attribute report or a read attributes response.
@@ -347,9 +388,9 @@ public:
 
 	/// {"network": {...}, "devices": [{ieee, short, manufacturer, model, label, interviewed, stale,
 	/// left, interviewing, last_seen, seen_ago_s, lqi, rssi, parent, parent_label, timeout_s,
-	/// expires_in_s, missing, incomplete, datapoints: [names]}]} for the console, the API and E-Home's
-	/// pairing view (spec/zigbee.md; `missing` and `incomplete` only for an incomplete interview, the
-	/// radio facts only where known).
+	/// expires_in_s, missing, incomplete, rejoin, datapoints: [names]}]} for the console, the API and
+	/// E-Home's pairing view (spec/zigbee.md; `missing` and `incomplete` only for an incomplete
+	/// interview, the radio facts only where known, `rejoin` only while a requested rejoin is pending).
 	void write_json(JsonWriter& json) const;
 	/// The members of the "network" object into an open object.
 	void write_network_json(JsonWriter& json) const;
@@ -472,6 +513,31 @@ private:
 	void topology_abort();
 	/// Whether the child table was read since the start (the first read logs every child it finds).
 	bool children_read_ = false;
+	/// The requested rejoin (request_rejoin()); `ieee` 0: none pending.
+	struct Rejoin {
+		Ieee ieee = 0;
+		/// The short address the request went to (a leave answer may come without the IEEE).
+		uint16_t short_addr = kNoShortAddress;
+		uint64_t since_ms = 0;
+		uint64_t sent_ms = 0;
+		uint8_t sends = 0;
+		/// The device answered the request with success.
+		bool accepted = false;
+		/// Ends the wait kRejoinWaitMs after the request.
+		TimerHandle timer;
+	};
+	Rejoin rejoin_;
+	/// Sends the pending rejoin request again (logged).
+	void resend_rejoin(ZigbeeDevice& device);
+	/// The device announced itself: ends its pending rejoin ("came back").
+	void rejoin_returned(const ZigbeeDevice& device);
+	void rejoin_expired();
+	void end_rejoin();
+	/// Sets the rejoin policy and makes the trust center hold a key for every known device (network up).
+	void trust_known_devices();
+	/// Makes the trust center hold a key for the device unless it left (logged when the key was restored
+	/// or refused; `why` names the occasion).
+	ZigbeeDriver::Trust trust(const ZigbeeDevice& device, const char* why);
 	void refresh_due();
 	void schedule_refresh();
 	/// Reports the value of the mapped point; the datapoint's id, kNoId when unmapped.

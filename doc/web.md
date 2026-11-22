@@ -337,7 +337,7 @@ are all local).
   latest joins and interviews from the WebSocket `zigbee` events; one card per device with its
   state (interviewing, new, left, silent, ok), manufacturer and model, IEEE, last seen, the radio
   link where known (LQI and RSSI, parent with the router's LQI of it and the depth, a router's LQI
-  of the coordinator, the coordinator's child entry with timeout and remaining time; homecontrol #98) and the live values of its datapoints; **Identify**, **Rename**, **Interview again**, **Remove** (after a
+  of the coordinator, the coordinator's child entry with timeout and remaining time; homecontrol #98) and the live values of its datapoints; **Identify**, **Rename**, **Interview again**, **Rejoin** (after a confirmation: the device leaves and rejoins at once, homecontrol #99; its pending request shows as a row until it is back), **Remove** (after a
   confirmation). The list is read again on every event and after a reconnect. Without a
   coordinator the page says why (`system.unavailable`).
 - **Log**: the ring's lines, polled every 3 s.

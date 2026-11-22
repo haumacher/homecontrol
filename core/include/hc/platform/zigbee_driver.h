@@ -125,6 +125,40 @@ public:
 	/// ZDO Management Leave Request: the device leaves the network (without rejoin).
 	virtual bool leave(zigbee::Ieee ieee, uint16_t short_addr) = 0;
 
+	/// ZDO Management Leave Request with rejoin set (homecontrol #99): the device leaves the network
+	/// and rejoins it at once, keeping the network key; a sleepy end device takes the request from
+	/// its parent's queue when it next polls. The device's answer arrives as
+	/// ZigbeeAdapter::leave_answered().
+	virtual bool leave_and_rejoin(zigbee::Ieee ieee, uint16_t short_addr) = 0;
+
+	/// Sets the trust center's rejoin policy (homecontrol #99, doc/zigbee.md "Rejoin policy"):
+	/// `trust_center_rejoin` whether it answers trust-center rejoins at all (the unsecured rejoin of a
+	/// device whose network key is missing or outdated), `without_link_key` whether it accepts one from
+	/// a device it holds no link key for (true would hand the network key to any device that asks).
+	/// False when the stack does not run.
+	virtual bool set_rejoin_policy(bool trust_center_rejoin, bool without_link_key) = 0;
+
+	/// What trust_device() found.
+	enum class Trust : uint8_t {
+		kept,     ///< The trust center holds a link key for the device (a verified or provisional one).
+		restored, ///< It held none; the well-known key the device joined with is its key again.
+		refused,  ///< It held none and the stack did not take the key (the stack does not run, a full table).
+	};
+
+	/// Makes the trust center hold a link key for a device the adapter knows (homecontrol #99), so that
+	/// it accepts the device's trust-center rejoin while the rejoin policy refuses devices without one:
+	/// a device without a key (a legacy device, whose provisional key the stack deletes after its
+	/// authorization; any device the stack forgot when it left) gets the well-known key it joined
+	/// with, as the stack itself gives a joining device.
+	virtual Trust trust_device(zigbee::Ieee ieee) = 0;
+
+	/// Drops every link key the trust center holds for a device that is no longer known (removed, or
+	/// left without rejoin; homecontrol #99), so that it refuses the device's trust-center rejoin,
+	/// whatever became of the device's leave. True when the trust center holds no verified or
+	/// provisional key for it afterwards; false when the stack did not drop it (it does not run, or the
+	/// key is still there).
+	virtual bool forget_device(zigbee::Ieee ieee) = 0;
+
 	/// Reads the coordinator's neighbour table (homecontrol #98): calls `visitor` once per entry before
 	/// it returns, on the calling thread, while the platform holds the stack (the visitor only copies,
 	/// it must not call the driver). False when the table could not be read now (stack not running, or

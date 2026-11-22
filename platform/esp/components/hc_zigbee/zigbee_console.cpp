@@ -15,7 +15,7 @@ namespace esp {
 namespace {
 
 constexpr const char* kUsage = "zigbee status | devices | permit <seconds> | remove <ieee> | identify <ieee> | "
-							   "label <ieee> [<text>] | interview <ieee>";
+							   "label <ieee> [<text>] | interview <ieee> | rejoin <ieee>";
 
 int usage() {
 	std::printf("usage: %s\n", kUsage);
@@ -147,6 +147,12 @@ int zigbee_console_command(ZigbeeService& service, int argc, char** argv) {
 			return 1;
 		}
 		return adapter->interview(ieee, &error) ? 0 : refused(error);
+	}
+	if (std::strcmp(command, "rejoin") == 0 && argc == 3) {
+		if (!device_argument(argv[2], ieee)) {
+			return 1;
+		}
+		return adapter->request_rejoin(ieee, &error) ? 0 : refused(error);
 	}
 	if (std::strcmp(command, "label") == 0) {
 		if (!device_argument(argv[2], ieee)) {

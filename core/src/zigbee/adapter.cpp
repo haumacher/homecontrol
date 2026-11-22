@@ -173,6 +173,7 @@ ZigbeeAdapter::~ZigbeeAdapter() {
 	loop_.cancel(interview_.timer);
 	loop_.cancel(topology_.timer);
 	loop_.cancel(topology_period_);
+	loop_.cancel(rejoin_.timer);
 	delete[] points_;
 	delete[] ids_;
 	free_overrides();
@@ -760,12 +761,23 @@ bool ZigbeeAdapter::remove(Ieee ieee, const char** error) {
 	}
 	char text[64];
 	device_text(*device, text, sizeof(text));
+	// The trust center's key goes first, whatever the leave does (homecontrol #99): the key restored for
+	// a legacy device would otherwise let the removed device back in by a trust-center rejoin.
+	if (!driver_.forget_device(ieee)) {
+		Log::warn(kTag, "%s not removed: the trust center's link key for it could not be dropped (the stack does not "
+			"run or kept it); try again when the network is up", text);
+		fail(error, "the trust center's link key for the device could not be dropped (try again when the network is up)");
+		return false;
+	}
 	if (device->short_addr == kNoShortAddress || !driver_.leave(ieee, device->short_addr)) {
 		Log::warn(kTag, "%s not asked to leave (no address or the stack refused): it rejoins as a new device "
 			"when it is heard again", text);
 	}
 	if (interview_.active && interview_.ieee == ieee) {
 		end_interview();
+	}
+	if (rejoin_.ieee == ieee) {
+		end_rejoin();
 	}
 	topology_abort(); // the database indices change
 	database_.remove(ieee);
@@ -845,6 +857,145 @@ bool ZigbeeAdapter::interview(Ieee ieee, const char** error) {
 	return true;
 }
 
+bool ZigbeeAdapter::request_rejoin(Ieee ieee, const char** error) {
+	if (!network_.up) {
+		fail(error, "the Zigbee network is not up");
+		return false;
+	}
+	ZigbeeDevice* device = database_.find(ieee);
+	if (device == nullptr) {
+		fail(error, "no such device");
+		return false;
+	}
+	if (device->left) {
+		fail(error, "the device left the network");
+		return false;
+	}
+	if (device->short_addr == kNoShortAddress) {
+		fail(error, "the device's network address is unknown");
+		return false;
+	}
+	if (rejoin_.ieee != 0 && rejoin_.ieee != ieee) {
+		fail(error, "the requested rejoin of another device is pending");
+		return false;
+	}
+	if (!driver_.leave_and_rejoin(ieee, device->short_addr)) {
+		fail(error, "the Zigbee stack refused the leave request");
+		return false;
+	}
+	// A new request for the same device starts over.
+	end_rejoin();
+	uint64_t now = clock_.monotonic_ms();
+	rejoin_.ieee = ieee;
+	rejoin_.short_addr = device->short_addr;
+	rejoin_.since_ms = now;
+	rejoin_.sent_ms = now;
+	rejoin_.sends = 1;
+	rejoin_.timer = loop_.schedule_at(now + kRejoinWaitMs,
+		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::rejoin_expired>(this, "zigbee.rejoin_expired"));
+	char text[64];
+	Log::info(kTag, "%s (short 0x%04x) asked to leave and rejoin (ZDO Mgmt_Leave with rejoin; a sleepy device takes it "
+		"from its parent when it next polls)", device_text(*device, text, sizeof(text)),
+		static_cast<unsigned>(device->short_addr));
+	notify(ZigbeeEvent::Kind::changed, ieee);
+	return true;
+}
+
+void ZigbeeAdapter::resend_rejoin(ZigbeeDevice& device) {
+	uint64_t now = clock_.monotonic_ms();
+	rejoin_.sent_ms = now; // also after a refusal: the next try waits kRejoinResendMs
+	char text[64];
+	device_text(device, text, sizeof(text));
+	if (!driver_.leave_and_rejoin(device.ieee, device.short_addr)) {
+		Log::warn(kTag, "%s heard, but the Zigbee stack refused to send the leave request again", text);
+		return;
+	}
+	rejoin_.short_addr = device.short_addr;
+	++rejoin_.sends;
+	Log::info(kTag, "%s heard: asked again to leave and rejoin (request %u of %u)", text,
+		static_cast<unsigned>(rejoin_.sends), static_cast<unsigned>(kRejoinSends));
+}
+
+void ZigbeeAdapter::rejoin_returned(const ZigbeeDevice& device) {
+	char text[64];
+	Log::info(kTag, "%s came back %u s after the requested rejoin (short 0x%04x; requested %u time(s)%s)",
+		device_text(device, text, sizeof(text)),
+		static_cast<unsigned>((clock_.monotonic_ms() - rejoin_.since_ms) / 1000),
+		static_cast<unsigned>(device.short_addr), static_cast<unsigned>(rejoin_.sends),
+		rejoin_.accepted ? "" : ", its answer was not heard");
+	end_rejoin();
+	notify(ZigbeeEvent::Kind::changed, device.ieee);
+}
+
+void ZigbeeAdapter::rejoin_expired() {
+	rejoin_.timer = TimerHandle();
+	Ieee ieee = rejoin_.ieee;
+	if (ieee == 0) {
+		return;
+	}
+	const ZigbeeDevice* device = database_.find(ieee);
+	char text[64];
+	if (device != nullptr) {
+		device_text(*device, text, sizeof(text));
+	} else {
+		format_ieee(ieee, text);
+	}
+	Log::warn(kTag, "%s did not come back within %u min of the requested rejoin (requested %u time(s); %s)", text,
+		static_cast<unsigned>(kRejoinWaitMs / 60000), static_cast<unsigned>(rejoin_.sends),
+		rejoin_.accepted ? "it took the request" : "no answer that it took the request");
+	end_rejoin();
+	notify(ZigbeeEvent::Kind::changed, ieee);
+}
+
+void ZigbeeAdapter::end_rejoin() {
+	loop_.cancel(rejoin_.timer);
+	rejoin_ = Rejoin();
+}
+
+// ---- The trust center -----------------------------------------------------------------------
+
+void ZigbeeAdapter::trust_known_devices() {
+	if (driver_.set_rejoin_policy(true, false)) {
+		Log::info(kTag, "trust center: trust-center rejoins accepted from the devices it holds a link key for, refused "
+			"from any other");
+	} else {
+		Log::warn(kTag, "trust center: the rejoin policy was not set (the stack does not run): its defaults apply");
+	}
+	size_t known = 0;
+	size_t restored = 0;
+	size_t refused = 0;
+	for (size_t i = 0; i < database_.size(); ++i) {
+		const ZigbeeDevice& device = database_.at(i);
+		if (device.left) {
+			continue;
+		}
+		++known;
+		switch (trust(device, "at the network's start")) {
+			case ZigbeeDriver::Trust::restored: ++restored; break;
+			case ZigbeeDriver::Trust::refused: ++refused; break;
+			case ZigbeeDriver::Trust::kept: break;
+		}
+	}
+	Log::info(kTag, "trust center: holds a link key for %u of %u known device(s) (%u restored)",
+		static_cast<unsigned>(known - refused), static_cast<unsigned>(known), static_cast<unsigned>(restored));
+}
+
+ZigbeeDriver::Trust ZigbeeAdapter::trust(const ZigbeeDevice& device, const char* why) {
+	if (device.left) {
+		return ZigbeeDriver::Trust::kept; // a device that left is no longer known to the trust center
+	}
+	ZigbeeDriver::Trust result = driver_.trust_device(device.ieee);
+	char text[64];
+	if (result == ZigbeeDriver::Trust::restored) {
+		Log::info(kTag, "%s: the trust center holds its link key again %s (the well-known key it joined with): its "
+			"trust-center rejoin is accepted", device_text(device, text, sizeof(text)), why);
+	} else if (result == ZigbeeDriver::Trust::refused) {
+		Log::warn(kTag, "%s: the trust center holds no link key for it and did not take one %s: its trust-center rejoin "
+			"is refused", device_text(device, text, sizeof(text)), why);
+	}
+	return result;
+}
+
 // ---- Device bookkeeping ---------------------------------------------------------------------
 
 ZigbeeDevice* ZigbeeAdapter::resolve(NodeAddress address, bool add) {
@@ -887,6 +1038,12 @@ void ZigbeeAdapter::touch(ZigbeeDevice& device) {
 		Log::info(kTag, "%s heard again: reading its datapoints", device_text(device, text, sizeof(text)));
 		schedule_refresh();
 		notify(ZigbeeEvent::Kind::changed, device.ieee);
+	}
+	// A requested rejoin the device has not taken is sent again when it is heard (homecontrol #99): a
+	// sleepy device polls its parent right after its own frames, and takes the request then.
+	if (rejoin_.ieee == device.ieee && !rejoin_.accepted && rejoin_.sends < kRejoinSends &&
+		now - rejoin_.sent_ms >= kRejoinResendMs) {
+		resend_rejoin(device);
 	}
 	// A device not interviewed (never, failed or incomplete) is interviewed when it is heard, at most
 	// once per kInterviewRetryMs: a sleepy device answers right after its own frames.
@@ -1507,6 +1664,7 @@ void ZigbeeAdapter::network_state(bool up, uint16_t pan_id, uint8_t channel, Iee
 		format_ieee(extended_pan, ext);
 		Log::info(kTag, "network up: PAN id 0x%04x, channel %u, extended PAN id %s", static_cast<unsigned>(pan_id),
 			static_cast<unsigned>(channel), ext);
+		trust_known_devices();
 		size_t held = commands_held();
 		if (held > 0 && !held_timer_.valid()) {
 			Log::info(kTag, "sending %u held command(s)", static_cast<unsigned>(held));
@@ -1574,6 +1732,9 @@ void ZigbeeAdapter::device_announced(NodeAddress address) {
 			static_cast<unsigned>(address.short_addr));
 	}
 	request_topology();
+	if (rejoin_.ieee == device->ieee) {
+		rejoin_returned(*device);
+	}
 	if (device->left && device->has_result()) {
 		// It left (a factory reset) and joined again: its endpoints may have changed.
 		device->interview_pending = true;
@@ -1609,11 +1770,16 @@ void ZigbeeAdapter::device_updated(NodeAddress address, uint8_t status, uint8_t 
 	char parent[64];
 	node_text(address, text, sizeof(text));
 	parent_text(parent_short, parent, sizeof(parent));
-	Log::info(kTag, "%s: %s (short 0x%04x) through %s, trust center: %s", text, update_status_name(status),
+	// A refusal is a device the trust center did not take back (homecontrol #99): warn.
+	Log::write(tc_action == kTcAuthorize ? LogLevel::info : LogLevel::warn, kTag,
+		"%s: %s (short 0x%04x) through %s, trust center: %s", text, update_status_name(status),
 		static_cast<unsigned>(address.short_addr), parent, tc_action_name(tc_action));
 	if (device != nullptr) {
 		device->parent_short = status == kUpdateLeft ? kNoShortAddress : parent_short;
 		device->set(ZigbeeDevice::kParentListed, false);
+		if (status == kUpdateLeft) {
+			trust(*device, "after its leave"); // the trust center forgot it; a known device may rejoin
+		}
 	}
 	notice_ieee_ = address.ieee;
 	notice_status_ = status;
@@ -1628,6 +1794,11 @@ void ZigbeeAdapter::device_authorized(NodeAddress address, uint8_t type, uint8_t
 	node_text(address, text, sizeof(text));
 	Log::write(status == 0 ? LogLevel::info : LogLevel::warn, kTag, "%s (short 0x%04x): authorization (%s): %s", text,
 		static_cast<unsigned>(address.short_addr), authorization_name(type), authorization_status_name(type, status));
+	// The stack deletes a legacy device's provisional link key when it authorizes it (homecontrol #99).
+	const ZigbeeDevice* device = address.ieee != 0 ? database_.find(address.ieee) : nullptr;
+	if (device != nullptr && type == kAuthorizationLegacy && status == 0) {
+		trust(*device, "after its authorization");
+	}
 }
 
 void ZigbeeAdapter::device_associated(Ieee ieee) {
@@ -1937,6 +2108,44 @@ void ZigbeeAdapter::device_joined(NodeAddress address) {
 	}
 }
 
+void ZigbeeAdapter::device_left_to_rejoin(NodeAddress address) {
+	char text[64];
+	node_text(address, text, sizeof(text));
+	Log::info(kTag, "%s (short 0x%04x) left to rejoin", text, static_cast<unsigned>(address.short_addr));
+	const ZigbeeDevice* device = resolve(address, false);
+	if (device != nullptr) {
+		trust(*device, "after its leave"); // the stack forgot the child's link key with its leave
+	}
+}
+
+void ZigbeeAdapter::leave_answered(NodeAddress address, uint8_t status) {
+	ZigbeeDevice* device = resolve(address, false);
+	bool requested = rejoin_.ieee != 0 &&
+		(device != nullptr ? device->ieee == rejoin_.ieee : address.short_addr == rejoin_.short_addr);
+	char text[64];
+	if (device != nullptr) {
+		device_text(*device, text, sizeof(text));
+	} else {
+		node_text(address, text, sizeof(text));
+	}
+	if (!requested) {
+		Log::info(kTag, "%s (short 0x%04x) answered the leave request: status 0x%02x", text,
+			static_cast<unsigned>(address.short_addr), static_cast<unsigned>(status));
+		return;
+	}
+	if (status == kLeaveSuccess) {
+		rejoin_.accepted = true;
+		Log::info(kTag, "%s took the request to leave and rejoin", text);
+	} else if (rejoin_.sends < kRejoinSends) {
+		Log::info(kTag, "%s did not take the request to leave and rejoin (status 0x%02x): asked again when it is next "
+			"heard", text, static_cast<unsigned>(status));
+	} else {
+		Log::warn(kTag, "%s did not take the request to leave and rejoin (status 0x%02x), requested %u times", text,
+			static_cast<unsigned>(status), static_cast<unsigned>(rejoin_.sends));
+	}
+	notify(ZigbeeEvent::Kind::changed, rejoin_.ieee);
+}
+
 void ZigbeeAdapter::device_left(NodeAddress address) {
 	ZigbeeDevice* device = resolve(address, false);
 	if (device == nullptr) {
@@ -1949,6 +2158,11 @@ void ZigbeeAdapter::device_left(NodeAddress address) {
 	char text[64];
 	Log::info(kTag, "%s left the network (it stays in the database; `zigbee remove` deletes it)",
 		device_text(*device, text, sizeof(text)));
+	// No longer known: no trust-center rejoin for it (homecontrol #99); it comes back by a new pairing.
+	if (!driver_.forget_device(device->ieee)) {
+		Log::warn(kTag, "%s: the trust center's link key for it could not be dropped: its trust-center rejoin is still "
+			"accepted", text);
+	}
 	notify(ZigbeeEvent::Kind::left, device->ieee);
 	if (interview_.active && interview_.ieee == device->ieee) {
 		fail_interview("the device left");
@@ -2456,6 +2670,13 @@ void ZigbeeAdapter::write_device_json(JsonWriter& json, size_t index) const {
 		json.member("seen_ago_s", (clock_.monotonic_ms() - device.seen_ms) / 1000);
 	}
 	write_radio_json(json, device);
+	if (rejoin_.ieee == device.ieee) {
+		json.key("rejoin").begin_object()
+			.member("requested_ago_s", (clock_.monotonic_ms() - rejoin_.since_ms) / 1000)
+			.member("sent", static_cast<uint32_t>(rejoin_.sends))
+			.member("accepted", rejoin_.accepted)
+			.end_object();
+	}
 	json.key("datapoints").begin_array();
 	for (size_t p = 0; loaded_ && p < point_count_; ++p) {
 		if (points_[p].ieee == device.ieee && ids_[p] != kNoId) {

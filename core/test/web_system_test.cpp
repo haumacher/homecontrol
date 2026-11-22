@@ -98,6 +98,7 @@ TEST_CASE("WebSystem: every new route needs the principal and the CSRF header") 
 		{HttpMethod::post, "/api/zigbee/devices/00124b0001020304/identify"},
 		{HttpMethod::put, "/api/zigbee/devices/00124b0001020304/label"},
 		{HttpMethod::post, "/api/zigbee/devices/00124b0001020304/interview"},
+		{HttpMethod::post, "/api/zigbee/devices/00124b0001020304/rejoin"},
 		{HttpMethod::post, "/api/external/pv/fetch"},
 		{HttpMethod::post, "/api/lang/sync"},
 		{HttpMethod::post, "/api/mqtt/discovery"},
@@ -583,6 +584,39 @@ TEST_CASE("WebSystem.Zigbee: pairing, the device list, label, identify, intervie
 	CHECK(f.driver.calls.back() == "leave 0x1a2b");
 	CHECK(f.call(HttpMethod::get, "/api/zigbee").json["count"].number == 0);
 	CHECK(f.call(HttpMethod::del, kBulbPath).status == 404);
+}
+
+TEST_CASE("WebSystem.Zigbee: a requested rejoin goes to the device, its state comes with the device (#99)") {
+	ZigbeeWebFixture f;
+	f.device.join_bulb();
+	f.device.join_sensor();
+	auto r = f.call(HttpMethod::post, std::string(kBulbPath) + "/rejoin");
+	REQUIRE_MESSAGE(r.status == 200, r.body);
+	CHECK(f.driver.calls.back() == "leave+rejoin 0x1a2b");
+	CHECK(r.json["device"]["ieee"].text == "00124b0001020304");
+	CHECK(r.json["device"]["rejoin"]["sent"].number == 1);
+	CHECK_FALSE(r.json["device"]["rejoin"]["accepted"].boolean);
+	CHECK(r.json["device"]["rejoin"]["requested_ago_s"].number == 0);
+	// The list shows it too, for this device only.
+	r = f.call(HttpMethod::get, "/api/zigbee");
+	CHECK(r.json["devices"].items[0].has("rejoin"));
+	CHECK_FALSE(r.json["devices"].items[1].has("rejoin"));
+	// One at a time: another device is refused with the reason; a GET is no request.
+	r = f.call(HttpMethod::post, "/api/zigbee/devices/00158d0005060708/rejoin");
+	CHECK(r.status == 409);
+	CHECK(r.json["code"].text == "zigbee.refused");
+	CHECK(r.json["error"].text == "the requested rejoin of another device is pending");
+	CHECK(f.call(HttpMethod::get, std::string(kBulbPath) + "/rejoin").status == 405);
+	CHECK(f.call(HttpMethod::post, "/api/zigbee/devices/00124b00ffffffff/rejoin").status == 404);
+	// The device comes back: the request is over.
+	f.adapter.device_announced(hc_test::ZigbeeActions::node(hc_test::kBulb, hc_test::kBulbShort));
+	r = f.call(HttpMethod::get, "/api/zigbee");
+	CHECK_FALSE(r.json["devices"].items[0].has("rejoin"));
+	// Not while the network is down.
+	f.adapter.network_state(false, 0, 0, 0);
+	r = f.call(HttpMethod::post, std::string(kBulbPath) + "/rejoin");
+	CHECK(r.status == 409);
+	CHECK(r.json["error"].text == "the Zigbee network is not up");
 }
 
 TEST_CASE("WebSystem.Zigbee: the live feed carries joins, interviews and the permit state") {

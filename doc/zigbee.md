@@ -136,7 +136,9 @@ interviews it. The trust center does not require the link key exchange after the
 devices of the Light Link and Home Automation 1.2 profiles (the Philips Hue motion sensor SML002 is
 one) never request a key, and with the Zigbee 3.0 default the stack removed such a device 22 s
 after the join, which sent it through leave and rejoin until it gave up. Zigbee 3.0 devices still
-exchange the key. The interview:
+exchange the key. A legacy device has no link key at the trust center from 15 s after its join on;
+the adapter gives it one again so that it can come back by a trust-center rejoin ("Rejoin policy"
+below). The interview:
 
 1. **Active endpoints** (ZDO), then the **simple descriptor** of every endpoint (profile, device
    type, input and output clusters; at most 4 endpoints and 12 clusters each are kept, the known
@@ -417,7 +419,132 @@ libraries):
 
 What the stack does not signal stays invisible: a NWK rejoin request the coordinator refuses below
 the trust center leaves no line; the absence of a rejoin line while the device's LED says it
-searches is then the evidence.
+searches is then the evidence. A refusal by the trust center is signalled (`trust center: deny`) and
+logged at warn (homecontrol #99).
+
+## Rejoin policy (homecontrol #99)
+
+A device that holds the network key and lost its parent must come back by whatever rejoin it tries,
+with the network closed; a device the controller does not know must not get the network key. The
+house controller's Hue motion sensor SML002 (a legacy HA 1.2 device) came back after every restart
+of the coordinator by a secured rejoin through the plug, but on 2026-11-20 it searched with the
+network closed and nothing reached the log until the network was opened.
+
+**What the stack does** (esp-zigbee-lib 1.6.8 / esp-zboss-lib, the `zczr` debug archives
+disassembled with their symbols; ZBOSS's trace calls carry the line numbers of its sources, quoted
+below as `file.c:line`):
+
+- **NWK layer.** A rejoin request at the coordinator (`zb_nlme_rejoin_request_pre_handler()` →
+  `zb_nlme_rejoin_build_response()`, `nwk_cr_join.c`) is answered without looking at the permit-join
+  state: a secured one goes to `zb_nwk_accept_child()` (capacity only); an unsecured one, a
+  trust-center rejoin, first through `zb_check_dev_cap_for_tc_rejoin()`, which accepts any IEEE
+  without a neighbour entry; refused only with distributed security or a stale key sequence number
+  (status "access denied", `nwk_cr_join.c:399`, `:445`). The beacons' router and end-device
+  capacity come from `nwk_have_space_for_children()` alone (`zb_nwk_do_update_beacon_payload()`).
+- **Trust center** (`zb_authenticate_dev()`, `zdo_secur.c`, for the coordinator's own child and,
+  through `zb_apsme_update_device_indication()`, for a router's Update Device), by the Update Device
+  status:
+  - secured rejoin (0): accepted.
+  - unsecured join (1, an association): only while joining is permitted (or with the policy
+    "authenticate always"); refused otherwise (`zdo_secur.c:853`). This gate stays.
+  - trust-center rejoin (3): ignored with `ignore_tc_rejoin` (`:822`), refused with `tc_rejoin` off
+    (`:828`); accepted when the trust center holds a verified or provisional link key for the device
+    (`zb_secur_get_verified_or_provisional_link_key()`); without one only with
+    `allow_unsecure_tc_rejoins` (`zb_aib_tcpol_get_allow_unsecure_tc_rejoins()`), refused otherwise
+    (`:837`), whether the network is open or not. Through a router the refusal is a Remove Device to
+    the router (`:1091`); the signal `ESP_ZB_ZDO_SIGNAL_DEVICE_UPDATE` carries `tc_action` deny.
+  - Defaults (`zdo_secur_init()`): `tc_rejoin` on, `ignore_tc_rejoin` off,
+    `allow_unsecure_tc_rejoins` off, the link key exchange required (turned off above for the legacy
+    devices).
+- **A legacy device's key.** At the join the trust center gives a device without a key a provisional
+  one (`zb_secur_create_best_suitable_link_key_pair_set()`: the pre-configured standard key, type
+  global, `zdo_secur.c:1921`). With the key exchange not required (`zigbee_service.cpp`,
+  `esp_zb_secur_link_key_exchange_required_set(false)`), `bdb_link_key_transport_with_alarm()`
+  schedules `zb_legacy_device_auth_signal_alarm()` 15 s after the key transport instead of the
+  removal; that alarm **deletes the provisional key** (`zdo_app.c:1343`,
+  `zb_secur_delete_link_key_by_idx()`) and signals "authorization (legacy device): success". The stack
+  also forgets a device's keys when it leaves (`zb_nwk_forget_device()` →
+  `zb_secur_delete_link_keys_by_addr_ref()`: a router's Update Device "left", the coordinator's child
+  leaving).
+
+**The cause.** From 15 s after its join on, the trust center holds no key for a legacy device. Its
+secured rejoins pass, but its trust-center rejoin, the rejoin a device falls back to when the secured
+one fails (its network key or frame counter no longer fits, its parent does not answer), is refused
+at `zdo_secur.c:837`, also with the network open. Firmware before 7b0c18d passed only the unsecured
+join of `ESP_ZB_ZDO_SIGNAL_DEVICE_UPDATE` on and dropped a trust-center rejoin's signal without a
+line, so the silence of 2026-11-20 fits it; which rejoin brought the sensor back at 18:53 (after a
+second press of its button, its old address, no unsecured join) the log of that firmware does not
+tell. The next loss shows its kind: `trust center rejoin ... trust center: deny` at warn was this
+refusal.
+
+**The decision.**
+
+- **Policy, at every network start** (`ZigbeeAdapter::network_state()`, through
+  `ZigbeeDriver::set_rejoin_policy(true, false)`): ZBOSS's public "TC rejoin settings"
+  (`zboss_api.h`) `zb_secur_set_tc_rejoin_enabled(ZB_TRUE)`, `zb_secur_set_ignore_tc_rejoin(ZB_FALSE)`,
+  `zb_secur_set_unsecure_tc_rejoin_enabled(ZB_FALSE)`: the defaults, set explicitly so that a library
+  update does not turn them silently. Log: `trust center: trust-center rejoins accepted from the
+  devices it holds a link key for, refused from any other`.
+- **A key for every known device** (in the device database and not left): `ZigbeeDriver::trust_device()`
+  looks for a verified or provisional key (`esp_zb_secur_has_link_key_pair_set()`, the lookup of
+  `:828`) and gives a device without one what the stack gives a joiner: the standard key
+  `ZigBeeAlliance09`, global, provisional (`esp_zb_secur_update_key_pair()`, written to the stack's
+  NVRAM). At the network's start for every known device, and again where the stack drops the key:
+  after a legacy device's authorization, a router's Update Device "left", the coordinator's child
+  leaving to rejoin. Each restored key is one info line (`<device>: the trust center holds its link
+  key again after its authorization (the well-known key it joined with): its trust-center rejoin is
+  accepted`), a refused one a warning; the start ends with `trust center: holds a link key for N of
+  M known device(s) (K restored)`. A Zigbee 3.0 device keeps its verified key; nothing is written
+  for it.
+- **Not `allow_unsecure_tc_rejoins`.** It would accept a trust-center rejoin of any IEEE (the NWK
+  layer accepts one without a neighbour entry) and transport the network key encrypted with the
+  well-known key: the network open to every stranger, always.
+- **Not the association.** A device that associates afresh (unsecured join) is a new pairing and
+  needs the network open, as before; a device with the network key rejoins.
+- **Safety.** The trust center accepts a trust-center rejoin only for an IEEE in the database. What
+  remains is legacy security itself: a device that claims the IEEE of a known legacy device (sent in
+  the clear) gets the network key by a trust-center rejoin, as any device does during a permit join;
+  Zigbee 3.0 devices keep their own key and are not exposed.
+- **A device that stops being known loses its key** (`ZigbeeDriver::forget_device()`), whatever became
+  of its leave: `remove()` drops the trust center's keys for it before it sends the leave (no short
+  address, a refused or lost leave change nothing), and a device that left without rejoin (marked
+  left) loses them too. The driver deletes every key pair of the IEEE and checks that none is left
+  (`esp_zb_secur_has_link_key_pair_set()`). A key the stack cannot drop refuses the removal (warn line,
+  409 over the API, nothing changed: "try again when the network is up"); for a leave it is a warning
+  naming the device. The network's start restores keys only for the devices in the database, so a
+  removed device stays without one. A removed device that never took its leave still holds the
+  network key and can come back by a secured rejoin; only a new network key keeps it out.
+- **The API.** `esp_zb_secur_has_link_key_pair_set()` and `esp_zb_secur_update_key_pair()` are the
+  esp-zigbee-lib's only access to the key table; they are declared in its test header
+  (`include/test/esp_zigbee_test_utils.h`, "mainly for certification and tests; ... might change").
+  No header of esp-zigbee-lib 1.6.8 or 1.6.9 (the newest 1.x, 2026-11-20) nor of esp-zboss-lib declares
+  a function that drops a key pair: `esp_zb_apsme_remove_device_request()` only sends a Remove Device
+  to a parent, the install-code removal and the IEEE joining list (not compiled into this ZBOSS) do not
+  touch it, and overwriting the key with `esp_zb_secur_update_key_pair()` cannot remove it (an entry
+  of another attribute is added beside it, `zdo_secur.c:1707-1744`) and would leave an unknown key that
+  breaks a later pairing of the device. So `forget_device()` calls ZBOSS's own
+  `zb_secur_delete_link_keys_by_long_addr()` (`zdo_secur.c:2028`, what `zb_nwk_forget_device()` calls
+  when a device leaves), a global symbol of the pinned `libzboss_stack` declared in `zigbee_service.cpp`
+  with the signature its disassembly shows; a release without it fails at the link. The versions are
+  pinned (`dependencies.lock.esp32c6`, 1.6.8); a change of these functions breaks the build, not the
+  behaviour. No upgrade (1.6.9 adds nothing here).
+- A trust-center rejoin that races the restore after a leave (the device rejoins within the
+  milliseconds before the event loop restored its key) is refused once (warn line) and passes at the
+  device's next attempt.
+
+**Verification without a person** (`ZigbeeAdapter::request_rejoin()`, `POST
+/api/zigbee/devices/<ieee>/rejoin`, `zigbee rejoin <ieee>`): the controller forces the device's loss
+with a ZDO Mgmt_Leave with rejoin set (remove children off), addressed to its short address; a
+sleepy child of a router takes it from the router's indirect queue at its next poll. One request at
+a time. While the device has not taken it, the request goes out again when the device is heard
+(its own frames are when it polls), at the earliest 30 s after the last send, at most 5 times. The
+log follows it: `<device> (short 0xaf9e) asked to leave and rejoin`, `<device> took the request to
+leave and rejoin` (its Mgmt_Leave_rsp) or `did not take ... (status 0x..)`, then the trust center's
+notice and the announce (`secured rejoin` / `trust center rejoin ... trust center: authorize`,
+`rejoined with a new address` or `announced itself`), and `<device> came back N s after the
+requested rejoin`; an hour without the announce ends it with `did not come back within 60 min` at
+warn. The adapter view carries `rejoin` while it is pending (spec/zigbee.md); the Zigbee page's
+**Rejoin** button sends it.
 
 ## Threading
 
@@ -443,7 +570,8 @@ event). Each device card shows the state (an incomplete interview with what did 
 manufacturer and model, IEEE, last seen, the radio link (LQI and RSSI of the last frame, the parent
 with the router's link quality of it and the depth, a router's link quality of the coordinator, the
 child entry's timeout and remaining time, where known) and its
-datapoints' live values, with **Identify** (10 s), **Rename** (the label), **Interview again** and
+datapoints' live values, with **Identify** (10 s), **Rename** (the label), **Interview again**,
+**Rejoin** (after a confirmation; "Rejoin policy"; a pending request shows as a row) and
 **Remove** (after a confirmation; asks the device to leave and forgets it). The adapter reports
 every change of its device list through `ZigbeeEventListener` (one listener, the `WebApi`, which
 forwards to the live feed) and counts them in `generation`. On a chip without 802.15.4 the page
@@ -459,6 +587,7 @@ zigbee remove <ieee>           ask the device to leave and delete it
 zigbee identify <ieee>         make the device identify itself for 10 s
 zigbee label <ieee> [<text>]   name the device (at most 32 bytes; without text: clear)
 zigbee interview <ieee>        interview the device again
+zigbee rejoin <ieee>           make the device leave and rejoin at once (homecontrol #99, "Rejoin policy")
 ```
 
 An IEEE address is 16 hex digits, colons allowed (`00:15:8d:00:01:02:03:04`). On a chip without

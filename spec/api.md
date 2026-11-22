@@ -747,13 +747,23 @@ Refusals: 422 `zigbee.invalid`, 409 `zigbee.refused` (network not up).
 `<ieee>` as in the list (16 hex digits; the colon form `00:12:...` is accepted too). Each answers 200 `{"ok": true, "device": {...}}`
 with the device as in the list (`DELETE` without `device`).
 
-- `DELETE`: asks the device to leave and forgets it (the console's `zigbee remove`).
+- `DELETE`: drops the trust center's link keys for the device, asks it to leave and forgets it (the
+  console's `zigbee remove`); refused (409, nothing changed) when the stack cannot drop the keys
+  (homecontrol #99: a removed device must not come back by a trust-center rejoin).
 - `POST .../identify`: the device identifies itself (blinks) for 10 s.
 - `PUT .../label` body `{"label": "<at most 32 bytes, \"\" clears>"}`.
 - `POST .../interview`: reads its descriptors and attributes again.
+- `POST .../rejoin` (homecontrol #99): forces the device's loss, to see it return: a ZDO Mgmt_Leave
+  with rejoin set (the device leaves and rejoins at once; a sleepy device takes it from its parent
+  when it next polls, and it is sent again, at most 5 times, when the device is heard before it took
+  it). While the request is pending the device carries `"rejoin": {"requested_ago_s", "sent",
+  "accepted"}` (spec/zigbee.md "Adapter view"); its announce ends it ("came back" in the log), an
+  hour without one ends it at warn. Refused (409) while the network is not up, for a device that
+  left or has no short address, and while another device's requested rejoin is pending.
 
 Refusals: 404 `zigbee.unknown_device` (unknown or malformed IEEE), 422 `zigbee.invalid` (label),
-409 `zigbee.refused` (with the adapter's reason, e.g. the device is not interviewed yet).
+409 `zigbee.refused` (with the adapter's reason, e.g. the device is not interviewed yet, or another
+device's requested rejoin is pending).
 
 ## Language packs (static files, not under `/api/`)
 

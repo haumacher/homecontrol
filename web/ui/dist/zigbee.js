@@ -1,9 +1,10 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
 // Zigbee: the coordinator's network and devices (GET /api/zigbee, spec/api.md "Zigbee"). "Pair"
 // opens the network for 254 s with a countdown; joins and interviews show as they happen (the live
-// feed's zigbee messages). Per device: identify, rename, interview again, remove; its radio link
-// (LQI, RSSI, parent, the coordinator's child entry: homecontrol #98). Values come from the live
-// datapoints, by name.
+// feed's zigbee messages). Per device: identify, rename, interview again, rejoin (leave and rejoin at
+// once, homecontrol #99), remove; its radio link (LQI, RSSI, parent, the coordinator's child entry:
+// homecontrol #98) and a requested rejoin while it is pending. Values come from the live datapoints,
+// by name.
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
@@ -127,6 +128,11 @@ export function renderZigbee(content, ctx) {
 		} }, t("zigbee.rename"));
 		const interview = h("button", { type: "button", class: "button small secondary",
 			onclick: () => act(interview, "POST", `${path}/interview`) }, t("zigbee.interview"));
+		const rejoin = h("button", { type: "button", class: "button small secondary", disabled: d.left, onclick: () => {
+			if (window.confirm(t("zigbee.rejoin.confirm", { name: deviceTitle(d) }))) {
+				act(rejoin, "POST", `${path}/rejoin`);
+			}
+		} }, t("zigbee.rejoin"));
 		const remove = h("button", { type: "button", class: "button small danger", onclick: () => {
 			if (window.confirm(t("zigbee.remove.confirm", { name: deviceTitle(d) }))) {
 				act(remove, "DELETE", path);
@@ -137,15 +143,18 @@ export function renderZigbee(content, ctx) {
 			return [name.replace(`zigbee.${d.ieee}.`, ""), dp ? formatValue(dp) : t("value.unknown")];
 		});
 		const missing = missingText(d);
+		const rejoinState = d.rejoin ? t(d.rejoin.accepted ? "zigbee.rejoin.taken" : "zigbee.rejoin.waiting",
+			{ ago: formatAgo(d.rejoin.requested_ago_s * 1000), sent: d.rejoin.sent }) : null;
 		return h("section", { class: "card" },
 			h("h2", null, deviceTitle(d), " ", stateBadge(d)),
 			h("dl", { class: "rows" },
 				[[t("zigbee.device"), `${d.manufacturer || "?"} / ${d.model || "?"}`], [t("zigbee.ieee"), d.ieee],
 					...(missing ? [[t("zigbee.missing"), missing]] : []),
-					[t("zigbee.seen"), seen], ...radioRows(d, data.devices), ...points]
+					[t("zigbee.seen"), seen], ...radioRows(d, data.devices),
+					...(rejoinState ? [[t("zigbee.rejoin.row"), rejoinState]] : []), ...points]
 					.map(([k, v]) => [h("dt", null, k), h("dd", null, v)])),
 			missing ? h("p", { class: "hint" }, t("zigbee.missing.hint")) : null,
-			h("div", { class: "actions" }, identify, rename, interview, remove));
+			h("div", { class: "actions" }, identify, rename, interview, rejoin, remove));
 	}
 
 	function drawDevices() {

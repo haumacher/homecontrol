@@ -287,7 +287,11 @@ otherwise the IEEE address of its parent router, from a router's neighbour table
 trust center's notice of its join or rejoin, with that router's label as `parent_label` if it has
 one and, when a router's table listed it, `parent_lqi` (the router's link quality of the device)
 and `depth`; absent when no parent is known. A router has no `parent`; `coordinator_lqi` is its
-link quality of the coordinator from its own neighbour table. `stale` turns true when the device was
+link quality of the coordinator from its own neighbour table. `rejoin` (homecontrol #99, doc/zigbee.md
+"Rejoin policy") is present while a rejoin requested for the device (`request_rejoin()`, the API's
+`POST .../rejoin`, the console's `zigbee rejoin`) is pending: `{"requested_ago_s": 42, "sent": 2,
+"accepted": false}`, the seconds since the request, how many leave requests went out, and whether
+the device took one; it ends with the device's announce or an hour after the request. `stale` turns true when the device was
 not heard within three times its shortest periodic maximum reporting interval ("Stale rule" in
 doc/zigbee.md). `GET /api/zigbee` (spec/api.md) pages the same device objects with `write_device_json()`
 and the network with `write_network_json()`.

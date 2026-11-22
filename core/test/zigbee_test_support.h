@@ -67,7 +67,36 @@ public:
 	bool identify(hc::zigbee::Ieee, uint16_t short_addr, uint8_t endpoint, uint16_t seconds) override {
 		return record("identify " + hex4(short_addr) + " " + std::to_string(endpoint) + " " + std::to_string(seconds));
 	}
-	bool leave(hc::zigbee::Ieee, uint16_t short_addr) override { return record("leave " + hex4(short_addr)); }
+	bool leave(hc::zigbee::Ieee, uint16_t short_addr) override {
+		return record("leave " + hex4(short_addr)) && !refuse_leave;
+	}
+	bool leave_and_rejoin(hc::zigbee::Ieee, uint16_t short_addr) override {
+		return record("leave+rejoin " + hex4(short_addr));
+	}
+	bool set_rejoin_policy(bool trust_center_rejoin, bool without_link_key) override {
+		if (accept) {
+			policy_tc_rejoin = trust_center_rejoin;
+			policy_without_key = without_link_key;
+		}
+		return record(std::string("rejoin-policy tc ") + (trust_center_rejoin ? "on" : "off") + ", without key " +
+			(without_link_key ? "on" : "off"));
+	}
+	/// Records "trust <ieee>"; answers from `keys`: a device listed there is kept, any other is restored
+	/// (and listed from then on) unless `accept` is false.
+	Trust trust_device(hc::zigbee::Ieee ieee) override {
+		char text[hc::zigbee::kIeeeText];
+		hc::zigbee::format_ieee(ieee, text);
+		if (!record(std::string("trust ") + text)) {
+			return Trust::refused;
+		}
+		for (hc::zigbee::Ieee key : keys) {
+			if (key == ieee) {
+				return Trust::kept;
+			}
+		}
+		keys.push_back(ieee);
+		return Trust::restored;
+	}
 	bool request_neighbor_table(hc::zigbee::Ieee, uint16_t short_addr, uint8_t start_index) override {
 		return record("lqi " + hex4(short_addr) + " " + std::to_string(start_index));
 	}
@@ -108,8 +137,43 @@ public:
 		return false;
 	}
 
+	/// Records "forget <ieee>" and drops the device from `keys` (refused with `accept` false).
+	bool forget_device(hc::zigbee::Ieee ieee) override {
+		char text[hc::zigbee::kIeeeText];
+		hc::zigbee::format_ieee(ieee, text);
+		if (!record(std::string("forget ") + text)) {
+			return false;
+		}
+		for (auto it = keys.begin(); it != keys.end();) {
+			it = *it == ieee ? keys.erase(it) : it + 1;
+		}
+		return true;
+	}
+
+	/// The trust center's answer to a trust-center rejoin of `ieee`, as zb_authenticate_dev() decides
+	/// it (doc/zigbee.md "Rejoin policy"): with trust-center rejoins on, accepted when it holds a key for
+	/// the device, without one only when the policy allows that.
+	bool tc_rejoin_accepted(hc::zigbee::Ieee ieee) const {
+		if (!policy_tc_rejoin) {
+			return false;
+		}
+		for (hc::zigbee::Ieee key : keys) {
+			if (key == ieee) {
+				return true;
+			}
+		}
+		return policy_without_key;
+	}
+
 	std::vector<std::string> calls;
 	bool accept = true;
+	/// Refuses leave() alone (the stack could not send the leave request).
+	bool refuse_leave = false;
+	/// The devices the trust center holds a link key for (trust_device()).
+	std::vector<hc::zigbee::Ieee> keys;
+	/// The rejoin policy the last set_rejoin_policy() set (the stack's defaults before).
+	bool policy_tc_rejoin = true;
+	bool policy_without_key = false;
 	/// The coordinator's neighbour table read_neighbors() reports.
 	std::vector<hc::ZigbeeNeighbor> neighbors;
 	bool neighbors_readable = true;

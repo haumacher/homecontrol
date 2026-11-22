@@ -215,6 +215,11 @@ TEST_CASE("ZigbeeAdapter: commands while the network is not up are held and sent
 	CHECK(capture.sink.contains("I hc.zigbee: holding commands until the Zigbee network is up"));
 	f.adapter.network_state(true, 0x1a62, 15, 0xdddddddddddddddd);
 	CHECK(capture.sink.contains("I hc.zigbee: sending 2 held command(s)"));
+	// The trust center's set-up comes first (homecontrol #99): the rejoin policy and the bulb's key.
+	REQUIRE(f.driver.calls.size() >= calls + 2);
+	CHECK(f.driver.calls[calls] == "rejoin-policy tc on, without key off");
+	CHECK(f.driver.calls[calls + 1] == "trust 00124b0001020304");
+	calls += 2;
 	// The first at once, the next after kHeldSpacingMs, in datapoint order; each once.
 	std::vector<std::string> sent(f.driver.calls.begin() + static_cast<long>(calls), f.driver.calls.end());
 	REQUIRE(sent.size() == 1);

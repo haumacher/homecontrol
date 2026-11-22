@@ -18,10 +18,19 @@
 #include "hc/log.h"
 #include "nvs_blob_store.h"
 #include "sdkconfig.h"
-// ZBOSS's own API (zb_zdo_get_diag_data(), the radio facts of homecontrol #98): C declarations without
-// a C++ guard of their own.
+// The esp-zigbee-lib's key-table access (esp_zb_secur_has_link_key_pair_set(), esp_zb_secur_update_key_pair(),
+// homecontrol #99): declared in its test header, the only one that has them (doc/zigbee.md "Rejoin policy").
+#include "test/esp_zigbee_test_utils.h"
+// ZBOSS's own API (zb_zdo_get_diag_data(), the radio facts of homecontrol #98; the trust center's rejoin
+// settings zb_secur_set_*tc_rejoin*(), homecontrol #99): C declarations without a C++ guard of their own.
 extern "C" {
 #include "zboss_api.h"
+/// ZBOSS's own deletion of every key pair of a device (zdo_secur.c; what zb_nwk_forget_device() calls when a
+/// device leaves). Defined in the pinned libzboss_stack but declared in none of its headers, and neither
+/// the esp-zigbee-lib 1.6.8 nor 1.6.9 has any function that drops a key pair (doc/zigbee.md "Rejoin
+/// policy"): declared here with the signature its disassembly shows (the IEEE address in a0). A release
+/// without it fails at the link, not at run time.
+void zb_secur_delete_link_keys_by_long_addr(zb_ieee_addr_t address);
 }
 
 namespace hc {
@@ -71,7 +80,8 @@ enum class Kind : uint8_t {
 	authorized, ///< type in command, status
 	associated,
 	announce, ///< capability in command
-	leave,
+	leave, ///< `up`: the device left to rejoin
+	leave_answer, ///< a Mgmt_Leave_rsp (or the stack's timeout): status
 	active_endpoints,
 	simple_descriptor,
 	attributes,
@@ -291,7 +301,14 @@ void deliver(ZigbeeAdapter& adapter, const Event& event) {
 			adapter.device_announced(address, event.command);
 			break;
 		case Kind::leave:
-			adapter.device_left(address);
+			if (event.up) {
+				adapter.device_left_to_rejoin(address);
+			} else {
+				adapter.device_left(address);
+			}
+			break;
+		case Kind::leave_answer:
+			adapter.leave_answered(address, event.status);
 			break;
 		case Kind::active_endpoints:
 			adapter.active_endpoints(address, event.status, event.payload.bytes, event.count);
@@ -519,9 +536,16 @@ void neighbor_table_answer(const esp_zb_zdo_mgmt_lqi_rsp_t* response, void* cont
 	commit();
 }
 
+/// The answer to a leave request (with or without rejoin): the adapter logs it and follows a requested rejoin.
 void leave_answer(esp_zb_zdp_status_t status, void* context) {
-	Log::info(kTag, "leave request to 0x%04x: status 0x%02x",
-		static_cast<unsigned>(reinterpret_cast<uintptr_t>(context) >> 8), static_cast<unsigned>(status));
+	Event* event = claim(Kind::leave_answer);
+	if (event == nullptr) {
+		return;
+	}
+	event->short_addr = static_cast<uint16_t>(reinterpret_cast<uintptr_t>(context) >> 8);
+	event->ieee = ieee_by_short(event->short_addr);
+	event->status = static_cast<uint8_t>(status);
+	commit();
 }
 
 void fill_source(Event& event, const esp_zb_zcl_cmd_info_t& info) {
@@ -988,6 +1012,67 @@ public:
 		return true;
 	}
 
+	bool leave_and_rejoin(Ieee ieee, uint16_t short_addr) override {
+		Lock lock;
+		if (!lock) {
+			return false;
+		}
+		esp_zb_zdo_mgmt_leave_req_param_t request = {};
+		bytes_of(ieee, request.device_address);
+		request.dst_nwk_addr = short_addr;
+		request.remove_children = 0;
+		request.rejoin = 1;
+		esp_zb_zdo_device_leave_req(&request, &leave_answer, reinterpret_cast<void*>(context_of(short_addr)));
+		return true;
+	}
+
+	bool set_rejoin_policy(bool trust_center_rejoin, bool without_link_key) override {
+		Lock lock;
+		if (!lock) {
+			return false;
+		}
+		// The trust center's rejoin settings of ZBOSS's public API (zboss_api.h, "TC rejoin settings"; the
+		// policy bits zdo_secur_init() sets, read by zb_authenticate_dev(), doc/zigbee.md "Rejoin policy").
+		zb_secur_set_tc_rejoin_enabled(trust_center_rejoin ? ZB_TRUE : ZB_FALSE);
+		zb_secur_set_ignore_tc_rejoin(ZB_FALSE);
+		zb_secur_set_unsecure_tc_rejoin_enabled(without_link_key ? ZB_TRUE : ZB_FALSE);
+		return true;
+	}
+
+	Trust trust_device(Ieee ieee) override {
+		Lock lock;
+		if (!lock) {
+			return Trust::refused;
+		}
+		esp_zb_secur_update_key_pair_params_t key = {};
+		bytes_of(ieee, key.address);
+		// A verified or provisional key: what zb_authenticate_dev() looks for at a trust-center rejoin.
+		if (esp_zb_secur_has_link_key_pair_set(key.address)) {
+			return Trust::kept;
+		}
+		// What zb_secur_create_best_suitable_link_key_pair_set() gives a joining device without an install
+		// code: the trust center's standard key (ZigBeeAlliance09) as a global, provisional key.
+		static const uint8_t kStandardKey[ESP_ZB_CCM_KEY_SIZE] = {0x5A, 0x69, 0x67, 0x42, 0x65, 0x65, 0x41, 0x6C, 0x6C,
+			0x69, 0x61, 0x6E, 0x63, 0x65, 0x30, 0x39};
+		std::memcpy(key.key, kStandardKey, sizeof(kStandardKey));
+		key.key_type = ESP_ZB_SECUR_GLOBAL_KEY;
+		key.key_attr = ESP_ZB_SECUR_PROVISIONAL_KEY;
+		key.key_source = ESP_ZB_SECUR_KEY_SRC_UNKNOWN;
+		return esp_zb_secur_update_key_pair(&key) == ESP_OK ? Trust::restored : Trust::refused;
+	}
+
+	bool forget_device(Ieee ieee) override {
+		Lock lock;
+		if (!lock) {
+			return false;
+		}
+		uint8_t address[8];
+		bytes_of(ieee, address);
+		zb_secur_delete_link_keys_by_long_addr(address);
+		// What a trust-center rejoin would find (zb_secur_get_verified_or_provisional_link_key()): nothing.
+		return !esp_zb_secur_has_link_key_pair_set(address);
+	}
+
 	bool request_neighbor_table(Ieee, uint16_t short_addr, uint8_t start_index) override {
 		Lock lock;
 		if (!lock) {
@@ -1121,13 +1206,13 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t* signal) {
 		case ESP_ZB_ZDO_SIGNAL_LEAVE_INDICATION: {
 			auto* params =
 				static_cast<esp_zb_zdo_signal_leave_indication_params_t*>(esp_zb_app_signal_get_params(pointer));
-			if (params->rejoin == 0) {
-				Event* event = claim(Kind::leave);
-				if (event != nullptr) {
-					event->short_addr = params->short_addr;
-					event->ieee = ieee_of(params->device_addr);
-					commit();
-				}
+			// A leave with rejoin is told too: the stack forgot the child's link key (homecontrol #99).
+			Event* event = claim(Kind::leave);
+			if (event != nullptr) {
+				event->short_addr = params->short_addr;
+				event->ieee = ieee_of(params->device_addr);
+				event->up = params->rejoin != 0;
+				commit();
 			}
 			break;
 		}

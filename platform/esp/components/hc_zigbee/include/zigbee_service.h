@@ -82,17 +82,18 @@ private:
 /// The body of the console command `zigbee` (runs on the event loop, like every console command):
 ///
 ///   zigbee status | zigbee devices | zigbee permit <seconds> | zigbee remove <ieee>
-///   zigbee identify <ieee> | zigbee label <ieee> [<text>] | zigbee interview <ieee>
+///   zigbee identify <ieee> | zigbee label <ieee> [<text>] | zigbee interview <ieee> | zigbee rejoin <ieee>
 ///
 /// Prints to stdout; returns 0 on success, 1 on a refusal (printed with its reason).
 int zigbee_console_command(ZigbeeService& service, int argc, char** argv);
 
 /// For the console's command table.
 constexpr const char* kZigbeeCommandHint =
-	"status | devices | permit <seconds> | remove <ieee> | identify <ieee> | label <ieee> [<text>] | interview <ieee>";
+	"status | devices | permit <seconds> | remove <ieee> | identify <ieee> | label <ieee> [<text>] | interview <ieee> | "
+	"rejoin <ieee>";
 constexpr const char* kZigbeeCommandHelp =
 	"Zigbee coordinator (doc/zigbee.md): network state, the joined devices and their datapoints, open the network "
-	"for joining (0 closes), remove a device, make it blink, name it, interview it again";
+	"for joining (0 closes), remove a device, make it blink, name it, interview it again, make it leave and rejoin";
 
 } // namespace esp
 } // namespace hc
