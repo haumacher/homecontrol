@@ -35,6 +35,11 @@ struct NodeAddress {
 	uint16_t short_addr = kNoShortAddress;
 };
 
+/// Whether a device's receiver is on while it is idle (the MAC capability of its announce, or a
+/// neighbour table's entry of it): a sleepy end device's is off, it hears only right after it polled
+/// its parent (homecontrol #108).
+enum class Receiver : uint8_t { unknown, on_when_idle, off_when_idle };
+
 /// Application profiles whose endpoints the interview keeps.
 constexpr uint16_t kHomeAutomationProfile = 0x0104;
 constexpr uint16_t kLightLinkProfile = 0xC05E;

@@ -361,16 +361,25 @@ TEST_CASE("ZigbeeAdapter: the database survives a restart and the devices are re
 	REQUIRE(f.dp(kBulbOn) != nullptr);
 	CHECK(f.dp(kBulbOn)->quality() == Quality::unknown);
 	CHECK(std::string(f.adapter.devices().find(kBulb)->label) == "Kitchen");
-	// The reads, one device per spacing interval.
+	// The reads wait for the network (the stack takes no request before it is up, homecontrol #108).
+	f.run_for(ZigbeeAdapter::kRefreshSpacingMs * 4);
+	CHECK(f.driver.count("read") == 0);
+	f.adapter.network_state(true, 0x1a62, 15, 0xdddddddddddddddd);
+	// The reads, one device per spacing interval. Whether they listen is not known (announces
+	// without their capability): their reporting is configured at their first frame (homecontrol #108).
 	f.run_for(ZigbeeAdapter::kRefreshSpacingMs);
 	CHECK(f.driver.count("read 0x1a2b") == 3);
 	CHECK(f.driver.count("read 0x3c4d") == 0);
 	f.run_for(ZigbeeAdapter::kRefreshSpacingMs);
 	CHECK(f.driver.count("read 0x3c4d") == 3);
+	CHECK(f.driver.count("configure") == 0);
 	// No interview: the devices are known.
 	CHECK(f.driver.count("active") == 0);
 	f.report(kSensorShort, 1, cluster::kTemperatureMeasurement, attribute::kMeasuredValue, zcl_type::kInt16, 1990);
 	CHECK(f.dp(kSensorTemperature)->value() == Value::of_real(19.9));
+	f.run_for(ZigbeeAdapter::kRefreshSpacingMs);
+	CHECK(f.driver.count("configure 0x3c4d") == 3);
+	CHECK(f.driver.count("configure 0x1a2b") == 0);
 	// A device not heard since the start goes stale after its timeout counted from the start.
 	f.run_for(900 * 1000);
 	CHECK(f.adapter.devices().find(kBulb)->stale);

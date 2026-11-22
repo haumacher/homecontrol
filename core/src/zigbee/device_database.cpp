@@ -211,6 +211,14 @@ bool read_device(const JsonSpan& span, ZigbeeDevice& out, const char** error) {
 		}
 		out.last_seen_s = static_cast<int64_t>(seconds);
 	}
+	if (json_member(span, "rx_on_when_idle", member)) {
+		bool on = false;
+		if (!json_bool(member, on)) {
+			fail(error, "device rx_on_when_idle is not a boolean");
+			return false;
+		}
+		out.receiver = on ? Receiver::on_when_idle : Receiver::off_when_idle;
+	}
 	JsonSpan missing;
 	bool has_missing = json_member(span, "missing", missing);
 	if (has_missing && !read_missing(missing, out)) {
@@ -380,6 +388,9 @@ void DeviceDatabase::write_json(JsonWriter& json) const {
 		json.member("interviewed", device.interviewed);
 		if (device.last_seen_s > 0) {
 			json.member("last_seen", static_cast<int64_t>(device.last_seen_s));
+		}
+		if (device.receiver != Receiver::unknown) {
+			json.member("rx_on_when_idle", device.receiver == Receiver::on_when_idle);
 		}
 		json.key("endpoints").begin_array();
 		for (size_t e = 0; e < device.endpoint_count; ++e) {

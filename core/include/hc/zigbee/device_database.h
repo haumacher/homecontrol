@@ -71,6 +71,9 @@ struct ZigbeeDevice {
 	uint8_t missing[kMaxMissing] = {};
 	uint8_t missing_count = 0;
 	bool missing_names = false;
+	/// Whether its receiver is on while idle (unknown until an announce or a neighbour table told;
+	/// homecontrol #108). Persisted; it takes a byte of the padding before `last_seen_s`.
+	Receiver receiver = Receiver::unknown;
 	/// Wall-clock seconds of the last frame heard while the clock was synchronized (0: never);
 	/// persisted with the next write of the database, not on every frame, and at the latest
 	/// ZigbeeAdapter::kSeenSaveS after it moved on (so it is at most that old after a restart).
@@ -87,12 +90,20 @@ struct ZigbeeDevice {
 	bool stale = false;
 	/// The device announced that it left the network (it may rejoin).
 	bool left = false;
-	/// Its reads are due (after the start and after a silence).
+	/// Its reads (and the reporting configuration not in effect) are due (after the start and after a
+	/// silence).
 	bool refresh = false;
 	/// An interview is due as soon as none is running.
 	bool interview_pending = false;
 	/// The due interview is the retry of an incomplete one: it asks only for what is missing.
 	bool interview_retry = false;
+	// homecontrol #108, in the three bytes of padding before `interview_ms`:
+	/// The refresh waits for the device's next frame (a device that may sleep, after the start).
+	bool refresh_on_frame = false;
+	/// The refresh was asked for by the device's own frame: it goes before the others.
+	bool refresh_awake = false;
+	/// Its points' reporting watches are checked shortly after its last frame (ZigbeeAdapter).
+	bool watch_check = false;
 	/// Monotonic time the last interview of it started, or ended incomplete (0: none since boot); the
 	/// next interview the device's own frames trigger waits kInterviewRetryMs from it.
 	uint64_t interview_ms = 0;
@@ -147,13 +158,18 @@ struct ZigbeeDevice {
 	/// The endpoint with `id`, nullptr if there is none.
 	const ZigbeeEndpoint* endpoint(uint8_t id) const;
 	ZigbeeEndpoint* endpoint(uint8_t id);
+
+	/// Whether the device sleeps: its receiver is known to be off while idle.
+	bool sleepy() const { return receiver == Receiver::off_when_idle; }
 };
 
 /// The joined devices, persisted as JSON in the BlobStore blob kBlobName (format in spec/zigbee.md).
 /// Statically sized (kMaxDevices); reading and writing the blob allocate one temporary buffer of
 /// exactly the blob's size (a save measures the JSON first; a load checks the text in a first pass
 /// and parses it into the table in a second, without a temporary table), which happens at start and
-/// when a device joins, is interviewed, renamed or removed, never per frame.
+/// when a device joins, is interviewed, renamed or removed, and (with the adapter's next check, at
+/// most one write per check) when its short address changes or its receiver is learnt; never per
+/// frame.
 ///
 /// Threading: the event loop's thread.
 class DeviceDatabase {

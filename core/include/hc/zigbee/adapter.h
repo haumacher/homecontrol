@@ -53,6 +53,49 @@ struct NetworkStatus {
 	uint64_t permit_until_ms = 0;
 };
 
+/// What became of the reporting configuration of one point (homecontrol #108), from the device's
+/// Configure Reporting Response.
+enum class ReportingState : uint8_t {
+	not_requested, ///< Not sent since the start (a sleepy device's waits for its next frame).
+	requested,     ///< Sent; no answer yet.
+	configured,    ///< The device answered with success.
+	refused,       ///< The device answered with a failure status (PointWatch::status).
+	timed_out,     ///< No answer within ZigbeeAdapter::kReportingAnswerMs.
+};
+
+/// "not_requested", "requested", "configured", "refused", "timed_out" (spec/zigbee.md "Adapter view").
+const char* reporting_state_name(ReportingState state);
+
+/// The adapter's watch of one loaded point (homecontrol #108), beside the point table and of this
+/// boot only: the state of its configuration, its repeats, and when it last reported and when its
+/// configuration last went out. 8 bytes. Times are in ticks of kTickMs since the start, 16 bits wide:
+/// ZigbeeAdapter keeps every elapsed time at most kMaxAge ticks (it moves an older time forward every
+/// check), so the difference modulo 2^16 is exact up to that age.
+struct PointWatch {
+	static constexpr uint32_t kTickMs = 10000;
+	/// 32767 ticks (3.8 days): beyond the longest silence the watch waits for (5 x 65534 s).
+	static constexpr uint16_t kMaxAge = 0x7FFF;
+	static constexpr uint8_t kRepeatsMask = 0x03;
+	/// The point reported at `report_t` since the start.
+	static constexpr uint8_t kReported = 0x04;
+	/// Its configuration went out at `sent_t` since the start.
+	static constexpr uint8_t kSent = 0x08;
+	/// The re-sends are exhausted and the point is still silent (warned once).
+	static constexpr uint8_t kSilent = 0x10;
+
+	ReportingState state = ReportingState::not_requested;
+	uint8_t status = 0; ///< The ZCL status of a refusal.
+	uint8_t bits = 0;   ///< repeats (kRepeatsMask) and the flags
+	uint16_t report_t = 0;
+	uint16_t sent_t = 0;
+
+	bool has(uint8_t flag) const { return (bits & flag) != 0; }
+	void set(uint8_t flag, bool on) { bits = static_cast<uint8_t>(on ? bits | flag : bits & ~flag); }
+	/// Re-sends after a silence since the point last reported (0..3).
+	uint8_t repeats() const { return bits & kRepeatsMask; }
+	void set_repeats(uint8_t n) { bits = static_cast<uint8_t>((bits & ~kRepeatsMask) | (n & kRepeatsMask)); }
+};
+
 /// One frame the adapter handled, for the monitor stream (hc::MonitorFeed).
 struct ZigbeeTraffic {
 	enum class Kind : uint8_t {
@@ -151,7 +194,19 @@ protected:
 /// - **Reporting.** Each point carries its effective reporting (the function table's default, or
 ///   the binding's override, spec/zigbee.md "Reporting overrides"); the interview configures it,
 ///   and bindings that change it configure the interviewed devices concerned again
-///   (reconfigure_reporting()), except at their first application (the start).
+///   (reconfigure_reporting()), except at their first application (the start), which the start's
+///   refresh covers: it configures every point not configured since the start (below, Reads).
+/// - **Reporting watch** (homecontrol #108). Each point that configures reporting has a watch
+///   (PointWatch, beside the point table): the state of its configuration from the device's Configure Reporting
+///   Response (configured, refused with its status, a warning; timed out after kReportingAnswerMs,
+///   info) and the time of its last report (a report, not a read's answer). A point with a periodic
+///   maximum that has not reported for (kWatchFactor + repeats) times that maximum, counted from its
+///   last report or the last sending of its configuration, has its binding and configuration sent
+///   again right after a frame of its device (the device is awake, its parent delivers at its next
+///   poll): one device at a time (the next waits until the answers of the one before came or timed
+///   out), at most kWatchRepeats times until it reports; a point still silent after that is a
+///   warning naming device, endpoint, cluster and attribute, and stays silent in the view until it
+///   reports. A refused configuration is not sent again (a new interview does).
 /// - **Stale.** Every kCheckPeriodMs the adapter compares each device's silence with its stale
 ///   timeout: kStaleFactor times the shortest effective maximum reporting interval of its datapoints
 ///   (every frame of the device counts as heard, so the most frequent promise is the one to check; a
@@ -194,14 +249,20 @@ protected:
 ///   (ZDO Mgmt_Leave with rejoin): one request at a time, sent again when the device is heard while
 ///   it has not taken it (a sleepy device listens right after its own frames), at most kRejoinSends
 ///   times; the device's announce ends it ("came back"), kRejoinWaitMs without one ends it at warn.
-/// - **Reads.** After start() and after a silence, the server attributes of each device are read,
-///   one device every kRefreshSpacingMs. A read the application asks for (read(), a rule's `read`
+/// - **Reads.** After start() (once the network is up) and after a silence, the server attributes of
+///   each device are read and the reporting of its points not configured since the start is
+///   configured (and of those whose configuration went unanswered), one device every
+///   kRefreshSpacingMs. A device that may sleep (its receiver is off while idle,
+///   ZigbeeDevice::receiver, or not known yet) waits for its first frame after the start: it hears
+///   requests only right after its own frames. One whose receiver is not known is also read at the
+///   start (it may listen); its configuration waits for the frame. A read the application asks for (read(), a rule's `read`
 ///   action) sends a Read Attributes of the datapoint's attribute at once; refused for a point the
 ///   adapter does not read on start either (a client command of a button, a multistate input's
 ///   events) and while the device has not joined.
 ///
-/// Memory: start(), configure() and the reload allocate the point table, the device database is
-/// static (DeviceDatabase::kMaxDevices); reports, commands and the stale check allocate nothing.
+/// Memory: start(), configure() and the reload allocate the point table (with a PointWatch of 8
+/// bytes per point), the device database is static (DeviceDatabase::kMaxDevices); reports,
+/// commands, the stale check and the watch allocate nothing.
 /// Threading: the event loop's thread; the platform posts its events there.
 class ZigbeeAdapter : public Technology, public image::DynamicSpecProvider {
 public:
@@ -209,6 +270,10 @@ public:
 	static constexpr uint16_t kNoId = 0xFFFF;
 	/// The MAC capability bit of a router (a full-function device) in a device announce.
 	static constexpr uint8_t kCapabilityRouter = 0x02;
+	/// The MAC capability bit of a receiver that is on while idle (clear: a sleepy end device).
+	static constexpr uint8_t kCapabilityReceiverOn = 0x08;
+	/// reporting_configured() without the attribute (a success names none).
+	static constexpr uint16_t kAnyAttribute = 0xFFFF;
 	/// Update Device status values (device_updated()).
 	static constexpr uint8_t kUpdateSecuredRejoin = 0x00;
 	static constexpr uint8_t kUpdateUnsecuredJoin = 0x01;
@@ -237,6 +302,16 @@ public:
 	/// An announce this shortly after the trust center's notice of the device belongs to it.
 	static constexpr uint64_t kNoticeBeforeAnnounceMs = 10000;
 	static constexpr uint32_t kStaleFactor = 3;
+	/// A Configure Reporting without an answer this long is timed out (a sleepy device's waits in its
+	/// parent's queue for its next poll, about 7.7 s).
+	static constexpr uint32_t kReportingAnswerMs = 30000;
+	/// A point silent for (kWatchFactor + repeats) times its maximum interval while its device is heard
+	/// has its configuration sent again, at most kWatchRepeats times until it reports.
+	static constexpr uint32_t kWatchFactor = 2;
+	static constexpr uint8_t kWatchRepeats = 3;
+	static_assert(kWatchRepeats <= PointWatch::kRepeatsMask, "the repeats fit their bits");
+	/// The watches of a device are checked this long after its frame (the frame's own report counts).
+	static constexpr uint32_t kWatchDelayMs = 500;
 	/// A device's `last_seen` is written at the latest this long after it moved past the stored one
 	/// (by the check every kCheckPeriodMs; one write covers every device): after a restart it is at
 	/// most an hour behind the last frame, and the flash sees at most about one write an hour.
@@ -317,7 +392,8 @@ public:
 	/// configuration are gone; it is interviewed again with the announce that follows.
 	void device_joined(NodeAddress address);
 	void device_announced(NodeAddress address);
-	/// The announce with the device's MAC capability (bit 0x02: a router).
+	/// The announce with the device's MAC capability (bit 0x02: a router; bit 0x08: its receiver is on
+	/// while idle, clear for a sleepy end device; remembered in the database).
 	void device_announced(NodeAddress address, uint8_t capability);
 	/// The trust center's Update Device (a join, rejoin or leave through it or its routers): `status`
 	/// as in Zigbee's Update Device command (UpdateDevice), `tc_action` what the trust center decided
@@ -346,14 +422,18 @@ public:
 	void leave_answered(NodeAddress address, uint8_t status);
 	void active_endpoints(NodeAddress address, uint8_t status, const uint8_t* endpoints, size_t count);
 	void simple_descriptor(NodeAddress address, uint8_t status, const SimpleDescriptor& descriptor);
-	/// An attribute report or a read attributes response.
+	/// An attribute report (`report` true) or a read attributes response (false; it does not count as
+	/// a report of the reporting watch).
 	void attributes(NodeAddress address, uint8_t endpoint, uint16_t cluster, const AttributeRecord* records,
-		size_t count);
+		size_t count, bool report = true);
 	/// A cluster command the device sent to the coordinator (a button's On/Off or Level Control
 	/// command, an IAS Zone Status Change Notification).
 	void command_received(NodeAddress address, uint8_t endpoint, uint16_t cluster, uint8_t command,
 		const uint8_t* payload, size_t length);
-	void reporting_configured(NodeAddress address, uint8_t endpoint, uint16_t cluster, uint8_t status);
+	/// The device's Configure Reporting Response: `status` 0 success, else the failure of `attribute`
+	/// (kAnyAttribute when the response names none: then the cluster's configured point).
+	void reporting_configured(NodeAddress address, uint8_t endpoint, uint16_t cluster, uint8_t status,
+		uint16_t attribute = kAnyAttribute);
 	void bind_result(NodeAddress address, uint8_t status);
 
 	// ---- State ----
@@ -371,6 +451,8 @@ public:
 	Ieee interviewing() const { return interview_.active ? interview_.ieee : 0; }
 	/// Whether the datapoints are in the model (start() or the last reload succeeded).
 	bool loaded() const { return loaded_; }
+	/// The watch of a device's point (homecontrol #108), nullptr if it has none.
+	const PointWatch* watch(Ieee ieee, uint8_t endpoint, Function function) const;
 
 	/// The one traffic listener (the monitor stream); nullptr: none. It must outlive the adapter or be
 	/// removed first.
@@ -388,9 +470,10 @@ public:
 
 	/// {"network": {...}, "devices": [{ieee, short, manufacturer, model, label, interviewed, stale,
 	/// left, interviewing, last_seen, seen_ago_s, lqi, rssi, parent, parent_label, timeout_s,
-	/// expires_in_s, missing, incomplete, rejoin, datapoints: [names]}]} for the console, the API and
-	/// E-Home's pairing view (spec/zigbee.md; `missing` and `incomplete` only for an incomplete
-	/// interview, the radio facts only where known, `rejoin` only while a requested rejoin is pending).
+	/// expires_in_s, missing, incomplete, rejoin, datapoints: [names], points: [...]}]} for the console,
+	/// the API and E-Home's pairing view (spec/zigbee.md; `missing` and `incomplete` only for an
+	/// incomplete interview, the radio facts only where known, `rejoin` only while a requested rejoin is
+	/// pending, `points` the reporting watch of each point that configures reporting).
 	void write_json(JsonWriter& json) const;
 	/// The members of the "network" object into an open object.
 	void write_network_json(JsonWriter& json) const;
@@ -461,13 +544,44 @@ private:
 	void fail_interview(const char* reason);
 	void end_interview();
 	void start_pending_interview();
-	void setup_reporting(const ZigbeeDevice& device);
+	void setup_reporting(ZigbeeDevice& device);
 	/// After the bindings changed from `old_table`: configures the reporting of every function of an
 	/// interviewed device whose effective reporting the new bindings change (or that the old ones did
 	/// not make a point), and binds its cluster.
 	void reconfigure_reporting(const ZigbeePoint* old_table, size_t old_count);
+	/// The clusters bound in one round of a device's configuration (each once).
+	struct BindSet;
+	/// Binds the point's cluster (once per round) and sends its reporting configuration; the watch
+	/// records it (requested). False when the stack refused the configuration.
+	bool send_reporting(ZigbeeDevice& device, uint8_t endpoint, Function function, const Reporting& reporting,
+		BindSet& bound);
+	/// Configures the points of the device whose configuration is not in effect: not sent since the
+	/// start, or unanswered (the refresh); logged. One the stack refuses waits for the device's next frame.
+	void configure_unsent(ZigbeeDevice& device);
+	/// The watch of the device's loaded point (endpoint, function), nullptr if it is no loaded point.
+	PointWatch* watch_of(Ieee ieee, uint8_t endpoint, Function function);
+	/// Whether loaded point `index` of the device is due (a re-send or the silence warning).
+	bool watch_due(const ZigbeeDevice& device, size_t index, uint16_t now) const;
+	bool device_watch_due(const ZigbeeDevice& device) const;
+	/// The deferred check after a frame: one device's due points (watch_check).
+	void watch_tick();
+	void check_watches(ZigbeeDevice& device);
+	/// Marks the configurations without an answer for kReportingAnswerMs as timed out, and keeps the
+	/// watches' times within PointWatch::kMaxAge.
+	void time_out_reporting(uint16_t now);
+	/// The watches' clock: ticks of PointWatch::kTickMs since boot, modulo 2^16.
+	uint16_t now_t() const;
+	/// Ticks from `then` to `now` (exact up to PointWatch::kMaxAge).
+	static uint16_t ticks(uint16_t now, uint16_t then) { return static_cast<uint16_t>(now - then); }
+	/// Learns the device's receiver; a change is saved with the next check.
+	void learn_receiver(ZigbeeDevice& device, Receiver receiver);
 	bool rebuild(const char** error);
+	/// Copies the watches of the current points into `watches` for the same points of `table`.
+	void carry_watches(const ZigbeePoint* table, PointWatch* watches, size_t count) const;
 	bool save_database();
+	/// A change the database must keep (a new short address, a receiver learnt; homecontrol #109) is
+	/// written with the next check (kCheckPeriodMs): at most one write per check for all of them.
+	bool save_due_ = false;
 	void check_stale();
 	/// Reads the coordinator's neighbour table into the devices' radio facts and logs who entered or
 	/// left the child table.
@@ -560,6 +674,10 @@ private:
 	const char* node_text(NodeAddress address, char* buffer, size_t size);
 	/// "the coordinator", the router's device text, or "router 0x1234".
 	const char* parent_text(uint16_t parent_short, char* buffer, size_t size);
+	/// A report of the point: its watch notes the time (homecontrol #108).
+	void reported(ZigbeeDevice& device, uint8_t endpoint, Function function);
+	/// The member "points": the reporting watch of each point that configures reporting.
+	void write_points_json(JsonWriter& json, const ZigbeeDevice& device) const;
 	/// lqi, rssi, parent, parent_label, timeout_s, expires_in_s where known.
 	void write_radio_json(JsonWriter& json, const ZigbeeDevice& device) const;
 
@@ -572,6 +690,7 @@ private:
 	Interview interview_;
 	ZigbeePoint* points_ = nullptr;
 	uint16_t* ids_ = nullptr; ///< The model id of each point (kNoId: not in the model).
+	PointWatch* watches_ = nullptr; ///< The reporting watch of each point (homecontrol #108).
 	size_t point_count_ = 0;
 	Pending* pending_ = nullptr;
 	ZigbeePoint* overrides_ = nullptr; ///< The image's bindings, names in override_names_.
@@ -587,6 +706,9 @@ private:
 	TimerHandle check_timer_;
 	TimerHandle refresh_timer_;
 	TimerHandle held_timer_;
+	TimerHandle watch_timer_;
+	/// The device whose re-sent configuration waits for its answers (0: none).
+	Ieee watch_ieee_ = 0;
 	uint16_t held_next_ = 0; ///< The model id from which the next held command is looked for.
 	bool hold_logged_ = false;
 

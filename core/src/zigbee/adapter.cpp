@@ -152,6 +152,7 @@ struct ZigbeeAdapter::Pending {
 	size_t override_count = 0;
 	ZigbeePoint* points = nullptr;
 	uint16_t* ids = nullptr;
+	PointWatch* watches = nullptr;
 	size_t count = 0;
 	image::DynamicSpec* specs = nullptr;
 	char* names = nullptr;
@@ -161,8 +162,33 @@ struct ZigbeeAdapter::Pending {
 		delete[] override_names;
 		delete[] points;
 		delete[] ids;
+		delete[] watches;
 		delete[] specs;
 		delete[] names;
+	}
+};
+
+/// The clusters bound in one round of a device's configuration, so that each is bound once.
+struct ZigbeeAdapter::BindSet {
+	struct Bound {
+		uint8_t endpoint;
+		uint16_t cluster;
+	};
+	Bound bound[kMaxBindings];
+	size_t count = 0;
+
+	/// Whether (endpoint, cluster) is new in this round (and kept, while there is room).
+	bool add(uint8_t endpoint, uint16_t cluster) {
+		for (size_t i = 0; i < count; ++i) {
+			if (bound[i].endpoint == endpoint && bound[i].cluster == cluster) {
+				return false;
+			}
+		}
+		if (count >= kMaxBindings) {
+			return false;
+		}
+		bound[count++] = Bound{endpoint, cluster};
+		return true;
 	}
 };
 
@@ -170,12 +196,14 @@ ZigbeeAdapter::~ZigbeeAdapter() {
 	loop_.cancel(check_timer_);
 	loop_.cancel(refresh_timer_);
 	loop_.cancel(held_timer_);
+	loop_.cancel(watch_timer_);
 	loop_.cancel(interview_.timer);
 	loop_.cancel(topology_.timer);
 	loop_.cancel(topology_period_);
 	loop_.cancel(rejoin_.timer);
 	delete[] points_;
 	delete[] ids_;
+	delete[] watches_;
 	free_overrides();
 	free_pending();
 }
@@ -250,9 +278,21 @@ bool ZigbeeAdapter::start(const char** error) {
 	} else {
 		Log::info(kTag, "%u device(s) in the database", static_cast<unsigned>(database_.size()));
 	}
+	// A device that may sleep hears requests only right after its own frames (homecontrol #108): its
+	// reads and reporting configuration wait for its first frame; one whose receiver is not known yet
+	// is also read now (it may listen).
+	size_t waiting = 0;
 	for (size_t i = 0; i < database_.size(); ++i) {
-		database_.at(i).refresh = database_.at(i).has_result();
-		database_.at(i).saved_seen_s = database_.at(i).last_seen_s;
+		ZigbeeDevice& device = database_.at(i);
+		bool result = device.has_result();
+		device.refresh = result && !device.sleepy();
+		device.refresh_on_frame = result && device.receiver != Receiver::on_when_idle;
+		device.saved_seen_s = device.last_seen_s;
+		waiting += device.refresh_on_frame ? 1 : 0;
+	}
+	if (waiting > 0) {
+		Log::info(kTag, "%u device(s) that may sleep are read and their reporting configured when next heard",
+			static_cast<unsigned>(waiting));
 	}
 	check_timer_ = loop_.schedule_periodic(start_ms_ + kCheckPeriodMs, kCheckPeriodMs,
 		Callback::member<ZigbeeAdapter, &ZigbeeAdapter::check_stale>(this, "zigbee.check_stale"));
@@ -417,6 +457,7 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 	}
 	ZigbeePoint* table = count > 0 ? new (std::nothrow) ZigbeePoint[count] : nullptr;
 	uint16_t* ids = count > 0 ? new (std::nothrow) uint16_t[count] : nullptr;
+	PointWatch* watches = count > 0 ? new (std::nothrow) PointWatch[count] : nullptr;
 	DatapointSpec* specs = count > 0 ? new (std::nothrow) DatapointSpec[count] : nullptr;
 	char* names = count > 0 ? new (std::nothrow) char[count * kNameSize] : nullptr;
 	struct Saved {
@@ -425,10 +466,11 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 		bool pending; ///< A command held while the network is not up (homecontrol #72).
 	};
 	Saved* saved = loaded_ && point_count_ > 0 ? new (std::nothrow) Saved[point_count_] : nullptr;
-	if ((count > 0 && (table == nullptr || ids == nullptr || specs == nullptr || names == nullptr)) ||
+	if ((count > 0 && (table == nullptr || ids == nullptr || watches == nullptr || specs == nullptr || names == nullptr)) ||
 		(loaded_ && point_count_ > 0 && saved == nullptr)) {
 		delete[] table;
 		delete[] ids;
+		delete[] watches;
 		delete[] specs;
 		delete[] names;
 		delete[] saved;
@@ -465,6 +507,7 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 	if (status != DatapointStatus::ok) {
 		delete[] table;
 		delete[] ids;
+		delete[] watches;
 		delete[] saved;
 		Log::error(kTag, "datapoints not loaded: the model refused them (%s)", datapoint_status_name(status));
 		fail(error, "the model refused the Zigbee datapoints");
@@ -498,10 +541,13 @@ bool ZigbeeAdapter::rebuild(const char** error) {
 		}
 	}
 	delete[] saved;
+	carry_watches(table, watches, count);
 	delete[] points_;
 	delete[] ids_;
+	delete[] watches_;
 	points_ = table;
 	ids_ = ids;
+	watches_ = watches;
 	point_count_ = count;
 	loaded_ = true;
 	Log::info(kTag, "%u datapoint(s) loaded", static_cast<unsigned>(count));
@@ -573,7 +619,8 @@ bool ZigbeeAdapter::dynamic_specs(const image::ImageBindings& bindings, const im
 	if (next->count > 0) {
 		next->points = new (std::nothrow) ZigbeePoint[next->count];
 		next->ids = new (std::nothrow) uint16_t[next->count];
-		if (next->points == nullptr || next->ids == nullptr) {
+		next->watches = new (std::nothrow) PointWatch[next->count];
+		if (next->points == nullptr || next->ids == nullptr || next->watches == nullptr) {
 			delete next;
 			fail(error, "out of memory");
 			return false;
@@ -651,7 +698,9 @@ void ZigbeeAdapter::model_loaded(const image::ImageBindings& bindings) {
 			known = same_point(next->points[i], points_[j]) && ids_[j] != kNoId;
 		}
 		ZigbeeDevice* device = known ? nullptr : database_.find(next->points[i].ieee);
-		if (device != nullptr && device->has_result() && !device->refresh) {
+		// A sleepy device not heard since the start keeps waiting for its frame (homecontrol #108).
+		if (device != nullptr && device->has_result() && !device->refresh &&
+			!(device->refresh_on_frame && device->sleepy())) {
 			device->refresh = true;
 			refresh = true;
 		}
@@ -671,13 +720,17 @@ void ZigbeeAdapter::model_loaded(const image::ImageBindings& bindings) {
 	bindings_known_ = true;
 	delete[] old_overrides;
 	delete[] old_names;
+	carry_watches(next->points, next->watches, next->count);
 	delete[] points_;
 	delete[] ids_;
+	delete[] watches_;
 	points_ = next->points;
 	ids_ = next->ids;
+	watches_ = next->watches;
 	point_count_ = next->count;
 	next->points = nullptr;
 	next->ids = nullptr;
+	next->watches = nullptr;
 	delete next; // the specs' names: the model keeps its own copies
 	loaded_ = true;
 	if (refresh && started_) {
@@ -690,6 +743,17 @@ void ZigbeeAdapter::model_loaded(const image::ImageBindings& bindings) {
 void ZigbeeAdapter::model_cleared() {
 	free_pending();
 	loaded_ = false;
+}
+
+void ZigbeeAdapter::carry_watches(const ZigbeePoint* table, PointWatch* watches, size_t count) const {
+	for (size_t i = 0; watches_ != nullptr && i < count; ++i) {
+		for (size_t j = 0; j < point_count_; ++j) {
+			if (same_point(table[i], points_[j])) {
+				watches[i] = watches_[j];
+				break;
+			}
+		}
+	}
 }
 
 size_t ZigbeeAdapter::device_points(const ZigbeeDevice& device, ZigbeePoint* out, size_t capacity) const {
@@ -727,6 +791,7 @@ bool ZigbeeAdapter::save_database() {
 	for (size_t i = 0; i < database_.size(); ++i) {
 		database_.at(i).saved_seen_s = database_.at(i).last_seen_s;
 	}
+	save_due_ = false;
 	return true;
 }
 
@@ -1017,7 +1082,12 @@ ZigbeeDevice* ZigbeeAdapter::resolve(NodeAddress address, bool add) {
 			return device;
 		}
 		if (device != nullptr && address.short_addr != kNoShortAddress && device->short_addr != address.short_addr) {
+			char text[64];
+			Log::debug(kTag, "%s: short address 0x%04x -> 0x%04x (saved with the next check)",
+				device_text(*device, text, sizeof(text)), static_cast<unsigned>(device->short_addr),
+				static_cast<unsigned>(address.short_addr));
 			database_.add(address.ieee, address.short_addr); // moves the short address to this device
+			save_due_ = true; // homecontrol #109: a restart starts from the address learnt
 		}
 	} else {
 		device = database_.find_short(address.short_addr);
@@ -1035,10 +1105,33 @@ void ZigbeeAdapter::touch(ZigbeeDevice& device) {
 	if (device.stale) {
 		device.stale = false;
 		device.refresh = device.has_result();
+		device.refresh_awake = device.refresh;
 		char text[64];
 		Log::info(kTag, "%s heard again: reading its datapoints", device_text(device, text, sizeof(text)));
 		schedule_refresh();
 		notify(ZigbeeEvent::Kind::changed, device.ieee);
+	}
+	// The start's reads and reporting configuration of a device that may sleep go out now, while it
+	// listens (homecontrol #108).
+	if (device.refresh_on_frame) {
+		device.refresh_on_frame = false;
+		if (device.has_result()) {
+			device.refresh = true;
+			device.refresh_awake = true;
+			char text[64];
+			Log::info(kTag, "%s heard (short 0x%04x): reading its datapoints and configuring its reporting now",
+				device_text(device, text, sizeof(text)), static_cast<unsigned>(device.short_addr));
+			schedule_refresh();
+		}
+	}
+	// A watched point that is due is sent again right after the frame, once the frame's own reports
+	// are in (homecontrol #108).
+	if (!device.watch_check && device_watch_due(device)) {
+		device.watch_check = true;
+		if (!watch_timer_.valid()) {
+			watch_timer_ = loop_.schedule_at(now + kWatchDelayMs,
+				Callback::member<ZigbeeAdapter, &ZigbeeAdapter::watch_tick>(this, "zigbee.watch_tick"));
+		}
 	}
 	// A requested rejoin the device has not taken is sent again when it is heard (homecontrol #99): a
 	// sleepy device polls its parent right after its own frames, and takes the request then.
@@ -1127,18 +1220,21 @@ uint16_t ZigbeeAdapter::report_point(const ZigbeeDevice& device, uint8_t endpoin
 
 void ZigbeeAdapter::check_stale() {
 	read_child_table();
+	time_out_reporting(now_t());
 	uint64_t now = clock_.monotonic_ms();
 	bool seen_due = false;
 	for (size_t i = 0; i < database_.size(); ++i) {
 		const ZigbeeDevice& device = database_.at(i);
 		seen_due = seen_due || device.last_seen_s - device.saved_seen_s >= kSeenSaveS;
 	}
-	if (seen_due && persistent_ && !save_database()) {
-		// Logged; tried again in kSeenSaveS, not at every check.
+	// One write covers every change since the last (homecontrol #109: a new short address).
+	if ((seen_due || save_due_) && persistent_ && !save_database()) {
+		// Logged; tried again with the next change or in kSeenSaveS, not at every check.
 		for (size_t i = 0; i < database_.size(); ++i) {
 			database_.at(i).saved_seen_s = database_.at(i).last_seen_s;
 		}
 	}
+	save_due_ = false;
 	for (size_t i = 0; i < database_.size(); ++i) {
 		ZigbeeDevice& device = database_.at(i);
 		uint32_t timeout_s = stale_timeout_s(device.ieee);
@@ -1175,7 +1271,16 @@ void ZigbeeAdapter::schedule_refresh() {
 
 void ZigbeeAdapter::refresh_due() {
 	refresh_timer_ = TimerHandle();
+	if (!network_.up) {
+		return; // the stack takes no request yet: network_state() schedules the refresh when it is up
+	}
+	// A device whose own frame asked for it goes first: it listens now.
 	ZigbeeDevice* device = nullptr;
+	for (size_t i = 0; i < database_.size() && device == nullptr; ++i) {
+		if (database_.at(i).refresh && database_.at(i).refresh_awake) {
+			device = &database_.at(i);
+		}
+	}
 	for (size_t i = 0; i < database_.size() && device == nullptr; ++i) {
 		if (database_.at(i).refresh) {
 			device = &database_.at(i);
@@ -1185,6 +1290,7 @@ void ZigbeeAdapter::refresh_due() {
 		return;
 	}
 	device->refresh = false;
+	device->refresh_awake = false;
 	if (device->short_addr != kNoShortAddress) {
 		// One Read Attributes per endpoint and cluster, started at the group's first point.
 		// Only the endpoints the device described (a binding may name one an incomplete interview
@@ -1216,6 +1322,11 @@ void ZigbeeAdapter::refresh_due() {
 				}
 			}
 			driver_.read_attributes(device->ieee, device->short_addr, first.endpoint, first.cluster(), attributes, count);
+		}
+		// A device whose receiver is not known is read at the start but configured at its first frame:
+		// a configuration lost to a sleeping device would only come back after a silence.
+		if (!device->refresh_on_frame) {
+			configure_unsent(*device);
 		}
 	}
 	for (size_t i = 0; i < database_.size(); ++i) {
@@ -1523,25 +1634,22 @@ const char* ZigbeeAdapter::missing_text(const ZigbeeDevice& device, char* buffer
 	return buffer;
 }
 
-void ZigbeeAdapter::setup_reporting(const ZigbeeDevice& device) {
-	struct Bound {
-		uint8_t endpoint;
-		uint16_t cluster;
-	};
-	Bound bound[kMaxBindings];
-	size_t bound_count = 0;
+void ZigbeeAdapter::setup_reporting(ZigbeeDevice& device) {
+	// The interview starts the watches afresh: the device may have been reset.
+	for (size_t i = 0; watches_ != nullptr && i < point_count_; ++i) {
+		if (points_[i].ieee == device.ieee) {
+			PointWatch& watch = watches_[i];
+			watch.state = ReportingState::not_requested;
+			watch.set_repeats(0);
+			watch.set(PointWatch::kSilent, false);
+		}
+	}
+	BindSet bound;
 	size_t configured = 0;
 	auto bind_once = [&](uint8_t endpoint, uint16_t cluster) {
-		for (size_t i = 0; i < bound_count; ++i) {
-			if (bound[i].endpoint == endpoint && bound[i].cluster == cluster) {
-				return;
-			}
+		if (bound.add(endpoint, cluster)) {
+			driver_.bind(device.ieee, device.short_addr, endpoint, cluster);
 		}
-		if (bound_count >= kMaxBindings) {
-			return;
-		}
-		bound[bound_count++] = Bound{endpoint, cluster};
-		driver_.bind(device.ieee, device.short_addr, endpoint, cluster);
 	};
 	// The device's mapping, not the loaded points: with the image service the model follows later.
 	ZigbeePoint points[kMaxDevicePoints];
@@ -1562,35 +1670,276 @@ void ZigbeeAdapter::setup_reporting(const ZigbeeDevice& device) {
 		if (point.function == Function::ias_zone) {
 			continue; // Zone notifications go to the enrolled CIE address, no binding needed.
 		}
-		bind_once(point.endpoint, info.cluster);
 		if (configures_reporting(point.function)) {
-			ReportingConfig config{info.attribute, info.zcl_type, point.reporting.min_s, point.reporting.max_s,
-				point.reporting.change};
-			driver_.configure_reporting(device.ieee, device.short_addr, point.endpoint, info.cluster, config);
-			++configured;
+			configured += send_reporting(device, point.endpoint, point.function, point.reporting, bound) ? 1 : 0;
+		} else {
+			bind_once(point.endpoint, info.cluster);
 		}
 	}
 	char text[64];
 	Log::info(kTag, "%s: %u binding(s) to the coordinator and the reporting of %u attribute(s) requested "
-		"(refusals and timeouts are logged as they come back)",
-		device_text(device, text, sizeof(text)), static_cast<unsigned>(bound_count), static_cast<unsigned>(configured));
+		"(each point's answer shows in its reporting state)",
+		device_text(device, text, sizeof(text)), static_cast<unsigned>(bound.count), static_cast<unsigned>(configured));
+}
+
+bool ZigbeeAdapter::send_reporting(ZigbeeDevice& device, uint8_t endpoint, Function function, const Reporting& reporting,
+	BindSet& bound) {
+	const FunctionInfo& info = function_info(function);
+	if (bound.add(endpoint, info.cluster)) {
+		driver_.bind(device.ieee, device.short_addr, endpoint, info.cluster);
+	}
+	ReportingConfig config{info.attribute, info.zcl_type, reporting.min_s, reporting.max_s, reporting.change};
+	if (!driver_.configure_reporting(device.ieee, device.short_addr, endpoint, info.cluster, config)) {
+		return false;
+	}
+	PointWatch* watch = watch_of(device.ieee, endpoint, function);
+	if (watch != nullptr) {
+		watch->state = ReportingState::requested;
+		watch->status = 0;
+		watch->sent_t = now_t();
+		watch->set(PointWatch::kSent, true);
+	}
+	return true;
+}
+
+void ZigbeeAdapter::configure_unsent(ZigbeeDevice& device) {
+	if (!device.has_result() || !loaded_) {
+		return;
+	}
+	BindSet bound;
+	size_t configured = 0;
+	size_t refused = 0;
+	for (size_t i = 0; i < point_count_; ++i) {
+		const ZigbeePoint& point = points_[i];
+		if (point.ieee != device.ieee || !configures_reporting(point.function) || device.endpoint(point.endpoint) == nullptr) {
+			continue;
+		}
+		const PointWatch* watch = watches_ != nullptr ? &watches_[i] : nullptr;
+		if (watch != nullptr && watch->state != ReportingState::not_requested &&
+			watch->state != ReportingState::timed_out) {
+			continue;
+		}
+		if (send_reporting(device, point.endpoint, point.function, point.reporting, bound)) {
+			++configured;
+		} else {
+			++refused;
+		}
+	}
+	if (configured + refused == 0) {
+		return;
+	}
+	char text[64];
+	device_text(device, text, sizeof(text));
+	if (refused > 0) {
+		device.refresh_on_frame = true;
+		Log::warn(kTag, "%s: the stack refused %u of %u reporting configuration(s): those are sent again after its next "
+			"frame", text, static_cast<unsigned>(refused), static_cast<unsigned>(configured + refused));
+	} else {
+		Log::info(kTag, "%s: the reporting of %u attribute(s) requested", text, static_cast<unsigned>(configured));
+	}
+}
+
+PointWatch* ZigbeeAdapter::watch_of(Ieee ieee, uint8_t endpoint, Function function) {
+	long index = watches_ != nullptr ? find_point(ieee, endpoint, function) : -1;
+	return index >= 0 ? &watches_[index] : nullptr;
+}
+
+uint16_t ZigbeeAdapter::now_t() const {
+	return static_cast<uint16_t>(clock_.monotonic_ms() / PointWatch::kTickMs);
+}
+
+const PointWatch* ZigbeeAdapter::watch(Ieee ieee, uint8_t endpoint, Function function) const {
+	long index = watches_ != nullptr ? find_point(ieee, endpoint, function) : -1;
+	return index >= 0 ? &watches_[index] : nullptr;
+}
+
+bool ZigbeeAdapter::watch_due(const ZigbeeDevice& device, size_t index, uint16_t now) const {
+	const ZigbeePoint& point = points_[index];
+	if (point.ieee != device.ieee || !configures_reporting(point.function) || !point.reporting.periodic() ||
+		device.endpoint(point.endpoint) == nullptr) {
+		return false;
+	}
+	const PointWatch& watch = watches_[index];
+	// Not configured since the start (the refresh does that), waiting for its answer, refused (sent
+	// again only by a new interview) or warned as silent: nothing to do.
+	if (watch.state == ReportingState::requested || watch.state == ReportingState::refused ||
+		watch.has(PointWatch::kSilent) || !watch.has(PointWatch::kSent)) {
+		return false;
+	}
+	// Silent since its last report or the last sending of its configuration, whichever came later.
+	uint16_t silent = ticks(now, watch.sent_t);
+	if (watch.has(PointWatch::kReported) && ticks(now, watch.report_t) < silent) {
+		silent = ticks(now, watch.report_t);
+	}
+	uint64_t wait_ms = static_cast<uint64_t>(point.reporting.max_s) * 1000 * (kWatchFactor + watch.repeats());
+	return static_cast<uint64_t>(silent) * PointWatch::kTickMs >= wait_ms;
+}
+
+bool ZigbeeAdapter::device_watch_due(const ZigbeeDevice& device) const {
+	if (!loaded_ || watches_ == nullptr) {
+		return false;
+	}
+	uint16_t now = now_t();
+	for (size_t i = 0; i < point_count_; ++i) {
+		if (watch_due(device, i, now)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void ZigbeeAdapter::watch_tick() {
+	watch_timer_ = TimerHandle();
+	// One device at a time: the next waits until the answers of the re-sent configuration came or
+	// timed out.
+	bool waiting = false;
+	for (size_t i = 0; watch_ieee_ != 0 && watches_ != nullptr && i < point_count_ && !waiting; ++i) {
+		waiting = points_[i].ieee == watch_ieee_ && watches_[i].state == ReportingState::requested;
+	}
+	if (!waiting) {
+		watch_ieee_ = 0;
+	}
+	bool more = false;
+	bool checked = false;
+	for (size_t i = 0; i < database_.size(); ++i) {
+		ZigbeeDevice& device = database_.at(i);
+		if (!device.watch_check) {
+			continue;
+		}
+		if (checked) {
+			more = true;
+			break;
+		}
+		device.watch_check = false;
+		if (watch_ieee_ != 0 && watch_ieee_ != device.ieee) {
+			char text[64];
+			Log::debug(kTag, "%s: its silent points wait for the answers of another device's configuration (until its "
+				"next frame)", device_text(device, text, sizeof(text)));
+			continue;
+		}
+		check_watches(device);
+		checked = true;
+	}
+	if (more) {
+		watch_timer_ = loop_.schedule_at(clock_.monotonic_ms() + kWatchDelayMs,
+			Callback::member<ZigbeeAdapter, &ZigbeeAdapter::watch_tick>(this, "zigbee.watch_tick"));
+	}
+}
+
+void ZigbeeAdapter::check_watches(ZigbeeDevice& device) {
+	if (!loaded_ || watches_ == nullptr || device.short_addr == kNoShortAddress || device.left || !network_.up) {
+		return;
+	}
+	uint16_t now = now_t();
+	BindSet bound;
+	bool sent = false;
+	char text[64];
+	device_text(device, text, sizeof(text));
+	for (size_t i = 0; i < point_count_; ++i) {
+		if (!watch_due(device, i, now)) {
+			continue;
+		}
+		const ZigbeePoint& point = points_[i];
+		PointWatch& watch = watches_[i];
+		const FunctionInfo& info = function_info(point.function);
+		uint16_t silent = ticks(now, watch.sent_t);
+		if (watch.has(PointWatch::kReported) && ticks(now, watch.report_t) < silent) {
+			silent = ticks(now, watch.report_t);
+		}
+		unsigned silent_s = static_cast<unsigned>(silent) * (PointWatch::kTickMs / 1000);
+		if (watch.repeats() >= kWatchRepeats) {
+			watch.set(PointWatch::kSilent, true);
+			Log::warn(kTag, "%s: %s on endpoint %u (cluster 0x%04x, attribute 0x%04x) has not reported for %u s although "
+				"the device is heard, after %u repeats of its reporting configuration (max %u s): its value comes only "
+				"from reads", text, info.key, static_cast<unsigned>(point.endpoint), static_cast<unsigned>(info.cluster),
+				static_cast<unsigned>(info.attribute), silent_s, static_cast<unsigned>(watch.repeats()),
+				static_cast<unsigned>(point.reporting.max_s));
+			notify(ZigbeeEvent::Kind::changed, device.ieee);
+			continue;
+		}
+		uint8_t repeats = watch.repeats();
+		if (!send_reporting(device, point.endpoint, point.function, point.reporting, bound)) {
+			Log::warn(kTag, "%s: %s on endpoint %u has not reported for %u s, but the stack refused to send its "
+				"reporting configuration again (tried after its next frame)", text, info.key,
+				static_cast<unsigned>(point.endpoint), silent_s);
+			continue;
+		}
+		watch.set_repeats(static_cast<uint8_t>(repeats + 1));
+		sent = true;
+		Log::info(kTag, "%s: %s on endpoint %u (cluster 0x%04x, attribute 0x%04x) has not reported for %u s (max %u s) "
+			"while the device is heard: binding and reporting configuration sent again (%u of %u)", text, info.key,
+			static_cast<unsigned>(point.endpoint), static_cast<unsigned>(info.cluster),
+			static_cast<unsigned>(info.attribute), silent_s, static_cast<unsigned>(point.reporting.max_s),
+			static_cast<unsigned>(watch.repeats()), static_cast<unsigned>(kWatchRepeats));
+	}
+	if (sent) {
+		watch_ieee_ = device.ieee;
+		notify(ZigbeeEvent::Kind::changed, device.ieee);
+	}
+}
+
+void ZigbeeAdapter::time_out_reporting(uint16_t now) {
+	if (watches_ == nullptr) {
+		return;
+	}
+	constexpr uint16_t kAnswerTicks = (kReportingAnswerMs + PointWatch::kTickMs - 1) / PointWatch::kTickMs;
+	Ieee notified = 0;
+	for (size_t i = 0; i < point_count_; ++i) {
+		PointWatch& watch = watches_[i];
+		// Times older than kMaxAge move forward: the 16-bit difference stays exact (the watch waits at
+		// most 5 x 65534 s, less than kMaxAge ticks).
+		if (ticks(now, watch.sent_t) > PointWatch::kMaxAge) {
+			watch.sent_t = static_cast<uint16_t>(now - PointWatch::kMaxAge);
+		}
+		if (ticks(now, watch.report_t) > PointWatch::kMaxAge) {
+			watch.report_t = static_cast<uint16_t>(now - PointWatch::kMaxAge);
+		}
+		if (watch.state != ReportingState::requested || ticks(now, watch.sent_t) < kAnswerTicks) {
+			continue;
+		}
+		watch.state = ReportingState::timed_out;
+		const ZigbeePoint& point = points_[i];
+		const FunctionInfo& info = function_info(point.function);
+		const ZigbeeDevice* device = database_.find(point.ieee);
+		char text[64];
+		if (device != nullptr) {
+			device_text(*device, text, sizeof(text));
+		} else {
+			format_ieee(point.ieee, text);
+		}
+		Log::info(kTag, "%s: no answer within %u s to the reporting configuration of %s on endpoint %u (cluster "
+			"0x%04x, attribute 0x%04x)", text, static_cast<unsigned>(kReportingAnswerMs / 1000), info.key,
+			static_cast<unsigned>(point.endpoint), static_cast<unsigned>(info.cluster),
+			static_cast<unsigned>(info.attribute));
+		if (notified != point.ieee) {
+			notified = point.ieee;
+			notify(ZigbeeEvent::Kind::changed, point.ieee);
+		}
+	}
+}
+
+void ZigbeeAdapter::learn_receiver(ZigbeeDevice& device, Receiver receiver) {
+	if (receiver == Receiver::unknown || device.receiver == receiver) {
+		return;
+	}
+	device.receiver = receiver;
+	save_due_ = true;
+	char text[64];
+	Log::info(kTag, "%s %s", device_text(device, text, sizeof(text)), receiver == Receiver::off_when_idle
+		? "sleeps (its receiver is off while idle): its reads and reporting configuration go out after its own frames"
+		: "listens while idle");
 }
 
 void ZigbeeAdapter::reconfigure_reporting(const ZigbeePoint* old_table, size_t old_count) {
 	for (size_t d = 0; d < database_.size(); ++d) {
-		const ZigbeeDevice& device = database_.at(d);
+		ZigbeeDevice& device = database_.at(d);
 		// A device not interviewed (or interviewed now) is configured when its interview finishes; one
 		// that left when it rejoins and is interviewed again.
 		if (!device.has_result() || device.left || device.short_addr == kNoShortAddress ||
 			(interview_.active && interview_.ieee == device.ieee)) {
 			continue;
 		}
-		struct Bound {
-			uint8_t endpoint;
-			uint16_t cluster;
-		};
-		Bound bound[kMaxBindings];
-		size_t bound_count = 0;
+		BindSet bound;
 		size_t configured = 0;
 		size_t refused = 0;
 		auto check = [&](uint8_t endpoint, Function function, const Reporting& now) {
@@ -1602,17 +1951,13 @@ void ZigbeeAdapter::reconfigure_reporting(const ZigbeePoint* old_table, size_t o
 			if (reporting_in(old_table, old_count, device, endpoint, function, before) && before == now) {
 				return;
 			}
-			const FunctionInfo& info = function_info(function);
-			bool seen = false;
-			for (size_t i = 0; i < bound_count && !seen; ++i) {
-				seen = bound[i].endpoint == endpoint && bound[i].cluster == info.cluster;
+			// A changed configuration starts its watch afresh.
+			PointWatch* watch = watch_of(device.ieee, endpoint, function);
+			if (watch != nullptr) {
+				watch->set_repeats(0);
+				watch->set(PointWatch::kSilent, false);
 			}
-			if (!seen && bound_count < kMaxBindings) {
-				bound[bound_count++] = Bound{endpoint, info.cluster};
-				driver_.bind(device.ieee, device.short_addr, endpoint, info.cluster);
-			}
-			ReportingConfig config{info.attribute, info.zcl_type, now.min_s, now.max_s, now.change};
-			if (driver_.configure_reporting(device.ieee, device.short_addr, endpoint, info.cluster, config)) {
+			if (send_reporting(device, endpoint, function, now, bound)) {
 				++configured;
 			} else {
 				++refused;
@@ -1648,7 +1993,7 @@ void ZigbeeAdapter::reconfigure_reporting(const ZigbeePoint* old_table, size_t o
 				static_cast<unsigned>(refused));
 		} else {
 			Log::info(kTag, "%s: the new bindings change the reporting of %u attribute(s): configured again "
-				"(refusals and timeouts are logged as they come back)", text, static_cast<unsigned>(configured));
+				"(each point's answer shows in its reporting state)", text, static_cast<unsigned>(configured));
 		}
 	}
 }
@@ -1666,6 +2011,7 @@ void ZigbeeAdapter::network_state(bool up, uint16_t pan_id, uint8_t channel, Iee
 		Log::info(kTag, "network up: PAN id 0x%04x, channel %u, extended PAN id %s", static_cast<unsigned>(pan_id),
 			static_cast<unsigned>(channel), ext);
 		trust_known_devices();
+		schedule_refresh(); // the start's reads waited for the network
 		size_t held = commands_held();
 		if (held > 0 && !held_timer_.valid()) {
 			Log::info(kTag, "sending %u held command(s)", static_cast<unsigned>(held));
@@ -1755,6 +2101,8 @@ void ZigbeeAdapter::device_announced(NodeAddress address, uint8_t capability) {
 	ZigbeeDevice* device = address.ieee != 0 ? database_.find(address.ieee) : nullptr;
 	if (device != nullptr) {
 		device->set(ZigbeeDevice::kRouter, (capability & kCapabilityRouter) != 0);
+		learn_receiver(*device, (capability & kCapabilityReceiverOn) != 0 ? Receiver::on_when_idle
+			: Receiver::off_when_idle);
 	}
 }
 
@@ -1837,6 +2185,7 @@ public:
 			if (neighbor.router) {
 				device.set(ZigbeeDevice::kRouter, true);
 			}
+			receiver[i] = neighbor.receiver;
 			if (neighbor.relationship == ZigbeeNeighbor::Relationship::child) {
 				child[i] = true;
 				device.child_timeout_s = neighbor.timeout_s;
@@ -1848,6 +2197,8 @@ public:
 
 	/// Which devices (by index) the table lists as children.
 	bool child[DeviceDatabase::kMaxDevices] = {};
+	/// The receiver the table gives each device (by index).
+	Receiver receiver[DeviceDatabase::kMaxDevices] = {};
 
 private:
 	DeviceDatabase& database_;
@@ -1869,6 +2220,9 @@ void ZigbeeAdapter::read_child_table() {
 		return;
 	}
 	uint64_t now = clock_.monotonic_ms();
+	for (size_t i = 0; i < database_.size(); ++i) {
+		learn_receiver(database_.at(i), reader.receiver[i]);
+	}
 	for (size_t i = 0; i < database_.size(); ++i) {
 		ZigbeeDevice& device = database_.at(i);
 		bool child = reader.child[i];
@@ -2003,6 +2357,10 @@ void ZigbeeAdapter::neighbor_table(NodeAddress router, uint8_t status, uint8_t t
 			owner.coordinator_lqi = entry.lqi; // the router's view of its link to the coordinator
 			owner.set(ZigbeeDevice::kCoordinatorLink, true);
 			continue;
+		}
+		ZigbeeDevice* listed = entry.ieee != 0 ? database_.find(entry.ieee) : database_.find_short(entry.short_addr);
+		if (listed != nullptr) {
+			learn_receiver(*listed, entry.receiver);
 		}
 		if (entry.relationship != ZigbeeNeighbor::Relationship::child) {
 			continue;
@@ -2249,7 +2607,7 @@ void ZigbeeAdapter::simple_descriptor(NodeAddress address, uint8_t status, const
 }
 
 void ZigbeeAdapter::attributes(NodeAddress address, uint8_t endpoint, uint16_t cluster, const AttributeRecord* records,
-	size_t count) {
+	size_t count, bool report) {
 	ZigbeeDevice* device = resolve(address, true);
 	if (device == nullptr) {
 		Log::debug(kTag, "attributes from unknown short 0x%04x ignored", static_cast<unsigned>(address.short_addr));
@@ -2319,6 +2677,9 @@ void ZigbeeAdapter::attributes(NodeAddress address, uint8_t endpoint, uint16_t c
 		}
 		uint16_t id = report_point(*device, endpoint, info->function, *converted);
 		traffic(ZigbeeTraffic::Kind::report, *device, endpoint, cluster, record.attribute, id, &*converted);
+		if (report) {
+			reported(*device, endpoint, info->function);
+		}
 	}
 	if (basic_step) {
 		start_zone(interview_.first_new);
@@ -2390,18 +2751,72 @@ void ZigbeeAdapter::command_received(NodeAddress address, uint8_t endpoint, uint
 	traffic(ZigbeeTraffic::Kind::action, *device, endpoint, cluster, command, ZigbeeTraffic::kNoDatapoint, nullptr);
 }
 
-void ZigbeeAdapter::reporting_configured(NodeAddress address, uint8_t endpoint, uint16_t cluster, uint8_t status) {
+void ZigbeeAdapter::reported(ZigbeeDevice& device, uint8_t endpoint, Function function) {
+	if (!configures_reporting(function) || find_point(device.ieee, endpoint, function) < 0) {
+		return;
+	}
+	PointWatch* watch = watch_of(device.ieee, endpoint, function);
+	if (watch == nullptr) {
+		return;
+	}
+	bool silent = watch->has(PointWatch::kSilent);
+	if (watch->repeats() > 0 || silent) {
+		char text[64];
+		Log::info(kTag, "%s: %s on endpoint %u reports again (its reporting configuration was sent again %u time(s))",
+			device_text(device, text, sizeof(text)), function_info(function).key, static_cast<unsigned>(endpoint),
+			static_cast<unsigned>(watch->repeats()));
+	}
+	watch->report_t = now_t();
+	watch->set(PointWatch::kReported, true);
+	watch->set_repeats(0);
+	watch->set(PointWatch::kSilent, false);
+	if (silent) {
+		notify(ZigbeeEvent::Kind::changed, device.ieee);
+	}
+}
+
+void ZigbeeAdapter::reporting_configured(NodeAddress address, uint8_t endpoint, uint16_t cluster, uint8_t status,
+	uint16_t attribute) {
 	ZigbeeDevice* device = resolve(address, false);
 	if (device == nullptr) {
 		return;
 	}
 	touch(*device);
-	if (status != zcl_status::kSuccess) {
-		char text[64];
-		Log::warn(kTag, "%s refused the reporting configuration of cluster 0x%04x on endpoint %u (status 0x%02x): "
-			"its values come when it reports on its own or is read", device_text(*device, text, sizeof(text)),
-			static_cast<unsigned>(cluster), static_cast<unsigned>(endpoint), static_cast<unsigned>(status));
+	// The point: the function of the cluster whose reporting is configured (one per cluster in the
+	// function table), of the attribute where the answer names it.
+	const FunctionInfo* info = nullptr;
+	for (size_t f = 0; f < kFunctionCount && info == nullptr; ++f) {
+		const FunctionInfo& candidate = function_info(static_cast<Function>(f));
+		if (candidate.cluster == cluster && configures_reporting(candidate.function) &&
+			(attribute == kAnyAttribute || candidate.attribute == attribute)) {
+			info = &candidate;
+		}
 	}
+	PointWatch* watch = info != nullptr ? watch_of(device->ieee, endpoint, info->function) : nullptr;
+	char text[64];
+	device_text(*device, text, sizeof(text));
+	if (status == zcl_status::kSuccess) {
+		if (watch != nullptr && watch->state != ReportingState::configured) {
+			if (watch->state == ReportingState::timed_out) {
+				Log::info(kTag, "%s: the reporting configuration of %s on endpoint %u answered late: configured", text,
+					info->key, static_cast<unsigned>(endpoint));
+			}
+			watch->state = ReportingState::configured;
+			watch->status = 0;
+			notify(ZigbeeEvent::Kind::changed, device->ieee);
+		}
+		return;
+	}
+	if (watch != nullptr) {
+		watch->state = ReportingState::refused;
+		watch->status = status;
+		notify(ZigbeeEvent::Kind::changed, device->ieee);
+	}
+	uint16_t named = attribute != kAnyAttribute ? attribute : info != nullptr ? info->attribute : kAnyAttribute;
+	Log::warn(kTag, "%s refused the reporting configuration of %s on endpoint %u (cluster 0x%04x, attribute 0x%04x): "
+		"status 0x%02x; its values come when it reports on its own or is read", text,
+		info != nullptr ? info->key : "an attribute", static_cast<unsigned>(endpoint), static_cast<unsigned>(cluster),
+		static_cast<unsigned>(named), static_cast<unsigned>(status));
 }
 
 void ZigbeeAdapter::bind_result(NodeAddress address, uint8_t status) {
@@ -2615,6 +3030,17 @@ void ZigbeeAdapter::notify(ZigbeeEvent::Kind kind, Ieee ieee, uint32_t permit_jo
 	events_->zigbee_event(event);
 }
 
+const char* reporting_state_name(ReportingState state) {
+	switch (state) {
+		case ReportingState::not_requested: return "not_requested";
+		case ReportingState::requested: return "requested";
+		case ReportingState::configured: return "configured";
+		case ReportingState::refused: return "refused";
+		case ReportingState::timed_out: return "timed_out";
+	}
+	return "not_requested";
+}
+
 const char* zigbee_event_name(ZigbeeEvent::Kind kind) {
 	switch (kind) {
 		case ZigbeeEvent::Kind::network: return "network";
@@ -2688,7 +3114,46 @@ void ZigbeeAdapter::write_device_json(JsonWriter& json, size_t index) const {
 		}
 	}
 	json.end_array();
+	write_points_json(json, device);
 	json.end_object();
+}
+
+void ZigbeeAdapter::write_points_json(JsonWriter& json, const ZigbeeDevice& device) const {
+	uint16_t now = now_t();
+	json.key("points").begin_array();
+	for (size_t p = 0; loaded_ && p < point_count_; ++p) {
+		const ZigbeePoint& point = points_[p];
+		if (point.ieee != device.ieee || !configures_reporting(point.function) || device.endpoint(point.endpoint) == nullptr) {
+			continue;
+		}
+		const FunctionInfo& info = function_info(point.function);
+		const PointWatch* watch = watches_ != nullptr ? &watches_[p] : nullptr;
+		json.begin_object();
+		const Datapoint* dp = ids_[p] != kNoId ? model_.get(ids_[p]) : nullptr;
+		if (dp != nullptr) {
+			json.member("datapoint", dp->name());
+		}
+		json.member("function", info.key);
+		json.member("endpoint", static_cast<uint32_t>(point.endpoint));
+		json.member("cluster", static_cast<uint32_t>(info.cluster));
+		json.member("attribute", static_cast<uint32_t>(info.attribute));
+		json.member("max_s", static_cast<uint32_t>(point.reporting.max_s));
+		json.member("reporting", reporting_state_name(watch != nullptr ? watch->state : ReportingState::not_requested));
+		if (watch != nullptr && watch->state == ReportingState::refused) {
+			json.member("status", static_cast<uint32_t>(watch->status));
+		}
+		if (watch != nullptr && watch->has(PointWatch::kReported)) {
+			json.member("last_report_ago_s", static_cast<uint32_t>(ticks(now, watch->report_t)) * (PointWatch::kTickMs / 1000));
+		}
+		if (watch != nullptr && watch->repeats() > 0) {
+			json.member("repeats", static_cast<uint32_t>(watch->repeats()));
+		}
+		if (watch != nullptr && watch->has(PointWatch::kSilent)) {
+			json.member("silent", true);
+		}
+		json.end_object();
+	}
+	json.end_array();
 }
 
 void ZigbeeAdapter::write_radio_json(JsonWriter& json, const ZigbeeDevice& device) const {

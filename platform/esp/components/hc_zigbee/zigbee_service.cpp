@@ -85,17 +85,18 @@ enum class Kind : uint8_t {
 	leave_answer, ///< a Mgmt_Leave_rsp (or the stack's timeout): status
 	active_endpoints,
 	simple_descriptor,
-	attributes,
+	attributes, ///< `up`: an attribute report (a read response otherwise)
 	command,
-	reporting,
+	reporting, ///< status; `profile` the attribute a refusal names (ZigbeeAdapter::kAnyAttribute: none)
 	bind,
 	/// A router's Mgmt_Lqi_rsp: status, total in `device`, start index in `endpoint`, `count`
 	/// records of kNeighborRecord bytes in the payload.
 	neighbor_table,
 };
 
-/// One neighbour record in an event's payload: IEEE (8), short (2), device type and relationship
-/// (1: type in bits 0-1, relationship in bits 2-4), depth (1), LQI (1).
+/// One neighbour record in an event's payload: IEEE (8), short (2), device type, relationship and
+/// receiver (1: type in bits 0-1, relationship in bits 2-4, receiver on while idle in bits 5-6: 0 off,
+/// 1 on, 2 unknown), depth (1), LQI (1).
 constexpr size_t kNeighborRecord = 13;
 /// Records kept of one Mgmt_Lqi_rsp (one frame carries three of 22 bytes; the rest of a table comes
 /// with the next page): bounds the array the delivery builds on the loop's stack.
@@ -128,7 +129,7 @@ struct Event {
 	int8_t rssi;
 	uint16_t short_addr;
 	uint16_t cluster;
-	uint16_t profile; ///< also the PAN id
+	uint16_t profile; ///< also the PAN id, and the attribute of a refused reporting configuration
 	uint16_t device; ///< also the channel
 	Ieee ieee;
 	Ieee extended_pan;
@@ -335,7 +336,7 @@ void deliver(ZigbeeAdapter& adapter, const Event& event) {
 				records[i].data = event.payload.bytes + event.records[i].offset;
 				records[i].length = event.records[i].length;
 			}
-			adapter.attributes(address, event.endpoint, event.cluster, records, event.count);
+			adapter.attributes(address, event.endpoint, event.cluster, records, event.count, event.up);
 			break;
 		}
 		case Kind::command:
@@ -343,7 +344,7 @@ void deliver(ZigbeeAdapter& adapter, const Event& event) {
 				event.count);
 			break;
 		case Kind::reporting:
-			adapter.reporting_configured(address, event.endpoint, event.cluster, event.status);
+			adapter.reporting_configured(address, event.endpoint, event.cluster, event.status, event.profile);
 			break;
 		case Kind::bind:
 			adapter.bind_result(address, event.status);
@@ -359,6 +360,10 @@ void deliver(ZigbeeAdapter& adapter, const Event& event) {
 				entries[i].router = type == ESP_ZB_DEVICE_TYPE_ROUTER;
 				entries[i].coordinator = type == ESP_ZB_DEVICE_TYPE_COORDINATOR;
 				entries[i].relationship = static_cast<ZigbeeNeighbor::Relationship>((r[10] >> 2) & 0x07);
+				uint8_t receiver = (r[10] >> 5) & 0x03;
+				entries[i].receiver = receiver == 0 ? zigbee::Receiver::off_when_idle
+					: receiver == 1                 ? zigbee::Receiver::on_when_idle
+													: zigbee::Receiver::unknown;
 				entries[i].depth = r[11];
 				entries[i].lqi = r[12];
 			}
@@ -528,7 +533,8 @@ void neighbor_table_answer(const esp_zb_zdo_mgmt_lqi_rsp_t* response, void* cont
 		std::memcpy(r, record.extended_addr, 8);
 		r[8] = static_cast<uint8_t>(record.network_addr & 0xFF);
 		r[9] = static_cast<uint8_t>(record.network_addr >> 8);
-		r[10] = static_cast<uint8_t>((record.device_type & 0x03) | ((record.relationship & 0x07) << 2));
+		r[10] = static_cast<uint8_t>((record.device_type & 0x03) | ((record.relationship & 0x07) << 2) |
+			((record.rx_when_idle & 0x03) << 5));
 		r[11] = record.depth;
 		r[12] = record.lqi;
 	}
@@ -586,6 +592,7 @@ esp_err_t action_handler(esp_zb_core_action_callback_id_t id, const void* messag
 			event->ieee = ieee_by_short(event->short_addr);
 			event->endpoint = report->src_endpoint;
 			event->cluster = report->cluster;
+			event->up = true; // a report, not a read's answer (the reporting watch, homecontrol #108)
 			add_record(*event, report->attribute.id, zigbee::zcl_status::kSuccess, report->attribute.data);
 			add_radio(*event);
 			commit();
@@ -613,9 +620,12 @@ esp_err_t action_handler(esp_zb_core_action_callback_id_t id, const void* messag
 			}
 			fill_source(*event, response->info);
 			event->status = static_cast<uint8_t>(response->info.status);
+			event->profile = ZigbeeAdapter::kAnyAttribute;
+			// One attribute per request (ZigbeeDriver::configure_reporting()): the first refusal names it.
 			for (const esp_zb_zcl_config_report_resp_variable_t* v = response->variables; v != nullptr; v = v->next) {
-				if (v->status != ESP_ZB_ZCL_STATUS_SUCCESS) {
+				if (v->status != ESP_ZB_ZCL_STATUS_SUCCESS && event->profile == ZigbeeAdapter::kAnyAttribute) {
 					event->status = static_cast<uint8_t>(v->status);
+					event->profile = v->attribute_id;
 				}
 			}
 			add_radio(*event);
@@ -1122,6 +1132,7 @@ public:
 			neighbor.short_addr = info.short_addr;
 			neighbor.router = info.device_type == ESP_ZB_DEVICE_TYPE_ROUTER;
 			neighbor.relationship = static_cast<ZigbeeNeighbor::Relationship>(info.relationship);
+			neighbor.receiver = info.rx_on_when_idle != 0 ? zigbee::Receiver::on_when_idle : zigbee::Receiver::off_when_idle;
 			neighbor.timeout_s = info.device_timeout;
 			neighbor.expires_ms = info.timeout_counter;
 			visitor.neighbor(neighbor);

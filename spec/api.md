@@ -684,7 +684,10 @@ The coordinator's network and devices (doc/zigbee.md, spec/zigbee.md). Without a
               "model": "TRADFRI bulb E27 WS opal 980lm", "label": "Hall", "interviewed": true,
               "stale": false, "left": false, "interviewing": false, "last_seen": 1792231392,
               "seen_ago_s": 12, "lqi": 156, "rssi": -71, "parent": "coordinator", "timeout_s": 15360,
-              "expires_in_s": 15342, "datapoints": ["zigbee.00124b0012345678.1.on"]}],
+              "expires_in_s": 15342, "datapoints": ["zigbee.00124b0012345678.1.on"],
+              "points": [{"datapoint": "zigbee.00124b0012345678.1.on", "function": "on_off", "endpoint": 1,
+                          "cluster": 6, "attribute": 0, "max_s": 300, "reporting": "configured",
+                          "last_report_ago_s": 87}]}],
  "next": null}
 ```
 
@@ -703,7 +706,11 @@ link quality of the coordinator (spec/zigbee.md "Adapter view"). An incomplete i
 device did not answer every request; `interviewed` false, its datapoints in use) adds
 `"missing": {"endpoints": [2], "names": false}` and the English reason
 `"incomplete": "endpoint 2 did not answer"` (spec/zigbee.md "Adapter view"); the export's device
-carries `missing` too.
+carries `missing` too. `points` (homecontrol #108, a new member) is the reporting watch of each point
+that configures reporting: `reporting` the state of its configuration since the start
+(`not_requested`, `requested`, `configured`, `refused` with the ZCL `status`, `timed_out`),
+`last_report_ago_s` the seconds since its last report (in steps of 10 s), `repeats` and `silent` when its configuration
+was sent again after a silence (spec/zigbee.md "Adapter view", doc/zigbee.md "Reporting watch").
 
 ### `GET /api/zigbee/export[?from=<n>]`
 

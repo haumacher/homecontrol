@@ -3,8 +3,9 @@
 // opens the network for 254 s with a countdown; joins and interviews show as they happen (the live
 // feed's zigbee messages). Per device: identify, rename, interview again, rejoin (leave and rejoin at
 // once, homecontrol #99), remove; its radio link (LQI, RSSI, parent, the coordinator's child entry:
-// homecontrol #98) and a requested rejoin while it is pending. Values come from the live datapoints,
-// by name.
+// homecontrol #98), a requested rejoin while it is pending, and beside each value the state of its
+// reporting configuration and its last report (homecontrol #108). Values come from the live
+// datapoints, by name.
 
 import { api, errorText } from "/api.js";
 import { h, replace } from "/dom.js";
@@ -30,6 +31,28 @@ function missingText(d) {
 	return parts.join(", ");
 }
 
+/// The texts of a point's reporting state (spec/zigbee.md "Adapter view": `points`).
+const kReporting = {
+	not_requested: () => t("zigbee.reporting.not_requested"),
+	requested: () => t("zigbee.reporting.requested"),
+	configured: () => t("zigbee.reporting.configured"),
+	refused: (p) => t("zigbee.reporting.refused", { status: (p.status || 0).toString(16).padStart(2, "0") }),
+	timed_out: () => t("zigbee.reporting.timed_out"),
+};
+
+/// A point's reporting: its state (or that it does not report), its last report, the repeats.
+function reportingText(p) {
+	const state = kReporting[p.reporting] || kReporting.not_requested;
+	const parts = [p.silent ? t("zigbee.reporting.silent") : state(p)];
+	if (p.last_report_ago_s !== undefined) {
+		parts.push(t("zigbee.reporting.last", { ago: formatAgo(p.last_report_ago_s * 1000) }));
+	}
+	if (p.repeats) {
+		parts.push(t("zigbee.reporting.repeats", { count: p.repeats }));
+	}
+	return parts.join(", ");
+}
+
 function stateBadge(d) {
 	if (d.interviewing) {
 		return h("span", { class: "badge warn" }, t("zigbee.state.interviewing"));
@@ -45,6 +68,9 @@ function stateBadge(d) {
 	}
 	if (d.stale) {
 		return h("span", { class: "badge warn" }, t("zigbee.state.stale"));
+	}
+	if ((d.points || []).some((p) => p.silent || p.reporting === "refused")) {
+		return h("span", { class: "badge warn" }, t("zigbee.state.reporting"));
 	}
 	return h("span", { class: "badge ok" }, t("zigbee.state.ok"));
 }
@@ -138,9 +164,12 @@ export function renderZigbee(content, ctx) {
 				act(remove, "DELETE", path);
 			}
 		} }, t("zigbee.remove"));
+		const reporting = new Map((d.points || []).filter((p) => p.datapoint).map((p) => [p.datapoint, p]));
 		const points = d.datapoints.map((name) => {
 			const dp = values.get(name);
-			return [name.replace(`zigbee.${d.ieee}.`, ""), dp ? formatValue(dp) : t("value.unknown")];
+			const value = dp ? formatValue(dp) : t("value.unknown");
+			const p = reporting.get(name);
+			return [name.replace(`zigbee.${d.ieee}.`, ""), p ? `${value} · ${reportingText(p)}` : value];
 		});
 		const missing = missingText(d);
 		const rejoinState = d.rejoin ? t(d.rejoin.accepted ? "zigbee.rejoin.taken" : "zigbee.rejoin.waiting",

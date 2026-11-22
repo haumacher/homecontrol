@@ -196,7 +196,8 @@ interview *incomplete*, not done:
 After the interview the adapter writes the database, loads the device's datapoints, binds each
 mapped server cluster to the coordinator's endpoint 1 (bindings for the buttons' client clusters,
 none for IAS Zone, which reports to its CIE address), configures the reporting of each mapped
-attribute (table below), and reads the current values.
+attribute (table below), and reads the current values. Whether the device took each configuration,
+and whether it keeps its promise, is watched ("Reporting watch" below).
 
 A known device that joins afresh (the trust center reports an unsecured join, not a rejoin) was
 factory-reset: its bindings and reporting configuration are gone, so the adapter interviews it again
@@ -317,6 +318,63 @@ without configured reporting (pure buttons, IAS zones) never go stale. A functio
 turns the periodic report off promises no report and does not count: `max` 65535 (ZCL: the device
 issues no reports of the attribute) and `max` 0 (ZCL: reports on a change only). A device whose
 every function has it off never goes stale, like a pure button.
+
+## Reporting watch (homecontrol #108)
+
+The house controller (2026-11-22): after a restart the Hue SML002's illuminance, occupancy and
+battery had values within minutes, its temperature (max 600 s) only after 52 minutes, although the
+sensor sent other frames throughout. The configuration went out once, at the interview, and nothing
+checked it afterwards; the reads on start went out before the network was up (the stack refuses
+every request then) or to a sleeping device.
+
+- **State per point.** Each loaded point has a watch of this boot (`PointWatch`, 8 bytes in a table
+  beside the point table, allocated with it: nothing in the device record, nothing persisted; its
+  times are 16-bit ticks of 10 s, so `last_report_ago_s` comes in steps of 10 s): `requested` when the configuration went out, `configured` or
+  `refused` (with the ZCL status) by the device's Configure Reporting Response (the ESP driver hands
+  the response's status and, for a refusal, the attribute it names), `timed_out` when no answer came
+  within `kReportingAnswerMs` (30 s; a sleepy device's request waits in its parent's queue for its
+  next poll, about 7.7 s), `not_requested` while it has not gone out since the start. A refusal is a
+  warning naming the device, function, endpoint, cluster, attribute and status; a timeout an info
+  line; a late answer still counts. The watch also keeps the time of the point's last *report* (an
+  attribute report; the answer to a read does not count). `GET /api/zigbee` shows them per device as
+  `points` (`reporting`, `status`, `last_report_ago_s`, `repeats`, `silent`; spec/zigbee.md "Adapter
+  view"), the Zigbee page beside each value ("reporting configured, last report 3 min ago"), with the
+  badge "Reporting" for a refused or silent point.
+- **Re-send after a silence.** A point with a periodic maximum that has not reported for (2 +
+  repeats) × its maximum interval, counted from its last report or the last sending of its
+  configuration, has its binding and configuration sent again — right after a frame of its device
+  (`kWatchDelayMs`, 500 ms, after the frame, so that the frame's own reports count first): the device
+  is awake then and its parent delivers the request at its next poll. One device at a time: another
+  device's due point waits until the answers of the one before came or timed out (it is checked again
+  at its own next frame). At most `kWatchRepeats` (3) re-sends until the point reports; each is an
+  info line `<device>: temperature on endpoint 2 (cluster 0x0402, attribute 0x0000) has not reported
+  for 1200 s (max 600 s) while the device is heard: binding and reporting configuration sent again (1
+  of 3)`. A point still silent after the third is a warning (`... has not reported for 3000 s
+  although the device is heard, after 3 repeats of its reporting configuration (max 600 s): its value
+  comes only from reads`), `silent` in the view, and is not sent again until it reports (`reports
+  again`) or the device is interviewed. A refused configuration is not sent again by the watch (the
+  device would refuse it again); a new interview does. A device that is not heard at all goes stale
+  (above) instead: the watch only acts on frames.
+- **Configuration and reads on start.** The start (once the network is up: the stack takes no request
+  before it, and until #108 the start's reads went out at once and were refused) reads each device's attributes and
+  sends the reporting configuration of every point not configured since the start, one device every
+  `kRefreshSpacingMs`. So after a restart every point's state is known again, and a device that lost
+  its configuration gets it back. A device that may sleep waits for its first frame after the start
+  (`<n> device(s) that may sleep are read and their reporting configured when next heard` at the start,
+  `<device> heard (short 0x..): reading its datapoints and configuring its reporting now` at its frame;
+  a refresh asked for by the device's own frame goes before the others). Whether a device sleeps is
+  its receiver while idle (`rx_on_when_idle` in the database): the MAC capability of its announce, or
+  the entry of the coordinator's or a router's neighbour table (the topology pass), learnt and saved
+  with the next check (`<device> sleeps (its receiver is off while idle): ...`). A device whose
+  receiver is not known yet (a database written before #108) is read at the start and again at its
+  first frame.
+
+**Short addresses (homecontrol #109).** Every change of a device's short address (an announce with a
+new one, the trust center's notice of a rejoin, a frame from a known IEEE with another address; a
+device losing its address to another) is written with the next check (`kCheckPeriodMs`, 10 s), one
+write for every change since the last, through the database's save (`save_database()`, the device
+database's NVS blob in `zb_db`, see "Partitions"). So a restart starts from the address the previous
+boot learnt, and the next rejoin logs `short <that address> -> <new>`.
 
 ## Radio facts, topology and the join log (homecontrol #98)
 

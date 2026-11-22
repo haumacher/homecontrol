@@ -48,6 +48,9 @@ struct ZigbeeNeighbor {
 	bool router = false;
 	/// The neighbour is the coordinator (only in a router's table).
 	bool coordinator = false;
+	/// Whether the neighbour's receiver is on while it is idle (a sleepy end device's is off;
+	/// homecontrol #108): the table's own field, unknown where it has none.
+	zigbee::Receiver receiver = zigbee::Receiver::unknown;
 	Relationship relationship = Relationship::none;
 	/// The end-device timeout of a child in seconds: how long the coordinator keeps it in its child
 	/// table without hearing from it (negotiated with an End Device Timeout Request, else the stack's

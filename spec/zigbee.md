@@ -162,6 +162,7 @@ The controller keeps the joined devices in the blob `zigbee-devices.json` (at mo
 			"label": "Bathroom",
 			"interviewed": true,
 			"last_seen": 1792234567,
+			"rx_on_when_idle": false,
 			"endpoints": [
 				{"id": 1, "profile": 260, "device": 770, "in": [0, 1026, 1029, 1027], "out": [0], "zone_type": 21}
 			]
@@ -174,12 +175,13 @@ The controller keeps the joined devices in the blob `zigbee-devices.json` (at mo
 |---|---|
 | `format` | 1. Another value is refused (the database starts empty, the blob stays until the next write). |
 | `ieee` | The device's IEEE address. |
-| `short` | The last known network address (absent when unknown). |
+| `short` | The last known network address (absent when unknown). A change (a rejoin with a new address) is written within 10 s (homecontrol #109), so a restart starts from it. |
 | `manufacturer`, `model` | Basic cluster attributes 0x0004 and 0x0005 (at most 32 bytes; empty when the device did not answer). |
 | `label` | The user's name for the device (`zigbee label`, at most 32 bytes). |
 | `interviewed` | Whether the interview finished (endpoints, clusters and names known). |
 | `missing` | Only for an incomplete interview (`interviewed` false, `endpoints` not empty): `{"endpoints": [2], "names": false}`, the endpoints whose simple descriptor did not answer (ids 1..240, at most 8) and whether the Basic cluster's manufacturer and model did not (doc/zigbee.md "Incomplete interviews"). The endpoints present are used; the device is interviewed again when it is heard. Absent otherwise; a reader drops it for an interviewed device or one without endpoints. Added for issue #47; older blobs without it load as before. |
 | `last_seen` | Wall-clock seconds (Unix time) of the last frame, absent before the clock is set. Written with the next change of the database and at the latest an hour after it moved on, so after a restart it is at most an hour behind the last frame heard before it. |
+| `rx_on_when_idle` | Whether the device's receiver is on while it is idle: `false` for a sleepy end device, which hears requests only right after its own frames (its reads and reporting configuration after a restart wait for its first frame, doc/zigbee.md "Reporting watch"). From the MAC capability of its announce or a neighbour table's entry. Absent while unknown. Added for homecontrol #108; older blobs without it load as before. |
 | `endpoints` | At most 4: `id`, `profile` and `device` from the simple descriptor, `in`/`out` the server/client clusters (at most 12 each, the known clusters first), `zone_type` of an IAS zone (absent otherwise). |
 
 Unknown members are ignored; a malformed database is refused as a whole and nothing of it is used.
@@ -261,7 +263,13 @@ pairs in the field, E-Home names, places and wires, and ships back as the bindin
 			"parent": "coordinator",
 			"timeout_s": 15360,
 			"expires_in_s": 15342,
-			"datapoints": ["zigbee.00158d0001020304.1.temperature", "zigbee.00158d0001020304.1.humidity"]
+			"datapoints": ["zigbee.00158d0001020304.1.temperature", "zigbee.00158d0001020304.1.humidity"],
+			"points": [
+				{"datapoint": "zigbee.00158d0001020304.1.temperature", "function": "temperature", "endpoint": 1,
+				 "cluster": 1026, "attribute": 0, "max_s": 600, "reporting": "configured", "last_report_ago_s": 312},
+				{"datapoint": "zigbee.00158d0001020304.1.humidity", "function": "humidity", "endpoint": 1,
+				 "cluster": 1029, "attribute": 0, "max_s": 600, "reporting": "refused", "status": 134}
+			]
 		}
 	]
 }
@@ -269,7 +277,18 @@ pairs in the field, E-Home names, places and wires, and ships back as the bindin
 
 `pan_id`, `channel` and `extended_pan_id` are present while the network is up; `permit_join_s` is
 the remaining time the network is open for joining (0: closed). `datapoints` lists the names of the
-device's datapoints in the model (empty while they are not loaded). On a controller without Zigbee
+device's datapoints in the model (empty while they are not loaded). `points` (homecontrol #108,
+doc/zigbee.md "Reporting watch"; empty while the datapoints are not loaded) is the reporting watch of
+each of the device's points that configures reporting, on the endpoints it described: `datapoint`
+(its name in the model, absent when it is not in it), `function`, `endpoint`, `cluster`,
+`attribute`, `max_s` (its effective maximum reporting interval; 0: on change only, 65535: no
+reports), `reporting` the state of its configuration since the start (`not_requested`: not sent yet,
+a sleepy device's waits for its next frame; `requested`: sent, no answer yet; `configured`: the device
+answered with success; `refused`: it answered with the ZCL `status`, decimal; `timed_out`: no answer
+within 30 s), `last_report_ago_s` the seconds since its last report, in steps of 10 s (absent before it reported since
+the start; the answer to a read is not a report), `repeats` how often its configuration was sent again
+after a silence since its last report (absent when 0), `silent` `true` when the repeats are exhausted
+and it still does not report (absent otherwise). On a controller without Zigbee
 the view is `{"available": false, "reason": "..."}`.
 `left`: the device announced its leave (it is kept; a rejoin clears it); `interviewing`: its
 interview runs now; `seen_ago_s`: seconds since it was last heard (absent before it was heard since
