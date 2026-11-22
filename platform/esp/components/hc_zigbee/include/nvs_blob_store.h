@@ -13,8 +13,9 @@
 namespace hc {
 namespace esp {
 
-/// hc::BlobStore over an NVS partition of its own (doc/zigbee.md: the zb_db partition holds the
-/// Zigbee device database). NVS keys have at most 15 characters, so a blob's keys are a letter and
+/// hc::BlobStore over an NVS partition of its own (doc/zigbee.md: the zb_db partition held the
+/// Zigbee device database until homecontrol #111; since then it is opened at the start only to move
+/// that blob to the LittleFS store, and closed again). NVS keys have at most 15 characters, so a blob's keys are a letter and
 /// the FNV-1a hash of its name in 8 hex digits: `n<hash>` holds the name (a string, written once:
 /// visit() reports it and a hash collision is detected, refused as a storage error), `d<hash>` the
 /// content, written straight from the caller's buffer (no copy for a write of one chunk) and read
@@ -33,6 +34,10 @@ public:
 	bool open(const char* label, const char* name_space);
 
 	bool is_open() const { return handle_ != 0; }
+
+	/// Closes the handle and deinitializes the partition (NVS's index of it leaves the heap); every
+	/// call refuses afterwards.
+	void close();
 
 	BlobStatus write(const char* name, const BlobChunk* chunks, size_t count) override;
 	BlobStatus read(const char* name, size_t offset, void* buffer, size_t size, size_t& length) const override;

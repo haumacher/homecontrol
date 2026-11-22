@@ -38,7 +38,7 @@ settings survive the switch; app partitions and the image slot start on 64 KB bo
 | `otadata` | data / ota | 0x3B0000, 8 KB | 0x580000 | 0x780000 |
 | `storage` | data / littlefs | 0x3B2000, 204 KB (268 KB before the core dump partition, 312 KB before the Zigbee partitions) | 0x582000, 2444 KB | 0x782000, 8588 KB |
 | `coredump` | data / coredump | 0x3E5000, 64 KB (doc/diagnostics.md) | 0x7E5000 | 0xFE5000 |
-| `zb_storage`, `zb_fct`, `zb_db` | data / fat, fat, nvs | 0x3F5000, 16 + 4 + 24 KB (doc/zigbee.md) | 0x7F5000 | 0xFF5000 |
+| `zb_storage`, `zb_fct`, `zb_db` | data / fat, fat, nvs | 0x3F5000, 16 + 4 + 24 KB (doc/zigbee.md; `zb_db` only for the move of the device database since homecontrol #111) | 0x7F5000 | 0xFF5000 |
 
 Sizes measured on 2026-10-17 (esp32c6, ESP-IDF 5.3):
 
@@ -704,7 +704,8 @@ signature" above), or the check reports `manifest refused: ...`.
 **Before anything is erased: the backup.** `erase_flash`, `erase_region`, `write_flash --erase-all`
 and a `write_flash` at a wrong offset destroy what no build can bring back: the WiFi credentials, the
 device password, the tokens, the E-Home enrollment and the installation key (NVS), the image, the
-saved values and the history (storage), the Zigbee network (`zb_storage`, `zb_db`). On 2026-11-04 a
+saved values, the history and the Zigbee device database (storage; `zb_db` before homecontrol #111),
+the Zigbee network (`zb_storage`). On 2026-11-04 a
 `write_flash ... --erase-all` meant for the updater alone erased all of it on the desk board; the
 recovery took WPS, a new password, a new enrollment and a new Zigbee network. So:
 

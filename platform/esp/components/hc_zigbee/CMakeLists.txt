@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Bernhard Haumacher
 #
 # The Zigbee coordinator on the device (issue #15, doc/zigbee.md): the esp-zigbee-lib (ZBOSS) task,
-# the core's ZigbeeAdapter fed through the LoopQueue, the device database in the zb_db NVS
-# partition, and the body of the console command `zigbee`. On a chip without an 802.15.4 radio (or
+# the core's ZigbeeAdapter fed through the LoopQueue, the NVS store of the zb_db partition (where the
+# device database was before homecontrol #111, read once to move it), and the body of the console command `zigbee`. On a chip without an 802.15.4 radio (or
 # with HC_ZIGBEE_ENABLED off) the same API is a stub that says Zigbee is not available.
 #
 # The requirements depend on the target only: the IDF expands them before the configuration

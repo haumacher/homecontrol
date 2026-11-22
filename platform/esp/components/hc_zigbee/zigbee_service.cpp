@@ -69,8 +69,10 @@ constexpr TickType_t kNeighborLockTicks = pdMS_TO_TICKS(20);
 
 constexpr const char* kStoragePartition = "zb_storage";
 constexpr const char* kFactoryPartition = "zb_fct";
-constexpr const char* kDatabasePartition = "zb_db";
-constexpr const char* kDatabaseNamespace = "zigbee";
+/// Where the device database was before homecontrol #111 (an NVS partition of its own): read at the
+/// start to move it into the blob store, then closed.
+constexpr const char* kLegacyPartition = "zb_db";
+constexpr const char* kLegacyNamespace = "zigbee";
 
 // ---- The ring between the stack's task and the event loop ----
 
@@ -152,7 +154,7 @@ struct State {
 	ZigbeeService* service = nullptr;
 	ZigbeeAdapter* adapter = nullptr;
 	EspZigbeeDriver* driver = nullptr;
-	NvsBlobStore store;
+	NvsBlobStore legacy;
 	const char* reason = "not initialized (ZigbeeService::init)";
 	bool available = false;
 
@@ -1299,15 +1301,15 @@ extern "C" void esp_zb_app_signal_handler(esp_zb_app_signal_t* signal) {
 ZigbeeService::ZigbeeService(Controller& controller, LoopQueue& queue, DatapointModel& model)
 	: controller_(controller), queue_(queue), model_(model) {}
 
-void ZigbeeService::init(BlobStore* store) {
-	start(nullptr, store);
+void ZigbeeService::init(BlobStore* store, BlobStore* direct) {
+	start(nullptr, store, direct);
 }
 
-void ZigbeeService::init(image::ImageService& images, BlobStore* store) {
-	start(&images, store);
+void ZigbeeService::init(image::ImageService& images, BlobStore* store, BlobStore* direct) {
+	start(&images, store, direct);
 }
 
-void ZigbeeService::start(image::ImageService* images, BlobStore* store) {
+void ZigbeeService::start(image::ImageService* images, BlobStore* store, BlobStore* direct) {
 	if (g_state.service != nullptr) {
 		Log::warn(kTag, "init called twice, ignored");
 		return;
@@ -1318,17 +1320,14 @@ void ZigbeeService::start(image::ImageService* images, BlobStore* store) {
 		Log::error(kTag, "%s", g_state.reason);
 		return;
 	}
-	if (store == nullptr) {
-		if (g_state.store.open(kDatabasePartition, kDatabaseNamespace)) {
-			store = &g_state.store;
-		} else {
-			Log::error(kTag, "device database partition %s unusable: devices are kept until the next restart only",
-				kDatabasePartition);
-		}
-	}
 	g_state.mutex = xSemaphoreCreateMutexStatic(&g_state.mutex_buffer);
 	g_state.driver = new EspZigbeeDriver();
 	g_state.adapter = new ZigbeeAdapter(controller_.loop(), controller_.clock(), model_, *g_state.driver, store);
+	// The database of a firmware before homecontrol #111 moves out of zb_db once (doc/zigbee.md
+	// "Partitions"); the partition is open for the adapter's start only.
+	if (store != nullptr && direct != nullptr && g_state.legacy.open(kLegacyPartition, kLegacyNamespace)) {
+		g_state.adapter->set_legacy_database(&g_state.legacy, direct);
+	}
 	if (images != nullptr && !images->add_provider(*g_state.adapter)) {
 		Log::error(kTag, "not registered with the image service: the adapter loads the model alone");
 	}
@@ -1336,6 +1335,8 @@ void ZigbeeService::start(image::ImageService* images, BlobStore* store) {
 	if (!g_state.adapter->start(&error)) {
 		Log::warn(kTag, "adapter: %s", error);
 	}
+	g_state.adapter->set_legacy_database(nullptr, nullptr);
+	g_state.legacy.close();
 	if (xTaskCreate(&zigbee_task, "hc_zigbee", kTaskStack, nullptr, kTaskPriority, nullptr) != pdPASS) {
 		g_state.reason = "the Zigbee task could not be created";
 		Log::error(kTag, "%s", g_state.reason);

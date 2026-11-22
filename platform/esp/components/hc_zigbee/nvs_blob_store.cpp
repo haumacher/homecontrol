@@ -74,6 +74,18 @@ bool NvsBlobStore::open(const char* label, const char* name_space) {
 	return true;
 }
 
+void NvsBlobStore::close() {
+	if (handle_ == 0) {
+		return;
+	}
+	nvs_close(handle_);
+	handle_ = 0;
+	esp_err_t err = nvs_flash_deinit_partition(label_);
+	if (err != ESP_OK) {
+		ESP_LOGW(kTag, "partition %s not deinitialized: %s", label_, esp_err_to_name(err));
+	}
+}
+
 BlobStatus NvsBlobStore::check_owner(const char* name, const char* data_key) const {
 	char key[16];
 	sibling_key(data_key, 'n', key);

@@ -234,6 +234,7 @@ endif()
 # The Zigbee coordinator's core (issue #15, doc/zigbee.md): database, mapping, adapter under the fake clock.
 target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/zigbee_database_test.cpp"
+	"${HC_REPO_DIR}/core/test/zigbee_database_store_test.cpp"
 	"${HC_REPO_DIR}/core/test/zigbee_mapping_test.cpp"
 	"${HC_REPO_DIR}/core/test/zigbee_adapter_test.cpp"
 	"${HC_REPO_DIR}/core/test/zigbee_diagnostics_test.cpp"

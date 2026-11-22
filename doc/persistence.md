@@ -48,8 +48,9 @@ budget in bytes. Not specified in this package.
 | `size(name, size)` | The size, `not_found` if there is none. |
 | `remove(name)` | Deletes; `not_found` if there is none. |
 | `visit(visitor)` | Every blob with its size; the visitor must not modify the store. |
-| `open_writer(name, expected, status)` | A streaming write (issue #43): a `BlobWriter` with `append(data, size)`, `commit()` (the same atomic replace as `write()`) and `discard()` (the old content stays), for content that arrives piece by piece and is never held as a whole (the language packs). Bounded by the free space, not by `kMaxBlobSize`: `expected` above the free space is refused (`no_space`) before anything is written, an `append()` that finds the store full returns `no_space` and the caller discards. One writer per store at a time (`busy`); the writer belongs to the store and lives until `commit()` or `discard()`. A store without streaming refuses (`unsupported`, the default: the Zigbee NVS store). |
+| `open_writer(name, expected, status)` | A streaming write (issue #43): a `BlobWriter` with `append(data, size)`, `commit()` (the same atomic replace as `write()`) and `discard()` (the old content stays), for content that arrives piece by piece and is never held as a whole (the language packs). Bounded by the free space, not by `kMaxBlobSize`: `expected` above the free space is refused (`no_space`) before anything is written, an `append()` that finds the store full returns `no_space` and the caller discards. One writer per store at a time (`busy`); the writer belongs to the store and lives until `commit()` or `discard()`. A store without streaming refuses (`unsupported`, the default: the NVS store of `hc_zigbee`). |
 | `patch(name, offset, chunks, count)` | Overwrites bytes of an existing blob in place (issue #56: the history's archive segments, slot by slot). The blob keeps its size (`too_large` if the chunks would end past it, nothing changed); `not_found` without the blob. Atomic like `write()`: after a power cut the blob holds the complete old or the complete new content. A store that cannot patch refuses (`unsupported`, the default); the history then keeps its archives' slots pending and logs the failure. |
+| `write_from(name, source)` | `write()` of the content a `BlobSource` produces (homecontrol #111: the Zigbee device database): `content_size()`, then `content(buffer, size)` into a buffer of `size` + 1 bytes. The default asks at once, writes and frees the buffer; the `BlobQueue` asks when its worker is about to write (below). The source stays valid until the write is done or `forget_source(source)` was called, which makes a store that holds a waiting `write_from()` take its content at once. |
 | `free_space(bytes)` | The bytes a new blob can take now; false if the store cannot tell. |
 
 Names are 1..31 characters of `[A-Za-z0-9._-]`, not starting with a dot (`check_name()`), in a flat
@@ -58,7 +59,7 @@ return a status and are logged by the implementation, never abort. Writes may ta
 the callers rate-limit them.
 
 **Threads.** The loop's writers (the value store, the history and its archives, the blocks'
-managed state, the inhabitant's timelines, the language packs) reach the store through the write
+managed state, the inhabitant's timelines, the language packs, the Zigbee device database) reach the store through the write
 queue (`BlobQueue`, below, homecontrol #101), whose worker performs their changes while the loop
 goes on reading; the storage figures' measurement (below) walks the store from a worker of its own
 (`visit()`, `free_space()`, `usage()`). So an implementation takes calls from several threads at
@@ -92,7 +93,17 @@ arena, the change goes to the store at once on the loop as before, with a warnin
 (`write queue full ...`) — the history's rings above 8 KB (about 1000 samples) are such writes,
 and they show as `slow ... handler history.on_tick`; the house controller has no history. A planned
 restart waits for the queue (a `Shutdown` participant, at most 1 s); the POSIX build also drains
-it before it exits. The arena costs 8 KB of RAM and the entry table 1.3 KB, allocated at start.
+it before it exits. The arena costs 8 KB of RAM and the entry table 1.5 KB, allocated at start.
+
+A `write_from()` (homecontrol #111) goes into the queue without a copy: the entry holds the source,
+and the queue asks it for the content on the loop when the worker is about to write the blob, into a
+buffer of exactly the content's size that the worker writes from and the loop frees when it is done.
+So a blob larger than the arena (the Zigbee device database: about 15 KB for 30 devices) is written
+off the loop too, a later `write_from()` of the same blob replaces the waiting one at no cost (at most
+one buffer per blob: the one in flight), and a failed write frees its buffer and asks the source
+again at its retry, for the content of that moment. A read, size or visit of such a blob while it
+waits asks the source (a read into a temporary buffer). A source that refuses (its own log line)
+counts as a failed attempt.
 
 What the worker cannot take away: on the single-core C6 a flash erase or program runs with the
 cache off and the scheduler suspended (`CONFIG_SPI_FLASH_AUTO_SUSPEND` is not set), so every task
@@ -104,8 +115,9 @@ system's lock is shared: a read of the loop beside the worker's write waits for 
 call (LittleFS's mutex, with priority inheritance).
 
 Not through the queue: the streaming write of a language pack (`open_writer()`, a download, rare;
-refused with `busy` while a queued change of the same blob waits), the Zigbee device database in
-NVS (`hc_zigbee`'s `NvsBlobStore`, on a device's join), and the settings in NVS (`Settings`: the
+refused with `busy` while a queued change of the same blob waits), the one move of the Zigbee device
+database out of NVS at the start (doc/zigbee.md "Partitions": written directly to the store, read back
+and compared before the old copy goes), and the settings in NVS (`Settings`: the
 rules' states, the overrides, written on a change; a write is a few ms, an NVS page erase more;
 their `visit()` beside a write of another task is not safe on the IDF's NVS iterator).
 
@@ -602,6 +614,19 @@ once per save while its slot changes. A real house writes far
 less: setpoints and states change a few times a day, and the history budget of a typical image is
 a fraction of the cap.
 
+The Zigbee device database (homecontrol #111, doc/zigbee.md "Partitions") joined the store from its
+own NVS partition. It is written when a device joins, is interviewed, renamed or removed, when a
+short address changes or a receiver is learnt (at most one write per check of 10 s, events of a few a
+day), and for the devices' last-seen times about once an hour (`ZigbeeAdapter::kSeenSaveS`). Assumed:
+**one write an hour** of the largest database, 30 devices of about 15 KB: four data blocks
+(`littlefs_footprint()`) and a metadata commit, **4.125 erases per hour**. With it the two worst
+cases above are 32.6 and 34.9 erases an hour: about **82 % and 87 %** of the endurance over 35
+blocks. The house controller's two devices are about 1 KB, one block per write. On NVS the same
+writes would have worn `zb_db`'s six sectors: a 15 KB save fills about 3.8 pages of 4000 bytes, each
+erased again when NVS reclaims it, so 0.63 erases per sector and save, 55,000 cycles (55 %) after ten
+years; and a database of more than about 20 such devices could not be replaced there at all (two
+copies do not fit its five usable pages).
+
 What a real installation writes is far below these limits. The house controller (firmware 1.5.0,
 two room controllers, KNX, a handful of persisted datapoints; measured 2026-11-20 from its log over
 30 minutes, haumacher/homecontrol#101), and the same installation on this firmware by its design:
@@ -669,3 +694,16 @@ the end and without the blob). `core/test/blob_writer_test.cpp` runs the same fo
 `MemoryBlobStore` and the fake. `no_space` from the file system is not tested (it needs a full file
 system). The ESP store shares the algorithm; it is verified on the board (`storage status`, a
 reboot keeps the values).
+
+`core/test/blob_queue_test.cpp` runs the write queue (homecontrol #101) with the stepped
+`ManualWorker`, and its `write_from()` (homecontrol #111): the source asked once, when the worker
+takes the write, a waiting one replaced, reads, sizes and visits answered from the source
+meanwhile, a refusing source retried and dropped like a failed write, the fallback when the entries
+are full, the pass-through without a worker. `core/test/zigbee_database_store_test.cpp` runs the
+Zigbee device database behind the queue: a save of 30 devices (15 KB, more than the arena) written by
+the worker and none on the loop, saves meanwhile holding one buffer of the JSON at most and none
+between the attempts of a failed write, the database going while its save waits, the adapter's
+interview and address change written by the worker and read by the next start; and the move out
+of the previous store: verified and removed there, a failed write or a copy that reads back
+different keeping the old blob (and loading it), the next start moving it, a newer blob in the new
+store winning, a damaged new blob leaving the old one loaded, a damaged old one not moved.

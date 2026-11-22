@@ -21,7 +21,8 @@ const char* op_name(uint8_t op) {
 	switch (op) {
 		case 0: return "write";
 		case 1: return "patch";
-		default: return "remove";
+		case 2: return "remove";
+		default: return "write"; // a write_from()
 	}
 }
 
@@ -62,6 +63,11 @@ BlobQueue::BlobQueue(EventLoop& loop, const Clock& clock, BlobStore& store, Work
 
 BlobQueue::~BlobQueue() {
 	loop_.cancel(retry_);
+	for (size_t i = 0; i < limits_.entries && entries_ != nullptr; ++i) {
+		if (used_[i] && entries_[i].op == Op::source) {
+			delete[] entries_[i].content;
+		}
+	}
 	delete[] entries_;
 	delete[] used_;
 	delete[] arena_;
@@ -77,10 +83,74 @@ BlobQueue::View BlobQueue::view(const char* name) const {
 		}
 		if (v.base == nullptr || entries_[i].sequence > v.base->sequence) {
 			v.base = &entries_[i];
-			v.kind = entries_[i].op == Op::write ? View::written : View::removed;
+			v.kind = entries_[i].op == Op::remove ? View::removed : View::written;
 		}
 	}
 	return v;
+}
+
+size_t BlobQueue::content_size(const Entry& entry) const {
+	if (entry.op == Op::source && entry.content == nullptr) {
+		return entry.source->content_size();
+	}
+	return entry.size;
+}
+
+BlobStatus BlobQueue::copy_content(const Entry& entry, size_t offset, void* buffer, size_t size, size_t& length) const {
+	length = 0;
+	if (entry.op != Op::source) {
+		if (offset < entry.size) {
+			length = entry.size - offset < size ? entry.size - offset : size;
+			std::memcpy(buffer, arena_ + entry.data + offset, length);
+		}
+		return BlobStatus::ok;
+	}
+	if (entry.content != nullptr) {
+		if (offset < entry.size) {
+			length = entry.size - offset < size ? entry.size - offset : size;
+			std::memcpy(buffer, entry.content + offset, length);
+		}
+		return BlobStatus::ok;
+	}
+	// Not produced yet: the source's content, in a buffer for this read.
+	size_t total = entry.source->content_size();
+	uint8_t* content = new (std::nothrow) uint8_t[total + 1];
+	if (content == nullptr) {
+		Log::error(kTag, "no memory to read the %u bytes of %s waiting to be written", static_cast<unsigned>(total),
+			entry.name);
+		return BlobStatus::storage_error;
+	}
+	BlobStatus status = BlobStatus::storage_error;
+	if (entry.source->content(content, total)) {
+		status = BlobStatus::ok;
+		if (offset < total) {
+			length = total - offset < size ? total - offset : size;
+			std::memcpy(buffer, content + offset, length);
+		}
+	}
+	delete[] content;
+	return status;
+}
+
+bool BlobQueue::produce(Entry& entry) {
+	size_t total = entry.source->content_size();
+	if (total > kMaxBlobSize) {
+		Log::error(kTag, "%s has grown to %u bytes, at most %u: not written", entry.name, static_cast<unsigned>(total),
+			static_cast<unsigned>(kMaxBlobSize));
+		return false;
+	}
+	uint8_t* content = new (std::nothrow) uint8_t[total + 1];
+	if (content == nullptr) {
+		Log::error(kTag, "no memory for the %u bytes of %s", static_cast<unsigned>(total), entry.name);
+		return false;
+	}
+	if (!entry.source->content(content, total)) {
+		delete[] content;
+		return false;
+	}
+	entry.content = content;
+	entry.size = total;
+	return true;
 }
 
 BlobQueue::Entry* BlobQueue::find_in_flight(const char* name) {
@@ -110,7 +180,7 @@ void BlobQueue::drop_waiting(const char* name) {
 size_t BlobQueue::arena_used() const {
 	size_t used = 0;
 	for (size_t i = 0; i < limits_.entries && entries_ != nullptr; ++i) {
-		if (used_[i]) {
+		if (used_[i] && entries_[i].op != Op::source) {
 			used += entries_[i].size;
 		}
 	}
@@ -130,7 +200,7 @@ bool BlobQueue::allocate(size_t bytes, size_t& offset) const {
 	for (size_t c = 0; c <= limits_.entries; ++c) {
 		size_t start = 0;
 		if (c < limits_.entries) {
-			if (!used_[c] || entries_[c].size == 0) {
+			if (!used_[c] || entries_[c].op == Op::source || entries_[c].size == 0) {
 				continue;
 			}
 			start = entries_[c].data + entries_[c].size;
@@ -140,7 +210,7 @@ bool BlobQueue::allocate(size_t bytes, size_t& offset) const {
 		}
 		bool free = true;
 		for (size_t i = 0; i < limits_.entries && free; ++i) {
-			if (used_[i] && entries_[i].size > 0) {
+			if (used_[i] && entries_[i].op != Op::source && entries_[i].size > 0) {
 				size_t a = entries_[i].data;
 				size_t b = a + entries_[i].size;
 				free = start + bytes <= a || start >= b;
@@ -185,6 +255,10 @@ BlobQueue::Entry* BlobQueue::add(const char* name, Op op, size_t bytes) {
 
 void BlobQueue::release(Entry& entry) {
 	size_t index = static_cast<size_t>(&entry - entries_);
+	if (entry.op == Op::source) {
+		delete[] entry.content;
+		entry.content = nullptr;
+	}
 	if (used_[index]) {
 		used_[index] = false;
 		--count_;
@@ -256,9 +330,9 @@ BlobStatus BlobQueue::read(const char* name, size_t offset, void* buffer, size_t
 	}
 	if (v.kind == View::written) {
 		after = v.base->sequence;
-		if (offset < v.base->size) {
-			length = v.base->size - offset < size ? v.base->size - offset : size;
-			std::memcpy(buffer, arena_ + v.base->data + offset, length);
+		BlobStatus status = copy_content(*v.base, offset, buffer, size, length);
+		if (status != BlobStatus::ok) {
+			return status;
 		}
 	} else {
 		BlobStatus status = store_.read(name, offset, buffer, size, length);
@@ -306,7 +380,7 @@ BlobStatus BlobQueue::size(const char* name, size_t& size) const {
 		return BlobStatus::not_found;
 	}
 	if (v.kind == View::written) {
-		size = v.base->size;
+		size = content_size(*v.base);
 		return BlobStatus::ok;
 	}
 	return store_.size(name, size);
@@ -361,7 +435,7 @@ void BlobQueue::visit(BlobVisitor& visitor) const {
 			}
 			if (v.kind == View::written) {
 				seen[v.base - queue.entries_] = true;
-				out.blob(name, v.base->size);
+				out.blob(name, queue.content_size(*v.base));
 				return;
 			}
 			out.blob(name, size);
@@ -370,12 +444,12 @@ void BlobQueue::visit(BlobVisitor& visitor) const {
 	store_.visit(merge);
 	// The queued writes of blobs the store does not have yet.
 	for (size_t i = 0; i < limits_.entries; ++i) {
-		if (!used_[i] || entries_[i].op != Op::write || seen[i]) {
+		if (!used_[i] || (entries_[i].op != Op::write && entries_[i].op != Op::source) || seen[i]) {
 			continue;
 		}
 		View v = view(entries_[i].name);
 		if (v.base == &entries_[i]) {
-			visitor.blob(entries_[i].name, entries_[i].size);
+			visitor.blob(entries_[i].name, content_size(entries_[i]));
 		}
 	}
 }
@@ -412,7 +486,7 @@ BlobStatus BlobQueue::patch(const char* name, size_t offset, const BlobChunk* ch
 	// Into the copy of a waiting write that nothing follows: the store sees one write.
 	View v = view(name);
 	Entry* target = nullptr;
-	if (v.kind == View::written && !v.base->in_flight) {
+	if (v.kind == View::written && v.base->op == Op::write && !v.base->in_flight) {
 		target = const_cast<Entry*>(v.base);
 		for (size_t i = 0; i < limits_.entries; ++i) {
 			if (used_[i] && entries_[i].op == Op::patch && entries_[i].sequence > target->sequence &&
@@ -445,6 +519,55 @@ BlobStatus BlobQueue::patch(const char* name, size_t offset, const BlobChunk* ch
 	changed();
 	kick();
 	return BlobStatus::ok;
+}
+
+BlobStatus BlobQueue::write_from(const char* name, const BlobSource& source) {
+	if (entries_ == nullptr) {
+		return store_.write_from(name, source);
+	}
+	BlobStatus status = check_name(name);
+	if (status != BlobStatus::ok) {
+		Log::warn(kTag, "write refused: blob name invalid");
+		return status;
+	}
+	size_t total = source.content_size();
+	if (total > kMaxBlobSize) {
+		Log::warn(kTag, "write of %s refused: %u bytes, at most %u", name, static_cast<unsigned>(total),
+			static_cast<unsigned>(kMaxBlobSize));
+		return BlobStatus::too_large;
+	}
+	drop_waiting(name); // replaced by this content
+	Entry* e = add(name, Op::source, 0);
+	if (e == nullptr) {
+		if (find_in_flight(name) != nullptr) {
+			Log::warn(kTag, "write of %s refused for now: queue full and its previous write in flight", name);
+			return BlobStatus::busy;
+		}
+		full_warning(name, "write");
+		return store_.write_from(name, source);
+	}
+	e->source = &source;
+	e->content = nullptr;
+	changed();
+	kick();
+	return BlobStatus::ok;
+}
+
+void BlobQueue::forget_source(const BlobSource& source) {
+	for (size_t i = 0; i < limits_.entries && entries_ != nullptr; ++i) {
+		Entry& e = entries_[i];
+		if (!used_[i] || e.op != Op::source || e.source != &source) {
+			continue;
+		}
+		if (e.content == nullptr && !produce(e)) {
+			Log::error(kTag, "write of %s dropped: its source went away", e.name);
+			++dropped_;
+			release(e);
+			continue;
+		}
+		e.source = nullptr; // the content stays for the worker, also for its retries
+	}
+	kick();
 }
 
 // ---- the worker ----
@@ -487,15 +610,25 @@ void BlobQueue::kick() {
 		}
 		return;
 	}
+	++next->attempts;
+	if (next->op == Op::source && next->content == nullptr && !produce(*next)) {
+		// Counted as a failed attempt: retried later, dropped after `attempts`. Then the next change.
+		finish(*next, BlobStatus::storage_error);
+		kick();
+		return;
+	}
 	job_ = next;
 	next->in_flight = true;
-	++next->attempts;
 	const char* error = nullptr;
 	if (!worker_->run(Callback{&BlobQueue::job, this, "blob_queue.job"},
 			Callback::member<BlobQueue, &BlobQueue::done>(this, "blob_queue.done"), &error)) {
 		next->in_flight = false;
 		--next->attempts;
 		job_ = nullptr;
+		if (next->op == Op::source && next->source != nullptr) {
+			delete[] next->content; // produced again when it can start
+			next->content = nullptr;
+		}
 		if (!start_failed_) {
 			Log::error(kTag, "cannot start writing %s off the loop (%s); trying again in %u ms", next->name,
 				error != nullptr ? error : "?", static_cast<unsigned>(kStartRetryMs));
@@ -523,9 +656,10 @@ void BlobQueue::job(void* context) {
 	BlobQueue* self = static_cast<BlobQueue*>(context);
 	Entry& e = *self->job_;
 	uint64_t start = self->clock_.monotonic_ms();
-	BlobChunk chunk{self->arena_ + e.data, e.size};
+	BlobChunk chunk{e.op == Op::source ? e.content : self->arena_ + e.data, e.size};
 	switch (e.op) {
 		case Op::write:
+		case Op::source:
 			self->job_status_ = self->store_.write(e.name, &chunk, 1);
 			break;
 		case Op::patch:
@@ -549,7 +683,12 @@ void BlobQueue::done() {
 	if (job_ms_ > longest_ms_) {
 		longest_ms_ = job_ms_;
 	}
-	BlobStatus status = job_status_;
+	finish(e, job_status_);
+	kick();
+	check_shutdown();
+}
+
+void BlobQueue::finish(Entry& e, BlobStatus status) {
 	if (status == BlobStatus::ok) {
 		if (failure_logged_) {
 			Log::info(kTag, "writing the flash works again (%s of %s)", op_name(static_cast<uint8_t>(e.op)), e.name);
@@ -574,10 +713,12 @@ void BlobQueue::done() {
 				failure_logged_ = true;
 			}
 			e.not_before_ms = clock_.monotonic_ms() + limits_.retry_ms;
+			if (e.op == Op::source && e.source != nullptr) {
+				delete[] e.content; // the retry asks the source again: the latest content, no buffer meanwhile
+				e.content = nullptr;
+			}
 		}
 	}
-	kick();
-	check_shutdown();
 }
 
 void BlobQueue::shutdown_begin(Shutdown& shutdown) {

@@ -14,7 +14,7 @@ platform only moves requests and frames between the stack and the event loop.
 | The cluster mapping: functions, datapoint names and values, overrides | `core/include/hc/zigbee/cluster_mapping.h` |
 | The adapter (`Technology`): interview, reporting, commands, stale rule | `core/include/hc/zigbee/adapter.h` |
 | The driver interface (requests to the network) | `core/include/hc/platform/zigbee_driver.h` |
-| ESP: stack task, driver, event ring, `ZigbeeService`, the `zigbee` console command, NVS `BlobStore` | `platform/esp/components/hc_zigbee` |
+| ESP: stack task, driver, event ring, `ZigbeeService`, the `zigbee` console command, the NVS `BlobStore` of the move out of `zb_db` | `platform/esp/components/hc_zigbee` |
 | Stack configuration | `platform/esp/sdkconfig.defaults.app.esp32c6`, menu "HomeControl Zigbee" |
 | Tests | `core/test/zigbee_*_test.cpp` |
 
@@ -38,7 +38,8 @@ Zigbee 3.0); Green Power devices themselves are not supported.
 ## Bring-up
 
 `ZigbeeService::init()` (after the WiFi driver) checks that the partitions `zb_storage` and `zb_fct`
-exist, opens the device database in the `zb_db` partition, starts the adapter and the task
+exist, starts the adapter with the device database in the blob store behind the write queue (moved
+there once from the `zb_db` partition of the firmware before, see "Partitions") and the task
 `hc_zigbee`. The task configures the stack: coordinator with `HC_ZIGBEE_MAX_CHILDREN` children, the
 channel mask `HC_ZIGBEE_CHANNEL_MASK`, the PAN id `HC_ZIGBEE_PAN_ID` (0: the stack picks one), the
 transmit power `HC_ZIGBEE_TX_POWER`, the stack's tables for a network of 32 nodes (the device
@@ -106,15 +107,39 @@ and `none` the per-household choice, with both named on the Settings page.
 ### Partitions
 
 The SDK finds its storage by fixed labels: `zb_storage` (16 KB, the stack's NVRAM: network, keys,
-children, bindings) and `zb_fct` (4 KB, factory data: install codes; unused but required). The
-device database lives in `zb_db` (24 KB, NVS) until the LittleFS `BlobStore` of
-`doc/persistence.md` exists. Each blob there has two NVS keys named by the hash of its name: the
-name (`n<hash>`, a string) and the content (`d<hash>`, written straight from the JSON buffer, read
-straight into the load's buffer). A save measures the JSON first and allocates exactly its size; a
+children, bindings) and `zb_fct` (4 KB, factory data: install codes; unused but required).
+
+**The device database** is the blob `zigbee-devices.json` of the LittleFS blob store (`/storage/state`,
+doc/persistence.md), written through the write queue (homecontrol #111): a save hands the database to
+the queue as the blob's source (`BlobStore::write_from()`), the queue asks it for the JSON on the loop
+when its worker `hc_flash` is about to write, into one buffer of exactly the JSON's size, which lives
+until the worker wrote it. So the loop never waits for the flash, the JSON (about 15 KB for 30
+devices with the longest names, more than the queue's 8 KB arena) never goes into the arena and
+never falls back to a write on the loop, saves while one is written wait as one entry without a
+copy, and a failed write is retried with the content of its retry, without a buffer in between. A
 load allocates one buffer of the blob, checks the text in a first pass and parses it into the table
-in a second (no temporary table): with 30 devices no block larger than the JSON (about 14 KB) is
-needed. Firmware before issue #44 kept name and content in one blob `b<hash>`; it is still read, and
-the first save after the update moves it (`hc.blob: ... moved from the legacy layout`). The three partitions (44 KB) sit at the end of the flash
+in a second (no temporary table): no block larger than the JSON is needed.
+
+Why not NVS on the worker: NVS takes one lock for all its partitions (`nvs::Lock`, ESP-IDF 5.5), so a
+write of `zb_db` on the worker would make the loop's settings reads and writes wait for it; and
+NVS writes the new version of a blob before it erases the old one, so a database above about 10 KB
+(5 usable pages of 4000 bytes of `zb_db`'s 6, two copies) cannot be replaced at all, about 20
+devices with the longest names. On LittleFS the write spreads over the storage partition's free blocks instead of six
+sectors (the wear budget: doc/persistence.md).
+
+**`zb_db`** (24 KB, NVS) held the database before homecontrol #111 (two NVS keys named by the hash of
+the blob's name: `n<hash>` the name, `d<hash>` the content; firmware before issue #44 kept both in
+one blob `b<hash>`, still read). At every start `ZigbeeService` opens it for the adapter's start, and
+the database moves its blob once (`DeviceDatabase::set_legacy()`, before anything is written through
+the queue): the old blob is read and loaded, written to the blob store directly, read back and
+compared, and only then removed from `zb_db` (`hc.zigbee: device database moved to the blob store
+(<bytes> B, <n> device(s))`). A failure keeps it in `zb_db` with a warning (`device database not
+moved to the blob store (<reason>): the previous store keeps it and it is loaded from there; moved at
+the next start`); the devices are loaded from it all the same, and the saves go to the blob store. A
+blob in both stores is the blob store's (a save after a failed move): it is loaded, and the old one
+removed after it loaded; one that does not load leaves the old one loaded and kept. Then the
+partition is closed and deinitialized, which takes NVS's index of it off the heap. `factory reset
+yes` still erases `zb_db`. The three partitions (44 KB) sit at the end of the flash
 (`tools/gen_partitions.py`); the `storage` partition gives up the room, on the 4 MB flash from 312
 to 268 KB. They exist on every flash size and target (the ESP32-S3 simply does not use them).
 
@@ -406,7 +431,7 @@ every request then) or to a sleeping device.
 new one, the trust center's notice of a rejoin, a frame from a known IEEE with another address; a
 device losing its address to another) is written with the next check (`kCheckPeriodMs`, 10 s), one
 write for every change since the last, through the database's save (`save_database()`, the device
-database's NVS blob in `zb_db`, see "Partitions"). So a restart starts from the address the previous
+database's blob, written by the write queue's worker, see "Partitions"). So a restart starts from the address the previous
 boot learnt, and the next rejoin logs `short <that address> -> <new>`.
 
 ## Radio facts, topology and the join log (homecontrol #98)
@@ -736,6 +761,4 @@ E-Home's pairing through the API (issue #16) uses `ZigbeeService::permit_join()`
 - **Colour** other than colour temperature (hue/saturation, XY), scenes and groups.
 - **Power source** of a device (mains or battery) is not read; the stale rule follows the reporting
   intervals instead.
-- **Device database on LittleFS**: the database uses its own NVS partition until the `BlobStore` of
-  `doc/persistence.md` exists.
 - **Measurements on the device**: heap of the stack at run time, frame loss under WiFi load.

@@ -49,6 +49,13 @@ struct BlobQueueLimits {
 ///   the store at once, on the loop, as without the queue (logged once per streak as a warning,
 ///   counted in direct()); not possible while a change of the same blob is in flight or (patch)
 ///   waits: then `busy`, which the writers treat as a failed write and retry.
+/// - A write_from() (homecontrol #111: the Zigbee device database) takes no copy: it waits as the
+///   source, which the queue asks for the content on the loop when the worker is about to write it,
+///   into a buffer of exactly its size that lives until the worker is done (never more than one per
+///   blob, the arena untouched). A later write_from() of the same blob while one waits replaces it at
+///   no cost; a failed write asks the source again at its retry. A read, size or visit of such a blob
+///   asks the source too (a read into a temporary buffer). forget_source() takes the content of the
+///   source's waiting writes at once, into such a buffer each.
 /// - Without a worker (nullptr: tests, a platform without one) every call goes straight through.
 /// - The streaming write (open_writer()) and the measurements (free_space(), usage(),
 ///   footprint()) go straight to the store; open_writer() is refused (busy) while a change of the
@@ -77,6 +84,8 @@ public:
 	void visit(BlobVisitor& visitor) const override;
 	BlobWriter* open_writer(const char* name, size_t expected, BlobStatus& status) override;
 	BlobStatus patch(const char* name, size_t offset, const BlobChunk* chunks, size_t count) override;
+	BlobStatus write_from(const char* name, const BlobSource& source) override;
+	void forget_source(const BlobSource& source) override;
 	bool free_space(size_t& bytes) const override { return store_.free_space(bytes); }
 	bool usage(uint64_t& total, uint64_t& used) const override { return store_.usage(total, used); }
 	size_t footprint(size_t bytes) const override { return store_.footprint(bytes); }
@@ -104,7 +113,8 @@ public:
 	uint32_t longest_ms() const { return longest_ms_; }
 
 private:
-	enum class Op : uint8_t { write, patch, remove };
+	/// `source`: a write_from(), its content produced when the worker takes it (homecontrol #111).
+	enum class Op : uint8_t { write, patch, remove, source };
 
 	struct Entry {
 		char name[kMaxNameLength + 1];
@@ -113,9 +123,17 @@ private:
 		uint8_t attempts;
 		/// Order of arrival (FIFO across the table).
 		uint32_t sequence;
-		size_t offset; ///< A patch's offset.
-		size_t data;   ///< Offset of the copy in the arena.
-		size_t size;   ///< Bytes of the copy.
+		union {
+			size_t offset; ///< A patch's offset.
+			/// A write_from()'s source (Op::source; nullptr once forgotten: `content` holds it).
+			const BlobSource* source;
+		};
+		union {
+			size_t data; ///< Offset of the copy in the arena.
+			/// The produced content of an Op::source (nullptr: not produced), on the heap.
+			uint8_t* content;
+		};
+		size_t size;   ///< Bytes of the copy (of `content` for an Op::source).
 		uint64_t not_before_ms; ///< A retry waits until then.
 	};
 
@@ -127,6 +145,15 @@ private:
 	};
 
 	View view(const char* name) const;
+	/// The bytes of the content a write or write_from() entry gives the blob.
+	size_t content_size(const Entry& entry) const;
+	/// Copies up to `size` bytes of that content from `offset` (`length` the bytes copied).
+	BlobStatus copy_content(const Entry& entry, size_t offset, void* buffer, size_t size, size_t& length) const;
+	/// Asks an Op::source entry's source for its content (on the loop); false (logged) if it cannot.
+	bool produce(Entry& entry);
+	/// The end of a change on the store (or of a production that failed): released, retried later
+	/// or dropped.
+	void finish(Entry& entry, BlobStatus status);
 	Entry* find_in_flight(const char* name);
 	bool waits(const char* name) const;
 	/// Drops the waiting (not in flight) changes of `name`.

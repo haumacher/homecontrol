@@ -7,10 +7,14 @@
 #include <cstring>
 #include <new>
 
+#include "hc/log.h"
+
 namespace hc {
 namespace zigbee {
 
 namespace {
+
+constexpr const char* kTag = "hc.zigbee";
 
 /// The clusters an endpoint keeps before all others when its descriptor lists more than
 /// ZigbeeEndpoint::kMaxClusters: those the interview and the mapping use.
@@ -304,6 +308,12 @@ void copy_text(char* field, size_t size, const char* text) {
 
 DeviceDatabase::DeviceDatabase(BlobStore* store) : store_(store) {}
 
+DeviceDatabase::~DeviceDatabase() {
+	if (store_ != nullptr) {
+		store_->forget_source(*this);
+	}
+}
+
 ZigbeeDevice* DeviceDatabase::find(Ieee ieee) {
 	for (size_t i = 0; i < count_; ++i) {
 		if (devices_[i].ieee == ieee) {
@@ -494,8 +504,15 @@ bool DeviceDatabase::load(const char** error) {
 	if (store_ == nullptr) {
 		return true;
 	}
+	if (legacy_ != nullptr && direct_ != nullptr) {
+		return load_moving(error);
+	}
+	return load_from(*store_, error);
+}
+
+bool DeviceDatabase::load_from(const BlobStore& store, const char** error) {
 	size_t size = 0;
-	BlobStatus status = store_->size(kBlobName, size);
+	BlobStatus status = store.size(kBlobName, size);
 	if (status == BlobStatus::not_found) {
 		return true;
 	}
@@ -509,7 +526,7 @@ bool DeviceDatabase::load(const char** error) {
 		return false;
 	}
 	size_t length = 0;
-	status = store_->read(kBlobName, 0, buffer, size, length);
+	status = store.read(kBlobName, 0, buffer, size, length);
 	bool ok = false;
 	if (status != BlobStatus::ok) {
 		fail(error, blob_status_name(status));
@@ -522,41 +539,133 @@ bool DeviceDatabase::load(const char** error) {
 	return ok;
 }
 
+bool DeviceDatabase::load_moving(const char** error) {
+	size_t old_size = 0;
+	BlobStatus old_status = legacy_->size(kBlobName, old_size);
+	if (old_status == BlobStatus::not_found) {
+		return load_from(*store_, error); // moved before, or never written there
+	}
+	if (old_status != BlobStatus::ok) {
+		Log::warn(kTag, "the device database of the previous store cannot be read (%s): it stays there",
+			blob_status_name(old_status));
+		return load_from(*store_, error);
+	}
+	size_t size = 0;
+	BlobStatus status = store_->size(kBlobName, size);
+	if (status == BlobStatus::ok) {
+		// A save of this firmware wrote the blob after an earlier move failed: it is the newer one.
+		const char* why = nullptr;
+		if (load_from(*store_, &why)) {
+			status = legacy_->remove(kBlobName);
+			if (status == BlobStatus::ok) {
+				Log::info(kTag, "the device database of the previous store removed (the blob store holds a newer one)");
+			} else {
+				Log::warn(kTag, "the device database of the previous store stays (%s): removed at the next start",
+					blob_status_name(status));
+			}
+			return true;
+		}
+		Log::warn(kTag, "%s unreadable (%s): the device database of the previous store is loaded and kept", kBlobName,
+			why != nullptr ? why : "?");
+		return load_from(*legacy_, error);
+	}
+	if (status != BlobStatus::not_found) {
+		Log::warn(kTag, "%s cannot be checked (%s): the device database of the previous store is loaded and kept",
+			kBlobName, blob_status_name(status));
+		return load_from(*legacy_, error);
+	}
+	// The move: one buffer of the blob, which the load parses afterwards.
+	char* buffer = new (std::nothrow) char[old_size + 1];
+	if (buffer == nullptr) {
+		fail(error, "out of memory");
+		return false;
+	}
+	size_t length = 0;
+	status = legacy_->read(kBlobName, 0, buffer, old_size, length);
+	bool ok = false;
+	if (status != BlobStatus::ok) {
+		fail(error, blob_status_name(status));
+	} else if (length != old_size) {
+		fail(error, "the blob is shorter than its size");
+	} else if (read_json(buffer, length, error)) {
+		ok = true;
+		const char* why = nullptr;
+		if (!copy_verified(buffer, length, why)) {
+			Log::warn(kTag, "device database not moved to the blob store (%s): the previous store keeps it and it is "
+				"loaded from there; moved at the next start", why);
+		} else {
+			status = legacy_->remove(kBlobName);
+			if (status == BlobStatus::ok) {
+				Log::info(kTag, "device database moved to the blob store (%u B, %u device(s))",
+					static_cast<unsigned>(length), static_cast<unsigned>(count_));
+			} else {
+				Log::warn(kTag, "device database moved to the blob store (%u B); its old copy stays (%s): removed at the "
+					"next start", static_cast<unsigned>(length), blob_status_name(status));
+			}
+		}
+	}
+	// A blob the load refuses is not moved: it stays where it is, and the next save writes a new one.
+	delete[] buffer;
+	return ok;
+}
+
+bool DeviceDatabase::copy_verified(const char* text, size_t length, const char*& why) {
+	BlobChunk chunk{text, length};
+	BlobStatus status = direct_->write(kBlobName, &chunk, 1);
+	if (status != BlobStatus::ok) {
+		why = blob_status_name(status);
+		return false;
+	}
+	size_t size = 0;
+	status = direct_->size(kBlobName, size);
+	bool same = status == BlobStatus::ok && size == length;
+	// Read back piece by piece: no second buffer of the blob.
+	char piece[64];
+	for (size_t offset = 0; same && offset < length; offset += sizeof(piece)) {
+		size_t want = length - offset < sizeof(piece) ? length - offset : sizeof(piece);
+		size_t got = 0;
+		status = direct_->read(kBlobName, offset, piece, want, got);
+		same = status == BlobStatus::ok && got == want && std::memcmp(piece, text + offset, want) == 0;
+	}
+	if (!same) {
+		why = status != BlobStatus::ok ? blob_status_name(status) : "the copy reads back different";
+		direct_->remove(kBlobName); // no copy that is not the database
+		return false;
+	}
+	return true;
+}
+
+size_t DeviceDatabase::content_size() const {
+	JsonWriter counter = JsonWriter::counter();
+	write_json(counter);
+	return counter.length();
+}
+
+bool DeviceDatabase::content(uint8_t* buffer, size_t size) const {
+	JsonWriter json(reinterpret_cast<char*>(buffer), size + 1);
+	write_json(json);
+	if (json.overflowed() || json.length() != size) {
+		Log::error(kTag, "device database changed while it was written"); // cannot happen: one thread
+		return false;
+	}
+	return true;
+}
+
 bool DeviceDatabase::save(const char** error) {
 	if (store_ == nullptr) {
 		fail(error, "no blob store");
 		return false;
 	}
-	// Measured first, so that the buffer is exactly the JSON (with its NUL): a save of a full
-	// database needs no block larger than its text.
-	JsonWriter counter = JsonWriter::counter();
-	write_json(counter);
-	size_t length = counter.length();
-	if (length > BlobStore::kMaxBlobSize) {
+	BlobStatus status = store_->write_from(kBlobName, *this);
+	if (status == BlobStatus::too_large) {
 		fail(error, "the database does not fit a blob (20 KB)");
 		return false;
 	}
-	char* buffer = new (std::nothrow) char[length + 1];
-	if (buffer == nullptr) {
-		fail(error, "out of memory");
+	if (status != BlobStatus::ok) {
+		fail(error, blob_status_name(status));
 		return false;
 	}
-	JsonWriter json(buffer, length + 1);
-	write_json(json);
-	bool ok = false;
-	if (json.overflowed() || json.length() != length) {
-		fail(error, "the database changed while it was written"); // cannot happen: one thread
-	} else {
-		BlobChunk chunk{json.data(), json.length()};
-		BlobStatus status = store_->write(kBlobName, &chunk, 1);
-		if (status != BlobStatus::ok) {
-			fail(error, blob_status_name(status));
-		} else {
-			ok = true;
-		}
-	}
-	delete[] buffer;
-	return ok;
+	return true;
 }
 
 } // namespace zigbee

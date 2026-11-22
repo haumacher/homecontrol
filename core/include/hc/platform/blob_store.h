@@ -7,6 +7,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <new>
+
+#include "hc/log.h"
 
 namespace hc {
 
@@ -69,6 +72,26 @@ public:
 
 protected:
 	~BlobWriter() = default;
+};
+
+/// Content a BlobStore asks for when it writes it (BlobStore::write_from(), homecontrol #111): a writer
+/// whose content is large and may change again soon (the Zigbee device database's JSON) hands over
+/// how to produce it instead of a copy. The store asks when it writes, so what it writes is the
+/// content of that moment.
+///
+/// Threading: the event loop's thread (the BlobQueue asks on the loop, before its worker writes).
+class BlobSource {
+public:
+	/// The bytes of the content now.
+	virtual size_t content_size() const = 0;
+
+	/// Writes the content, exactly `size` bytes (what content_size() just answered), into `buffer`,
+	/// which has room for `size` + 1 bytes (a text writer may end with a NUL). False if it cannot
+	/// (logged by the source); the store then writes nothing.
+	virtual bool content(uint8_t* buffer, size_t size) const = 0;
+
+protected:
+	~BlobSource() = default;
 };
 
 /// Receives the names of BlobStore::visit().
@@ -184,6 +207,40 @@ public:
 	/// StorageStats measures again when it moved. Any thread (the image's store writes from the
 	/// Worker's). A store that never calls changed() is measured once.
 	uint32_t changes() const { return changes_.load(); }
+
+	/// Replaces the blob `name` by the content of `source` (homecontrol #111), with the contract of
+	/// write(). The default asks `source` now, into a buffer of exactly the content (one byte more),
+	/// writes it and frees it: what the writer did before by itself. The BlobQueue asks only when its
+	/// worker is about to write the blob: nothing waits in its arena, the content is the latest, and
+	/// writes of the same blob while one waits cost nothing. `source` must stay valid until the
+	/// write is done or forget_source() was called with it.
+	virtual BlobStatus write_from(const char* name, const BlobSource& source) {
+		BlobStatus status = check_name(name);
+		if (status != BlobStatus::ok) {
+			return status;
+		}
+		size_t size = source.content_size();
+		if (size > kMaxBlobSize) {
+			return BlobStatus::too_large;
+		}
+		uint8_t* buffer = new (std::nothrow) uint8_t[size + 1];
+		if (buffer == nullptr) {
+			Log::error("hc.blob", "no memory for the %u bytes of %s: not written", static_cast<unsigned>(size), name);
+			return BlobStatus::storage_error;
+		}
+		if (source.content(buffer, size)) {
+			BlobChunk chunk{buffer, size};
+			status = write(name, &chunk, 1);
+		} else {
+			status = BlobStatus::storage_error;
+		}
+		delete[] buffer;
+		return status;
+	}
+
+	/// `source` goes away (homecontrol #111): a store that still holds a write_from() of it takes
+	/// its content now. The default holds none.
+	virtual void forget_source(const BlobSource& source) { (void)source; }
 
 	/// The bytes of free_space() a new blob of `bytes` takes (homecontrol #52: the largest image the
 	/// store can take, ImageStore::storable()). The default: its bytes; a store in blocks counts the

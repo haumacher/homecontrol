@@ -2,6 +2,7 @@
  * Copyright (c) 2026 Bernhard Haumacher
  */
 // The write queue in front of the blob store (homecontrol #101): the loop's flash writes on a worker.
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -392,4 +393,103 @@ TEST_CASE("BlobQueueProbe.ARemovalWhileTheWriteOfTheBlobIsInFlightLeavesNoBlob")
 	b.drain();
 	CHECK(b.stored("v.1") == "<none>");
 	CHECK(b.queue.idle());
+}
+
+// ---- write_from(): the content asked for when the worker takes it (homecontrol #111) ----
+
+namespace {
+
+/// A source whose content the test changes; counts how often it is asked.
+struct TextSource : hc::BlobSource {
+	std::string text;
+	mutable int asked = 0;
+	bool refuse = false;
+
+	size_t content_size() const override { return text.size(); }
+	bool content(uint8_t* buffer, size_t size) const override {
+		++asked;
+		if (refuse || size != text.size()) {
+			return false;
+		}
+		std::memcpy(buffer, text.data(), size);
+		buffer[size] = 0;
+		return true;
+	}
+};
+
+} // namespace
+
+TEST_CASE("BlobQueue.AWriteFromIsProducedWhenTheWorkerTakesItAndAnsweredFromTheSourceMeanwhile") {
+	Bench b;
+	b.put("a", "first"); // in flight: the source's write waits behind it
+	TextSource source;
+	source.text = "one";
+	CHECK(b.queue.write_from("db", source) == BlobStatus::ok);
+	CHECK(b.queue.write_from("db", source) == BlobStatus::ok); // replaces the waiting one
+	CHECK(b.queue.pending() == 2);
+	CHECK(b.queue.arena_used() == 5); // only "first"
+	source.text = "longer content than the arena of 64 bytes holds, which a copy could not take at all";
+	CHECK(source.asked == 0);
+	size_t size = 0;
+	REQUIRE(b.queue.size("db", size) == BlobStatus::ok);
+	CHECK(size == source.text.size());
+	char piece[8] = {};
+	size_t length = 0;
+	REQUIRE(b.queue.read("db", 7, piece, 7, length) == BlobStatus::ok);
+	CHECK(std::string(piece, length) == "content");
+	Names names;
+	b.queue.visit(names);
+	CHECK(names.seen["db"] == source.text.size());
+	int asked = source.asked;
+	b.drain();
+	CHECK(source.asked == asked + 1); // once, when taken
+	CHECK(b.stored("db") == source.text);
+	CHECK(b.queue.direct() == 0);
+	CHECK(b.queue.idle());
+}
+
+TEST_CASE("BlobQueue.AWriteFromWhoseSourceRefusesIsRetriedAndDroppedLikeAFailedWrite") {
+	hc_test::ScopedCapture capture;
+	Bench b;
+	TextSource source;
+	source.text = "x";
+	source.refuse = true;
+	CHECK(b.queue.write_from("db", source) == BlobStatus::ok);
+	CHECK(b.queue.pending() == 1);
+	CHECK_FALSE(b.worker.pending); // nothing to write
+	for (int i = 0; i < 3; ++i) {
+		b.clock.advance(1000);
+		b.loop.run_once(b.clock.now_ms);
+	}
+	CHECK(b.queue.idle());
+	CHECK(b.queue.dropped() == 1);
+	CHECK(capture.sink.contains("write of db dropped after 3 attempts"));
+	CHECK(b.stored("db") == "<none>");
+}
+
+TEST_CASE("BlobQueue.AWriteFromGoesToTheStoreOnTheLoopWhenTheEntriesAreFull") {
+	hc_test::ScopedCapture capture;
+	Bench b; // 4 entries
+	b.put("a", "1");
+	b.put("b", "2");
+	b.put("c", "3");
+	b.put("d", "4");
+	TextSource source;
+	source.text = "now";
+	CHECK(b.queue.write_from("db", source) == BlobStatus::ok);
+	CHECK(b.stored("db") == "now");
+	CHECK(b.queue.direct() == 1);
+	CHECK(capture.sink.contains("write queue full"));
+}
+
+TEST_CASE("BlobQueue.WithoutAWorkerAWriteFromGoesThrough") {
+	hc_test::FakeClock clock;
+	hc::EventLoop loop;
+	hc_test::FakeBlobStore store;
+	BlobQueue queue(loop, clock, store, nullptr);
+	TextSource source;
+	source.text = "direct";
+	CHECK(queue.write_from("db", source) == BlobStatus::ok);
+	CHECK(source.asked == 1);
+	CHECK(std::string(store.blobs["db"].begin(), store.blobs["db"].end()) == "direct");
 }

@@ -85,7 +85,7 @@ survive the switch.
 | `otadata` | 0x3B0000, 8 KB | 0x580000 | 0x780000 |
 | `storage` (LittleFS, issue #5) | 0x3B2000, 204 KB (268 KB before the core dump partition, 312 KB before the Zigbee partitions) | 0x582000, 2444 KB (2956 KB before the image slot) | 0x782000, 8588 KB (9100 KB before the image slot) |
 | `coredump` (issue #4) | 0x3E5000, 64 KB | 0x7E5000 | 0xFE5000 |
-| `zb_storage`, `zb_fct`, `zb_db` (issue #15) | 0x3F5000, 16 + 4 + 24 KB | 0x7F5000 | 0xFF5000 |
+| `zb_storage`, `zb_fct`, `zb_db` (issue #15) | 0x3F5000, 16 + 4 + 24 KB (`zb_db` only for the move of the device database since homecontrol #111, doc/zigbee.md) | 0x7F5000 | 0xFF5000 |
 
 The `coredump` partition (doc/diagnostics.md) took its 64 KB from the end of `storage`, whose offset
 stays. The image slot took 128 KB from the 4 MB application, and the updater, whose staging area

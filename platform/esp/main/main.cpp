@@ -219,10 +219,12 @@ void loop_task(void*) {
 	g_diag.report();
 	// ---- end diagnostics ----
 	knx().init();
-	zigbee().init(image()); // the adapter becomes a dynamic spec provider of the image service
 	// ---- runtime image ----
 	g_blobs.start(); // mounts /storage (shared with the web server's UI files) and opens /storage/state
 	ctl.shutdown().add(flash_queue()); // a planned restart waits for the queued writes (at most 1 s)
+	// The adapter becomes a dynamic spec provider of the image service; its device database is a blob
+	// of g_blobs behind the write queue (homecontrol #111), moved there from zb_db once.
+	zigbee().init(image(), &flash_queue(), &g_blobs);
 	g_storage.set_worker(&g_storage_worker);
 	g_storage.measure_now(); // once here; after that off the loop when the store changed
 	g_slot.start(); // the partition `image` (logged); the service maps it at start()

@@ -168,14 +168,22 @@ struct ZigbeeDevice {
 
 /// The joined devices, persisted as JSON in the BlobStore blob kBlobName (format in spec/zigbee.md).
 /// Statically sized (kMaxDevices); reading and writing the blob allocate one temporary buffer of
-/// exactly the blob's size (a save measures the JSON first; a load checks the text in a first pass
-/// and parses it into the table in a second, without a temporary table), which happens at start and
-/// when a device joins, is interviewed, renamed or removed, and (with the adapter's next check, at
-/// most one write per check) when its short address changes or its receiver is learnt; never per
-/// frame.
+/// exactly the blob's size (a load checks the text in a first pass and parses it into the table in a
+/// second, without a temporary table), which happens at start and when a device joins, is
+/// interviewed, renamed or removed, and (with the adapter's next check, at most one write per check)
+/// when its short address changes or its receiver is learnt; never per frame.
+///
+/// A save hands the database to the store as the blob's source (BlobStore::write_from(),
+/// homecontrol #111): through the BlobQueue the JSON is produced on the loop when the queue's worker
+/// is about to write it, into a buffer of exactly its size that lives until the worker wrote it; the
+/// loop never waits for the flash, and saves while one waits cost nothing.
+///
+/// Firmware before homecontrol #111 kept the blob in an NVS store of its own (the ESP's `zb_db`
+/// partition): set_legacy() names it, and load() moves the blob from there once (doc/zigbee.md
+/// "Partitions").
 ///
 /// Threading: the event loop's thread.
-class DeviceDatabase {
+class DeviceDatabase : private BlobSource {
 public:
 	static constexpr size_t kMaxDevices = 32;
 
@@ -187,16 +195,37 @@ public:
 
 	/// `store` may be nullptr: the database then lives in memory only (logged by the adapter).
 	explicit DeviceDatabase(BlobStore* store);
+	/// A save still waiting in the store is taken from it now (BlobStore::forget_source()).
+	~DeviceDatabase();
 
 	DeviceDatabase(const DeviceDatabase&) = delete;
 	DeviceDatabase& operator=(const DeviceDatabase&) = delete;
 
+	/// The store of the firmware before homecontrol #111 (`legacy`, the NVS store of `zb_db`) and the
+	/// store the database's store writes to (`direct`: the platform's store under the BlobQueue, the
+	/// database's store itself without one), for the move in load(). Call before load(), while
+	/// nothing waits in the queue.
+	void set_legacy(BlobStore* legacy, BlobStore* direct) {
+		legacy_ = legacy;
+		direct_ = direct;
+	}
+
 	/// Reads the blob. A missing blob is an empty database (true). A refusal (false, the reason in
 	/// `error`) leaves the database as it was.
+	///
+	/// With set_legacy() and a blob in the legacy store (homecontrol #111): without a blob in the
+	/// database's store, the legacy blob is loaded, written to `direct`, read back and compared, and
+	/// only then removed from the legacy store; a failure (logged as a warning) keeps it there and
+	/// the database runs on what it loaded from it (moved at the next start, or replaced by the next
+	/// save, which goes to the database's store). With a blob in both, the database's store wins: it
+	/// is loaded, and the legacy blob is removed after it loaded; one that does not load leaves the
+	/// legacy blob loaded and kept.
 	bool load(const char** error = nullptr);
 
-	/// Writes the blob (atomic replace by the store). False with `error` when the JSON does not fit
-	/// BlobStore::kMaxBlobSize or the store refuses; the previous blob then stays.
+	/// Writes the blob (atomic replace by the store, through write_from()). False with `error` when
+	/// the JSON does not fit BlobStore::kMaxBlobSize or the store refuses; the previous blob then
+	/// stays. Through the BlobQueue `ok` means accepted: a failure of the worker's write is logged and
+	/// retried by the queue.
 	bool save(const char** error = nullptr);
 
 	size_t size() const { return count_; }
@@ -225,7 +254,20 @@ public:
 	bool read_json(const char* text, size_t length, const char** error = nullptr);
 
 private:
+	// BlobSource: the JSON of write_json().
+	size_t content_size() const override;
+	bool content(uint8_t* buffer, size_t size) const override;
+
+	/// Reads the blob of `store` into the database (load() without the move).
+	bool load_from(const BlobStore& store, const char** error);
+	/// load() with a legacy store (set_legacy()).
+	bool load_moving(const char** error);
+	/// Writes `text` to direct_, reads it back and compares; false (the reason in `why`) otherwise.
+	bool copy_verified(const char* text, size_t length, const char*& why);
+
 	BlobStore* store_;
+	BlobStore* legacy_ = nullptr;
+	BlobStore* direct_ = nullptr;
 	ZigbeeDevice devices_[kMaxDevices];
 	size_t count_ = 0;
 };

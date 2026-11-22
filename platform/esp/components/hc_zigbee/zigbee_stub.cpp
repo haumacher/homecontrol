@@ -24,9 +24,9 @@ constexpr const char* kReason = "this chip has no 802.15.4 radio (Zigbee needs a
 ZigbeeService::ZigbeeService(Controller& controller, LoopQueue& queue, DatapointModel& model)
 	: controller_(controller), queue_(queue), model_(model) {}
 
-void ZigbeeService::init(BlobStore*) {}
+void ZigbeeService::init(BlobStore*, BlobStore*) {}
 
-void ZigbeeService::init(image::ImageService&, BlobStore*) {}
+void ZigbeeService::init(image::ImageService&, BlobStore*, BlobStore*) {}
 
 bool ZigbeeService::available() const {
 	return false;

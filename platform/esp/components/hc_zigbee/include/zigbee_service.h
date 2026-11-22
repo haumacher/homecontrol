@@ -19,7 +19,8 @@ namespace esp {
 
 /// The Zigbee coordinator on the device (doc/zigbee.md): the esp-zigbee-lib in its own task
 /// (`hc_zigbee`), the core's ZigbeeAdapter on the event loop, the driver between them, and the
-/// device database in the zb_db NVS partition. Answers and frames of the stack are copied into a
+/// device database in the blob store behind the write queue (homecontrol #111; moved there once from
+/// the zb_db NVS partition of the firmware before). Answers and frames of the stack are copied into a
 /// ring and handed to the adapter through the LoopQueue; the adapter's requests take the stack's
 /// lock and call it directly from the loop task.
 ///
@@ -37,16 +38,19 @@ public:
 	ZigbeeService(const ZigbeeService&) = delete;
 	ZigbeeService& operator=(const ZigbeeService&) = delete;
 
-	/// Opens the device database (`store`, or the zb_db partition when nullptr), starts the adapter
-	/// and the Zigbee task (network formation on the first start). Call once, on the event loop's
-	/// task, after the WiFi driver is initialized. Logs and stays unavailable when the partitions
-	/// zb_storage/zb_fct are missing (an OTA-updated device with the old partition table).
-	void init(BlobStore* store = nullptr);
+	/// Starts the adapter with the device database in `store` (the BlobQueue in front of the blob
+	/// store; nullptr: in memory only, logged), moving the database of the firmware before out of the
+	/// zb_db partition into `direct` (the store under the queue) once, and starts the Zigbee task
+	/// (network formation on the first start). Call once, on the event loop's task, after the WiFi
+	/// driver is initialized and before anything writes through the queue. Logs and stays
+	/// unavailable when the partitions zb_storage/zb_fct are missing (an OTA-updated device with the
+	/// old partition table).
+	void init(BlobStore* store, BlobStore* direct);
 
 	/// As init(), and registers the adapter with `images` as a provider of dynamic datapoints before
 	/// it starts: the joined devices' datapoints join the image-loaded model (doc/zigbee.md "The
 	/// model"), and the image's `zigbee` bindings reach the adapter. Call before images.start().
-	void init(image::ImageService& images, BlobStore* store = nullptr);
+	void init(image::ImageService& images, BlobStore* store, BlobStore* direct);
 
 	/// Whether the coordinator runs (compiled in, partitions present, task created).
 	bool available() const;
@@ -72,7 +76,7 @@ public:
 	DatapointModel& model() { return model_; }
 
 private:
-	void start(image::ImageService* images, BlobStore* store);
+	void start(image::ImageService* images, BlobStore* store, BlobStore* direct);
 
 	Controller& controller_;
 	LoopQueue& queue_;

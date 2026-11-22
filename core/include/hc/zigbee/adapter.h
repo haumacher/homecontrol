@@ -397,6 +397,11 @@ public:
 	ZigbeeAdapter(const ZigbeeAdapter&) = delete;
 	ZigbeeAdapter& operator=(const ZigbeeAdapter&) = delete;
 
+	/// The store of the device database before homecontrol #111 and the store under `store`'s write
+	/// queue: start() moves the database from `legacy` once (DeviceDatabase::set_legacy(),
+	/// doc/zigbee.md "Partitions"). Before start().
+	void set_legacy_database(BlobStore* legacy, BlobStore* direct) { database_.set_legacy(legacy, direct); }
+
 	/// Reads the database (an unreadable one is logged and starts empty, the blob is kept until the
 	/// next write), loads the datapoints and starts the stale check and the reads. Once; false (with
 	/// `error`) when called again or the datapoints cannot be loaded (the adapter runs anyway and
