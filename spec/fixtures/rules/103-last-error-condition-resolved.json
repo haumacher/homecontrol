@@ -1,0 +1,47 @@
+{
+	"title": "Last error: a condition without a value is resolved once the condition has a value",
+	"description": "The courtyard light of homecontrol #114: after the boot the illuminance has no value, so the motions at 1000 and 2000 find the condition without a value (conditionNoValue, logged once, naming the illuminance). The illuminance arrives at 60000; the error stays a problem until the condition is evaluated again. The motion at 61000 evaluates it with a value and switches the light: the last error is history, it stays the last error.",
+	"datapoints": [
+		{"name": "yard.motion", "type": "boolean"},
+		{"name": "yard.lux", "type": "unsigned"},
+		{"name": "yard.light", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "courtyard",
+			"name": "Courtyard light",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "yard.motion", "on": "update"}],
+					"condition": {"kind": "binary", "op": "and", "left": {"kind": "datapoint", "name": "yard.motion"}, "right": {"kind": "binary", "op": "<", "left": {"kind": "datapoint", "name": "yard.lux"}, "right": {"kind": "literal", "type": "integer", "value": 50}}},
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "yard.light",
+							"value": {"kind": "literal", "type": "boolean", "value": true}
+						}
+					]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 0, "check": {"lastError": {"courtyard": null}}},
+		{"at": 1000, "report": {"datapoint": "yard.motion", "value": true}},
+		{"at": 2000, "report": {"datapoint": "yard.motion", "value": true}},
+		{"at": 2000, "check": {"lastError": {"courtyard": {"code": "conditionNoValue", "resolved": false}}}},
+		{"at": 60000, "report": {"datapoint": "yard.lux", "value": 10}},
+		{"at": 60000, "check": {"lastError": {"courtyard": {"code": "conditionNoValue", "resolved": false}}}},
+		{"at": 61000, "report": {"datapoint": "yard.motion", "value": true}}
+	],
+	"end": 62000,
+	"expected": {
+		"commands": [
+			{"at": 61000, "rule": "courtyard", "datapoint": "yard.light", "value": true}
+		],
+		"logs": [
+			{"at": 1000, "rule": "courtyard", "code": "conditionNoValue", "datapoint": "yard.lux"}
+		],
+		"final": {"lastError": {"courtyard": {"code": "conditionNoValue", "resolved": true}}}
+	}
+}

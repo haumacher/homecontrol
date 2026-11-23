@@ -1,0 +1,39 @@
+{
+	"title": "Last error: a refused silence trigger is resolved when it arms after a parameter change",
+	"description": "The period of the silence trigger is the parameter quiet, 50 ms by default: below 100 ms, so the trigger is not armed at the start (timerRefused). The update at 1000 runs the other reaction of the rule cleanly and arms the trigger again, refused without a new entry: the error stays a problem, its place is the silence trigger. Setting quiet to 1 min at 2000 arms the trigger from the update at 1000 and resolves the error; the period ends at 61000.",
+	"datapoints": [{"name": "sensor.temp", "type": "real"}],
+	"rules": [
+		{
+			"id": "watch",
+			"name": "Watch",
+			"parameters": [{"id": "quiet", "label": "Quiet period", "type": "duration", "default": 50}],
+			"reactions": [
+				{
+					"triggers": [{"kind": "silence", "datapoint": "sensor.temp", "after": {"kind": "parameter", "id": "quiet"}}],
+					"actions": [{"kind": "log", "level": "warning", "message": ["silent"]}]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "sensor.temp", "on": "update"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["update"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 0, "check": {"lastError": {"watch": {"code": "timerRefused", "resolved": false}}}},
+		{"at": 1000, "report": {"datapoint": "sensor.temp", "value": 20.0}},
+		{"at": 1000, "check": {"lastError": {"watch": {"code": "timerRefused", "resolved": false}}}},
+		{"at": 2000, "setParameter": {"rule": "watch", "parameter": "quiet", "value": 60000}},
+		{"at": 2000, "check": {"lastError": {"watch": {"code": "timerRefused", "resolved": true}}}}
+	],
+	"end": 70000,
+	"expected": {
+		"commands": [],
+		"logs": [
+			{"at": 0, "rule": "watch", "code": "timerRefused"},
+			{"at": 1000, "rule": "watch", "code": "log", "level": "info", "message": "update"},
+			{"at": 61000, "rule": "watch", "code": "log", "level": "warning", "message": "silent"}
+		],
+		"final": {"firings": {"watch": 2}, "lastError": {"watch": {"code": "timerRefused", "resolved": true}}}
+	}
+}

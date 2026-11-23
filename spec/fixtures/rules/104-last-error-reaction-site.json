@@ -1,0 +1,67 @@
+{
+	"title": "Last error: a refused write is resolved only when its own reaction runs again without a problem",
+	"description": "The reaction on in.level writes in.level to the unsigned d.level: -5.0 at 1000 has no exact conversion (writeRefused). The other reaction of the same rule runs cleanly at 2000 and does not resolve it: the place of an error without an expression is the reaction it was logged in. The reaction on in.level runs again without a problem at 3000 and resolves it. The second rule never had an error.",
+	"datapoints": [
+		{"name": "in.level", "type": "real"},
+		{"name": "in.switch", "type": "boolean"},
+		{"name": "d.level", "type": "unsigned"},
+		{"name": "d.lamp", "type": "boolean"}
+	],
+	"rules": [
+		{
+			"id": "w",
+			"name": "Writes",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.level"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "d.level",
+							"value": {"kind": "datapoint", "name": "in.level"}
+						}
+					]
+				},
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.switch"}],
+					"actions": [
+						{
+							"kind": "write",
+							"datapoint": "d.lamp",
+							"value": {"kind": "datapoint", "name": "in.switch"}
+						}
+					]
+				}
+			]
+		},
+		{
+			"id": "clean",
+			"name": "Clean",
+			"reactions": [
+				{
+					"triggers": [{"kind": "datapoint", "datapoint": "in.switch"}],
+					"actions": [{"kind": "log", "level": "info", "message": ["switch"]}]
+				}
+			]
+		}
+	],
+	"timeline": [
+		{"at": 1000, "report": {"datapoint": "in.level", "value": -5.0}},
+		{"at": 1000, "check": {"lastError": {"w": {"code": "writeRefused", "resolved": false}, "clean": null}}},
+		{"at": 2000, "report": {"datapoint": "in.switch", "value": true}},
+		{"at": 2000, "check": {"lastError": {"w": {"code": "writeRefused", "resolved": false}}}},
+		{"at": 3000, "report": {"datapoint": "in.level", "value": 40.0}}
+	],
+	"end": 4000,
+	"expected": {
+		"commands": [
+			{"at": 2000, "rule": "w", "datapoint": "d.lamp", "value": true},
+			{"at": 3000, "rule": "w", "datapoint": "d.level", "value": 40}
+		],
+		"logs": [
+			{"at": 1000, "rule": "w", "code": "writeRefused"},
+			{"at": 2000, "rule": "clean", "code": "log", "level": "info", "message": "switch"}
+		],
+		"final": {"lastError": {"w": {"code": "writeRefused", "resolved": true}, "clean": null}}
+	}
+}

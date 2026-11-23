@@ -1149,6 +1149,20 @@ private:
 			CHECK_MESSAGE(d.firings == static_cast<uint32_t>(entry.second.number), where << ": firings of "
 				<< entry.first << " are " << d.firings << ", expected " << entry.second.text);
 		}
+		for (const auto& entry : expected["lastError"].members) {
+			// The rule's last error and whether it is resolved (spec/rules.md 9.1); null: none.
+			hc::rules::RuleDiagnostics d;
+			REQUIRE(engine_->diagnostics(static_cast<size_t>(rule_index(entry.first)), d));
+			std::string have = d.has_error ? std::string(hc::rules::log_code_name(d.last_error_code)) +
+				(d.resolved ? " resolved" : " unresolved") : "null";
+			REQUIRE_MESSAGE((entry.second.kind == Json::Kind::null ||
+				(entry.second["code"].kind == Json::Kind::string && entry.second["resolved"].kind == Json::Kind::boolean)),
+				"lastError of " << entry.first << " is neither null nor {\"code\", \"resolved\"}");
+			std::string want = entry.second.kind == Json::Kind::null ? "null" :
+				entry.second["code"].text + (entry.second["resolved"].boolean ? " resolved" : " unresolved");
+			CHECK_MESSAGE(have == want, where << ": last error of " << entry.first << " is " << have << ", expected "
+				<< want);
+		}
 		if (expected.has("schedules")) {
 			compare_schedules(expected["schedules"], where);
 		}
@@ -1589,6 +1603,9 @@ HC_RULE_CASE("99", "load-refused-write-state-datapoint")
 HC_RULE_CASE("100", "load-refused-own-state-datapoint")
 HC_RULE_CASE("101", "timeline-enable-override-watch")
 HC_RULE_CASE("102", "persisted-value-reboot")
+HC_RULE_CASE("103", "last-error-condition-resolved")
+HC_RULE_CASE("104", "last-error-reaction-site")
+HC_RULE_CASE("105", "last-error-silence-armed")
 
 /// The counts of a corpus run (the cases selected in this run), for the log.
 void print_stats(const char* name, const std::string& directory) {
@@ -1605,7 +1622,7 @@ void print_stats(const char* name, const std::string& directory) {
 
 TEST_CASE("RulesCorpus every case has a test") {
 	std::vector<std::string> files = hc_test::rule_corpus_files();
-	CHECK(files.size() == 102);
+	CHECK(files.size() == 105);
 	print_stats("RulesCorpus", "rules");
 }
 
