@@ -224,6 +224,14 @@ bool BlobQueue::allocate(size_t bytes, size_t& offset) const {
 	return false;
 }
 
+bool BlobQueue::has_room(size_t bytes) const {
+	if (entries_ == nullptr) {
+		return true;
+	}
+	size_t offset = 0;
+	return count_ < limits_.entries && allocate(bytes, offset);
+}
+
 BlobQueue::Entry* BlobQueue::add(const char* name, Op op, size_t bytes) {
 	if (count_ == limits_.entries) {
 		return nullptr;

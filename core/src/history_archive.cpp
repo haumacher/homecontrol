@@ -26,16 +26,24 @@ using history_detail::put_u32;
 using history_detail::slot_empty;
 using history_detail::to_double;
 
+using history_detail::build_header;
+using history_detail::kArchiveMagic0;
+using history_detail::kArchiveMagic1;
+using history_detail::kArchivePrefix;
+using history_detail::kJournalMagic0;
+using history_detail::kJournalMagic1;
+using history_detail::kJournalMaxBytes;
+using history_detail::kJournalPrefix;
+using history_detail::kJournalVersion;
+using history_detail::kMaxSegments;
+using history_detail::kSegmentNameSize;
+using history_detail::segment_name;
+using history_detail::SegmentState;
+using history_detail::slot_middle;
+using history_detail::take;
+
 namespace {
 
-constexpr const char* kArchivePrefix = "a.";
-constexpr uint8_t kMagic0 = 'H';
-constexpr uint8_t kMagic1 = 'A';
-/// The most segments an archive can have (kMaxSlots slots).
-constexpr uint32_t kMaxSegments =
-	(History::kMaxSlots + History::kSlotsPerSegment - 1) / History::kSlotsPerSegment;
-/// Slots a query reads from flash at a time.
-constexpr uint32_t kWindow = 16;
 /// Chunks of one patch: slots and the empty slots of the gaps between them.
 constexpr size_t kMaxChunks = 32;
 /// Empty slots, for the gaps of a patch and a new segment.
@@ -45,35 +53,6 @@ const uint8_t kZeros[kZeroBytes] = {};
 constexpr uint32_t kDstSlackS = 7200;
 
 static_assert(History::kSegmentBytes == 4096, "a segment is one LittleFS block");
-
-/// "a." + 8 hex digits of the name's hash + "." + the resolution in hex + "." + the segment in hex.
-void segment_name(uint32_t hash, uint32_t resolution_s, uint32_t segment, char* out, size_t size) {
-	std::snprintf(out, size, "%s%08x.%x.%x", kArchivePrefix, static_cast<unsigned>(hash),
-		static_cast<unsigned>(resolution_s), static_cast<unsigned>(segment));
-}
-
-constexpr size_t kSegmentNameSize = 32;
-
-} // namespace
-
-namespace history_detail {
-
-enum class SegmentState : uint8_t {
-	ok,
-	retention_changed, ///< The same layout: the data stays, the header is rewritten.
-	absent,
-	damaged,
-	newer,
-	type_changed,
-	layout_changed,
-	foreign,
-};
-
-} // namespace history_detail
-
-namespace {
-
-using history_detail::SegmentState;
 
 const char* segment_state_reason(SegmentState state) {
 	switch (state) {
@@ -90,14 +69,13 @@ const char* segment_state_reason(SegmentState state) {
 
 // ---- Segments -----------------------------------------------------------------------------------
 
-namespace {
+namespace history_detail {
 
-/// The header of segment `index` (doc/persistence.md "Archive segment format").
 void build_header(uint8_t* h, uint32_t hash, ValueType type, uint32_t resolution_s, uint32_t retention_s, uint32_t days,
 	uint16_t index, uint16_t segments) {
 	std::memset(h, 0, History::kSegmentHeaderBytes);
-	h[0] = kMagic0;
-	h[1] = kMagic1;
+	h[0] = kArchiveMagic0;
+	h[1] = kArchiveMagic1;
 	h[2] = History::kArchiveFormatVersion;
 	h[3] = sizeof(ArchiveSlot);
 	put_u32(h + 4, resolution_s);
@@ -111,54 +89,42 @@ void build_header(uint8_t* h, uint32_t hash, ValueType type, uint32_t resolution
 	put_u32(h + 28, persist::crc32(0, h, 28));
 }
 
-} // namespace
+} // namespace history_detail
 
-/// Reads the slots of an archive from its segments, a window of kWindow slots at a time.
-class History::SlotReader {
-public:
-	SlotReader(const History& history, const Ring& ring, const Archive& archive)
-		: history_(history), ring_(ring), archive_(archive) {}
-
-	/// The slot at `position` on flash; false if its segment is missing or not this archive's.
-	bool get(uint32_t position, ArchiveSlot& out) {
-		uint32_t segment = position / kSlotsPerSegment;
-		uint32_t index = position % kSlotsPerSegment;
-		if (segment != segment_) {
-			segment_ = segment;
-			count_ = 0;
-			SegmentState state = history_.segment_state(ring_, archive_, segment, nullptr);
-			usable_ = state == SegmentState::ok || state == SegmentState::retention_changed;
+bool History::SlotReader::get(uint32_t position, ArchiveSlot& out) {
+	uint32_t segment = position / kSlotsPerSegment;
+	uint32_t index = position % kSlotsPerSegment;
+	if (segment != segment_) {
+		segment_ = segment;
+		count_ = 0;
+		SegmentState state = history_->segment_state(*ring_, *archive_, segment, nullptr);
+		if (calls_ != nullptr) {
+			*calls_ += state == SegmentState::absent ? 1 : 2;
 		}
-		if (!usable_) {
+		usable_ = state == SegmentState::ok || state == SegmentState::retention_changed;
+	}
+	if (!usable_) {
+		return false;
+	}
+	if (count_ == 0 || index < base_ || index >= base_ + count_) {
+		char name[kSegmentNameSize];
+		segment_name(ring_->hash, archive_->resolution_s, segment, name, sizeof(name));
+		uint32_t want = std::min<uint32_t>(kWindow, kSlotsPerSegment - index);
+		size_t length = 0;
+		BlobStatus status = history_->store_.read(name, kSegmentHeaderBytes + index * sizeof(ArchiveSlot), window_,
+			want * sizeof(ArchiveSlot), length);
+		if (calls_ != nullptr) {
+			++*calls_;
+		}
+		base_ = index;
+		count_ = status == BlobStatus::ok ? static_cast<uint32_t>(length / sizeof(ArchiveSlot)) : 0;
+		if (count_ == 0) {
 			return false;
 		}
-		if (count_ == 0 || index < base_ || index >= base_ + count_) {
-			char name[kSegmentNameSize];
-			segment_name(ring_.hash, archive_.resolution_s, segment, name, sizeof(name));
-			uint32_t want = std::min<uint32_t>(kWindow, kSlotsPerSegment - index);
-			size_t length = 0;
-			BlobStatus status = history_.store_.read(name, kSegmentHeaderBytes + index * sizeof(ArchiveSlot), window_,
-				want * sizeof(ArchiveSlot), length);
-			base_ = index;
-			count_ = status == BlobStatus::ok ? static_cast<uint32_t>(length / sizeof(ArchiveSlot)) : 0;
-			if (count_ == 0) {
-				return false;
-			}
-		}
-		out = window_[index - base_];
-		return true;
 	}
-
-private:
-	const History& history_;
-	const Ring& ring_;
-	const Archive& archive_;
-	uint32_t segment_ = UINT32_MAX;
-	bool usable_ = false;
-	uint32_t base_ = 0;
-	uint32_t count_ = 0;
-	ArchiveSlot window_[kWindow];
-};
+	out = window_[index - base_];
+	return true;
+}
 
 SegmentState History::segment_state(const Ring& r, const Archive& a, uint32_t segment,
 	uint32_t* saved_retention) const {
@@ -174,7 +140,7 @@ SegmentState History::segment_state(const Ring& r, const Archive& a, uint32_t se
 	if (status == BlobStatus::ok) {
 		status = store_.read(name, 0, h, sizeof(h), length);
 	}
-	if (status != BlobStatus::ok || length != sizeof(h) || h[0] != kMagic0 || h[1] != kMagic1 ||
+	if (status != BlobStatus::ok || length != sizeof(h) || h[0] != kArchiveMagic0 || h[1] != kArchiveMagic1 ||
 		get_u32(h + 28) != persist::crc32(0, h, 28) || h[2] == 0) {
 		return SegmentState::damaged;
 	}
@@ -250,16 +216,6 @@ int64_t History::slot_start(const Archive& a, uint32_t number) const {
 	return local_day_start(static_cast<int64_t>(number) * a.days);
 }
 
-namespace {
-
-/// The middle of a slot from its start: the number of a slot follows from it even after the zone
-/// moved local midnight by some hours.
-int64_t slot_middle(uint32_t start, uint32_t resolution_s, uint32_t days) {
-	return static_cast<int64_t>(start) + (days > 0 ? static_cast<int64_t>(days) * 43200 : resolution_s / 2);
-}
-
-} // namespace
-
 bool History::slot_valid(const Archive& a, const ArchiveSlot& s, uint32_t number) const {
 	if (slot_empty(s) || s.start == 0) {
 		return false;
@@ -272,21 +228,6 @@ bool History::slot_valid(const Archive& a, const ArchiveSlot& s, uint32_t number
 }
 
 // ---- Feeding ------------------------------------------------------------------------------------
-
-namespace {
-
-void take(ArchiveSlot& s, float value) {
-	if (slot_empty(s)) {
-		s.min = value;
-		s.max = value;
-	} else {
-		s.min = std::min(s.min, value);
-		s.max = std::max(s.max, value);
-	}
-	s.last = value;
-}
-
-} // namespace
 
 void History::feed(Ring& r, uint32_t t, uint32_t bits) {
 	if (r.archive_count == 0) {
@@ -386,7 +327,9 @@ void History::open_at(Ring& r, Archive& a, uint32_t t) {
 		a.open_dirty = true;
 		return;
 	}
-	if (r.persistable) {
+	// An archive a carry-over fills takes up only the slot of the cut once the carry-over wrote it (merged
+	// with what was live then); anything else of it on the store is not this load's (homecontrol #118).
+	if (r.persistable && (!a.carry || (a.merged && number == a.carry_number))) {
 		SlotReader reader(*this, r, a);
 		ArchiveSlot saved;
 		if (reader.get(number % a.positions, saved) && saved.start == a.open.start && slot_valid(a, saved, number)) {
@@ -401,8 +344,11 @@ void History::close(Ring& r, Archive& a) {
 		return;
 	}
 	if (a.pending_count == a.pending_capacity) {
-		// Saves are later than an hour (a store that failed, or a long save interval): write now.
-		save_archive(r, a);
+		// Saves are later than an hour (a store that failed, or a long save interval): write now, unless
+		// a carry-over reads the datapoint's archives (it takes less than an hour unless the store fails).
+		if (!r.carrying) {
+			save_archive(r, a);
+		}
 		if (a.pending_count == a.pending_capacity) {
 			std::memmove(a.pending, a.pending + 1, (a.pending_count - 1) * sizeof(ArchiveSlot));
 			--a.pending_count;
@@ -420,8 +366,8 @@ void History::close(Ring& r, Archive& a) {
 // ---- Writing ------------------------------------------------------------------------------------
 
 bool History::save_archive(const Ring& r, Archive& a) {
-	if (!r.persistable) {
-		return false;
+	if (!r.persistable || a.carry) {
+		return false; // a carry-over fills it: saved once that is done
 	}
 	bool with_open = a.has_open && a.open_dirty && !slot_empty(a.open);
 	size_t total = a.pending_count + (with_open ? 1 : 0);
@@ -517,8 +463,79 @@ bool History::save_archive(const Ring& r, Archive& a) {
 
 // ---- Load ---------------------------------------------------------------------------------------
 
+bool History::read_journal(const Ring& r, uint32_t* resolutions, uint8_t& count, bool& damaged) const {
+	count = 0;
+	damaged = false;
+	char name[persist::kBlobNameSize];
+	persist::blob_name(kJournalPrefix, r.name, name);
+	size_t size = 0;
+	if (store_.size(name, size) != BlobStatus::ok) {
+		return false;
+	}
+	uint8_t j[kJournalMaxBytes];
+	size_t length = 0;
+	if (size < 12 || size > sizeof(j) || store_.read(name, 0, j, sizeof(j), length) != BlobStatus::ok || length != size ||
+		j[0] != kJournalMagic0 || j[1] != kJournalMagic1 || j[2] != kJournalVersion || j[3] > kMaxArchives ||
+		size != 12u + 4u * j[3] || get_u32(j + size - 4) != persist::crc32(0, j, size - 4) || get_u32(j + 4) != r.hash) {
+		damaged = true;
+		return true;
+	}
+	count = j[3];
+	for (uint8_t i = 0; i < count; ++i) {
+		resolutions[i] = get_u32(j + 8 + 4 * i);
+	}
+	return true;
+}
+
 void History::check_archives() {
 	size_t missing = 0;
+	size_t jobs = 0;
+	WallTime wall = clock_.wall_time();
+	// Which segments of the image's archives the store has: one walk instead of a size() of every possible
+	// segment of every archive (17 each), which grew the load with the number of histories (homecontrol #118).
+	static_assert(kMaxSegments <= 32, "a segment mask is 32 bits");
+	class Presence : public BlobVisitor {
+	public:
+		Presence(Ring* rings, size_t count) : rings_(rings), count_(count) {}
+		void blob(const char* name, size_t) override {
+			if (std::strncmp(name, kArchivePrefix, 2) != 0) {
+				return;
+			}
+			char* end = nullptr;
+			unsigned long hash = std::strtoul(name + 2, &end, 16);
+			if (end == nullptr || *end != '.') {
+				return;
+			}
+			unsigned long resolution = std::strtoul(end + 1, &end, 16);
+			if (end == nullptr || *end != '.') {
+				return;
+			}
+			unsigned long segment = std::strtoul(end + 1, &end, 16);
+			if (end == nullptr || *end != '\0' || segment >= kMaxSegments) {
+				return;
+			}
+			for (size_t i = 0; i < count_; ++i) {
+				Ring& r = rings_[i];
+				for (uint8_t k = 0; r.persistable && r.hash == hash && k < r.archive_count; ++k) {
+					if (r.archives[k].resolution_s == resolution) {
+						r.archives[k].present |= 1u << segment;
+					}
+				}
+			}
+		}
+
+	private:
+		Ring* rings_;
+		size_t count_;
+	};
+	bool archives = false;
+	for (size_t i = 0; i < count_; ++i) {
+		archives = archives || (rings_[i].persistable && rings_[i].archive_count > 0);
+	}
+	if (archives) {
+		Presence presence(rings_, count_);
+		store_.visit(presence);
+	}
 	for (size_t i = 0; i < count_; ++i) {
 		Ring& r = rings_[i];
 		if (!r.persistable) {
@@ -527,6 +544,16 @@ void History::check_archives() {
 			}
 			continue;
 		}
+		// A carry-over that did not finish (a restart or another load in the middle, homecontrol #118):
+		// the archives its journal names are not complete, so they are carried over again.
+		uint32_t unfinished[kMaxArchives] = {};
+		uint8_t unfinished_count = 0;
+		bool journal_damaged = false;
+		bool journal = read_journal(r, unfinished, unfinished_count, journal_damaged);
+		if (journal_damaged) {
+			Log::warn(kTag, "history of '%s': the journal of a carry-over is damaged: its archives are carried over again",
+				r.name);
+		}
 		for (uint8_t k = 0; k < r.archive_count; ++k) {
 			Archive& a = r.archives[k];
 			const char* reason = nullptr;
@@ -534,6 +561,9 @@ void History::check_archives() {
 			uint32_t existing = 0;
 			bool retention_changed = false;
 			for (uint32_t s = 0; s < kMaxSegments; ++s) {
+				if ((a.present & (1u << s)) == 0) {
+					continue;
+				}
 				uint32_t retention = a.retention_s;
 				SegmentState state = segment_state(r, a, s, &retention);
 				if (state == SegmentState::absent) {
@@ -549,15 +579,26 @@ void History::check_archives() {
 					reason = segment_state_reason(state);
 				}
 			}
+			bool untrusted = false;
+			for (uint8_t u = 0; u < unfinished_count; ++u) {
+				untrusted = untrusted || unfinished[u] == a.resolution_s;
+			}
+			untrusted = existing > 0 && (untrusted || journal_damaged);
 			if (reason != nullptr) {
 				Log::warn(kTag, "history of '%s': the %u s archive is dropped: %s", r.name,
 					static_cast<unsigned>(a.resolution_s), reason);
 				for (uint32_t s = 0; s < kMaxSegments; ++s) {
-					char name[kSegmentNameSize];
-					segment_name(r.hash, a.resolution_s, s, name, sizeof(name));
-					store_.remove(name);
+					if ((a.present & (1u << s)) != 0) {
+						char name[kSegmentNameSize];
+						segment_name(r.hash, a.resolution_s, s, name, sizeof(name));
+						store_.remove(name);
+					}
 				}
 				existing = 0;
+				untrusted = false;
+			} else if (untrusted) {
+				Log::info(kTag, "history of '%s': the %u s archive is carried over again (the carry-over before did not finish)",
+					r.name, static_cast<unsigned>(a.resolution_s));
 			} else if (retention_changed) {
 				Log::info(kTag, "history of '%s': the %u s archive keeps its slots (retention %u s, was %u s, same segments)",
 					r.name, static_cast<unsigned>(a.resolution_s), static_cast<unsigned>(a.retention_s),
@@ -575,16 +616,52 @@ void History::check_archives() {
 					}
 				}
 			}
-			missing += a.segments - std::min<uint32_t>(existing, a.segments);
-			a.fresh = existing == 0;
+			missing += a.segments - std::min<uint32_t>(untrusted ? 0 : existing, a.segments);
+			// A new archive takes what the stores kept before already hold for its time (a new image whose
+			// archives have other resolutions, homecontrol #115), in steps after the load (#118).
+			a.carry = existing == 0 || untrusted;
+			a.stale = untrusted;
+		}
+		bool carry = journal;
+		for (uint8_t k = 0; k < r.archive_count; ++k) {
+			carry = carry || r.archives[k].carry;
+		}
+		r.carrying = carry;
+		jobs += carry ? 1 : 0;
+	}
+
+	// The carry-over's jobs, and what the store holds of their datapoints' archives (one walk).
+	carry_stats_ = HistoryCarryStats();
+	Carry* carry = nullptr;
+	if (jobs > 0) {
+		carry = new (std::nothrow) Carry(*this);
+		if (carry != nullptr && !carry->allocate_jobs(jobs)) {
+			delete carry;
+			carry = nullptr;
+		}
+		if (carry == nullptr) {
+			// Nothing is carried over now, nothing deleted that it would read: the next load tries again.
+			Log::error(kTag, "history: no memory to carry %u histories over into the new stores (%u bytes): "
+				"done at the next load", static_cast<unsigned>(jobs),
+				static_cast<unsigned>(sizeof(Carry) + jobs * sizeof(Carry::Job)));
+		} else {
+			for (size_t i = 0; i < count_; ++i) {
+				if (rings_[i].carrying) {
+					carry->job_at(carry->job_count++).ring = static_cast<uint16_t>(i);
+				}
+			}
+			if (wall.synchronized && wall.seconds >= 0 && wall.seconds <= static_cast<int64_t>(UINT32_MAX)) {
+				// The live samples come after the load: the stores count up to it.
+				carry->load_cut_known = true;
+				carry->load_cut = wall.seconds;
+			}
+			carry->cut_known = carry->load_cut_known;
+			carry->cut = carry->load_cut;
 		}
 	}
-	// A new archive takes what the stores kept before already hold for its time (a new image whose
-	// archives have other resolutions, homecontrol #115), before the archives it replaces are deleted.
-	size_t seeded = seed_archives();
-	missing -= std::min(missing, seeded);
 
-	// Segments of archives no longer in the image (another resolution, a datapoint without history).
+	// Segments of archives no longer in the image (another resolution, a datapoint without history),
+	// except those of a datapoint with a carry-over: it reads them and deletes them when it is done.
 	class ArchiveKeeper : public persist::BlobKeeper {
 	public:
 		ArchiveKeeper(const Ring* rings, size_t count) : rings_(rings), count_(count) {}
@@ -604,6 +681,9 @@ void History::check_archives() {
 				if (!r.persistable || r.hash != hash) {
 					continue;
 				}
+				if (r.carrying) {
+					return true;
+				}
 				for (uint8_t k = 0; k < r.archive_count; ++k) {
 					char own[kSegmentNameSize];
 					segment_name(r.hash, r.archives[k].resolution_s, static_cast<uint32_t>(segment), own, sizeof(own));
@@ -620,13 +700,27 @@ void History::check_archives() {
 		const Ring* rings_;
 		size_t count_;
 	};
-	// One line per archive of a datapoint of the image that the image no longer has (its segments
-	// are deleted below with the orphans).
-	class Dropped : public BlobVisitor {
+	// One line per archive of a datapoint of the image that the image no longer has (its segments are
+	// deleted below with the orphans, or by the carry-over); the archives of the carry-over's datapoints.
+	class Walk : public BlobVisitor {
 	public:
-		Dropped(const Ring* rings, size_t count) : rings_(rings), count_(count) {}
+		Walk(const Ring* rings, size_t count, Carry* carry) : rings_(rings), count_(count), carry_(carry) {}
 		void blob(const char* name, size_t) override {
 			char* end = nullptr;
+			if (std::strncmp(name, kJournalPrefix, 3) == 0) {
+				// The journal of a datapoint without a carry-over (no longer recorded or persisted): it goes.
+				for (size_t i = 0; i < count_; ++i) {
+					char own[persist::kBlobNameSize];
+					persist::blob_name(kJournalPrefix, rings_[i].name, own);
+					if (rings_[i].persistable && rings_[i].carrying && std::strcmp(own, name) == 0) {
+						return;
+					}
+				}
+				if (journals_ < kMax && std::strlen(name) < sizeof(orphans_[0])) {
+					std::snprintf(orphans_[journals_++], sizeof(orphans_[0]), "%s", name);
+				}
+				return;
+			}
 			if (std::strncmp(name, kArchivePrefix, 2) != 0) {
 				return;
 			}
@@ -635,9 +729,20 @@ void History::check_archives() {
 				return;
 			}
 			unsigned long resolution = std::strtoul(end + 1, &end, 16);
+			if (end == nullptr || *end != '.' || resolution == 0 || resolution > UINT32_MAX) {
+				return;
+			}
+			unsigned long segment = std::strtoul(end + 1, &end, 16);
+			if (end == nullptr || *end != '\0' || segment >= kMaxSegments) {
+				return;
+			}
 			for (size_t i = 0; i < count_; ++i) {
 				const Ring& r = rings_[i];
 				if (!r.persistable || r.hash != hash) {
+					continue;
+				}
+				if (r.carrying) {
+					found(i, static_cast<uint32_t>(resolution), static_cast<uint32_t>(segment));
 					continue;
 				}
 				bool kept = false;
@@ -659,8 +764,40 @@ void History::check_archives() {
 					rings_[seen_[j].ring].name, seen_[j].resolution);
 			}
 		}
+		/// Deletes the orphaned journals (more than kMax: the rest at the next load).
+		void delete_journals(BlobStore& store) const {
+			for (size_t j = 0; j < journals_; ++j) {
+				BlobStatus status = store.remove(orphans_[j]);
+				if (status == BlobStatus::ok) {
+					Log::info(kTag, "deleted %s: no longer in the image", orphans_[j]);
+				} else if (status != BlobStatus::not_found) {
+					Log::error(kTag, "cannot delete %s: %s", orphans_[j], blob_status_name(status));
+				}
+			}
+		}
 
 	private:
+		void found(size_t ring, uint32_t resolution, uint32_t segment) {
+			if (carry_ == nullptr) {
+				return;
+			}
+			for (size_t j = 0; j < carry_->job_count; ++j) {
+				Carry::Job& job = carry_->job_at(j);
+				if (job.ring != ring) {
+					continue;
+				}
+				for (uint8_t f = 0; f < job.found_count; ++f) {
+					if (job.found_resolution[f] == resolution) {
+						return;
+					}
+				}
+				if (job.found_count < Carry::kMaxFound) {
+					job.found_resolution[job.found_count] = resolution;
+					job.found_segment[job.found_count++] = static_cast<uint8_t>(segment);
+				}
+				return;
+			}
+		}
 		struct Seen {
 			size_t ring;
 			unsigned long resolution;
@@ -668,12 +805,16 @@ void History::check_archives() {
 		enum : size_t { kMax = 8 };
 		const Ring* rings_;
 		size_t count_;
+		Carry* carry_;
 		Seen seen_[kMax] = {};
 		size_t found_ = 0;
+		char orphans_[kMax][persist::kBlobNameSize] = {};
+		size_t journals_ = 0;
 	};
-	Dropped dropped(rings_, count_);
-	store_.visit(dropped);
-	dropped.log();
+	Walk walk(rings_, count_, carry);
+	store_.visit(walk);
+	walk.log();
+	walk.delete_journals(store_);
 	persist::delete_orphans(store_, kArchivePrefix, ArchiveKeeper(rings_, count_), kTag);
 
 	size_t free = 0;
@@ -682,356 +823,16 @@ void History::check_archives() {
 		Log::warn(kTag, "history: the archives need %u more bytes of flash as they fill, %u are free",
 			static_cast<unsigned>(missing * kSegmentBytes), static_cast<unsigned>(free));
 	}
-}
-
-// ---- Seeding a new archive (homecontrol #115) ----------------------------------------------------
-
-size_t History::seed_archives() {
-	size_t written = 0;
-	SeedScratch* scratch = nullptr;
-	for (size_t i = 0; i < count_; ++i) {
-		Ring& r = rings_[i];
-		for (uint8_t k = 0; k < r.archive_count; ++k) {
-			Archive& a = r.archives[k];
-			if (!a.fresh) {
-				continue;
-			}
-			a.fresh = false;
-			if (scratch == nullptr) {
-				scratch = new (std::nothrow) SeedScratch;
-				if (scratch == nullptr) {
-					Log::warn(kTag, "history: the new archives start empty: no memory to consolidate what was kept (%u bytes)",
-						static_cast<unsigned>(sizeof(SeedScratch)));
-					return written;
-				}
-			}
-			written += seed(r, a, *scratch);
+	if (carry == nullptr) {
+		// Without the memory: the datapoints go on as if done, their new archives are not saved, and their
+		// old ones stay for the next load.
+		for (size_t i = 0; i < count_; ++i) {
+			rings_[i].carrying = false;
 		}
+		return;
 	}
-	delete scratch;
-	return written;
-}
-
-size_t History::seed(Ring& r, Archive& a, SeedScratch& scratch) {
-	// The sources, finest first: the ring's blob (its samples at the spacing they were taken at) and
-	// the datapoint's archives on the store that are finer than the new one, those of the image and
-	// those it no longer has (deleted after this).
-	constexpr size_t kMaxSources = SeedScratch::kMaxSources;
-	Archive* sources = scratch.sources;
-	ArchiveSlot* buffer = scratch.slots;
-	size_t count = 0;
-	history_detail::RingBlob blob;
-	bool ring = ring_blob(r, blob, false) && blob.samples > 0;
-	uint32_t ring_spacing = blob.spacing_s != 0 ? blob.spacing_s : r.spacing_s;
-	ring = ring && ring_spacing < a.resolution_s;
-
-	class Finer : public BlobVisitor {
-	public:
-		Finer(uint32_t hash, uint32_t below) : hash_(hash), below_(below) {}
-		void blob(const char* name, size_t) override {
-			if (std::strncmp(name, kArchivePrefix, 2) != 0) {
-				return;
-			}
-			char* end = nullptr;
-			unsigned long hash = std::strtoul(name + 2, &end, 16);
-			if (end == nullptr || *end != '.' || hash != hash_) {
-				return;
-			}
-			unsigned long resolution = std::strtoul(end + 1, &end, 16);
-			if (end == nullptr || *end != '.' || resolution == 0 || resolution >= below_) {
-				return;
-			}
-			unsigned long segment = std::strtoul(end + 1, &end, 16);
-			for (size_t i = 0; i < count_; ++i) {
-				if (found_[i].resolution == resolution) {
-					return;
-				}
-			}
-			if (count_ < kMaxSources - 1) {
-				found_[count_++] = Found{static_cast<uint32_t>(resolution), static_cast<uint32_t>(segment)};
-			}
-		}
-		struct Found {
-			uint32_t resolution;
-			uint32_t segment;
-		};
-		Found found_[kMaxSources - 1] = {};
-		size_t count_ = 0;
-
-	private:
-		uint32_t hash_;
-		uint32_t below_;
-	};
-	Finer finer(r.hash, a.resolution_s);
-	store_.visit(finer);
-	for (size_t i = 0; i < finer.count_; ++i) {
-		char name[kSegmentNameSize];
-		segment_name(r.hash, finer.found_[i].resolution, finer.found_[i].segment, name, sizeof(name));
-		uint8_t h[kSegmentHeaderBytes];
-		size_t length = 0;
-		if (store_.read(name, 0, h, sizeof(h), length) != BlobStatus::ok || length != sizeof(h) || h[0] != kMagic0 ||
-			h[1] != kMagic1 || get_u32(h + 28) != persist::crc32(0, h, 28)) {
-			continue;
-		}
-		Archive& s = sources[count];
-		s = Archive();
-		s.resolution_s = finer.found_[i].resolution;
-		s.retention_s = get_u32(h + 8);
-		s.segments = get_u16(h + 20);
-		s.positions = s.segments * kSlotsPerSegment;
-		s.slots = std::min(ring_samples(s.retention_s, s.resolution_s), s.positions);
-		s.days = h[17] != 0 && s.resolution_s % 86400 == 0 ? s.resolution_s / 86400 : 0;
-		if (s.segments == 0 || s.slots == 0 || (h[17] != 0) != (s.days > 0)) {
-			continue;
-		}
-		SegmentState state = segment_state(r, s, finer.found_[i].segment, nullptr);
-		if (state == SegmentState::ok || state == SegmentState::retention_changed) {
-			++count;
-		}
-	}
-	if (!ring && count == 0) {
-		return 0;
-	}
-
-	// Where the new archive's window ends: now, or (before the clock is synchronized) the ring's last sample.
-	WallTime wall = clock_.wall_time();
-	HistorySample sample{};
-	int64_t now = -1;
-	if (wall.synchronized && wall.seconds >= 0 && wall.seconds <= static_cast<int64_t>(UINT32_MAX)) {
-		now = wall.seconds;
-	} else if (ring && ring_blob_sample(blob, blob.samples - 1, sample)) {
-		now = sample.t;
-	}
-	if (now < 0) {
-		Log::info(kTag, "history of '%s': the %u s archive starts empty: the time is not known yet", r.name,
-			static_cast<unsigned>(a.resolution_s));
-		return 0;
-	}
-
-	// How far back each source holds: the ring's first sample, an archive's oldest valid slot.
-	int64_t ring_from = ring && ring_blob_sample(blob, 0, sample) ? static_cast<int64_t>(sample.t) : INT64_MAX;
-	size_t usable = 0;
-	for (size_t i = 0; i < count; ++i) {
-		Archive& s = sources[i];
-		SlotReader reader(*this, r, s);
-		uint32_t newest = slot_number(s, now);
-		uint32_t oldest = newest >= s.slots - 1 ? newest - (s.slots - 1) : 0;
-		s.from = INT64_MAX;
-		for (uint32_t n = oldest; n <= newest; ++n) {
-			ArchiveSlot slot;
-			if (reader.get(n % s.positions, slot) && slot_valid(s, slot, n)) {
-				s.from = slot.start;
-				break;
-			}
-			if (n == UINT32_MAX) {
-				break;
-			}
-		}
-		if (s.from != INT64_MAX) {
-			sources[usable++] = s;
-		}
-	}
-	count = usable;
-	// Finest first (an insertion sort of at most kMaxSources).
-	for (size_t i = 1; i < count; ++i) {
-		for (size_t j = i; j > 0 && sources[j].resolution_s < sources[j - 1].resolution_s; --j) {
-			std::swap(sources[j], sources[j - 1]);
-		}
-	}
-	if (ring_from == INT64_MAX && count == 0) {
-		return 0;
-	}
-
-	// A sample of the ring blob through a window of 32, and the first sample at or after a time.
-	constexpr uint32_t kRingWindow = SeedScratch::kRingWindow;
-	HistorySample* window = scratch.window;
-	uint32_t window_base = 0;
-	uint32_t window_count = 0;
-	auto ring_at = [&](uint32_t i, HistorySample& out) {
-		if (i < window_base || i >= window_base + window_count) {
-			window_base = i;
-			window_count = 0;
-			uint32_t n = std::min(kRingWindow, blob.samples - i);
-			for (uint32_t k = 0; k < n; ++k) {
-				if (blob.sample_size == sizeof(HistorySample) && k == 0) {
-					size_t length = 0;
-					if (store_.read(blob.name, blob.data + static_cast<size_t>(i) * sizeof(HistorySample), window,
-							n * sizeof(HistorySample), length) != BlobStatus::ok || length != n * sizeof(HistorySample)) {
-						return false;
-					}
-					window_count = n;
-					break;
-				}
-				if (!ring_blob_sample(blob, i + k, window[k])) {
-					break;
-				}
-				window_count = k + 1;
-			}
-			if (window_count == 0) {
-				return false;
-			}
-		}
-		out = window[i - window_base];
-		return true;
-	};
-	auto ring_lower = [&](int64_t t) {
-		uint32_t lo = 0;
-		uint32_t hi = blob.samples;
-		while (lo < hi) {
-			uint32_t mid = lo + (hi - lo) / 2;
-			HistorySample s;
-			if (!ring_at(mid, s)) {
-				return blob.samples;
-			}
-			if (static_cast<int64_t>(s.t) < t) {
-				lo = mid + 1;
-			} else {
-				hi = mid;
-			}
-		}
-		return lo;
-	};
-	// The ring's samples over [s0, s1) as feed() and hold() consolidate them.
-	auto from_ring = [&](int64_t s0, int64_t s1, ArchiveSlot& out) {
-		uint32_t first = ring_lower(s0);
-		int64_t previous_t = -1;
-		for (uint32_t k = first > 0 ? first - 1 : 0; k < blob.samples; ++k) {
-			HistorySample s;
-			if (!ring_at(k, s) || static_cast<int64_t>(s.t) >= s1) {
-				break;
-			}
-			if (static_cast<int64_t>(s.t) <= previous_t) {
-				continue; // not increasing: a blob the restore would not take either
-			}
-			previous_t = s.t;
-			float value = static_cast<float>(to_double(r.type, s.bits));
-			if (static_cast<int64_t>(s.t) >= s0) {
-				take(out, value);
-				++out.count;
-			}
-			HistorySample next;
-			int64_t end = k + 1 < blob.samples && ring_at(k + 1, next) ? static_cast<int64_t>(next.t) : now;
-			end = std::min({end, static_cast<int64_t>(s.t) + ring_spacing + kHoldSlackS, s1, now});
-			int64_t begin = std::max<int64_t>(s.t, s0);
-			if (end > begin) {
-				take(out, value);
-				out.sum += static_cast<double>(value) * static_cast<double>(end - begin);
-				out.held_s += static_cast<uint32_t>(end - begin);
-			}
-		}
-	};
-	// The slots of a finer archive whose middle lies in [s0, s1).
-	auto from_archive = [&](const Archive& s, int64_t s0, int64_t s1, ArchiveSlot& out) {
-		SlotReader reader(*this, r, s);
-		uint32_t m1 = slot_number(s, s1 - 1);
-		for (uint32_t m = slot_number(s, s0); m <= m1; ++m) {
-			ArchiveSlot slot;
-			if (reader.get(m % s.positions, slot) && slot_valid(s, slot, m)) {
-				int64_t middle = slot_middle(slot.start, s.resolution_s, s.days);
-				if (middle >= s0 && middle < s1) {
-					if (slot_empty(out)) {
-						out.min = slot.min;
-						out.max = slot.max;
-					} else {
-						out.min = std::min(out.min, slot.min);
-						out.max = std::max(out.max, slot.max);
-					}
-					out.last = slot.last;
-					out.count += slot.count;
-					out.sum += slot.sum;
-					out.held_s += slot.held_s;
-				}
-			}
-			if (m == UINT32_MAX) {
-				break;
-			}
-		}
-	};
-
-	// The new archive's window, segment by segment: each slot from the finest source that reaches back
-	// to its start, else from the one that reaches furthest (as a query chooses its store).
-	uint32_t newest = slot_number(a, now);
-	uint32_t span = std::min(a.slots, a.positions) - 1;
-	uint32_t oldest = newest >= span ? newest - span : 0;
-	size_t written = 0;
-	uint32_t slots = 0;
-	for (uint32_t segment = 0; segment < a.segments; ++segment) {
-		std::memset(static_cast<void*>(buffer), 0, kSlotsPerSegment * sizeof(ArchiveSlot));
-		uint32_t filled = 0;
-		for (uint32_t j = 0; j < kSlotsPerSegment; ++j) {
-			uint32_t p = segment * kSlotsPerSegment + j;
-			uint32_t back = (newest % a.positions + a.positions - p) % a.positions;
-			if (back > newest - oldest) {
-				continue;
-			}
-			uint32_t n = newest - back;
-			int64_t s0 = slot_start(a, n);
-			int64_t s1 = slot_start(a, n + 1);
-			if (s0 <= 0 || s1 <= s0) {
-				continue;
-			}
-			// -1: the ring; k: sources[k]; -2: none.
-			int chosen = -2;
-			int64_t furthest = INT64_MAX;
-			if (ring_from <= s0) {
-				chosen = -1;
-			}
-			for (size_t k = 0; k < count && chosen == -2; ++k) {
-				if (sources[k].from <= s0) {
-					chosen = static_cast<int>(k);
-				}
-			}
-			if (chosen == -2) {
-				if (ring_from < s1) {
-					chosen = -1;
-					furthest = ring_from;
-				}
-				for (size_t k = 0; k < count; ++k) {
-					if (sources[k].from < s1 && sources[k].from < furthest) {
-						chosen = static_cast<int>(k);
-						furthest = sources[k].from;
-					}
-				}
-			}
-			if (chosen == -2) {
-				continue;
-			}
-			ArchiveSlot slot{};
-			if (chosen == -1) {
-				from_ring(s0, s1, slot);
-			} else {
-				from_archive(sources[chosen], s0, s1, slot);
-			}
-			if (!slot_empty(slot) && std::isfinite(slot.sum)) {
-				slot.start = static_cast<uint32_t>(s0);
-				buffer[j] = slot;
-				++filled;
-			}
-		}
-		if (filled == 0) {
-			continue;
-		}
-		char name[kSegmentNameSize];
-		segment_name(r.hash, a.resolution_s, segment, name, sizeof(name));
-		uint8_t header[kSegmentHeaderBytes];
-		build_header(header, r.hash, r.type, a.resolution_s, a.retention_s, a.days, static_cast<uint16_t>(segment),
-			a.segments);
-		BlobChunk chunks[2] = {{header, sizeof(header)}, {buffer, kSlotsPerSegment * sizeof(ArchiveSlot)}};
-		BlobStatus status = store_.write(name, chunks, 2);
-		if (status != BlobStatus::ok) {
-			Log::error(kTag, "history of '%s': cannot write the %u s archive (%s): %s; it starts with what was written",
-				r.name, static_cast<unsigned>(a.resolution_s), name, blob_status_name(status));
-			break;
-		}
-		++archive_writes_;
-		++written;
-		slots += filled;
-	}
-	if (slots > 0) {
-		Log::info(kTag, "history of '%s': the %u s archive starts with %u slots consolidated from what was kept before",
-			r.name, static_cast<unsigned>(a.resolution_s), static_cast<unsigned>(slots));
-	}
-	return written;
+	carry_ = carry;
+	carry_start(carry->job_count);
 }
 
 // ---- Queries ------------------------------------------------------------------------------------

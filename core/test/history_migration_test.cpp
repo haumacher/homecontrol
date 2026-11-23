@@ -78,7 +78,14 @@ struct Boot {
 
 	HistoryStatus load(uint32_t retention, uint32_t spacing, const std::vector<ArchiveSpec>& archives) {
 		HistorySpec spec{0, retention, spacing, archives.data(), static_cast<uint8_t>(archives.size())};
-		return history.load(&spec, 1, 65536, 65536);
+		HistoryStatus status = history.load(&spec, 1, 65536, 65536);
+		settle();
+		return status;
+	}
+
+	/// The carry-over into the new stores runs in steps after the load (homecontrol #118).
+	void settle() {
+		hc_test::run_while(loop, clock, [this] { return history.carrying(); });
 	}
 
 	std::vector<HistoryBucket> query(int64_t from, int64_t to, uint32_t points, HistoryAnswer& answer) {
@@ -353,13 +360,27 @@ TEST_CASE("HistoryMigration: before the clock is synchronized the window ends at
 	REQUIRE(slot.size() == 1);
 	CHECK(slot[0].count == 180);
 
-	// Without a ring sample and without the time nothing can be placed: the archive starts empty, said so.
+	// Without a ring sample and without the time nothing can be placed yet: the carry-over waits for the
+	// time and keeps the old archive meanwhile (homecontrol #118: no slot is lost), then takes it over.
 	ScopedCapture quiet;
 	FakeBlobStore only_archive;
 	old_archive(only_archive, 3600, 31 * kDay, now, hour_value);
 	Boot blind(only_archive, now, false);
-	REQUIRE(blind.load(kDay, 300, {{10800, 7 * kDay}}) == HistoryStatus::ok);
-	CHECK(quiet.sink.contains("the 10800 s archive starts empty: the time is not known yet"));
+	ArchiveSpec three_hours[] = {{10800, 7 * kDay}};
+	HistorySpec spec{0, kDay, 300, three_hours, 1};
+	REQUIRE(blind.history.load(&spec, 1, 65536, 65536) == HistoryStatus::ok);
+	hc_test::run_while(blind.loop, blind.clock, [] { return true; }, 100);
+	CHECK(quiet.sink.contains("history of 'Living.Temp': the carry-over into the new stores waits for the time"));
+	CHECK(blind.history.carrying());
+	CHECK(archive_blobs(only_archive, 3600) == 6);
+	CHECK(archive_blobs(only_archive, 10800) == 0);
+	blind.clock.synchronized = true;
+	blind.settle();
+	CHECK(quiet.sink.contains("the 10800 s archive starts with"));
+	CHECK(archive_blobs(only_archive, 3600) == 0);
+	slot = blind.query(nine, nine + 10800, 1, answer);
+	REQUIRE(slot.size() == 1);
+	CHECK(slot[0].count == 180);
 }
 
 TEST_CASE("HistoryMigration: a source of another datapoint or type is not taken, and a live value goes on in the seeded slot") {

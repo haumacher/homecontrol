@@ -86,7 +86,10 @@ struct Boot {
 				specs.push_back(HistorySpec{id, 600, 60});
 			}
 		}
-		return history.load(specs.data(), specs.size(), budget, archive_budget);
+		HistoryStatus status = history.load(specs.data(), specs.size(), budget, archive_budget);
+		// What an archive the store does not have takes over from the others runs in steps (homecontrol #118).
+		hc_test::run_while(loop, clock, [this] { return history.carrying(); });
+		return status;
 	}
 
 	void report(uint16_t id, const Value& value) { REQUIRE(model.report(bus, id, value) == DatapointStatus::ok); }

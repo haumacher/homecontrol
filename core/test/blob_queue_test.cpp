@@ -175,6 +175,52 @@ TEST_CASE("BlobQueue.WhenFullTheChangeGoesToTheStoreOnTheLoopVisibly") {
 	CHECK(b.queue.arena_used() == 0);
 }
 
+TEST_CASE("BlobQueue.HasRoomAndSettledTellAWriterWhatTheQueueWouldDo") {
+	// homecontrol #118: a writer that must not write on the loop asks for room first, and a writer that
+	// deletes what its write replaces waits until the write is settled.
+	Bench b; // 64 bytes, 4 changes
+	CHECK(b.queue.has_room(64));
+	CHECK_FALSE(b.queue.has_room(65));
+	CHECK(b.queue.settled("a"));
+	CHECK(b.put("a", std::string(40, 'a')) == BlobStatus::ok);
+	CHECK_FALSE(b.queue.settled("a"));
+	CHECK(b.queue.settled("b"));
+	CHECK(b.queue.has_room(24));
+	CHECK_FALSE(b.queue.has_room(25)); // would go to the store on the loop
+	CHECK(b.queue.has_room(0));        // a removal
+	CHECK(b.put("b", std::string(24, 'b')) == BlobStatus::ok);
+	CHECK(b.queue.direct() == 0);
+	CHECK_FALSE(b.queue.has_room(1));
+	b.worker.run_job(); // in flight: still not settled
+	CHECK_FALSE(b.queue.settled("a"));
+	b.worker.deliver();
+	CHECK(b.queue.settled("a"));
+	CHECK_FALSE(b.queue.settled("b"));
+	b.drain();
+	CHECK(b.queue.settled("b"));
+	CHECK(b.queue.has_room(64));
+	// The entries count too: four removals fill the table.
+	for (const char* name : {"a", "b"}) {
+		CHECK(b.queue.remove(name) == BlobStatus::ok);
+	}
+	CHECK(b.put("c", "c") == BlobStatus::ok);
+	CHECK(b.put("d", "d") == BlobStatus::ok);
+	CHECK_FALSE(b.queue.has_room(0));
+	// A failed write that is dropped is settled: the store shows that it is missing.
+	b.drain();
+	b.store.fail_writes = true;
+	CHECK(b.put("e", "e") == BlobStatus::ok);
+	for (int i = 0; i < 3; ++i) {
+		b.worker.deliver();
+		b.clock.now_ms += 1000;
+		b.loop.run_once(b.clock.now_ms);
+	}
+	CHECK(b.queue.dropped() == 1);
+	CHECK(b.queue.settled("e"));
+	size_t size = 0;
+	CHECK(b.queue.size("e", size) == BlobStatus::not_found);
+}
+
 TEST_CASE("BlobQueue.AFailedWriteIsRetriedAfterTheOthersAndDroppedAfterItsAttempts") {
 	hc_test::ScopedCapture capture;
 	Bench b;
@@ -254,6 +300,8 @@ TEST_CASE("BlobQueue.WithoutAWorkerEveryCallGoesThrough") {
 	BlobChunk chunk{"abc", 3};
 	CHECK(queue.write("x", &chunk, 1) == BlobStatus::ok);
 	CHECK(store.writes == 1);
+	CHECK(queue.has_room(1 << 20)); // nothing to wait for: the call writes at once
+	CHECK(queue.settled("x"));
 }
 
 TEST_CASE("BlobQueue.AStreamingWriteWaitsForTheQueuedChangesOfItsBlob") {

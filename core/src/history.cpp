@@ -62,6 +62,11 @@ History::History(EventLoop& loop, const Clock& clock, DatapointModel& model, Blo
 	: loop_(loop), clock_(clock), model_(model), store_(store), limits_(limits), zone_(zone) {}
 
 History::~History() {
+	if (carry_ != nullptr) {
+		loop_.cancel(carry_timer_);
+		delete carry_;
+		carry_ = nullptr;
+	}
 	if (tick_.valid()) {
 		loop_.cancel(tick_);
 	}
@@ -267,7 +272,7 @@ HistoryStatus History::validate(const HistorySpec* specs, size_t count, size_t b
 
 HistoryStatus History::start(uint32_t save_interval_s) {
 	uint64_t now = clock_.monotonic_ms();
-	Callback save = Callback::member<History, &History::flush>(this, "history.flush");
+	Callback save = Callback::member<History, &History::on_save>(this, "history.save");
 	if (listening_) {
 		if (save_interval_s != save_interval_s_) {
 			// Re-armed with the new interval (the slot just freed is taken again: cannot fail).
@@ -416,10 +421,15 @@ HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budge
 
 	size_t restored = 0;
 	WallTime wall = clock_.wall_time();
+	// One buffer for the restores, freed below: a ring blob is read in a few calls (homecontrol #118:
+	// the load reads every ring, so its calls grow with the histories); 2 KB, below the large blocks a
+	// swap must not take (homecontrol #71).
+	constexpr size_t kRestoreSamples = 256;
+	HistorySample* scratch = count_ > 0 ? new (std::nothrow) HistorySample[kRestoreSamples] : nullptr;
 	for (size_t i = 0; i < count_; ++i) {
 		Ring& r = rings_[i];
 		if (r.persistable) {
-			restore(r);
+			restore(r, scratch, scratch != nullptr ? kRestoreSamples : 0);
 			restored += r.count;
 		}
 		// A swap without a restart: the last sample's value goes on holding from now (the hold up
@@ -430,6 +440,7 @@ HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budge
 			r.credit_t = static_cast<uint32_t>(wall.seconds);
 		}
 	}
+	delete[] scratch;
 
 	// The persistable rings' names, for the orphan check.
 	class RingKeeper : public persist::BlobKeeper {
@@ -536,6 +547,9 @@ void History::datapoint_updated(const DatapointUpdate& update) {
 	if (r == nullptr || !sample_time(clock_, now)) {
 		return;
 	}
+	if (first_sample_t_ == 0) {
+		first_sample_t_ = now;
+	}
 	if (dp.quality() != Quality::good) {
 		// The value is no longer good: the archives hold the last one up to now and no further (a gap).
 		settle(*r, now);
@@ -555,6 +569,9 @@ void History::on_tick() {
 	uint32_t now = 0;
 	if (!sample_time(clock_, now)) {
 		return;
+	}
+	if (first_sample_t_ == 0) {
+		first_sample_t_ = now;
 	}
 	for (size_t i = 0; i < count_; ++i) {
 		Ring& r = rings_[i];
@@ -677,6 +694,30 @@ void History::flush() {
 		}
 		for (uint8_t k = 0; k < r.archive_count; ++k) {
 			Archive& a = r.archives[k];
+			// An archive a carry-over fills is not saved: the next load() fills it again (save_archive()).
+			if (a.pending_count > 0 || (a.has_open && a.open_dirty)) {
+				save_archive(r, a);
+			}
+		}
+	}
+	if (carry_ != nullptr) {
+		// The ring blobs it reads may have changed now: it ends, and the next load() does it again.
+		carry_abort("the stores were saved for a restart or a new image");
+	}
+}
+
+void History::on_save() {
+	for (size_t i = 0; i < count_; ++i) {
+		Ring& r = rings_[i];
+		if (r.carrying) {
+			// Its ring blob and archives are what the carry-over reads: saved once it is done.
+			continue;
+		}
+		if (r.dirty && r.persistable) {
+			save(r);
+		}
+		for (uint8_t k = 0; k < r.archive_count; ++k) {
+			Archive& a = r.archives[k];
 			if (a.pending_count > 0 || (a.has_open && a.open_dirty)) {
 				save_archive(r, a);
 			}
@@ -754,10 +795,14 @@ bool History::save(Ring& r) {
 	return true;
 }
 
-bool History::ring_blob(const Ring& r, history_detail::RingBlob& blob, bool log) const {
+bool History::ring_blob(const Ring& r, history_detail::RingBlob& blob, bool log, uint8_t* scratch,
+	size_t scratch_size, uint32_t* calls) const {
+	uint32_t ignored = 0;
+	uint32_t& counted = calls != nullptr ? *calls : ignored;
 	persist::blob_name(kPrefix, r.name, blob.name);
 	size_t size = 0;
 	BlobStatus status = store_.size(blob.name, size);
+	++counted;
 	if (status == BlobStatus::not_found) {
 		return false;
 	}
@@ -766,6 +811,7 @@ bool History::ring_blob(const Ring& r, history_detail::RingBlob& blob, bool log)
 	size_t length = 0;
 	if (status == BlobStatus::ok) {
 		status = store_.read(blob.name, 0, buffer, sizeof(buffer), length);
+		++counted;
 	}
 	if (status != BlobStatus::ok) {
 		if (log) {
@@ -848,19 +894,23 @@ bool History::ring_blob(const Ring& r, history_detail::RingBlob& blob, bool log)
 	}
 	if (problem == nullptr) {
 		// The checksum covers everything before it.
+		uint8_t* through = scratch != nullptr && scratch_size >= sizeof(buffer) ? scratch : buffer;
+		size_t through_size = through == scratch ? scratch_size : sizeof(buffer);
 		uint32_t crc = 0;
 		size_t offset = 0;
 		while (offset < size - 4 && status == BlobStatus::ok) {
-			size_t chunk = std::min(sizeof(buffer), size - 4 - offset);
-			status = store_.read(blob.name, offset, buffer, chunk, length);
+			size_t chunk = std::min(through_size, size - 4 - offset);
+			status = store_.read(blob.name, offset, through, chunk, length);
+			++counted;
 			if (status == BlobStatus::ok && length != chunk) {
 				status = BlobStatus::storage_error;
 			}
-			crc = persist::crc32(crc, buffer, chunk);
+			crc = persist::crc32(crc, through, chunk);
 			offset += chunk;
 		}
 		if (status == BlobStatus::ok) {
 			status = store_.read(blob.name, size - 4, buffer, 4, length);
+			++counted;
 		}
 		if (status != BlobStatus::ok || length != 4) {
 			problem = "read failed";
@@ -900,9 +950,9 @@ bool History::ring_blob_sample(const history_detail::RingBlob& blob, uint32_t i,
 	return status == BlobStatus::ok && length == sizeof(HistorySample);
 }
 
-void History::restore(Ring& r) {
+void History::restore(Ring& r, HistorySample* scratch, size_t scratch_samples) {
 	history_detail::RingBlob blob;
-	if (!ring_blob(r, blob, true)) {
+	if (!ring_blob(r, blob, true, reinterpret_cast<uint8_t*>(scratch), scratch_samples * sizeof(HistorySample))) {
 		return;
 	}
 	// Merged into the series, oldest first, through the ring (a full ring drops its oldest): strictly
@@ -911,13 +961,19 @@ void History::restore(Ring& r) {
 	// keeps every sample (they are never closer); a coarser one (a new image) keeps a sample per spacing
 	// over its whole retention instead of only the newest of the finer samples (homecontrol #115).
 	WallTime wall = clock_.wall_time();
-	constexpr uint32_t kWindow = 32;
-	HistorySample window[kWindow];
+	constexpr uint32_t kStackWindow = 32;
+	HistorySample stack_window[kStackWindow];
+	HistorySample* window = stack_window;
+	uint32_t window_size = kStackWindow;
+	if (scratch != nullptr && scratch_samples > kStackWindow) {
+		window = scratch;
+		window_size = static_cast<uint32_t>(std::min<size_t>(scratch_samples, UINT32_MAX));
+	}
 	uint64_t kept = 0;
 	uint32_t last_t = 0;
 	BlobStatus status = BlobStatus::ok;
-	for (uint32_t i = 0; i < blob.samples && status == BlobStatus::ok; i += kWindow) {
-		uint32_t n = std::min(blob.samples - i, kWindow);
+	for (uint32_t i = 0; i < blob.samples && status == BlobStatus::ok; i += window_size) {
+		uint32_t n = std::min(blob.samples - i, window_size);
 		size_t length = 0;
 		if (blob.sample_size == sizeof(HistorySample)) {
 			status = store_.read(blob.name, blob.data + static_cast<size_t>(i) * sizeof(HistorySample), window,

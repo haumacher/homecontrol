@@ -242,6 +242,26 @@ public:
 	/// its content now. The default holds none.
 	virtual void forget_source(const BlobSource& source) { (void)source; }
 
+	/// Whether a write or patch of `bytes` (0: a removal) would be taken now without writing the flash
+	/// on the caller's thread (homecontrol #118: the history's carry-over waits for it instead of making
+	/// a write queue fall back to a write on the loop). The default (a store that writes in place,
+	/// where there is nothing to wait for): true; the BlobQueue: while an entry and room in its arena
+	/// are free.
+	virtual bool has_room(size_t bytes) const {
+		(void)bytes;
+		return true;
+	}
+
+	/// Whether no change of the blob `name` that the store accepted still waits to reach the backing
+	/// store (homecontrol #118): then a read of it answers what the backing store holds, so a writer
+	/// can check that its write is durable before it deletes what the write replaces. A change that
+	/// failed for good is settled too (the read shows that it is missing). The default (a store that
+	/// writes in place): true.
+	virtual bool settled(const char* name) const {
+		(void)name;
+		return true;
+	}
+
 	/// The bytes of free_space() a new blob of `bytes` takes (homecontrol #52: the largest image the
 	/// store can take, ImageStore::storable()). The default: its bytes; a store in blocks counts the
 	/// blocks the blob occupies (the LittleFS store: littlefs_footprint()).

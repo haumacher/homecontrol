@@ -89,6 +89,7 @@ list(APPEND HC_CORE_SOURCES
 	"${HC_CORE_DIR}/src/value_store.cpp"
 	"${HC_CORE_DIR}/src/history.cpp"
 	"${HC_CORE_DIR}/src/history_archive.cpp"
+	"${HC_CORE_DIR}/src/history_carry.cpp"
 )
 # The rule interpreter (doc/rules.md).
 list(APPEND HC_CORE_SOURCES

@@ -48,7 +48,10 @@ struct BlobQueueLimits {
 /// - When the arena or the entries are full, or a change does not fit at all, the change goes to
 ///   the store at once, on the loop, as without the queue (logged once per streak as a warning,
 ///   counted in direct()); not possible while a change of the same blob is in flight or (patch)
-///   waits: then `busy`, which the writers treat as a failed write and retry.
+///   waits: then `busy`, which the writers treat as a failed write and retry. A writer that must
+///   not write on the loop asks has_room() first and waits instead (homecontrol #118: the history's
+///   carry-over into new stores); one that deletes what a write replaces waits for settled() and
+///   reads the write back, since a write dropped after its attempts is settled too.
 /// - A write_from() (homecontrol #111: the Zigbee device database) takes no copy: it waits as the
 ///   source, which the queue asks for the content on the loop when the worker is about to write it,
 ///   into a buffer of exactly its size that lives until the worker is done (never more than one per
@@ -89,6 +92,12 @@ public:
 	bool free_space(size_t& bytes) const override { return store_.free_space(bytes); }
 	bool usage(uint64_t& total, uint64_t& used) const override { return store_.usage(total, used); }
 	size_t footprint(size_t bytes) const override { return store_.footprint(bytes); }
+	/// An entry free and `bytes` of the arena in one piece (homecontrol #118): a write of that size is
+	/// queued, not written on the loop. Without the queue's memory or a worker: true (every call goes
+	/// through anyway).
+	bool has_room(size_t bytes) const override;
+	/// No change of `name` waits or is in flight.
+	bool settled(const char* name) const override { return entries_ == nullptr || !waits(name); }
 
 	// ShutdownParticipant
 	const char* shutdown_name() const override { return "flash writes"; }

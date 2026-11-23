@@ -181,6 +181,7 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/persisted_restore_test.cpp" # a restored value counts (#100)
 	"${HC_REPO_DIR}/core/test/initial_value_test.cpp" # the initial value of an application datapoint (#107)
 	"${HC_REPO_DIR}/core/test/history_migration_test.cpp" # the history kept across new stores (#115)
+	"${HC_REPO_DIR}/core/test/history_carry_test.cpp" # the carry-over in steps, through the queue (#118)
 	"${HC_REPO_DIR}/core/test/history_meter_test.cpp" # the meter flag and the coverage of a history (#115)
 )
 # The test-only image compiler (issue #87): the JSON source form into the binary runtime image.

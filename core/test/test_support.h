@@ -40,6 +40,20 @@ public:
 	bool synchronized = false;
 };
 
+/// Runs `loop` while `busy()` holds, advancing only the monotonic time by `step_ms` per turn (the wall
+/// clock stands): the steps of work the loop does after a call, such as the history's carry-over into
+/// new stores (homecontrol #118). Returns the turns; stops after `limit`.
+template <class Busy>
+size_t run_while(hc::EventLoop& loop, FakeClock& clock, Busy busy, size_t limit = 1000000, uint64_t step_ms = 10) {
+	size_t turns = 0;
+	while (busy() && turns < limit) {
+		clock.now_ms += step_ms;
+		loop.run_once(clock.now_ms);
+		++turns;
+	}
+	return turns;
+}
+
 /// Fixed memory figures; tasks, a temperature and chip facts when a test sets them (the System page).
 class FakeSystemInfo : public hc::SystemInfo {
 public:

@@ -120,6 +120,17 @@ struct HistoryPoint {
 	double mean;    ///< The mean of the bucket's samples (for a boolean the share of samples that are on).
 };
 
+/// What the carry-over of histories into new stores did (homecontrol #118; History::carry_stats(),
+/// for the tests and the diagnostics): how many steps it took and the most work one step did.
+struct HistoryCarryStats {
+	uint32_t histories = 0;     ///< Datapoints whose stores the last load() gave a carry-over.
+	uint32_t steps = 0;         ///< Steps run since that load().
+	uint32_t max_step_work = 0; ///< The most store calls one step made (at most History::kCarryStepWork).
+	uint64_t work = 0;          ///< Store calls of all steps.
+	uint32_t retries = 0;       ///< Carry-overs of a datapoint started again after a failure.
+	uint32_t queue_waits = 0;   ///< Steps that ended waiting for the store's write queue (room, a write to settle).
+};
+
 /// The limits the platform sets for the history.
 struct HistoryLimits {
 	/// The most RAM an image may ask for (`history.budget`): the raw rings' samples and the
@@ -163,6 +174,12 @@ struct RingBlob;
 ///   flush() (orderly shutdown), one blob per ring ("h." + 8 hex digits of the FNV-1a hash of the
 ///   name); load() restores them. Archive segments are "a." + the hash + "." + the resolution and
 ///   the segment index in hex.
+/// - Carry-over (homecontrol #115, #118): an archive the store does not have yet takes what the ring
+///   and the datapoint's other archives already hold for its time. load() only decides which; the
+///   consolidation runs afterwards on the loop in steps of at most kCarryStepWork store calls (and
+///   kCarryStepMs), writes through the store's queue only when it has room, and deletes what it
+///   replaces only once the new segments are durable; a journal ("ac." + the hash) makes a restart
+///   or another load() in the middle do it again (doc/persistence.md "Carrying a history over").
 ///
 /// Memory: load() allocates five blocks (the samples, the ring table, the names, the archive
 /// table, the archives' pending slots); nothing in steady state. Threading: the event loop's thread.
@@ -198,6 +215,18 @@ public:
 	/// A sample's value is held for at most its ring's spacing plus this (the tick's slack); a
 	/// longer silence is a gap.
 	static constexpr uint32_t kHoldSlackS = 10;
+
+	/// The most store calls (reads, sizes, writes, removals) one step of the carry-over makes ...
+	static constexpr uint32_t kCarryStepWork = 32;
+	/// ... and the longest it goes on once it has made one (the device's flash: a step ends before
+	/// either bound is passed, so it holds the loop well below 100 ms).
+	static constexpr uint32_t kCarryStepMs = 50;
+	/// The pause between two steps: the loop sleeps, so the flash worker and the idle task run.
+	static constexpr uint32_t kCarryGapMs = 10;
+	/// How often a step waiting for the write queue (room, a write to become durable) looks again.
+	static constexpr uint32_t kCarryPollMs = 20;
+	/// A carry-over whose write or removal failed for good starts again after this long.
+	static constexpr uint32_t kCarryRetryMs = 30000;
 
 	/// `zone` gives the local days of daily archives; nullptr: UTC days.
 	History(EventLoop& loop, const Clock& clock, DatapointModel& model, BlobStore& store,
@@ -243,8 +272,16 @@ public:
 	/// starts the tick and the save timer.
 	HistoryStatus load(const HistorySpec* specs, size_t count, size_t budget_bytes, size_t archive_budget_bytes = 0);
 
-	/// Saves every ring with new samples and every archive with new slots now.
+	/// Saves every ring with new samples and every archive with new slots now (before a restart or
+	/// another load()). A carry-over in progress ends here: the archives it fills are not saved, and
+	/// the next load() does it again from what the store holds (its journal).
 	void flush();
+
+	/// Whether a carry-over of histories into new stores is in progress (homecontrol #118).
+	bool carrying() const { return carry_ != nullptr; }
+
+	/// What the carry-over of the last load() did so far.
+	const HistoryCarryStats& carry_stats() const { return carry_stats_; }
 
 	/// The samples of a datapoint with from <= t < to (and within the retention), decimated to at
 	/// most `max_points` points: when there are more samples, the range is split into max_points
@@ -324,7 +361,7 @@ private:
 	struct Ring;
 	struct Archive;
 	class SlotReader;
-	struct SeedScratch;
+	struct Carry;
 
 	HistoryStatus validate(const HistorySpec* specs, size_t count, size_t budget_bytes, size_t archive_budget_bytes,
 		size_t& ram, size_t& flash, size_t& archives, size_t& pending) const;
@@ -333,10 +370,16 @@ private:
 	Ring* ring_of(const Datapoint& datapoint) const;
 	void append(Ring& ring, uint32_t t, uint32_t bits);
 	bool save(Ring& ring);
-	bool ring_blob(const Ring& ring, history_detail::RingBlob& blob, bool log) const;
+	/// Checks the ring blob of `ring` (header, size, checksum); the checksum is read through `scratch`
+	/// (a 256-byte buffer of the stack without one), the store calls are added to `calls`.
+	bool ring_blob(const Ring& ring, history_detail::RingBlob& blob, bool log, uint8_t* scratch = nullptr,
+		size_t scratch_size = 0, uint32_t* calls = nullptr) const;
 	bool ring_blob_sample(const history_detail::RingBlob& blob, uint32_t i, HistorySample& out) const;
-	void restore(Ring& ring);
+	/// Restores the ring from its blob, read through `scratch` (`scratch_samples` samples; nullptr: a
+	/// window of the stack), so that a ring takes a few store calls, not one per 256 bytes.
+	void restore(Ring& ring, HistorySample* scratch, size_t scratch_samples);
 	void on_tick();
+	void on_save();
 	void free_rings();
 
 	// Archives (history_archive.cpp).
@@ -347,8 +390,18 @@ private:
 	void close(Ring& ring, Archive& archive);
 	bool save_archive(const Ring& ring, Archive& archive);
 	void check_archives();
-	size_t seed_archives();
-	size_t seed(Ring& ring, Archive& archive, SeedScratch& scratch);
+	/// The journal of an unfinished carry-over of `ring` (homecontrol #118): false if there is none;
+	/// `damaged` if it cannot be read (then every archive with segments counts as unfinished).
+	bool read_journal(const Ring& ring, uint32_t* resolutions, uint8_t& count, bool& damaged) const;
+
+	// Carry-over into new stores (history_carry.cpp).
+	enum class CarryWait : uint8_t;
+	void carry_start(size_t jobs);
+	void carry_step();
+	CarryWait carry_run(Carry& carry);
+	void carry_abort(const char* why);
+	void carry_end();
+	bool carry_afford(const Carry& carry, uint32_t calls) const;
 	history_detail::SegmentState segment_state(const Ring& ring, const Archive& archive, uint32_t segment,
 		uint32_t* saved_retention) const;
 	uint32_t slot_number(const Archive& archive, int64_t t) const;
@@ -389,6 +442,13 @@ private:
 	uint32_t archive_writes_ = 0;
 	uint32_t slots_dropped_ = 0;
 	uint32_t save_interval_s_ = 0;
+	/// The carry-over in progress (nullptr: none) and its next step.
+	Carry* carry_ = nullptr;
+	TimerHandle carry_timer_;
+	HistoryCarryStats carry_stats_;
+	/// The first synchronized wall time a sample was taken at since construction (0: none yet): the
+	/// carry-over's cut when neither the load nor a ring gave one.
+	uint32_t first_sample_t_ = 0;
 };
 
 } // namespace hc

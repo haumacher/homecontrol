@@ -52,6 +52,8 @@ budget in bytes. Not specified in this package.
 | `patch(name, offset, chunks, count)` | Overwrites bytes of an existing blob in place (issue #56: the history's archive segments, slot by slot). The blob keeps its size (`too_large` if the chunks would end past it, nothing changed); `not_found` without the blob. Atomic like `write()`: after a power cut the blob holds the complete old or the complete new content. A store that cannot patch refuses (`unsupported`, the default); the history then keeps its archives' slots pending and logs the failure. |
 | `write_from(name, source)` | `write()` of the content a `BlobSource` produces (homecontrol #111: the Zigbee device database): `content_size()`, then `content(buffer, size)` into a buffer of `size` + 1 bytes. The default asks at once, writes and frees the buffer; the `BlobQueue` asks when its worker is about to write (below). The source stays valid until the write is done or `forget_source(source)` was called, which makes a store that holds a waiting `write_from()` take its content at once. |
 | `free_space(bytes)` | The bytes a new blob can take now; false if the store cannot tell. |
+| `has_room(bytes)` | Whether a write or patch of `bytes` (0: a removal) would be taken now without writing the flash on the caller's thread (homecontrol #118). The default (a store that writes in place): true; the `BlobQueue`: an entry and room in its arena are free. |
+| `settled(name)` | Whether no accepted change of the blob still waits to reach the backing store (performed, or dropped after its attempts): a read then answers what the store holds. The default: true. |
 
 Names are 1..31 characters of `[A-Za-z0-9._-]`, not starting with a dot (`check_name()`), in a flat
 namespace of the store's own (a directory nobody else writes); a name is never a path. Failures
@@ -91,7 +93,9 @@ same blob's wait behind it), at most five times, then dropped with an error line
 (8 KB on the C6, 64 KB on POSIX) or its 24 entries (64) are full, or a blob is larger than the
 arena, the change goes to the store at once on the loop as before, with a warning once per streak
 (`write queue full ...`) — the history's rings above 8 KB (about 1000 samples) are such writes,
-and they show as `slow ... handler history.on_tick`; the house controller has no history. A planned
+and they show as `slow ... handler history.on_tick`; the house controller has no history. A writer
+that must not write on the loop asks `has_room()` first and waits (the history's carry-over, #118);
+one that deletes what its write replaces waits for `settled()` and reads the write back. A planned
 restart waits for the queue (a `Shutdown` participant, at most 1 s); the POSIX build also drains
 it before it exits. The arena costs 8 KB of RAM and the entry table 1.5 KB, allocated at start.
 
@@ -538,21 +542,92 @@ archives hold its value on from the swap.
 
 A new image may dimension the stores otherwise (haumacher/ehome#221: archives of 3 h, 12 h, 7 days
 and 31 days where hourly and daily ones were derived from the charts before). An archive none of whose
-segments is on the store takes, at `load()` and before the archives the image no longer has are
-deleted, the slots its window already has data for: each slot of the window from the finest source
-that reaches back to its start, else from the one that reaches furthest — the ring's blob (its samples
-at the spacing they were taken at, held as `feed()` and `hold()` hold them) or an archive of the
-datapoint on the store finer than the new one (its valid slots whose middle lies in the slot, summed:
-min, max, last, count, the sum and the held seconds). The window ends now, or, before the clock is
-synchronized, at the ring's last sample; without either it starts empty ("the 10800 s archive starts
-empty: the time is not known yet"). The segments with a filled slot are written whole, one write each
-("history of 'x': the 10800 s archive starts with 57 slots consolidated from what was kept before"),
-the open slot of now goes on with the live samples. A restart finds the segments and takes nothing
-over again. Sources of another type or datapoint are not read (the checks of the ring blob and the
-segment header). A power cut in the middle leaves the archive with the segments already written; the
-old archives are deleted only after it. A changed layout of the same resolution (another number of
-segments) is still dropped, and the ring then seeds the new archive with what it holds. Tests:
-`core/test/history_migration_test.cpp`.
+segments is on the store takes the slots its window already has data for: each slot of the window from
+the finest source that reaches back to its start, else from the one that reaches furthest — the ring's
+blob (its samples at the spacing they were taken at, held as `feed()` and `hold()` hold them) or an
+archive of the datapoint on the store finer than the new one (its valid slots whose middle lies in the
+slot, summed: min, max, last, count, the sum and the held seconds). The window ends at the **cut**: the
+load, or, when the clock was not synchronized at the load, the ring's last sample, or without one the
+first sample taken once the clock is known; without the time the carry-over waits for it and keeps
+the old archives ("history of 'x': the carry-over into the new stores waits for the time"). The
+segments with a filled slot are written whole ("history of 'x': the 10800 s archive starts with 57
+slots consolidated from what was kept before"). Sources of another type or datapoint are not read (the
+checks of the ring blob and the segment header). A changed layout of the same resolution (another
+number of segments) is still dropped, and the ring then seeds the new archive with what it holds.
+
+### Carrying a history over: in steps, through the queue (homecontrol #118)
+
+On the desk board the carry-over of one datapoint (26 + 9 + 2 slots) held the loop for about 1.5 s in
+the apply step of a deploy, its segments written on the loop because the write queue was full; 20
+recorded datapoints would have held it for half a minute, longer than the KNX tunnel's 1 s
+TUNNELING_ACK. Now `load()` only decides which archives get a carry-over (and does not read their
+sources); the consolidation runs afterwards on the event loop (`core/src/history_carry.cpp`):
+
+- **Steps.** One datapoint after the other, in phases that a step leaves and the next takes up where
+  it stopped (the ring blob, the cut, the sources' headers and how far back each reaches, the new
+  archives' segments slot by slot, the newest segment first). A step makes at most
+  `History::kCarryStepWork` (32) store calls and stops after `kCarryStepMs` (50 ms) once it has made
+  one; it checks the budget before each call, with the most calls the next piece can make (a slot read
+  through a segment change is 3, a ring search 13). The next step follows after `kCarryGapMs` (10 ms):
+  the loop sleeps, so the flash worker and the idle task run. On the host the bound is counted in
+  store calls (`HistoryCarryStats`, `carry_stats()`), not in time. The steps are the loop's: stepping
+  in the flash worker instead would hold the worker for the whole consolidation (every other writer's
+  change would wait in the queue until it is full and then go to the flash on the loop, which is what
+  #101 removed), and the worker would read the stores beside the loop's live writes to the same
+  datapoint's archives.
+- **Through the queue, with back-pressure.** A new segment (4 KB) is written only when
+  `BlobStore::has_room()` says the queue takes it, one at a time; a full queue makes the step look
+  again after `kCarryPollMs` (20 ms) instead of falling back to a write on the loop. That fallback
+  (below "Writing off the loop") stays for the other writers: it is what keeps a write that has no
+  room from being lost, and what writes a blob larger than the arena.
+- **Durable before anything goes.** Before the first new segment of a datapoint a **journal**
+  `ac.<hash>` names its new archives; it must be durable (`BlobStore::settled()`: the queue performed
+  it, and it reads back) before a segment is written. Each segment is read back once settled (CRC of
+  the 4 KB against what was written). After the last one the journal is removed (settled, gone), and
+  only then the archives the image no longer has. A write the queue drops (a store that fails) shows
+  in the read-back: nothing is deleted, the datapoint starts again after `kCarryRetryMs` (30 s), logged
+  once ("carrying it over into the new stores failed (...); it starts again in 30 s, what was kept
+  stays").
+- **While it runs.** The datapoint's live samples go into the ring and the new archives' open and
+  pending slots as always; the carry-over's slots end at the cut and the live ones start there, so
+  only the slot of the cut has both: when the carry-over writes it, the live slot (open or pending)
+  takes what was kept (min, max, count, sum and held seconds added, `last` the live one), once
+  (`Archive::merged`). Until the carry-over of the datapoint is done its ring blob and its archives
+  are not saved by the periodic save (they are what it reads, and a new archive's slots on the store
+  are not this load's), and a slot opening in a new archive is not taken up from the store (except the
+  slot of the cut once written). A pending queue full after an hour (only a store that keeps failing
+  gets there) drops its oldest slot as before. A **query** meanwhile answers from what is there: a
+  new archive's slots carried over so far (the newest first) and the live ones, empty where the
+  carry-over has not arrived yet; the stores that did not change answer as always.
+- **A restart or another load in the middle.** `flush()` (before a restart, and at the start of every
+  `load()`) saves the rings, with their live samples, and the archives that are not being filled, and
+  ends the carry-over. The next `load()` reads the journal: an archive it names is carried over again
+  from the beginning, whatever of it is on the store (written again whole; a segment the new run does
+  not fill keeps slots of the old one, which lie outside the window or are the same, since its sources
+  are the same), and none it names is a source. An archive it names that the image no longer has is
+  deleted first (and that is durable before a new journal replaces the old one). The old archives of
+  a datapoint with a carry-over are not deleted at the load. So after a power cut at any moment the
+  store holds the old archives complete, or the journal is gone and the new ones are complete; the
+  restart ends in the same archives as a carry-over that ran through (the test cuts the power after
+  every loop turn). A ring saved by such a `flush()` holds the samples at the new spacing: a carry-over
+  done again after a planned restart takes the ring's part at that spacing (the old ring's finer
+  samples are gone), never a sample twice.
+- **The load itself.** `load()` no longer asks for every possible segment of every archive (17 each):
+  one walk of the store tells which segments exist, and the rings are restored through one 2 KB buffer
+  per load, a few calls a ring instead of one per 256 bytes. 20 recorded datapoints with rings of
+  1440 samples and four archives each: about 320 store calls in the apply step, from about 1900.
+
+Tests: `core/test/history_migration_test.cpp` (what is carried over), `core/test/history_carry_test.cpp`
+(20 datapoints behind a write queue of the C6's size, a full queue, a power cut after every turn,
+another image in the middle, a store that refuses, live samples during the carry-over).
+
+### Journal format
+
+Blob `ac.<hash>` (the FNV-1a hash of the datapoint name, 8 hex digits), little-endian: magic `H` `J`,
+the format generation 1, the number n of new archives (at most 4), the hash (u32), n resolutions
+(u32 seconds), and the CRC-32 of everything before it: 12 + 4n bytes. A journal that cannot be read
+(another generation, a bad checksum) makes every archive of the datapoint with segments count as
+unfinished. A journal of a datapoint without a carry-over is deleted at the load.
 
 ### Saving
 
@@ -567,9 +642,15 @@ counts the patches and can refuse them (`patchable`).
 
 ### Memory
 
-Allocated at load beside the rings, nothing in steady state: the archive table (80 bytes per
+Allocated at load beside the rings, nothing in steady state: the archive table (96 bytes per
 archive on the C6) and the pending blocks (the budget above). The query reads slots through a
-window of 16 slots (512 bytes on the stack); a save writes from the slots in place.
+window of 16 slots (512 bytes on the stack); a save writes from the slots in place. A load restores
+the rings through a buffer of 2 KB, freed when they are restored. A carry-over (#118) holds its state
+on the heap while it runs, in no block above 3 KB (#71): about 1.6 KB from the load (the sources, a
+window of the ring and of a source) and pages of 32 jobs of 48 bytes, one job per datapoint it carries
+over, and from its first step a segment's slots in two blocks of 2 KB (also the scratch of the ring's
+checksum and of the read-back). Without the first, nothing is carried over or deleted and the next
+load tries again; without the second, the step tries again after 30 s (both logged).
 
 ## The flash wear budget
 
