@@ -2627,7 +2627,9 @@ bool Compiler::anonymous_tables(const std::vector<JsonSpan>& pages) {
 }
 
 bool Compiler::pages_body(const std::vector<JsonSpan>& pages, uint16_t section) {
-	static const char* const kRanges[] = {"1h", "24h", "7d", "30d", "1y"};
+	static const char* const kRanges[] = {"1h", "6h", "24h", "7d", "30d", "1y", "10y"};
+	constexpr size_t kRangeCount = sizeof(kRanges) / sizeof(kRanges[0]);
+	constexpr int k24h = 2;
 	auto parse_label = [](const JsonSpan& object, Label& out) {
 		out.clear();
 		JsonSpan value;
@@ -2720,19 +2722,19 @@ bool Compiler::pages_body(const std::vector<JsonSpan>& pages, uint16_t section) 
 							json.string("full");
 						}
 						json.member("height", static_cast<uint32_t>(member_number(chart, "height", 2)));
-						int range = has_member(chart, "range") ? index_of(kRanges, 5, member_text(chart, "range")) : 1;
-						range = range < 0 ? 1 : range;
+						int range = has_member(chart, "range") ? index_of(kRanges, kRangeCount, member_text(chart, "range")) : k24h;
+						range = range < 0 ? k24h : range;
 						json.member("range", kRanges[range]);
 						unsigned presets = 0;
 						for (const JsonSpan& preset : member_items(chart, "presets")) {
-							int k = index_of(kRanges, 5, text_of(preset));
+							int k = index_of(kRanges, kRangeCount, text_of(preset));
 							presets |= k >= 0 ? 1u << k : 0u;
 						}
 						if (presets == 0) {
 							presets = 1u << range;
 						}
 						json.key("presets").begin_array();
-						for (size_t k = 0; k < 5; ++k) {
+						for (size_t k = 0; k < kRangeCount; ++k) {
 							if ((presets & (1u << k)) != 0) {
 								json.string(kRanges[k]);
 							}

@@ -31,14 +31,6 @@ constexpr size_t kMaxReferences = 128; ///< The reference lines of all charts.
 constexpr size_t kMaxPageId = 32;
 constexpr size_t kMaxIcon = 31;
 
-/// The time ranges of a chart (`range` and `presets`): 1 h, 24 h, 7 d, 30 d, 1 y.
-constexpr size_t kChartRanges = 5;
-/// "1h", "24h", "7d", "30d", "1y" for 0..4; nullptr beyond.
-const char* chart_range_name(size_t range);
-/// The range's length in seconds (a year is 365 days).
-uint32_t chart_range_seconds(size_t range);
-/// The index of a range name; -1 if unknown.
-int chart_range_of(const char* name);
 
 /// How a chart series reduces the samples of a bucket.
 enum class Consolidation : uint8_t {

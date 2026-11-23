@@ -195,28 +195,9 @@ const char* value_type_label(ValueType type) {
 
 namespace {
 
-constexpr const char* kRangeNames[kChartRanges] = {"1h", "24h", "7d", "30d", "1y"};
-constexpr uint32_t kRangeSeconds[kChartRanges] = {3600, 86400, 7 * 86400, 30 * 86400, 365 * 86400};
 constexpr const char* kConsolidationNames[] = {"mean", "last", "band", "consumption"};
 
 } // namespace
-
-const char* chart_range_name(size_t range) {
-	return range < kChartRanges ? kRangeNames[range] : nullptr;
-}
-
-uint32_t chart_range_seconds(size_t range) {
-	return range < kChartRanges ? kRangeSeconds[range] : 0;
-}
-
-int chart_range_of(const char* name) {
-	for (size_t i = 0; i < kChartRanges; ++i) {
-		if (std::strcmp(kRangeNames[i], name) == 0) {
-			return static_cast<int>(i);
-		}
-	}
-	return -1;
-}
 
 const char* consolidation_name(Consolidation consolidation) {
 	size_t i = static_cast<size_t>(consolidation);
