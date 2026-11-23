@@ -10,6 +10,7 @@ import { formatAgo, formatNumber, formatValue } from "/format.js";
 import { t, has as hasText } from "/i18n.js";
 import { label, dpUnit } from "/model.js";
 import { sparkline } from "/chart.js";
+import { hasSpark } from "/history_view.js";
 import { blindState, dimmerOn, flames, heating } from "/function_state.js";
 
 const REPORT_WAIT_MS = 5000;
@@ -271,17 +272,16 @@ export function functionTile(fn, env) {
 			setpointText,
 			adjustable ? h("button", { type: "button", class: "round", "aria-label": t("tile.warmer", { name }), onclick: () => step(0.5) }, icon(icons.plus)) : null));
 	}
-	if (fn.kind === "sensor") {
-		const valueInfo = info("value");
-		if (valueInfo && valueInfo.history) {
-			spark = h("div", { class: "tile-spark" });
-			controls.push(spark);
-			env.history(roles.value).then((data) => {
-				if (data) {
-					replace(spark, sparkline(data.points, data.from, data.to, typeOf("value") === "boolean"));
-				}
-			}).catch(() => {});
-		}
+	// The sparkline of the main value wherever it keeps a history (homecontrol #115), of every kind.
+	const sparkRole = primaryRole && hasSpark(info(primaryRole)) ? primaryRole : null;
+	if (sparkRole) {
+		spark = h("div", { class: "tile-spark" });
+		controls.push(spark);
+		env.history(roles[sparkRole]).then((data) => {
+			if (data) {
+				replace(spark, sparkline(data.points, data.from, data.to, typeOf(sparkRole) === "boolean"));
+			}
+		}).catch(() => {});
 	}
 	if (controls.length) {
 		element.appendChild(h("div", { class: "tile-controls" }, controls));
@@ -398,7 +398,7 @@ export function functionTile(fn, env) {
 	update();
 	return { element, ids: new Set(Object.values(roles)), update, refreshSpark: (data) => {
 		if (spark && data) {
-			replace(spark, sparkline(data.points, data.from, data.to, typeOf("value") === "boolean"));
+			replace(spark, sparkline(data.points, data.from, data.to, typeOf(sparkRole) === "boolean"));
 		}
-	}, sparkId: spark ? roles.value : null };
+	}, sparkId: spark ? roles[sparkRole] : null };
 }

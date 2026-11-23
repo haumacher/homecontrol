@@ -97,7 +97,7 @@ bool tag_matches(const char* tag, const char* language, size_t length) {
 } // namespace
 
 const char* format_text() {
-	return "1.2";
+	return "1.3";
 }
 
 const SectionInfo* section_info(uint16_t id) {

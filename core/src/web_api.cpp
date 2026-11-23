@@ -2268,7 +2268,12 @@ void WebApi::ui_model(const WebRequest& request, WebResponse& response) {
 				json.member("min", static_cast<uint32_t>(0)).member("max", static_cast<uint32_t>(type.sub == 1 ? 100 : 360));
 			}
 		}
-		json.member("history", dp != nullptr && dp->has_history());
+		bool kept = dp != nullptr && dp->has_history();
+		json.member("history", kept);
+		if (kept && image_->history().has_history(dp->id())) {
+			// What the history keeps (homecontrol #115): how far back it reaches and how it is drawn.
+			json.member("coverage", image_->history().coverage_s(dp->id())).member("meter", image_->history().meter(dp->id()));
+		}
 		json.end_object();
 		if (json.overflowed()) {
 			json.reset(mark);

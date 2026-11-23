@@ -376,10 +376,20 @@ the detail sheet, the controls below operate the rest:
 | light, switch | toggles `command` | on/off from `state`, else from `command` | — |
 | dimmer | toggles `command`; without it `levelCommand` 0 / 100 | the level from `level` (else `levelCommand`), "Off" at 0; a dimmer with its `command` alone (1.6) on/off from `state`, else `command` | a 0..100 slider that sends `levelCommand` on release; with a writable `step`: − / + sending a 25 % relative step (`{"control": brighter, "value": 3}`, DPT 3.007) |
 | blind | — | `position`; without one the end positions `atTop`/`atBottom` (1.6): open, closed, in between (both false), never a percentage; with both, "end positions disagree" where the ends contradict the position | up / stop / down (`move` false / `stop` true / `move` true), a slider for `positionCommand` |
-| sensor | — | `value` with the function's unit (else the datapoint's) | a 24 h sparkline when the datapoint keeps a history (refreshed every 5 min) |
+| sensor | — | `value` with the function's unit (else the datapoint's) | — |
 | climate | — | `temperature`; with `heatingLevel` (1.6) "heating 35 %" and three flames lit by its steps; without it "heating" from `heating` (a number: above 0) | − / setpoint / + in 0.5 steps on `setpointCommand` (from `setpoint`, else the last command) |
 | scene | sends the KNX scene code `scene − 1` to `command` (`{"control": false, "value": scene − 1}` for a controlled datapoint; scenes count from 1 in the image, from 0 on the bus) | "Scene n" | — |
 | button | sends true (or `{"control": true, "value": 1}`) to a writable `press` | `state`, else "Pressed 3 min ago" | — |
+
+**Histories** (homecontrol #115): every tile whose main value (the role the tile's state is shown
+from) keeps a history has a sparkline of it, over 24 h or its coverage where that is shorter
+(refreshed every 5 min); so has a datapoint tile of a page. The detail sheet has a chart per
+datapoint of the function that keeps a history, offering exactly the ranges of `6h`, `24h`, `7d`,
+`30d`, `1y`, `10y` its coverage reaches (`GET /api/model` `coverage`; a shorter history gets `6h`),
+24 h first, stepping back and forth in time: a number as its line with the min/max band, a boolean
+as the on/off strip, a meter (`meter`) as consumption bars. The derivations are in `history_view.js`
+(`web/ui/test/history_view.test.mjs`, ctest `WebUi.HistoryView`); the charts are the pages' chart
+tiles (`elements.js`).
 
 The derivations of what a tile shows (the blind's end positions, the heating of a number, the flame
 steps, a dimmer's on state) are pure functions in `function_state.js`, tested with node's test runner
@@ -406,8 +416,8 @@ sparkline), CSS columns (order top to bottom), `dense` (reorders), CSS masonry (
 
 The **detail sheet** (a modal `<dialog>`: Escape and the backdrop close it, a bottom sheet on a
 phone) lists the function's datapoints by role and label with their value, quality and age
-(live), and a chart over 24 h or 7 days for each datapoint that keeps a history (the line of the
-buckets' last values, the min/max band, a read-out under the pointer). The technology bindings are
+(live), and a chart for each datapoint that keeps a history over the ranges its coverage reaches,
+drawn by its kind ("Histories" above). The technology bindings are
 not shown there (homecontrol #82); `GET /api/model` still delivers them.
 
 The dashboard reads `GET /api/model` once (paged), the live values from the WebSocket, the history
@@ -443,8 +453,9 @@ rebuilds the navigation and draws the page shown again. A page is its sections, 
   colours. Left and right axes each automatic or fixed by the image, with the unit of the first
   series on it; lines through the buckets' mean (`mean`) or last value (`last`), breaking at a gap
   of more than 2.5 buckets; a min/max band for `band` on a chart of a single series; `consumption`
-  as bars of the delta between adjacent buckets' last values (an hour, a day or a month per bar,
-  aligned to the local hour or midnight, with one bucket before the window queried for the first
+  as bars of the delta between adjacent buckets' last values (per range 5 min, 15 min, an hour, a
+  day, a twelfth of the year or a year per bar, spec/runtime-image.md 3.9, aligned to the local hour
+  or midnight, with one bucket before the window queried for the first
   bar; a negative delta, or an empty bucket next to it, is a gap); booleans as strips beneath the
   plot whose opacity is the bucket's on-share; reference lines dashed across the plot with their
   label and value (a datapoint's follows its live value). The legend (more than one series) toggles

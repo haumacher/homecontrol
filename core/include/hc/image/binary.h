@@ -17,11 +17,12 @@ class JsonWriter;
 /// record at `offset + i * entrySize` of its section, so a later minor version may lengthen records.
 namespace hc::image::bin {
 
-/// The format this firmware reads (section 11): major 1, every minor up to 2 (1.1: the anonymous
-/// pages, homecontrol #91; 1.2: the initial values of application datapoints, homecontrol #107).
+/// The format this firmware reads (section 11): major 1, every minor up to 3 (1.1: the anonymous
+/// pages, homecontrol #91; 1.2: the initial values of application datapoints, homecontrol #107; 1.3:
+/// the meter flag of a history, homecontrol #115).
 constexpr uint16_t kFormatMajor = 1;
-constexpr uint16_t kFormatMinor = 2;
-/// "1.2".
+constexpr uint16_t kFormatMinor = 3;
+/// "1.3".
 const char* format_text();
 
 constexpr uint16_t kNone = 0xFFFF;
@@ -223,10 +224,13 @@ struct RoleRec {
 };
 static_assert(sizeof(RoleRec) == 8, "role");
 
+/// The bit of HistoryRec::flags: the datapoint is a meter reading, drawn as consumption bars (format 1.3).
+constexpr uint8_t kHistoryMeter = 0x01;
+
 struct HistoryRec {
 	uint16_t datapoint;
 	uint8_t archive_count;
-	uint8_t reserved;
+	uint8_t flags;        ///< Bit 0 (kHistoryMeter): a meter reading (1.3; reserved and 0 before).
 	uint32_t retention;
 	uint32_t spacing;
 	uint16_t first_archive;

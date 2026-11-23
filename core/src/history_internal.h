@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "hc/history.h"
+#include "hc/value_store.h"
 
 // The samples and slots go to flash as they are in RAM: little-endian words, IEEE 754 numbers.
 #if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
@@ -78,6 +79,15 @@ inline double to_double(ValueType type, uint32_t bits) {
 	}
 }
 
+/// A ring blob whose header and checksum were read (History::ring_blob()): where its samples are.
+struct RingBlob {
+	char name[persist::kBlobNameSize] = {};
+	size_t data = 0;          ///< Offset of the first (oldest) sample.
+	uint32_t samples = 0;
+	uint32_t sample_size = 0; ///< At least 8; a reader takes the first 8 bytes of each.
+	uint32_t spacing_s = 0;   ///< The spacing the samples were taken at (0: the blob does not say).
+};
+
 /// Whether a slot was fed at all.
 inline bool slot_empty(const ArchiveSlot& slot) {
 	return slot.count == 0 && slot.held_s == 0;
@@ -98,6 +108,7 @@ struct History::Ring {
 	ValueType type = ValueType::none;
 	bool dirty = false;       ///< Samples added since the last save.
 	bool persistable = true;  ///< False for the second of two names with the same hash.
+	bool meter = false;       ///< HistorySpec::meter.
 	/// The archives, finest first (a range of History::archives_).
 	Archive* archives = nullptr;
 	uint8_t archive_count = 0;
@@ -124,6 +135,18 @@ struct History::Archive {
 	uint32_t open_number = 0;
 	int64_t open_end = 0;     ///< The open slot's end (exclusive), UTC seconds.
 	ArchiveSlot open = {};
+	bool fresh = false;       ///< At load: none of its segments is on the store (History::seed()).
+	int64_t from = 0;         ///< History::seed(): the oldest time a source archive holds.
+};
+
+/// What History::seed() works in, allocated once per load that has a new archive (on the heap: the
+/// event loop's stack keeps its margin): a segment's slots, the source archives, a window of ring samples.
+struct History::SeedScratch {
+	static constexpr size_t kMaxSources = 6;
+	static constexpr uint32_t kRingWindow = 32;
+	ArchiveSlot slots[History::kSlotsPerSegment];
+	Archive sources[kMaxSources];
+	HistorySample window[kRingWindow];
 };
 
 } // namespace hc

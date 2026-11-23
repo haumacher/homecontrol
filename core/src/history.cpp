@@ -379,6 +379,7 @@ HistoryStatus History::load(const HistorySpec* specs, size_t count, size_t budge
 		r.id = dp->id();
 		r.type = dp->type();
 		r.hash = persist::fnv1a(r.name);
+		r.meter = specs[i].meter;
 		r.archives = specs[i].archive_count > 0 ? archive : nullptr;
 		r.archive_count = specs[i].archive_count;
 		for (uint8_t k = 0; k < specs[i].archive_count; ++k) {
@@ -651,6 +652,23 @@ uint32_t History::retention_s(uint16_t id) const {
 	return r != nullptr ? r->retention_s : 0;
 }
 
+uint32_t History::coverage_s(uint16_t id) const {
+	const Ring* r = ring(id);
+	if (r == nullptr) {
+		return 0;
+	}
+	uint32_t coverage = r->retention_s;
+	for (uint8_t k = 0; k < r->archive_count; ++k) {
+		coverage = std::max(coverage, r->archives[k].retention_s);
+	}
+	return coverage;
+}
+
+bool History::meter(uint16_t id) const {
+	const Ring* r = ring(id);
+	return r != nullptr && r->meter;
+}
+
 void History::flush() {
 	for (size_t i = 0; i < count_; ++i) {
 		Ring& r = rings_[i];
@@ -736,29 +754,31 @@ bool History::save(Ring& r) {
 	return true;
 }
 
-void History::restore(Ring& r) {
-	char name[persist::kBlobNameSize];
-	persist::blob_name(kPrefix, r.name, name);
+bool History::ring_blob(const Ring& r, history_detail::RingBlob& blob, bool log) const {
+	persist::blob_name(kPrefix, r.name, blob.name);
 	size_t size = 0;
-	BlobStatus status = store_.size(name, size);
+	BlobStatus status = store_.size(blob.name, size);
 	if (status == BlobStatus::not_found) {
-		return;
+		return false;
 	}
 	const char* problem = nullptr;
 	uint8_t buffer[kMaxHeaderRead];
 	size_t length = 0;
 	if (status == BlobStatus::ok) {
-		status = store_.read(name, 0, buffer, sizeof(buffer), length);
+		status = store_.read(blob.name, 0, buffer, sizeof(buffer), length);
 	}
 	if (status != BlobStatus::ok) {
-		Log::error(kTag, "cannot read the history of '%s' (%s): %s", r.name, name, blob_status_name(status));
-		return;
+		if (log) {
+			Log::error(kTag, "cannot read the history of '%s' (%s): %s", r.name, blob.name, blob_status_name(status));
+		}
+		return false;
 	}
 	size_t fields = length >= kPrefixSize ? static_cast<size_t>(buffer[3] | (buffer[4] << 8)) : 0;
 	char saved_name[Datapoint::kMaxName + 1] = {};
 	uint8_t type = 0;
 	uint32_t sample_size = 0;
 	uint32_t samples = 0;
+	uint32_t spacing = 0;
 	bool has_count = false;
 	if (length < kPrefixSize + 4 || buffer[0] != kMagic0 || buffer[1] != kMagic1) {
 		problem = "not a history blob";
@@ -793,6 +813,12 @@ void History::restore(Ring& r) {
 						type = field[0];
 					}
 					break;
+				case kFieldSpacing:
+					// Informative: what the samples were taken at (the archives are seeded with it).
+					if (n == 4) {
+						spacing = get_u32(field);
+					}
+					break;
 				case kFieldSampleSize:
 					if (n != 1) {
 						problem = "sample size length";
@@ -808,7 +834,7 @@ void History::restore(Ring& r) {
 						has_count = true;
 					}
 					break;
-				default: break; // Spacing, retention (informative) and fields of a newer firmware.
+				default: break; // Retention (informative) and fields of a newer firmware.
 			}
 			pos += 2 + n;
 		}
@@ -826,7 +852,7 @@ void History::restore(Ring& r) {
 		size_t offset = 0;
 		while (offset < size - 4 && status == BlobStatus::ok) {
 			size_t chunk = std::min(sizeof(buffer), size - 4 - offset);
-			status = store_.read(name, offset, buffer, chunk, length);
+			status = store_.read(blob.name, offset, buffer, chunk, length);
 			if (status == BlobStatus::ok && length != chunk) {
 				status = BlobStatus::storage_error;
 			}
@@ -834,7 +860,7 @@ void History::restore(Ring& r) {
 			offset += chunk;
 		}
 		if (status == BlobStatus::ok) {
-			status = store_.read(name, size - 4, buffer, 4, length);
+			status = store_.read(blob.name, size - 4, buffer, 4, length);
 		}
 		if (status != BlobStatus::ok || length != 4) {
 			problem = "read failed";
@@ -843,55 +869,89 @@ void History::restore(Ring& r) {
 		}
 	}
 	if (problem == nullptr && std::strcmp(saved_name, r.name) != 0) {
-		Log::error(kTag, "history blob %s belongs to '%s', not '%s': ignored", name, saved_name, r.name);
-		return;
+		if (log) {
+			Log::error(kTag, "history blob %s belongs to '%s', not '%s': ignored", blob.name, saved_name, r.name);
+		}
+		return false;
 	}
 	if (problem == nullptr && type != static_cast<uint8_t>(r.type)) {
-		Log::warn(kTag, "history of '%s' discarded: the datapoint's type changed", r.name);
-		return;
+		if (log) {
+			Log::warn(kTag, "history of '%s' discarded: the datapoint's type changed", r.name);
+		}
+		return false;
 	}
 	if (problem != nullptr) {
-		Log::error(kTag, "history of '%s' (%s) ignored: %s", r.name, name, problem);
+		if (log) {
+			Log::error(kTag, "history of '%s' (%s) ignored: %s", r.name, blob.name, problem);
+		}
+		return false;
+	}
+	blob.data = kPrefixSize + fields;
+	blob.samples = samples;
+	blob.sample_size = sample_size;
+	blob.spacing_s = spacing;
+	return true;
+}
+
+bool History::ring_blob_sample(const history_detail::RingBlob& blob, uint32_t i, HistorySample& out) const {
+	size_t length = 0;
+	BlobStatus status = store_.read(blob.name, blob.data + static_cast<size_t>(i) * blob.sample_size, &out,
+		sizeof(HistorySample), length);
+	return status == BlobStatus::ok && length == sizeof(HistorySample);
+}
+
+void History::restore(Ring& r) {
+	history_detail::RingBlob blob;
+	if (!ring_blob(r, blob, true)) {
 		return;
 	}
-
-	// The newest samples that fit, oldest first, straight into the (empty) ring.
-	uint32_t take = std::min(samples, r.capacity);
-	size_t data = kPrefixSize + fields + static_cast<size_t>(samples - take) * sample_size;
-	if (sample_size == sizeof(HistorySample)) {
-		status = store_.read(name, data, r.samples, take * sizeof(HistorySample), length);
-		if (status == BlobStatus::ok && length != take * sizeof(HistorySample)) {
-			status = BlobStatus::storage_error;
-		}
-	} else {
-		for (uint32_t i = 0; i < take && status == BlobStatus::ok; ++i) {
-			status = store_.read(name, data + i * sample_size, &r.samples[i], sizeof(HistorySample), length);
-			if (status == BlobStatus::ok && length != sizeof(HistorySample)) {
+	// Merged into the series, oldest first, through the ring (a full ring drops its oldest): strictly
+	// increasing times, nothing from the future and nothing older than the retention (both only when the
+	// wall clock is known), and samples at least the ring's spacing apart. A ring of the same spacing
+	// keeps every sample (they are never closer); a coarser one (a new image) keeps a sample per spacing
+	// over its whole retention instead of only the newest of the finer samples (homecontrol #115).
+	WallTime wall = clock_.wall_time();
+	constexpr uint32_t kWindow = 32;
+	HistorySample window[kWindow];
+	uint64_t kept = 0;
+	uint32_t last_t = 0;
+	BlobStatus status = BlobStatus::ok;
+	for (uint32_t i = 0; i < blob.samples && status == BlobStatus::ok; i += kWindow) {
+		uint32_t n = std::min(blob.samples - i, kWindow);
+		size_t length = 0;
+		if (blob.sample_size == sizeof(HistorySample)) {
+			status = store_.read(blob.name, blob.data + static_cast<size_t>(i) * sizeof(HistorySample), window,
+				n * sizeof(HistorySample), length);
+			if (status == BlobStatus::ok && length != n * sizeof(HistorySample)) {
 				status = BlobStatus::storage_error;
 			}
+		} else {
+			for (uint32_t k = 0; k < n && status == BlobStatus::ok; ++k) {
+				status = ring_blob_sample(blob, i + k, window[k]) ? BlobStatus::ok : BlobStatus::storage_error;
+			}
+		}
+		for (uint32_t k = 0; k < n && status == BlobStatus::ok; ++k) {
+			const HistorySample s = window[k];
+			if (kept > 0 && (s.t <= last_t || s.t - last_t < r.spacing_s)) {
+				continue;
+			}
+			if (wall.synchronized && (static_cast<int64_t>(s.t) > wall.seconds ||
+					static_cast<int64_t>(s.t) + r.retention_s < wall.seconds)) {
+				continue;
+			}
+			r.samples[kept % r.capacity] = s;
+			last_t = s.t;
+			++kept;
 		}
 	}
 	if (status != BlobStatus::ok) {
-		Log::error(kTag, "cannot read the history of '%s' (%s): %s", r.name, name, blob_status_name(status));
+		Log::error(kTag, "cannot read the history of '%s' (%s): %s", r.name, blob.name, blob_status_name(status));
+		r.head = 0;
+		r.count = 0;
 		return;
 	}
-	// Merge into the series: strictly increasing times, nothing from the future, nothing older than
-	// the retention (both only when the wall clock is known).
-	WallTime wall = clock_.wall_time();
-	uint32_t kept = 0;
-	for (uint32_t i = 0; i < take; ++i) {
-		const HistorySample s = r.samples[i];
-		if (kept > 0 && s.t <= r.samples[kept - 1].t) {
-			continue;
-		}
-		if (wall.synchronized && (static_cast<int64_t>(s.t) > wall.seconds ||
-				static_cast<int64_t>(s.t) + r.retention_s < wall.seconds)) {
-			continue;
-		}
-		r.samples[kept++] = s;
-	}
-	r.head = 0;
-	r.count = kept;
+	r.head = kept > r.capacity ? static_cast<uint32_t>(kept % r.capacity) : 0;
+	r.count = static_cast<uint32_t>(std::min<uint64_t>(kept, r.capacity));
 }
 
 } // namespace hc

@@ -1,0 +1,17 @@
+{"comment": "The meter flag of schema 1.10 (format 1.3, homecontrol #115, haumacher/ehome#221): a numeric datapoint whose history is a meter reading carries history.meter true, and the generic view draws it as consumption bars; false is the default. A temperature recorded 30 days (the stores of that level: a ring of 5 min over 24 h, archives of 3 h over 7 days and of 12 h over 30 days), an energy meter of a year, a gas meter of 10 years, a counter meter without archives, a light recorded 24 h with meter false written out, and a history without the member, as before 1.10. GET /api/model gives each its coverage (the longest retention of its ring and archives) and meter. The page's charts use the ranges 6h and 10y beside the older ones.",
+ "expect": {"valid": true},
+ "image": {"schemaVersion": "1.10", "projectId": "case", "revision": 1},
+ "datapoints": [
+   {"id": "temperature", "type": "real", "unit": "°C", "knx": {"dpt": "9.001", "listen": ["1/3/1"]},
+    "history": {"retention": 86400, "spacing": 300, "archives": [{"resolution": 10800, "retention": 604800}, {"resolution": 43200, "retention": 2592000}]}},
+   {"id": "energy", "type": "signed", "unit": "kWh", "knx": {"dpt": "13.013", "listen": ["1/3/2"]},
+    "history": {"retention": 90000, "spacing": 900, "meter": true, "archives": [{"resolution": 86400, "retention": 31536000}]}},
+   {"id": "gas", "type": "unsigned", "unit": "m³", "knx": {"dpt": "12.001", "listen": ["1/3/3"]},
+    "history": {"retention": 90000, "spacing": 3600, "meter": true, "archives": [{"resolution": 86400, "retention": 31536000}, {"resolution": 2678400, "retention": 315360000}]}},
+   {"id": "counter", "type": "real", "virtual": {}, "initial": 0.0, "history": {"retention": 86400, "spacing": 300, "meter": true}},
+   {"id": "light", "type": "boolean", "knx": {"dpt": "1.001", "listen": ["1/1/1"]}, "history": {"retention": 86400, "spacing": 300, "meter": false}},
+   {"id": "humidity", "type": "real", "unit": "%", "knx": {"dpt": "9.007", "listen": ["1/3/4"]}, "history": {"retention": 21600, "spacing": 300}}],
+ "ui": {"pages": [{"id": "energy", "sections": [{"elements": [
+   {"chart": {"range": "6h", "presets": ["6h", "24h", "7d", "30d"], "series": [{"datapoint": "temperature", "consolidation": "band"}]}},
+   {"chart": {"range": "1y", "presets": ["24h", "7d", "30d", "1y"], "series": [{"datapoint": "energy", "consolidation": "consumption"}]}},
+   {"chart": {"range": "10y", "presets": ["1y", "10y"], "series": [{"datapoint": "gas", "consolidation": "consumption"}]}}]}]}]}}

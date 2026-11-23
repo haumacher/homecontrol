@@ -45,11 +45,11 @@ in `doc/image.md`); transported by `PUT /api/image` (`spec/api.md`). Fixtures:
   the flash for a case E-Home handles by sending the last valid deployment again, I9); a staging
   area beside the stored image (the scheme until firmware 1.2).
 - **I4. Two versions.** The source form is versioned by `image.schemaVersion` (`<major>.<minor>`,
-  this document 1.9, section 8): it is E-Home's and the corpus's; E-Home's compiler reads every
-  schema 1.0 to 1.9 and compiles each with the meaning its version gives it (an image of 1.6 whose
+  this document 1.10, section 8): it is E-Home's and the corpus's; E-Home's compiler reads every
+  schema 1.0 to 1.10 and compiles each with the meaning its version gives it (an image of 1.6 whose
   rule with states declares a parameter `state` keeps that parameter's datapoint and gets no state
   datapoint, section 8). The binary image is versioned by its **format version** `<major>.<minor>`
-  in the header (section 11; this document is format 1.2). The device reports the format it reads
+  in the header (section 11; this document is format 1.3). The device reports the format it reads
   and the size of its slot (`GET /api/status` `device.format` and `image.slot`, the E-Home
   connection's `auth`, `spec/api.md`); E-Home compiles for that format and refuses, before sending,
   an image larger than the slot ("Das Abbild hat N Bytes, der Controller fasst M") or one that needs
@@ -169,7 +169,7 @@ what section 10 lists. Where it says what "the device" does at run time, that ho
 
 | Member | Type | Required | Meaning |
 |---|---|---|---|
-| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.9` (section 8). The binary image carries it as text (9.6); its own version is the format version (I4, section 11). |
+| `schemaVersion` | string `<major>.<minor>` | yes | This document is `1.10` (section 8). The binary image carries it as text (9.6); its own version is the format version (I4, section 11). |
 | `projectId` | string, 1..63 | yes | E-Home's project. Shown in the status. |
 | `revision` | integer 0..4294967295 | yes | E-Home's deployment counter, shown in the status and returned by PUT. The device does not refuse an older revision: rolling back is a deployment like any other. |
 | `generatedAt` | string, 1..31 | no | ISO 8601 time of the export. |
@@ -203,7 +203,7 @@ An array of datapoint objects (at most 1024). The array order is the model order
 | `transmit` | boolean | no, false | A commanded value is sent to the technology. |
 | `readOnStart` | boolean | no, false | The technology reads the value after a start or reconnect. |
 | `persist` | boolean | no, false | The last value is kept across restarts (`doc/persistence.md`): after a restart it counts, with quality good, whatever the technology; with `readOnStart` the technology's answer replaces it (`spec/rules.md` 7.10). |
-| `history` | `{"retention": s, "spacing": s, "archives": [...]}` | no | A short-term history ring: `spacing` 10..86400 s, `retention` from the spacing up to 31 days, at most 2048 samples; only `boolean`, `unsigned`, `signed`, `real`. `archives` (1.2, optional): the consolidated archives of the datapoint, below. |
+| `history` | `{"retention": s, "spacing": s, "archives": [...], "meter": bool}` | no | A short-term history ring: `spacing` 10..86400 s, `retention` from the spacing up to 31 days, at most 2048 samples; only `boolean`, `unsigned`, `signed`, `real`. `archives` (1.2, optional): the consolidated archives of the datapoint, below. `meter` (1.10, optional, default false): the datapoint is a meter reading, below. |
 | `knx` | object | no | The KNX binding, below. |
 | `zigbee` | object | no | The Zigbee binding, below. Excludes `knx` and `virtual`. |
 | `virtual` | object (members reserved) | no | A value of the application: no technology; rules write it, the user commands it where it is `writable`. Excludes `knx` and `zigbee`. |
@@ -257,6 +257,16 @@ not zero. Refusals at `datapoints[i].history.archives`: not an array, more than 
 read); at `...archives[k]`: not an object, a missing member, a resolution or retention out of its
 range, a resolution not above the spacing, two archives of the same resolution, more than 2048
 slots. Where they live and what they cost: 3.7 and `doc/persistence.md` "Archives".
+
+**The meter flag** (1.10, homecontrol #115, haumacher/ehome#221). `history.meter` true says that the
+datapoint is a meter reading (a counter of energy, water, gas): the device's generic view draws its
+history as consumption bars (the deltas of section 3.9's `consumption`) instead of a line; it changes
+nothing else (the stores, the sampling, the API's history). Only an `unsigned`, `signed` or `real`
+datapoint is a meter reading. Refusals at `datapoints[i].history.meter`: not a boolean (`meter must
+be true or false`); on a boolean datapoint (`a meter needs a numeric datapoint; 'heating' is
+boolean`). `GET /api/model` gives it back per datapoint with a history, with the history's coverage
+(`spec/api.md`). E-Home sets the stores of a datapoint from its setting "Aufzeichnung" (6 h, 24 h, 7
+days, 30 days, 1 year, 10 years) and its flag "Zählerstand" (haumacher/ehome#221).
 
 The KNX binding:
 
@@ -570,7 +580,7 @@ A **chart**:
 | `label` | label | no | The title; the element's `label`, when it has one, replaces it. |
 | `width` | 1, 2, 3, 4 or `"full"` | no, `"full"` | Columns of the section's grid, capped at the columns a narrow screen has. |
 | `height` | 2 or 4 | no, 2 | Tile rows of 64 px: 2 hold a title and one or two series, 4 suit many series with the legend. |
-| `range` | `"1h"`, `"24h"`, `"7d"`, `"30d"`, `"1y"` (a year is 365 days) | no, `"24h"` | The range shown first. |
+| `range` | `"1h"`, `"6h"`, `"24h"`, `"7d"`, `"30d"`, `"1y"`, `"10y"` (a year is 365 days; `6h` and `10y` from 1.10) | no, `"24h"` | The range shown first. |
 | `presets` | array of ranges, each once, including `range` | no, `[range]` | The ranges the viewer switches between; the viewer also steps back and forth in time by one range. |
 | `axes` | `{"left": {"min", "max"}, "right": {"min", "max"}}`, each bound a number (−10⁹..10⁹) or `null` | no, automatic | A fixed bound per axis; `null` or absent is automatic. `min` < `max` when both are fixed. |
 | `series` | array of series, may be empty (an empty chart) | yes | In this order, coloured by a fixed palette of 12 in series order (no per-series colour). |
@@ -602,7 +612,11 @@ finest that reaches back to the range's start answers; if none does, the one tha
 if no archive is fine enough, the raw ring. A range longer than what the answering store keeps shows
 what it has, with the hint "only the last ... stored", never an error; the response's `store` names
 the store (`"raw"` or the archive's resolution in seconds). E-Home derives the archives from the
-charts' ranges (ehome#73).
+charts' ranges (ehome#73) until 1.9; from 1.10 they follow from the setting "Aufzeichnung" at the
+datapoint (haumacher/ehome#221), and a chart offers only the ranges its datapoints' stores reach. The
+device's UI draws a line, band or strip at 48 points per range and consumption bars per range as:
+`1h` 12 of 5 min, `6h` 24 of 15 min, `24h` 24 of an hour, `7d` 7 and `30d` 30 of a day, `1y` 12 of
+a twelfth of the year, `10y` 10 of a year (the bars start at the local hour or midnight).
 
 Refusals, each with its path (`ui.pages[0].sections[1].elements[0].chart.series[2].consolidation`):
 `ui` or `pages` of the wrong type; more than the limits of section 5 (at `ui.pages`, before anything
@@ -901,6 +915,20 @@ no image is loaded it answers 404 `image.none`, also when the slot holds bytes t
   otherwise that the initial values need a firmware update. A firmware of 1.2 loads an image of 1.1
   and older unchanged (the byte `init` is 0). Corpus cases `accept-initial-values` (every value
   type, format 1.2) and `refuse-initial-values`.
+- 1.10 and **format 1.3** (homecontrol #115, haumacher/ehome#221): the member `meter` of a datapoint's
+  `history` (3.3), a meter reading the generic view draws as consumption bars, and the chart ranges
+  `6h` and `10y` (3.9). In the binary image the history record's byte `flags` (bit 0 `meter`), reserved
+  and 0 in format 1.2 (9.9). E-Home writes `"schemaVersion": "1.10"` and the header's minor 3 for an
+  image with a meter (an image without one is written as before: minor 2, 1 or 0). The flag is a
+  meaning for a reserved field (section 11, way 4): a firmware of format 1.2 does not read it and
+  would draw a meter as a line. The ranges are in the page JSON only (I10), which the UI of a firmware
+  of 1.2 does not know. E-Home compiles for the format the controller reports (section 11): for a
+  controller of format 1.2 it writes no meter flag (minor 2 at most) and refuses, before sending, a
+  page with the range `6h` or `10y` (`the controller reads format 1.2; this project needs 1.3 (the
+  chart ranges 6h and 10y): update the firmware`).
+  A firmware of 1.3 loads an image of 1.2 and older unchanged (the byte is 0); `1h` stays
+  valid. `GET /api/model` gives per datapoint with a history its `coverage` and `meter`
+  (`spec/api.md`). Corpus cases `accept-history-meter` (format 1.3) and `refuse-history-meter`.
 
 ## 9. The binary image
 
@@ -942,7 +970,7 @@ The image starts with a header of 32 bytes; the section table follows it.
 |---|---|---|---|
 | 0 | `u8[4]` | `magic` | `48 43 49 4D` ("HCIM") |
 | 4 | `u16` | `major` | The format's major version: 1. |
-| 6 | `u16` | `minor` | The format's minor version the image is written in: the oldest whose fields and sections the image uses: 0 (format 1.0), 1 for an image with a section of format 1.1, 2 for one with an initial value (format 1.2; section 8). |
+| 6 | `u16` | `minor` | The format's minor version the image is written in: the oldest whose fields and sections the image uses: 0 (format 1.0), 1 for an image with a section of format 1.1, 2 for one with an initial value (format 1.2), 3 for one with a meter flag (format 1.3; section 8). |
 | 8 | `u32` | `length` | The image's size in bytes, the signature included; a multiple of 8. |
 | 12 | `u32` | `crc` | CRC-32 (the IEEE polynomial as zlib's `crc32()`: reflected `0xEDB88320`, initial and final XOR `0xFFFFFFFF`) over the bytes `[0, signedEnd)` with this field taken as 0. |
 | 16 | `u32` | `flags` | Bit 0 `signed`: the image ends with a 64-byte Ed25519 signature (9.17). Other bits: none in 1.0. |
@@ -1159,7 +1187,7 @@ datapoints") are not in the image; they follow it in the model.
 |---|---|---|---|
 | 0 | `u16` | `datapoint` | Datapoint index. |
 | 2 | `u8` | `archiveCount` | 0..4. |
-| 3 | `u8` | reserved | |
+| 3 | `u8` | `flags` | Bit 0 `meter`: the datapoint is a meter reading (3.3; format 1.3, reserved and 0 before). Other bits: none. |
 | 4 | `u32` | `retention` | Seconds. |
 | 8 | `u32` | `spacing` | Seconds. |
 | 12 | `u16` | `firstArchive` | Run in `archives`. |
@@ -1662,8 +1690,8 @@ kinds and codes; the paths name the header (`header.<field>`), an entry of the s
 `i` the record's index) or a whole section (`strings`).
 
 **The hint.** A refusal of an unknown code, flag bit or required section adds, when the image's
-minor version is newer than the firmware's: ` (the image's format 1.3 is newer than this firmware
-reads, up to 1.2: update the firmware)`.
+minor version is newer than the firmware's: ` (the image's format 1.4 is newer than this firmware
+reads, up to 1.3: update the firmware)`.
 
 ### 10.1 The header, before the slot is erased
 
@@ -1671,7 +1699,7 @@ reads, up to 1.2: update the firmware)`.
 |---|---|---|---|
 | The body announced or received has at least 32 bytes. | `header` | `image.format` | `not a runtime image: 20 bytes, the header alone has 32` |
 | `magic` is `48 43 49 4D`. | `header.magic` | `image.format` | `not a runtime image: the magic is 7B 0A 09 22, not 48 43 49 4D ("HCIM")`; when the first byte is `{` it adds `: a JSON text (E-Home compiles the image; send the binary form)` |
-| `major` is 1. | `header.major` | `image.version` | `format 2.0: this firmware reads format 1 (up to 1.2)` |
+| `major` is 1. | `header.major` | `image.version` | `format 2.0: this firmware reads format 1 (up to 1.3)` |
 | `flags` has no bits but `signed`. | `header.flags` | `image.version` | `unknown flags 0x2` with the hint |
 | `length` equals the bytes of the body (at boot: is at most the slot's size). | `header.length` | `image.format` | `the header says 112 bytes, the body has 100` (at boot: `the header says 600000 bytes, the slot holds 524288`) |
 | `length` is a multiple of 8 and at least `headerSize`, plus 64 when `signed`. | `header.length` | `image.format` | `length 113 is not a multiple of 8`; `length 64 leaves no room for the signature` |
@@ -1741,7 +1769,7 @@ The fields not listed here are reserved (not checked) or plain numbers the runti
 | `locations` | `id`; `label`; `parent`; `kind` | id string; label; index or `kNone`; code 0..5. The parents form no cycle (`malformed: the parents of location 4 form a cycle`). |
 | `functions` | `id`; `label`; `unit`; `room`; roles; `kind`; `scene`; `presses` | id string; label; string; location index or `kNone`; run in `roles`; code 0..7; range 0..64; each byte flags of bits 0..5 |
 | `roles` | `name`; `datapoint` | id string; datapoint index |
-| `history` | `datapoint`; `spacing`; `retention`; archives | datapoint index of type boolean, unsigned, signed or real (`malformed: a history of a string datapoint: only boolean, unsigned, signed and real`); range 10..86400; range `spacing`..2 678 400 (31 days) and `ceil(retention / spacing) + 1` at most 2048 (`limitExceeded: 4321 samples, at most 2048`); run in `archives`, `archiveCount` at most 4 |
+| `history` | `datapoint`; `flags`; `spacing`; `retention`; archives | datapoint index of type boolean, unsigned, signed or real (`malformed: a history of a string datapoint: only boolean, unsigned, signed and real`); flags 0..1, bit 0 not on a boolean datapoint (`malformed: a meter of a boolean datapoint: only unsigned, signed and real`); range 10..86400; range `spacing`..2 678 400 (31 days) and `ceil(retention / spacing) + 1` at most 2048 (`limitExceeded: 4321 samples, at most 2048`); run in `archives`, `archiveCount` at most 4 |
 | `archives` | `resolution`; `retention` | range 60..2 678 400 and above the ring's spacing (`malformed: resolution 60 is not above the ring's spacing 60`); range `resolution`..315 360 000 (3650 days) and `ceil(retention / resolution) + 1` at most 2048 |
 | `knx.addresses` | `address`; listeners | strictly ascending (`malformed: address 1/1/2 follows 1/1/3`; equal: `address 1/1/2 twice`); run in `knx.listeners` whose entries ascend strictly |
 | `knx.bindings` | `datapoint`; `send`; listen | datapoint index, strictly ascending; address index or `kNone`; run in `knx.listen`, `listenCount` at most 8, its addresses distinct and none of them `send` (`malformed: address 1/1/2 is listed twice`) |
@@ -1846,7 +1874,7 @@ listeners do not name it`; `malformed: 18 listeners, the bindings use addresses 
 
 ## 11. Versioning of the binary image
 
-The header's `major.minor` (I4). This document is format **1.2**; the firmware reads exactly one
+The header's `major.minor` (I4). This document is format **1.3**; the firmware reads exactly one
 major version and every minor version up to its own.
 
 - **Another major version** is refused from the header, before the slot is erased (`image.version`,
@@ -1987,7 +2015,7 @@ each with the CRC recomputed unless the row is about the CRC):
 |---|---|---|---|
 | Cut to 100 bytes | `image.format` | `header.length` | `the header says 112 bytes, the body has 100` |
 | The source text `minimal.json` itself | `image.format` | `header.magic` | `not a runtime image: the magic is 7B 22 69 6D, not 48 43 49 4D ("HCIM"): a JSON text (E-Home compiles the image; send the binary form)` |
-| `header.major` 2 | `image.version` | `header.major` | `format 2.0: this firmware reads format 1 (up to 1.2)` |
+| `header.major` 2 | `image.version` | `header.major` | `format 2.0: this firmware reads format 1 (up to 1.3)` |
 | Byte 0x66 changed, CRC kept | `image.damaged` | `header.crc` | `the CRC-32 is 59772c42, the bytes give …: the image was damaged on the way or in the slot` |
 | Sent to a device that holds the installation key | `image.unsigned` | `header.flags` | `the image is not signed; …` |
 | `minimal.signed.bin` to a device holding the "rotated" key | `image.bad_signature` | `signature` | `the signature does not verify under the installation key 90ae 3702 f3a9 63ab` |
@@ -2023,7 +2051,10 @@ another key). `images/test-system.template.json` is a template, not an image: it
 device's test compiler (`core/test/image_compiler.cpp`), until E-Home's compiler writes the
 sections (haumacher/ehome#184) and the two are compared byte for byte as for every other image. The case
 `cases/accept-initial-values.json` (format 1.2, homecontrol #107) has an initial value of every
-value type (3.3); E-Home's compiler writes the same bytes (haumacher/ehome#217).
+value type (3.3); E-Home's compiler writes the same bytes (haumacher/ehome#217). The case
+`cases/accept-history-meter.json` (format 1.3, homecontrol #115) has meters of every numeric type and
+the ranges `6h` and `10y`; its `.bin` was written by the device's test compiler and E-Home's compiler
+writes the same bytes (haumacher/ehome#221).
 
 Readings fixed while writing the compiler (haumacher/ehome#176):
 - A node without a value type (a timer node) carries type code 0 (10.6).

@@ -886,7 +886,8 @@ a client builds the dashboard without the image. Without an image: 200 `{"loaded
                {"id": "evening", "label": "Evening", "kind": "scene", "scene": 1, "datapoints": {"command": 12}}],
  "datapoints": [{"id": 4, "name": "living.temperature", "type": "real", "writable": false,
                  "label": "Living room temperature", "unit": "°C", "technology": "knx",
-                 "binding": {"knx": {"dpt": "9.001", "listen": ["1/3/1"]}}, "history": true}],
+                 "binding": {"knx": {"dpt": "9.001", "listen": ["1/3/1"]}}, "history": true,
+                 "coverage": 2592000, "meter": false}],
  "next": null}
 ```
 
@@ -901,6 +902,12 @@ a client builds the dashboard without the image. Without an image: 200 `{"loaded
   `null` for an application value); `binding` the image's technology members verbatim (`knx`,
   `zigbee`, `virtual`); `history` whether it keeps a history ring. `label`, `unit` and `binding`
   are left out when absent.
+- A datapoint with a history also has `coverage`, how far back it reaches in seconds (the longest
+  retention of its ring and its archives), and `meter`, whether it is a meter reading
+  (spec/runtime-image.md 3.3, format 1.3; homecontrol #115). The generic view offers the chart ranges
+  of `6h`, `24h`, `7d`, `30d`, `1y`, `10y` that the coverage reaches and draws a meter as consumption
+  bars, a boolean as the on/off strip, any other number as its line with the min/max band. Without a
+  history both are left out.
 - The datapoints of the rule parameters (spec/rules.md 8.6, after the image's own) have the
   technology `rules` and a member `"parameter": {"rule": "<ruleId>", "parameter": "<parameterId>"}`;
   their `label` is the parameter's label (the rule's `name` for the enable switch `enabled`), their

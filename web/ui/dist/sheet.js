@@ -1,20 +1,17 @@
 /* Copyright (c) 2026 Bernhard Haumacher */
 // The detail sheet of a function (a modal <dialog>: Escape closes it, focus stays inside): the
-// values of its datapoints with quality and age, the history over 24 h or 7 days for the
-// datapoints that keep one. Each datapoint is named by its role and its label (its id only without a
-// label); the technical name and the binding are the technical pages' business (homecontrol #82).
+// values of its datapoints with quality and age, and a chart of each datapoint that keeps a history,
+// over exactly the ranges its coverage reaches, drawn by its kind (homecontrol #115: a number as its
+// line with the min/max band, a boolean as the on/off strip, a meter as consumption bars). Each
+// datapoint is named by its role and its label (its id only without a label); the technical name and
+// the binding are the technical pages' business (homecontrol #82).
 
-import { api, errorText } from "/api.js";
-import { h, icon, icons, replace } from "/dom.js";
-import { chart } from "/chart.js";
+import { h, icon, icons } from "/dom.js";
+import { chartTile } from "/elements.js";
 import { formatAgo, formatNumber, formatValue } from "/format.js";
 import { t, has } from "/i18n.js";
 import { label, dpLabel, dpUnit } from "/model.js";
-
-const RANGES = [
-	{ key: "history.day", seconds: 86400, points: 96 },
-	{ key: "history.week", seconds: 7 * 86400, points: 140 },
-];
+import { consolidationOf, coveredRanges, drawKind, firstRange } from "/history_view.js";
 
 function roleName(role) {
 	return has(`role.${role}`) ? t(`role.${role}`) : role;
@@ -54,39 +51,18 @@ export function openSheet(fn, env) {
 		return [h("dt", null, roleName(role), h("small", { class: "muted block" }, dpLabel(model, id, live))), value];
 	}));
 
-	// History: every datapoint of the function that keeps one (each id once).
-	const historyIds = [...new Set(roles.map(([, id]) => id))].filter((id) => (model.datapoints.get(id) || {}).history);
-	let range = RANGES[0];
-	const historyBody = h("div", null);
-	const tabs = h("div", { class: "segmented", role: "group", "aria-label": t("history.range") }, RANGES.map((r) =>
-		h("button", { type: "button", "aria-pressed": r === range ? "true" : "false", onclick: (event) => {
-			range = r;
-			for (const b of tabs.children) {
-				b.setAttribute("aria-pressed", b === event.currentTarget ? "true" : "false");
-			}
-			loadHistory();
-		} }, t(r.key))));
-
-	async function loadHistory() {
-		replace(historyBody, h("p", { class: "muted" }, t("app.loading")));
-		const to = Math.floor(Date.now() / 1000) + 1;
-		const from = to - range.seconds;
-		try {
-			const charts = [];
-			for (const id of historyIds) {
-				const data = await api("GET", `/api/history?ids=${id}&from=${from}&to=${to}&points=${range.points}`);
-				const series = data.series[0];
-				const dp = live.datapoints.get(id);
-				charts.push(h("h3", { class: "sheet-subtitle" }, dpLabel(model, id, live)));
-				charts.push(series.points
-					? chart(series.points, { from, to, unit: dpUnit(model, id), step: dp && dp.type === "boolean", digits: dpUnit(model, id) === "%" ? 0 : 1, width: historyBody.clientWidth })
-					: h("p", { class: "muted" }, errorText({ code: series.code, reason: series.error })));
-			}
-			replace(historyBody, charts);
-		} catch (error) {
-			replace(historyBody, h("p", { class: "message error" }, errorText(error)));
-		}
-	}
+	// History: every datapoint of the function that keeps one (each id once), its ranges by its coverage.
+	const charts = [...new Set(roles.map(([, id]) => id))]
+		.map((id) => [id, model.datapoints.get(id) || {}])
+		.filter(([, info]) => info.history)
+		.map(([id, info]) => {
+			const ranges = coveredRanges(info.coverage);
+			return chartTile({
+				label: dpLabel(model, id, live),
+				chart: { range: firstRange(ranges), presets: ranges, height: drawKind(info) === "strip" ? 2 : 4,
+					series: [{ datapoint: id, consolidation: consolidationOf(info) }] },
+			}, env);
+		});
 
 	dialog.append(h("div", { class: "sheet-body" },
 		h("header", { class: "sheet-head" },
@@ -95,7 +71,8 @@ export function openSheet(fn, env) {
 				h("p", { class: "muted" }, [has(`kind.${fn.kind}`) ? t(`kind.${fn.kind}`) : fn.kind, room ? label(room.label, room.id) : null].filter(Boolean).join(" · "))),
 			h("button", { type: "button", class: "icon-button", "aria-label": t("sheet.close"), onclick: close }, icon(icons.close))),
 		h("section", null, h("h3", { class: "sheet-subtitle" }, t("sheet.values")), values),
-		historyIds.length ? h("section", null, h("div", { class: "sheet-row" }, h("h3", { class: "sheet-subtitle" }, t("sheet.history")), tabs), historyBody) : null,
+		charts.length ? h("section", { class: "sheet-history" }, h("h3", { class: "sheet-subtitle" }, t("sheet.history")),
+			charts.map((chart) => chart.element)) : null,
 	));
 
 	const onDatapoints = (event) => {
@@ -108,6 +85,7 @@ export function openSheet(fn, env) {
 	live.addEventListener("datapoints", onDatapoints);
 	dialog.addEventListener("close", () => {
 		live.removeEventListener("datapoints", onDatapoints);
+		charts.forEach((chart) => chart.dispose());
 		dialog.remove();
 	});
 	dialog.addEventListener("click", (event) => {
@@ -117,8 +95,5 @@ export function openSheet(fn, env) {
 	});
 	document.body.appendChild(dialog);
 	dialog.showModal();
-	if (historyIds.length) {
-		loadHistory();
-	}
 	return dialog;
 }

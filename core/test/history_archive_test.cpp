@@ -458,16 +458,36 @@ TEST_CASE("HistoryArchive: a changed resolution or layout drops the archive with
 	ArchiveSpec week[] = {archive(3600, 7 * 86400)};
 	REQUIRE(boot.load({{0, 7200, 60, week, 1}}) == HistoryStatus::ok);
 	CHECK(capture.sink.contains("history of 'Living.Temp': the 3600 s archive is dropped: its retention changed the number of segments"));
-	CHECK(segments() == 0);
-	CHECK(boot.query(0, kMonday, boot.clock.wall_seconds - 3600, 3, answer).empty());
+	// The new archive takes what the ring still holds (its last two hours, homecontrol #115); the hours
+	// before it are gone with the old segments.
+	CHECK(capture.sink.contains("history of 'Living.Temp': the 3600 s archive starts with 3 slots consolidated from what was kept before"));
+	CHECK(segments() == 1);
+	CHECK(boot.query(0, kMonday, kMonday + 2 * 3600, 2, answer).empty());
+	// (A second before the ring's reach: the archive answers.)
+	std::vector<HistoryBucket> kept = boot.query(0, kMonday + 2 * 3600 - 1, kMonday + 4 * 3600 - 1, 2, answer);
+	REQUIRE(kept.size() == 2);
+	CHECK(answer.resolution_s == 3600);
+	CHECK(kept[0].count == 60);
+	CHECK(kept[0].mean == doctest::Approx(20.0));
 	boot.run(2 * 3600);
 	boot.history.flush();
 	CHECK(segments() == 1);
-	// Another resolution: the old archive's segments go.
+	// Another resolution: the old archive's segments go, the new one starts with their slots.
 	ArchiveSpec two_hours[] = {archive(7200, 7 * 86400)};
 	REQUIRE(boot.load({{0, 7200, 60, two_hours, 1}}) == HistoryStatus::ok);
 	CHECK(capture.sink.contains("history of 'Living.Temp': the 3600 s archive is dropped: the image no longer has it"));
-	CHECK(segments() == 0);
+	CHECK(capture.sink.contains("history of 'Living.Temp': the 7200 s archive starts with"));
+	size_t hourly_segments = 0;
+	for (const auto& blob : blobs.blobs) {
+		hourly_segments += blob.first.rfind("a.", 0) == 0 && blob.first.find(".e10.") != std::string::npos ? 1 : 0;
+	}
+	CHECK(hourly_segments == 0);
+	CHECK(segments() == 1);
+	kept = boot.query(0, kMonday + 2 * 3600, kMonday + 6 * 3600, 2, answer);
+	REQUIRE(kept.size() == 2);
+	CHECK(answer.resolution_s == 7200);
+	CHECK(kept[0].count == 120);
+	CHECK(kept[1].count == 120);
 	// A changed type (the datapoint is now a boolean of the same name): dropped.
 	boot.run(3 * 3600);
 	boot.history.flush();

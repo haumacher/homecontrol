@@ -5,7 +5,7 @@
 // plain tile with its live value (a writable boolean toggles on a tap) and a hint says why. A
 // datapoint is named by its label, its id only without one (dpLabel).
 
-import { api, errorText } from "/api.js";
+import { errorText } from "/api.js";
 import { h, icon, icons, replace } from "/dom.js";
 import { formatValue } from "/format.js";
 import { t } from "/i18n.js";
@@ -13,6 +13,7 @@ import { dpLabel, label, loadModel } from "/model.js";
 import { functionTile } from "/tiles.js";
 import { flowTiles } from "/flow.js";
 import { openSheet } from "/sheet.js";
+import { sparkData } from "/elements.js";
 
 const SPARK_REFRESH_MS = 5 * 60 * 1000;
 const AGE_REFRESH_MS = 30 * 1000;
@@ -136,21 +137,13 @@ function flatTiles(live, model, show) {
 /// The rooms and their function tiles.
 function dashboard(model, live, show) {
 	const histories = new Map(); // id -> Promise of {points, from, to}
-	const fetchHistory = (id) => {
-		const to = Math.floor(Date.now() / 1000) + 1;
-		const from = to - 86400;
-		return api("GET", `/api/history?ids=${id}&from=${from}&to=${to}&points=48`).then((data) => {
-			const series = data.series[0];
-			return series && series.points ? { points: series.points, from, to } : null;
-		});
-	};
 	const env = {
 		model,
 		live,
 		open: (fn) => openSheet(fn, env),
 		history: (id) => {
 			if (!histories.has(id)) {
-				histories.set(id, fetchHistory(id));
+				histories.set(id, sparkData(model, id));
 			}
 			return histories.get(id);
 		},

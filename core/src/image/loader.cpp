@@ -633,6 +633,7 @@ void Builder::history(size_t cap, size_t archive_cap) {
 		h.spacing_s = r.spacing;
 		h.archives = r.archive_count > 0 ? pool + r.first_archive : nullptr;
 		h.archive_count = r.archive_count;
+		h.meter = (r.flags & kHistoryMeter) != 0;
 		needed += History::ram_bytes(h);
 		flash += History::flash_bytes(h);
 	}

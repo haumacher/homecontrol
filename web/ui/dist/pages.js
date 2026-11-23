@@ -5,14 +5,14 @@
 // chooses, a chart as a wide tile (elements.js). Without pages the generated overview stays the
 // start page (overview.js).
 
-import { api, errorText } from "/api.js";
+import { errorText } from "/api.js";
 import { h, replace } from "/dom.js";
 import { t } from "/i18n.js";
 import { label, loadModel, pages as fetchPages } from "/model.js";
 import { functionTile } from "/tiles.js";
 import { flowTiles } from "/flow.js";
 import { openSheet } from "/sheet.js";
-import { valueTile, chartTile, CHART_REFRESH_MS } from "/elements.js";
+import { valueTile, chartTile, sparkData, CHART_REFRESH_MS } from "/elements.js";
 
 const AGE_REFRESH_MS = 30 * 1000;
 const SPARK_REFRESH_MS = 5 * 60 * 1000;
@@ -90,6 +90,7 @@ export function renderPage(content, ctx, page) {
 	let resize = null;
 	let flows = [];
 	let disposed = false;
+	let current = null; // the model the tiles were built from
 
 	const show = (text) => {
 		message.textContent = text;
@@ -101,6 +102,7 @@ export function renderPage(content, ctx, page) {
 	};
 
 	function build(model) {
+		current = model;
 		const histories = new Map();
 		const env = {
 			model,
@@ -108,12 +110,7 @@ export function renderPage(content, ctx, page) {
 			open: (fn) => openSheet(fn, env),
 			history: (id) => {
 				if (!histories.has(id)) {
-					const to = Math.floor(Date.now() / 1000) + 1;
-					const from = to - 86400;
-					histories.set(id, api("GET", `/api/history?ids=${id}&from=${from}&to=${to}&points=48`).then((data) => {
-						const series = data.series[0];
-						return series && series.points ? { points: series.points, from, to } : null;
-					}));
+					histories.set(id, sparkData(model, id));
 				}
 				return histories.get(id);
 			},
@@ -213,13 +210,8 @@ export function renderPage(content, ctx, page) {
 	const ageTimer = setInterval(() => tiles.forEach((tile) => tile.update()), AGE_REFRESH_MS);
 	const sparkTimer = setInterval(() => {
 		for (const tile of tiles) {
-			if (tile.sparkId !== null && tile.sparkId !== undefined) {
-				api("GET", `/api/history?ids=${tile.sparkId}&points=48`).then((data) => {
-					const series = data.series[0];
-					if (series && series.points) {
-						tile.refreshSpark({ points: series.points, from: data.from, to: data.to });
-					}
-				}).catch(() => {});
+			if (tile.sparkId !== null && tile.sparkId !== undefined && current) {
+				sparkData(current, tile.sparkId).then((data) => tile.refreshSpark(data)).catch(() => {});
 			}
 		}
 	}, SPARK_REFRESH_MS);

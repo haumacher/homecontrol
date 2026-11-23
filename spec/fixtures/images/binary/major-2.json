@@ -1,1 +1,1 @@
-{"from": "minimal.bin", "mutation": "header.major 2", "code": "image.version", "path": "header.major", "reason": "format 2.0: this firmware reads format 1 (up to 1.2)"}
+{"from": "minimal.bin", "mutation": "header.major 2", "code": "image.version", "path": "header.major", "reason": "format 2.0: this firmware reads format 1 (up to 1.3)"}

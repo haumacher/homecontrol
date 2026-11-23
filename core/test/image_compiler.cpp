@@ -559,12 +559,14 @@ private:
 		bool present = false;
 		uint32_t retention = 0;
 		uint32_t spacing = 0;
+		bool meter = false; ///< `history.meter` (format 1.3).
 		std::vector<std::pair<uint32_t, uint32_t>> archives; ///< resolution, retention
 	};
 
 	const blocks::BlockRegistry& registry_;
 	bool harness_;
 	bool has_initial_ = false; ///< A datapoint has an initial value: format 1.2.
+	bool has_meter_ = false;   ///< A history is a meter reading: format 1.3.
 	JsonSpanDocument document_;
 	std::map<uint16_t, Table> tables_;
 	std::vector<StringFix> string_fixes_;
@@ -743,6 +745,9 @@ bool Compiler::declared_datapoints(const JsonSpan& root) {
 			history.present = true;
 			history.retention = static_cast<uint32_t>(member_number(history_member, "retention"));
 			history.spacing = static_cast<uint32_t>(member_number(history_member, "spacing"));
+			// The meter flag (3.3, format 1.3, homecontrol #115).
+			history.meter = member_flag(history_member, "meter", false);
+			has_meter_ = has_meter_ || history.meter;
 			for (const JsonSpan& archive : member_items(history_member, "archives")) {
 				history.archives.emplace_back(static_cast<uint32_t>(member_number(archive, "resolution")),
 					static_cast<uint32_t>(member_number(archive, "retention")));
@@ -1034,6 +1039,7 @@ void Compiler::history_tables() {
 		size_t r = t.add();
 		t.u16(r, 0, i);
 		t.u8(r, 2, h.archives.size());
+		t.u8(r, 3, h.meter ? 0x01 : 0);
 		t.u32(r, 4, h.retention);
 		t.u32(r, 8, h.spacing);
 		t.u16(r, 12, archives.count());
@@ -2963,9 +2969,9 @@ bool Compiler::assemble(std::vector<uint8_t>& out, const uint8_t* seed) {
 	std::memcpy(out.data(), magic, 4);
 	put16(out, 4, 1);
 	// Format 1.1 only for an image with its sections (spec/runtime-image.md 8): the anonymous pages.
-	// The oldest minor version that has what the image uses (section 8): 1.2 the initial values, 1.1
-	// the anonymous pages.
-	put16(out, 6, has_initial_ ? 2 : tables_.count(kUiAnonymous) != 0 && !tables_[kUiAnonymous].bytes.empty() ? 1 : 0);
+	// The oldest minor version that has what the image uses (section 8): 1.3 the meter flag, 1.2 the
+	// initial values, 1.1 the anonymous pages.
+	put16(out, 6, has_meter_ ? 3 : has_initial_ ? 2 : tables_.count(kUiAnonymous) != 0 && !tables_[kUiAnonymous].bytes.empty() ? 1 : 0);
 	put32(out, 8, static_cast<uint32_t>(length));
 	put32(out, 16, seed != nullptr ? 1 : 0);
 	put16(out, 20, static_cast<uint16_t>(header));

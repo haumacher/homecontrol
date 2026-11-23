@@ -33,6 +33,9 @@ struct HistorySpec {
 	                      ///< History::kMinSpacingS .. History::kMaxSpacingS.
 	const ArchiveSpec* archives = nullptr; ///< `archive_count` archives (load() copies them).
 	uint8_t archive_count = 0;             ///< 0 .. History::kMaxArchives.
+	/// The datapoint is a meter reading (homecontrol #115): the UI draws it as consumption bars.
+	/// Only for unsigned, signed and real.
+	bool meter = false;
 };
 
 /// Outcome of History calls. Everything except `ok` is a refusal; a refused load keeps the previous
@@ -134,6 +137,7 @@ struct HistoryLimits {
 
 namespace history_detail {
 enum class SegmentState : uint8_t;
+struct RingBlob;
 }
 
 /// Short-term history of numeric and boolean datapoints for the UI's sparklines and charts
@@ -275,6 +279,13 @@ public:
 	/// Archives of a datapoint (0 without history).
 	size_t archives(uint16_t id) const;
 
+	/// How far back the history of a datapoint reaches, in seconds: the longest retention of its
+	/// ring and its archives (0 without history; homecontrol #115).
+	uint32_t coverage_s(uint16_t id) const;
+
+	/// Whether the datapoint's history is a meter reading (HistorySpec::meter; false without history).
+	bool meter(uint16_t id) const;
+
 	/// The open slot of the archive of `resolution_s` of a datapoint; false if there is none open.
 	bool open_slot(uint16_t id, uint32_t resolution_s, ArchiveSlot& slot) const;
 
@@ -313,6 +324,7 @@ private:
 	struct Ring;
 	struct Archive;
 	class SlotReader;
+	struct SeedScratch;
 
 	HistoryStatus validate(const HistorySpec* specs, size_t count, size_t budget_bytes, size_t archive_budget_bytes,
 		size_t& ram, size_t& flash, size_t& archives, size_t& pending) const;
@@ -321,6 +333,8 @@ private:
 	Ring* ring_of(const Datapoint& datapoint) const;
 	void append(Ring& ring, uint32_t t, uint32_t bits);
 	bool save(Ring& ring);
+	bool ring_blob(const Ring& ring, history_detail::RingBlob& blob, bool log) const;
+	bool ring_blob_sample(const history_detail::RingBlob& blob, uint32_t i, HistorySample& out) const;
 	void restore(Ring& ring);
 	void on_tick();
 	void free_rings();
@@ -333,6 +347,8 @@ private:
 	void close(Ring& ring, Archive& archive);
 	bool save_archive(const Ring& ring, Archive& archive);
 	void check_archives();
+	size_t seed_archives();
+	size_t seed(Ring& ring, Archive& archive, SeedScratch& scratch);
 	history_detail::SegmentState segment_state(const Ring& ring, const Archive& archive, uint32_t segment,
 		uint32_t* saved_retention) const;
 	uint32_t slot_number(const Archive& archive, int64_t t) const;

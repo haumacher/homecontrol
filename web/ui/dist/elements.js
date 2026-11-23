@@ -10,12 +10,9 @@ import { h, icon, icons, replace } from "/dom.js";
 import { formatAgo, formatDurationShort, formatNumber, formatValue } from "/format.js";
 import { t, has as hasText } from "/i18n.js";
 import { label, dpLabel, dpUnit } from "/model.js";
-import { seriesChart, PALETTE_SIZE } from "/chart.js";
+import { seriesChart, sparkline, PALETTE_SIZE } from "/chart.js";
+import { BARS, LINE_POINTS, RANGE_SECONDS, hasSpark, sparkSeconds } from "/history_view.js";
 
-const RANGE_SECONDS = { "1h": 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "1y": 365 * 86400 };
-/// Consumption bars per range: their count and width (s), aligned to the local hour or day.
-const BARS = { "1h": [12, 300], "24h": [24, 3600], "7d": [7, 86400], "30d": [30, 86400], "1y": [12, 365 * 86400 / 12] };
-const LINE_POINTS = 48;
 const MAX_POINTS = 160; // GET /api/history: points times ids
 const TILE_ROW = 64;
 const GAP = 12;
@@ -84,7 +81,19 @@ function inputText(type, v) {
 	}
 }
 
-/// A datapoint element: {datapoint, label, readOnly}. Returns {element, ids, update()}.
+/// The points of a tile's sparkline (homecontrol #115): the last 24 h of the datapoint's history, or
+/// what its coverage reaches where that is shorter. Resolves to {points, from, to} or null.
+export function sparkData(model, id) {
+	const to = Math.floor(Date.now() / 1000) + 1;
+	const from = to - sparkSeconds(model.datapoints.get(id));
+	return api("GET", `/api/history?ids=${id}&from=${from}&to=${to}&points=${LINE_POINTS}`).then((data) => {
+		const series = data.series[0];
+		return series && series.points ? { points: series.points, from, to } : null;
+	});
+}
+
+/// A datapoint element: {datapoint, label, readOnly}. Returns {element, ids, update(), sparkId,
+/// refreshSpark(data)}; a datapoint that keeps a history shows its sparkline (homecontrol #115).
 export function valueTile(el, env) {
 	const { live, model } = env;
 	const id = el.datapoint;
@@ -171,6 +180,17 @@ export function valueTile(el, env) {
 			: type === "color" ? icons.palette : type.includes("date") || type.includes("time") ? icons.clock : icons.data));
 	element.append(h("div", { class: "tile-head" }, iconElement,
 		h("div", { class: "tile-main static" }, h("span", { class: "tile-name", title: name }, name), stateText)));
+	// The sparkline of a datapoint that keeps a history (homecontrol #115), below the controls.
+	let spark = null;
+	if (hasSpark(info) && env.history) {
+		spark = h("div", { class: "tile-spark" });
+		controls.push(spark);
+		env.history(id).then((data) => {
+			if (data) {
+				replace(spark, sparkline(data.points, data.from, data.to, type === "boolean"));
+			}
+		}).catch(() => {});
+	}
 	if (controls.length) {
 		element.appendChild(h("div", { class: "tile-controls" }, controls));
 	}
@@ -218,7 +238,11 @@ export function valueTile(el, env) {
 	}
 
 	update();
-	return { element, ids: new Set([id]), update };
+	return { element, ids: new Set([id]), update, sparkId: spark ? id : null, refreshSpark: (data) => {
+		if (spark && data) {
+			replace(spark, sparkline(data.points, data.from, data.to, type === "boolean"));
+		}
+	} };
 }
 
 /// Local midnight (or the hour) after `seconds`, for bars that start at a natural boundary.

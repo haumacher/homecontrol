@@ -301,6 +301,7 @@ TEST_CASE("WebApi query parameters parse strictly") {
 
 // ---- The dashboard's view of the image (issue #14) ---------------------------------------------
 
+#include <map>
 #include <memory>
 
 #include "fake_blob_store.h"
@@ -543,6 +544,50 @@ TEST_CASE("WebApi.Model of the example house: rooms, functions with roles, label
 	REQUIRE(f.request(HttpMethod::del, "/api/image", "", f.cookie).status == 200);
 	r = f.get("/api/model", f.cookie);
 	CHECK_FALSE(r.json["loaded"].boolean);
+}
+
+TEST_CASE("WebApi.Model: a datapoint with a history gives its coverage and whether it is a meter (#115)") {
+	// The corpus case of the meter flag (spec/fixtures/images/cases/accept-history-meter.json): the
+	// generic view offers the ranges the coverage reaches and draws a meter as consumption bars.
+	DashboardFixture f;
+	f.load(image_fixture("cases/accept-history-meter.json"));
+	auto r = f.get("/api/model", f.cookie);
+	REQUIRE(r.status == 200);
+	std::map<std::string, const hc_test::Json*> by_name;
+	for (const auto& dp : r.json["datapoints"].items) {
+		by_name[dp["name"].text] = &dp;
+	}
+	struct Expected {
+		const char* name;
+		double coverage;
+		bool meter;
+	};
+	for (const Expected& e : {Expected{"temperature", 2592000, false}, Expected{"energy", 31536000, true},
+			 Expected{"gas", 315360000, true}, Expected{"counter", 86400, true}, Expected{"light", 86400, false},
+			 Expected{"humidity", 21600, false}}) {
+		CAPTURE(e.name);
+		REQUIRE(by_name.count(e.name) == 1);
+		const hc_test::Json& dp = *by_name[e.name];
+		CHECK(dp["history"].boolean);
+		CHECK(dp["coverage"].number == e.coverage);
+		CHECK(dp["meter"].kind == hc_test::Json::Kind::boolean);
+		CHECK(dp["meter"].boolean == e.meter);
+	}
+	// Without a history: neither member.
+	f.load(kSmallImage);
+	r = f.get("/api/model", f.cookie);
+	bool without = false;
+	for (const auto& dp : r.json["datapoints"].items) {
+		if (!dp["history"].boolean) {
+			without = true;
+			CHECK_FALSE(dp.has("coverage"));
+			CHECK_FALSE(dp.has("meter"));
+		} else {
+			CHECK(dp["coverage"].number == 86400);
+			CHECK_FALSE(dp["meter"].boolean);
+		}
+	}
+	CHECK(without);
 }
 
 /// Archives (issue #56): an hourly one for the temperature, a daily one for the boolean.
@@ -1148,7 +1193,7 @@ TEST_CASE("WebApi.Blocks: list, types, changes applied whole or refused whole, r
 	f.controller.run_once();
 	auto status = f.get("/api/status", f.cookie);
 	REQUIRE(status.status == 200);
-	CHECK(status.json["device"]["format"].text == "1.2");
+	CHECK(status.json["device"]["format"].text == "1.3");
 	CHECK(status.json["image"]["blocks"].number == 1);
 	auto r = f.get("/api/blocks", f.cookie);
 	REQUIRE(r.status == 200);

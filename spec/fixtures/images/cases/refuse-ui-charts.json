@@ -2,7 +2,7 @@
  "expect": {"valid": false, "kind": "invalid", "refusals": [
    {"path": "ui.pages[0].sections[0].elements[0].chart.width", "reason": "width must be 1, 2, 3, 4 (columns) or \"full\""},
    {"path": "ui.pages[0].sections[0].elements[0].chart.height", "reason": "height must be 2 or 4 (tile rows)"},
-   {"path": "ui.pages[0].sections[0].elements[0].chart.range", "reason": "unknown range \"2d\" (1h, 24h, 7d, 30d, 1y)"},
+   {"path": "ui.pages[0].sections[0].elements[0].chart.range", "reason": "unknown range \"2d\" (1h, 6h, 24h, 7d, 30d, 1y, 10y)"},
    {"path": "ui.pages[0].sections[0].elements[0].chart.presets[1]", "reason": "unknown range \"5y\""},
    {"path": "ui.pages[0].sections[0].elements[0].chart.axes.right", "reason": "min must be less than max"},
    {"path": "ui.pages[0].sections[0].elements[0].chart.series[0].datapoint", "reason": "unknown datapoint 'nothing'"},

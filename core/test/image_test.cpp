@@ -383,7 +383,7 @@ TEST_CASE("Image.WorkedExampleMutations") {
 	mutations.push_back({"the source text", std::vector<uint8_t>(json.begin(), json.end()), "image.format", "header.magic",
 		"not a runtime image: the magic is 7B 22 69 6D, not 48 43 49 4D (\"HCIM\"): a JSON text (E-Home compiles the image; send the binary form)"});
 	mutations.push_back({"major 2", mutate([](auto& b) { put_u16(b, 4, 2); }), "image.version", "header.major",
-		"format 2.0: this firmware reads format 1 (up to 1.2)"});
+		"format 2.0: this firmware reads format 1 (up to 1.3)"});
 	mutations.push_back({"a byte changed, CRC kept", mutate([](auto& b) { b[0x66] ^= 0x01; }, false), "image.damaged",
 		"header.crc", "the CRC-32 is 59772c42, the bytes give"});
 	mutations.push_back({"strings at 0x61", mutate([](auto& b) { put_u32(b, 0x34, 0x61); }), "image.invalid",
@@ -832,7 +832,7 @@ TEST_CASE("Image.ApiPutGetDeleteStatus") {
 	REQUIRE(r.status == 200);
 	CHECK_FALSE(r.json["image"]["loaded"].boolean);
 	CHECK(r.json["image"]["slot"].number == 524288);
-	CHECK(r.json["device"]["format"].text == "1.2");
+	CHECK(r.json["device"]["format"].text == "1.3");
 
 	std::string example = as_text(hc_test::compiled(fixture("example.json")));
 	CHECK(f.request(hc::HttpMethod::put, "/api/image", example).status == 401);

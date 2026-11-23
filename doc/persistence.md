@@ -380,9 +380,11 @@ for a large history, so at most 64 KB of samples are written per hour (the wear 
 power cut loses at most the samples of one interval; an orderly shutdown loses nothing.
 
 `load()` restores each ring from its blob and merges it into the series: the newest samples that
-fit the (possibly smaller) ring, strictly increasing in time, and — when the wall clock is known —
-none from the future and none older than the retention; samples taken after the restore continue
-the series. A blob of another datapoint (hash collision), of a changed type, with a bad checksum or
+fit the (possibly smaller) ring, strictly increasing in time, at least the ring's spacing apart, and
+— when the wall clock is known — none from the future and none older than the retention; samples
+taken after the restore continue the series. A ring of the same spacing keeps every sample (they are
+never closer); a coarser ring of a new image keeps one sample per spacing over its whole retention:
+24 h at 1 min restored into 24 h at 5 min keeps the day, not its last 289 minutes (homecontrol #115). A blob of another datapoint (hash collision), of a changed type, with a bad checksum or
 of a newer format generation is ignored with the reason in the log. Blobs of rings no longer in the
 image are deleted.
 
@@ -531,6 +533,26 @@ its segments deleted. When a slot opens it is taken up from pending or from flas
 same start is there: after a restart (the slot was saved) or a swap with the same spec the open slot
 goes on. A swap flushes the old history first; when the last sample is still fresh, the new
 archives hold its value on from the swap.
+
+### A new archive starts with what was kept (homecontrol #115)
+
+A new image may dimension the stores otherwise (haumacher/ehome#221: archives of 3 h, 12 h, 7 days
+and 31 days where hourly and daily ones were derived from the charts before). An archive none of whose
+segments is on the store takes, at `load()` and before the archives the image no longer has are
+deleted, the slots its window already has data for: each slot of the window from the finest source
+that reaches back to its start, else from the one that reaches furthest — the ring's blob (its samples
+at the spacing they were taken at, held as `feed()` and `hold()` hold them) or an archive of the
+datapoint on the store finer than the new one (its valid slots whose middle lies in the slot, summed:
+min, max, last, count, the sum and the held seconds). The window ends now, or, before the clock is
+synchronized, at the ring's last sample; without either it starts empty ("the 10800 s archive starts
+empty: the time is not known yet"). The segments with a filled slot are written whole, one write each
+("history of 'x': the 10800 s archive starts with 57 slots consolidated from what was kept before"),
+the open slot of now goes on with the live samples. A restart finds the segments and takes nothing
+over again. Sources of another type or datapoint are not read (the checks of the ring blob and the
+segment header). A power cut in the middle leaves the archive with the segments already written; the
+old archives are deleted only after it. A changed layout of the same resolution (another number of
+segments) is still dropped, and the ring then seeds the new archive with what it holds. Tests:
+`core/test/history_migration_test.cpp`.
 
 ### Saving
 

@@ -673,12 +673,18 @@ void Checker::history() {
 	for (size_t i = 0; i < count(kHistory) && !full(); ++i) {
 		const HistoryRec& r = rec<HistoryRec>(kHistory, i);
 		at(kHistory, i);
+		uint8_t type = 0;
 		if (index("datapoint", kDatapoints, r.datapoint, false)) {
-			uint8_t type = rec<DatapointRec>(kDatapoints, r.datapoint).type;
+			type = rec<DatapointRec>(kDatapoints, r.datapoint).type;
 			if (type < 1 || type > 4) {
 				refuse(path("datapoint"), "malformed: a history of a %s datapoint: only boolean, unsigned, signed and real",
 					value_type_name(static_cast<ValueType>(type <= 12 ? type : 0)));
 			}
+		}
+		// The meter flag (format 1.3, homecontrol #115): a meter reading is a number.
+		if (flags("flags", r.flags, kHistoryMeter) && (r.flags & kHistoryMeter) != 0 &&
+			type == static_cast<uint8_t>(ValueType::boolean)) {
+			refuse(path("flags"), "malformed: a meter of a boolean datapoint: only unsigned, signed and real");
 		}
 		if (range("spacing", r.spacing, 10, 86400) && range("retention", r.retention, r.spacing, 2678400)) {
 			uint64_t samples = (static_cast<uint64_t>(r.retention) + r.spacing - 1) / r.spacing + 1;

@@ -143,6 +143,9 @@ if(HC_NODE)
 	# What the UI offers without sign-in (web/ui/dist/access.js, homecontrol #91).
 	add_test(NAME WebUi.Access
 		COMMAND "${HC_NODE}" --test "${HC_REPO_DIR}/web/ui/test/access.test.mjs")
+	# What the generic view draws of a history (web/ui/dist/history_view.js, homecontrol #115).
+	add_test(NAME WebUi.HistoryView
+		COMMAND "${HC_NODE}" --test "${HC_REPO_DIR}/web/ui/test/history_view.test.mjs")
 else()
 	message(STATUS "node not found: the test WebUi.FunctionState is not registered")
 endif()
@@ -177,6 +180,8 @@ target_sources(hc_tests PRIVATE
 	"${HC_REPO_DIR}/core/test/restore_probe_test.cpp"
 	"${HC_REPO_DIR}/core/test/persisted_restore_test.cpp" # a restored value counts (#100)
 	"${HC_REPO_DIR}/core/test/initial_value_test.cpp" # the initial value of an application datapoint (#107)
+	"${HC_REPO_DIR}/core/test/history_migration_test.cpp" # the history kept across new stores (#115)
+	"${HC_REPO_DIR}/core/test/history_meter_test.cpp" # the meter flag and the coverage of a history (#115)
 )
 # The test-only image compiler (issue #87): the JSON source form into the binary runtime image.
 target_sources(hc_tests PRIVATE

@@ -1757,3 +1757,8 @@ input[type="color"].element-input {
 .series-12 {
 	color: var(--s12);
 }
+
+/* The history charts of the detail sheet (homecontrol #115): one chart tile per recorded datapoint. */
+.sheet-history .chart-tile {
+	margin-bottom: 8px;
+}
