@@ -641,8 +641,16 @@ outcome of every frame sent since the start. At every secured or trust-center re
 reads the device's counts and starts them again (`ZigbeeDriver::read_polls()`; the host and the test
 fakes do not count), in two info lines:
 
-    <device>: since its last rejoin 412 polls to the coordinator (3 with frame pending), last poll 31.2 s ago, longest gap 31.2 s, last gaps [31.2 7.5 7.4] s
+    <device>: since its last rejoin 412 polls to the coordinator (3 with frame pending: 2 delivered, 1 not), 5 other frames from it, last poll 31.2 s ago, longest gap 31.2 s, last gaps [31.2 7.5 7.4] s
     <device>: frames to it 9 (2 without ack, 0 refused by coexistence, 0 failed); all frames 1200 (0 without ack, 4 refused by coexistence, 0 failed)
+    <device>: radio before the rejoin, s ago: 0.0 T!c/cs, 0.0 P+, 4.6 R/ds, 7.4 T/m, 31.2 P
+
+A poll answered with frame pending counts as delivered when a frame to the child is acknowledged
+before its next poll, otherwise as not delivered. The last line lists the device's last 12 radio
+events, newest first: `P` a poll, `P+` one answered with frame pending, `R` another frame from it,
+`T` a frame to it acknowledged, `T!a` without acknowledgement, `T!c` refused by the coexistence,
+`T!f` failed otherwise; after a frame its kind: `/m` a MAC command, `/d` NWK data, `/c` a NWK
+command, `s` secured by the NWK layer.
 
 A child that rejoins although its polls reached the coordinator regularly up to the rejoin did not
 lose it for missed polls; a long last gap, polls with frame pending and no frame after them, or
