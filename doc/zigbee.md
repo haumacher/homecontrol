@@ -628,6 +628,26 @@ the trust center leaves no line; the absence of a rejoin line while the device's
 searches is then the evidence. A refusal by the trust center is signalled (`trust center: deny`) and
 logged at warn (homecontrol #99).
 
+**The radio's view of a rejoin (homecontrol #117).** Below the stack, the component counts what the
+802.15.4 radio hears and sends (`platform/esp/components/hc_zigbee/radio_tap.cpp`): it registers its
+own callbacks with the driver (`esp_ieee802154_event_callback_list_register()`, before the stack brings
+the radio up), counts in them, and hands every event on unchanged to the stack's handlers
+(`esp_ieee802154_receive_done()`, `_transmit_done()`, `_transmit_failed()`, which ZBOSS's port
+defines). Per short address (24 at once, the least recently heard makes room): the MAC Data Requests
+(the polls of a sleepy child), those whose acknowledgement said a frame is pending, the time of the
+last poll, the longest gap and the last six gaps between polls, the frames sent to it with their
+outcome (acknowledged, no acknowledgement, refused by the WiFi coexistence, failed otherwise); and the
+outcome of every frame sent since the start. At every secured or trust-center rejoin the adapter
+reads the device's counts and starts them again (`ZigbeeDriver::read_polls()`; the host and the test
+fakes do not count), in two info lines:
+
+    <device>: since its last rejoin 412 polls to the coordinator (3 with frame pending), last poll 31.2 s ago, longest gap 31.2 s, last gaps [31.2 7.5 7.4] s
+    <device>: frames to it 9 (2 without ack, 0 refused by coexistence, 0 failed); all frames 1200 (0 without ack, 4 refused by coexistence, 0 failed)
+
+A child that rejoins although its polls reached the coordinator regularly up to the rejoin did not
+lose it for missed polls; a long last gap, polls with frame pending and no frame after them, or
+frames without acknowledgement point at the cause.
+
 ## Rejoin policy (homecontrol #99)
 
 A device that holds the network key and lost its parent must come back by whatever rejoin it tries,

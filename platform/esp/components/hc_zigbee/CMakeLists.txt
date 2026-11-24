@@ -12,7 +12,7 @@
 set(hc_zigbee_targets esp32c6 esp32h2)
 set(hc_zigbee_priv)
 if(IDF_TARGET IN_LIST hc_zigbee_targets)
-	set(hc_zigbee_priv espressif__esp-zigbee-lib espressif__esp-zboss-lib nvs_flash esp_partition esp_coex esp_wifi
+	set(hc_zigbee_priv espressif__esp-zigbee-lib espressif__esp-zboss-lib ieee802154 esp_timer nvs_flash esp_partition esp_coex esp_wifi
 		freertos log)
 endif()
 
@@ -22,7 +22,7 @@ if(CONFIG_HC_ZIGBEE_ENABLED)
 			"CONFIG_ZB_ENABLED, CONFIG_ZB_ZCZR and CONFIG_ZB_RADIO_NATIVE (sdkconfig.defaults.app.esp32c6); "
 			"delete the build directory's sdkconfig after changing the defaults")
 	endif()
-	set(hc_zigbee_srcs "zigbee_service.cpp" "zigbee_console.cpp" "nvs_blob_store.cpp")
+	set(hc_zigbee_srcs "zigbee_service.cpp" "zigbee_console.cpp" "nvs_blob_store.cpp" "radio_tap.cpp")
 else()
 	set(hc_zigbee_srcs "zigbee_stub.cpp")
 endif()

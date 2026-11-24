@@ -821,6 +821,10 @@ private:
 	EventLoop& loop_;
 	const Clock& clock_;
 	DatapointModel& model_;
+	/// Logs what the radio heard of the device at `short_addr` since its last rejoin and starts the
+	/// count again (ZigbeeDriver::read_polls(), homecontrol #117).
+	void log_polls(const char* text, uint16_t short_addr);
+
 	ZigbeeDriver& driver_;
 	DeviceDatabase database_;
 	NetworkStatus network_;

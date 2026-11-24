@@ -476,3 +476,43 @@ TEST_CASE("ZigbeeRejoin: restore_key and forget_key judge by the table alone") {
 	table.writes = true;
 	CHECK(hc::zigbee::forget_key(table, kSml002));
 }
+
+// ---- The radio's view of a rejoining child (homecontrol #117) ----------------------------------
+
+TEST_CASE("ZigbeeRejoin: a rejoin logs what the radio heard of the device since its last rejoin") {
+	HouseFixture f;
+	hc_test::ScopedCapture capture;
+	f.driver.polls_counted = true;
+	f.driver.polls_short = kSml002Short;
+	f.driver.polls.polls = 412;
+	f.driver.polls.pending = 3;
+	f.driver.polls.since_poll_ms = 31250;
+	f.driver.polls.longest_gap_ms = 31250;
+	f.driver.polls.gaps_ms[0] = 31250;
+	f.driver.polls.gaps_ms[1] = 7520;
+	f.driver.polls.gaps_ms[2] = 7480;
+	f.driver.polls.sent = 9;
+	f.driver.polls.no_ack = 2;
+	f.driver.polls.all_sent = 1200;
+	f.driver.polls.all_coexist = 4;
+	f.adapter.device_updated(ZigbeeFixture::node(kSml002, kSml002Short), ZigbeeAdapter::kUpdateSecuredRejoin,
+		ZigbeeAdapter::kTcAuthorize, 0x0000);
+	CHECK(f.driver.has("polls 0xaf9e reset"));
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): since its last rejoin 412 polls to "
+								"the coordinator (3 with frame pending), last poll 31.2 s ago, longest gap 31.2 s, last "
+								"gaps [31.2 7.5 7.4] s"));
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): frames to it 9 (2 without ack, 0 "
+								"refused by coexistence, 0 failed); all frames 1200 (0 without ack, 4 refused by "
+								"coexistence, 0 failed)"));
+
+	// A leave or a platform that does not count logs nothing of the radio.
+	capture.sink.lines.clear();
+	f.driver.polls_counted = false;
+	f.adapter.device_updated(ZigbeeFixture::node(kSml002, kSml002Short), ZigbeeAdapter::kUpdateTrustCenterRejoin,
+		ZigbeeAdapter::kTcAuthorize, kPlugShort);
+	CHECK_FALSE(capture.sink.contains("polls to the coordinator"));
+	f.driver.calls.clear();
+	f.adapter.device_updated(ZigbeeFixture::node(kSml002, kSml002Short), ZigbeeAdapter::kUpdateLeft,
+		ZigbeeAdapter::kTcAuthorize, kPlugShort);
+	CHECK_FALSE(f.driver.has("polls 0xaf9e reset"));
+}

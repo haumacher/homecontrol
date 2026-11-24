@@ -29,6 +29,36 @@ struct ReportingConfig {
 	uint32_t change;
 };
 
+/// What the coordinator's radio heard of one short address and sent to it, counted below the stack
+/// in the 802.15.4 driver's events (homecontrol #117: why a sleepy child loses the coordinator as its
+/// parent). Counted since the last read with reset, or since the start.
+struct ZigbeePolls {
+	/// Number of gaps between polls the platform keeps, the newest first.
+	static constexpr size_t kGaps = 6;
+	/// MAC Data Requests (the polls of a sleepy child) the radio received from the address and
+	/// acknowledged.
+	uint32_t polls = 0;
+	/// Of those, the polls whose acknowledgement said a frame is pending for the child.
+	uint32_t pending = 0;
+	/// Milliseconds since the last poll; UINT32_MAX without one.
+	uint32_t since_poll_ms = UINT32_MAX;
+	/// The longest time between two polls, in milliseconds.
+	uint32_t longest_gap_ms = 0;
+	/// The last gaps between polls in milliseconds, the newest first; 0 where there is none.
+	uint32_t gaps_ms[kGaps] = {};
+	/// Frames the radio sent to the address (each attempt counts), and of those the ones without an
+	/// acknowledgement, refused by the WiFi coexistence, or failed otherwise (channel busy, abort).
+	uint32_t sent = 0;
+	uint32_t no_ack = 0;
+	uint32_t coexist = 0;
+	uint32_t failed = 0;
+	/// The same failures of every frame the radio sent since the start.
+	uint32_t all_sent = 0;
+	uint32_t all_no_ack = 0;
+	uint32_t all_coexist = 0;
+	uint32_t all_failed = 0;
+};
+
 /// One entry of a neighbour table: the coordinator's own as the stack keeps it
 /// (ZigbeeDriver::read_neighbors()), or a router's from its Mgmt_Lqi_rsp
 /// (ZigbeeAdapter::neighbor_table()).
@@ -173,6 +203,16 @@ public:
 	/// ZDO Mgmt_Lqi_req to a router: its neighbour table from entry `start_index` (homecontrol #98).
 	/// The answer arrives as ZigbeeAdapter::neighbor_table().
 	virtual bool request_neighbor_table(zigbee::Ieee ieee, uint16_t short_addr, uint8_t start_index) = 0;
+
+	/// What the radio heard of `short_addr` and sent to it (ZigbeePolls); `reset` starts the address's
+	/// counts again after the read (the totals of every frame stay). False where the platform does not
+	/// count (the default: the host and the test fakes).
+	virtual bool read_polls(uint16_t short_addr, bool reset, ZigbeePolls& out) {
+		(void) short_addr;
+		(void) reset;
+		(void) out;
+		return false;
+	}
 
 protected:
 	~ZigbeeDriver() = default;

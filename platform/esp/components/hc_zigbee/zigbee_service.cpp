@@ -18,6 +18,7 @@
 #include "hc/log.h"
 #include "hc/zigbee/key_table.h"
 #include "nvs_blob_store.h"
+#include "radio_tap.h"
 #include "sdkconfig.h"
 // The esp-zigbee-lib's key-table access (esp_zb_secur_has_link_key_pair_set(), esp_zb_secur_update_key_pair(),
 // homecontrol #99): declared in its test header, the only one that has them (doc/zigbee.md "Rejoin policy").
@@ -754,6 +755,10 @@ void network_up(const char* how) {
 // ---- The stack's task ----
 
 void zigbee_task(void*) {
+	// Before the stack brings the radio up: the driver takes callbacks only while it is down.
+	if (!radio_tap_install()) {
+		Log::warn(kTag, "the 802.15.4 driver refused the radio tap: the polls of the children are not counted");
+	}
 	esp_zb_platform_config_t platform = {};
 	platform.radio_config.radio_mode = ZB_RADIO_MODE_NATIVE;
 	platform.host_config.host_connection_mode = ZB_HOST_CONNECTION_MODE_NONE;
@@ -1174,6 +1179,10 @@ public:
 		esp_zb_zdo_mgmt_lqi_req(&request, &neighbor_table_answer,
 			reinterpret_cast<void*>(context_of(short_addr, start_index)));
 		return true;
+	}
+
+	bool read_polls(uint16_t short_addr, bool reset, ZigbeePolls& out) override {
+		return radio_tap_read(short_addr, reset, out);
 	}
 
 	bool read_neighbors(ZigbeeNeighborVisitor& visitor) override {

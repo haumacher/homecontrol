@@ -97,6 +97,15 @@ public:
 	bool request_neighbor_table(hc::zigbee::Ieee, uint16_t short_addr, uint8_t start_index) override {
 		return record("lqi " + hex4(short_addr) + " " + std::to_string(start_index));
 	}
+	/// Answers `polls` for its address (homecontrol #117); records "polls <short> reset|keep".
+	bool read_polls(uint16_t short_addr, bool reset, hc::ZigbeePolls& out) override {
+		calls.push_back("polls " + hex4(short_addr) + (reset ? " reset" : " keep"));
+		if (!polls_counted || short_addr != polls_short) {
+			return false;
+		}
+		out = polls;
+		return true;
+	}
 	/// Hands `neighbors` to the visitor (not recorded in `calls`: the adapter reads the table at every
 	/// check); `neighbors_readable` false refuses.
 	bool read_neighbors(hc::ZigbeeNeighborVisitor& visitor) override {
@@ -198,6 +207,10 @@ public:
 	/// The rejoin policy the last set_rejoin_policy() set (the stack's defaults before).
 	bool policy_tc_rejoin = true;
 	bool policy_without_key = false;
+	/// What read_polls() answers for `polls_short` while `polls_counted`.
+	hc::ZigbeePolls polls;
+	uint16_t polls_short = 0;
+	bool polls_counted = false;
 	/// The coordinator's neighbour table read_neighbors() reports.
 	std::vector<hc::ZigbeeNeighbor> neighbors;
 	bool neighbors_readable = true;

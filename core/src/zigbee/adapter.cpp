@@ -2406,6 +2406,43 @@ void ZigbeeAdapter::device_announced(NodeAddress address, uint8_t capability) {
 	}
 }
 
+void ZigbeeAdapter::log_polls(const char* text, uint16_t short_addr) {
+	ZigbeePolls polls;
+	if (short_addr == kNoShortAddress || !driver_.read_polls(short_addr, true, polls)) {
+		return;
+	}
+	// What the coordinator's radio heard of the device since its last rejoin (homecontrol #117): a
+	// child that stops polling, polls in long gaps or whose frames go unacknowledged shows here.
+	char since[16];
+	if (polls.since_poll_ms == UINT32_MAX) {
+		std::snprintf(since, sizeof(since), "none");
+	} else {
+		std::snprintf(since, sizeof(since), "%lu.%lu s", static_cast<unsigned long>(polls.since_poll_ms / 1000),
+			static_cast<unsigned long>(polls.since_poll_ms % 1000 / 100));
+	}
+	char gaps[12 * ZigbeePolls::kGaps + 1];
+	size_t used = 0;
+	gaps[0] = '\0';
+	for (size_t i = 0; i < ZigbeePolls::kGaps && polls.gaps_ms[i] != 0; ++i) {
+		int n = std::snprintf(gaps + used, sizeof(gaps) - used, "%s%lu.%lu", i == 0 ? "" : " ",
+			static_cast<unsigned long>(polls.gaps_ms[i] / 1000), static_cast<unsigned long>(polls.gaps_ms[i] % 1000 / 100));
+		if (n < 0 || static_cast<size_t>(n) >= sizeof(gaps) - used) {
+			break;
+		}
+		used += static_cast<size_t>(n);
+	}
+	Log::info(kTag, "%s: since its last rejoin %lu polls to the coordinator (%lu with frame pending), last poll %s "
+		"ago, longest gap %lu.%lu s, last gaps [%s] s", text, static_cast<unsigned long>(polls.polls),
+		static_cast<unsigned long>(polls.pending), since, static_cast<unsigned long>(polls.longest_gap_ms / 1000),
+		static_cast<unsigned long>(polls.longest_gap_ms % 1000 / 100), gaps);
+	Log::info(kTag, "%s: frames to it %lu (%lu without ack, %lu refused by coexistence, %lu failed); all frames %lu "
+		"(%lu without ack, %lu refused by coexistence, %lu failed)", text, static_cast<unsigned long>(polls.sent),
+		static_cast<unsigned long>(polls.no_ack), static_cast<unsigned long>(polls.coexist),
+		static_cast<unsigned long>(polls.failed), static_cast<unsigned long>(polls.all_sent),
+		static_cast<unsigned long>(polls.all_no_ack), static_cast<unsigned long>(polls.all_coexist),
+		static_cast<unsigned long>(polls.all_failed));
+}
+
 void ZigbeeAdapter::device_updated(NodeAddress address, uint8_t status, uint8_t tc_action, uint16_t parent_short) {
 	if (address.ieee == 0) {
 		Log::warn(kTag, "%s without IEEE address (short 0x%04x) ignored", update_status_name(status),
@@ -2423,6 +2460,9 @@ void ZigbeeAdapter::device_updated(NodeAddress address, uint8_t status, uint8_t 
 	Log::write(tc_action == kTcAuthorize ? LogLevel::info : LogLevel::warn, kTag,
 		"%s: %s (short 0x%04x) through %s, trust center: %s", text, update_status_name(status),
 		static_cast<unsigned>(address.short_addr), parent, tc_action_name(tc_action));
+	if (status == kUpdateSecuredRejoin || status == kUpdateTrustCenterRejoin) {
+		log_polls(text, notice_old_short_ != kNoShortAddress ? notice_old_short_ : address.short_addr);
+	}
 	if (device != nullptr) {
 		device->parent_short = status == kUpdateLeft ? kNoShortAddress : parent_short;
 		device->set(ZigbeeDevice::kParentListed, false);
