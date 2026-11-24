@@ -46,6 +46,36 @@ struct ZigbeePolls {
 	uint32_t longest_gap_ms = 0;
 	/// The last gaps between polls in milliseconds, the newest first; 0 where there is none.
 	uint32_t gaps_ms[kGaps] = {};
+	/// Polls answered with frame pending whose frame reached the child (sent and acknowledged before its
+	/// next poll), and those whose frame did not (the child polled again first).
+	uint32_t delivered = 0;
+	uint32_t undelivered = 0;
+	/// Other frames the radio received from the address (its data and commands, not its polls).
+	uint32_t received = 0;
+	/// One radio event of the address (ZigbeePolls::events).
+	enum class Event : uint8_t {
+		none = 0,
+		poll,          ///< a poll, acknowledged without frame pending
+		poll_pending,  ///< a poll, acknowledged with frame pending
+		received,      ///< another frame from the address
+		sent,          ///< a frame to it, acknowledged
+		sent_no_ack,   ///< a frame to it without acknowledgement
+		sent_coexist,  ///< a frame to it the WiFi coexistence refused
+		sent_failed,   ///< a frame to it that failed otherwise
+	};
+	struct Timed {
+		Event event = Event::none;
+		/// The frame's kind where the radio can tell: the MAC frame type (1 data, 3 command) and, for a
+		/// data frame, the NWK frame type (0 data, 1 command) and whether the NWK layer secured it.
+		uint8_t mac_type = 0;
+		uint8_t nwk_type = 0;
+		bool nwk_secured = false;
+		/// Milliseconds before the read.
+		uint32_t ago_ms = 0;
+	};
+	/// Number of events the platform keeps, the newest first.
+	static constexpr size_t kEvents = 12;
+	Timed events[kEvents];
 	/// Frames the radio sent to the address (each attempt counts), and of those the ones without an
 	/// acknowledgement, refused by the WiFi coexistence, or failed otherwise (channel busy, abort).
 	uint32_t sent = 0;

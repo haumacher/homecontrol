@@ -2406,6 +2406,62 @@ void ZigbeeAdapter::device_announced(NodeAddress address, uint8_t capability) {
 	}
 }
 
+namespace {
+
+/// The code of a radio event in the log (ZigbeeAdapter::log_polls()): P a poll, P+ one answered with frame
+/// pending, R another frame from the device, T a frame to it acknowledged, T!a without acknowledgement,
+/// T!c refused by the WiFi coexistence, T!f failed otherwise.
+const char* radio_event_code(ZigbeePolls::Event event) {
+	switch (event) {
+		case ZigbeePolls::Event::poll: return "P";
+		case ZigbeePolls::Event::poll_pending: return "P+";
+		case ZigbeePolls::Event::received: return "R";
+		case ZigbeePolls::Event::sent: return "T";
+		case ZigbeePolls::Event::sent_no_ack: return "T!a";
+		case ZigbeePolls::Event::sent_coexist: return "T!c";
+		case ZigbeePolls::Event::sent_failed: return "T!f";
+		case ZigbeePolls::Event::none: break;
+	}
+	return "?";
+}
+
+/// The kind of the frame of an event: "/m" a MAC command, "/d" or "/c" NWK data or a NWK command, with
+/// "s" where the NWK layer secured it; nothing for a poll.
+void radio_frame_kind(const ZigbeePolls::Timed& timed, char* out, size_t size) {
+	if (timed.event == ZigbeePolls::Event::poll || timed.event == ZigbeePolls::Event::poll_pending
+		|| timed.mac_type == 0) {
+		out[0] = '\0';
+	} else if (timed.mac_type == 3) {
+		std::snprintf(out, size, "/m");
+	} else if (timed.mac_type == 1) {
+		std::snprintf(out, size, "/%c%s", timed.nwk_type == 1 ? 'c' : 'd', timed.nwk_secured ? "s" : "");
+	} else {
+		std::snprintf(out, size, "/t%u", static_cast<unsigned>(timed.mac_type));
+	}
+}
+
+/// The events of `polls`, newest first, as "0.0 P+, 0.0 T/ds, 4.6 P"; false without any.
+bool format_radio_events(const ZigbeePolls& polls, char* out, size_t size) {
+	size_t used = 0;
+	out[0] = '\0';
+	for (size_t i = 0; i < ZigbeePolls::kEvents && polls.events[i].event != ZigbeePolls::Event::none; ++i) {
+		const ZigbeePolls::Timed& timed = polls.events[i];
+		char kind[8];
+		radio_frame_kind(timed, kind, sizeof(kind));
+		int n = std::snprintf(out + used, size - used, "%s%lu.%lu %s%s", i == 0 ? "" : ", ",
+			static_cast<unsigned long>(timed.ago_ms / 1000), static_cast<unsigned long>(timed.ago_ms % 1000 / 100),
+			radio_event_code(timed.event), kind);
+		if (n < 0 || static_cast<size_t>(n) >= size - used) {
+			out[used] = '\0';
+			break;
+		}
+		used += static_cast<size_t>(n);
+	}
+	return used > 0;
+}
+
+} // namespace
+
 void ZigbeeAdapter::log_polls(const char* text, uint16_t short_addr) {
 	ZigbeePolls polls;
 	if (short_addr == kNoShortAddress || !driver_.read_polls(short_addr, true, polls)) {
@@ -2431,9 +2487,11 @@ void ZigbeeAdapter::log_polls(const char* text, uint16_t short_addr) {
 		}
 		used += static_cast<size_t>(n);
 	}
-	Log::info(kTag, "%s: since its last rejoin %lu polls to the coordinator (%lu with frame pending), last poll %s "
-		"ago, longest gap %lu.%lu s, last gaps [%s] s", text, static_cast<unsigned long>(polls.polls),
-		static_cast<unsigned long>(polls.pending), since, static_cast<unsigned long>(polls.longest_gap_ms / 1000),
+	Log::info(kTag, "%s: since its last rejoin %lu polls to the coordinator (%lu with frame pending: %lu delivered, %lu "
+		"not), %lu other frames from it, last poll %s ago, longest gap %lu.%lu s, last gaps [%s] s", text,
+		static_cast<unsigned long>(polls.polls), static_cast<unsigned long>(polls.pending),
+		static_cast<unsigned long>(polls.delivered), static_cast<unsigned long>(polls.undelivered),
+		static_cast<unsigned long>(polls.received), since, static_cast<unsigned long>(polls.longest_gap_ms / 1000),
 		static_cast<unsigned long>(polls.longest_gap_ms % 1000 / 100), gaps);
 	Log::info(kTag, "%s: frames to it %lu (%lu without ack, %lu refused by coexistence, %lu failed); all frames %lu "
 		"(%lu without ack, %lu refused by coexistence, %lu failed)", text, static_cast<unsigned long>(polls.sent),
@@ -2441,6 +2499,10 @@ void ZigbeeAdapter::log_polls(const char* text, uint16_t short_addr) {
 		static_cast<unsigned long>(polls.failed), static_cast<unsigned long>(polls.all_sent),
 		static_cast<unsigned long>(polls.all_no_ack), static_cast<unsigned long>(polls.all_coexist),
 		static_cast<unsigned long>(polls.all_failed));
+	char trail[200];
+	if (format_radio_events(polls, trail, sizeof(trail))) {
+		Log::info(kTag, "%s: radio before the rejoin, s ago: %s", text, trail);
+	}
 }
 
 void ZigbeeAdapter::device_updated(NodeAddress address, uint8_t status, uint8_t tc_action, uint16_t parent_short) {

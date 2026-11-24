@@ -491,6 +491,15 @@ TEST_CASE("ZigbeeRejoin: a rejoin logs what the radio heard of the device since 
 	f.driver.polls.gaps_ms[0] = 31250;
 	f.driver.polls.gaps_ms[1] = 7520;
 	f.driver.polls.gaps_ms[2] = 7480;
+	f.driver.polls.delivered = 2;
+	f.driver.polls.undelivered = 1;
+	f.driver.polls.received = 5;
+	using Event = hc::ZigbeePolls::Event;
+	f.driver.polls.events[0] = {Event::sent_coexist, 1, 1, true, 20};
+	f.driver.polls.events[1] = {Event::poll_pending, 3, 0, false, 31};
+	f.driver.polls.events[2] = {Event::received, 1, 0, true, 4600};
+	f.driver.polls.events[3] = {Event::sent, 3, 0, false, 7400};
+	f.driver.polls.events[4] = {Event::poll, 3, 0, false, 31250};
 	f.driver.polls.sent = 9;
 	f.driver.polls.no_ack = 2;
 	f.driver.polls.all_sent = 1200;
@@ -499,8 +508,10 @@ TEST_CASE("ZigbeeRejoin: a rejoin logs what the radio heard of the device since 
 		ZigbeeAdapter::kTcAuthorize, 0x0000);
 	CHECK(f.driver.has("polls 0xaf9e reset"));
 	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): since its last rejoin 412 polls to "
-								"the coordinator (3 with frame pending), last poll 31.2 s ago, longest gap 31.2 s, last "
-								"gaps [31.2 7.5 7.4] s"));
+								"the coordinator (3 with frame pending: 2 delivered, 1 not), 5 other frames from it, last "
+								"poll 31.2 s ago, longest gap 31.2 s, last gaps [31.2 7.5 7.4] s"));
+	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): radio before the rejoin, s ago: 0.0 "
+								"T!c/cs, 0.0 P+, 4.6 R/ds, 7.4 T/m, 31.2 P"));
 	CHECK(capture.sink.contains("I hc.zigbee: 0017880106498a49 (Bewegungsmelder Hof): frames to it 9 (2 without ack, 0 "
 								"refused by coexistence, 0 failed); all frames 1200 (0 without ack, 4 refused by "
 								"coexistence, 0 failed)"));

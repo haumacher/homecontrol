@@ -37,6 +37,20 @@ struct Entry {
 	uint32_t no_ack;
 	uint32_t coexist;
 	uint32_t failed;
+	uint32_t delivered;
+	uint32_t undelivered;
+	uint32_t received;
+	/// When the last poll answered with frame pending came, while its frame has not been delivered.
+	int64_t awaiting_us;
+	/// The events, a ring; `next` is where the next one goes.
+	struct Timed {
+		ZigbeePolls::Event event;
+		uint8_t mac_type;
+		uint8_t nwk_type;
+		bool nwk_secured;
+		int64_t at_us;
+	} events[ZigbeePolls::kEvents];
+	uint8_t next;
 };
 
 struct Totals {
@@ -56,6 +70,8 @@ bool s_installed = false;
 /// header, counting the two bytes of the FCS at the end), then the MAC header.
 struct Header {
 	uint8_t type;
+	uint8_t nwk_type;
+	bool nwk_secured;
 	uint16_t dst;
 	uint16_t src;
 	const uint8_t* payload;
@@ -109,6 +125,13 @@ IRAM_ATTR bool parse(const uint8_t* frame, Header& header) {
 	}
 	header.payload = p;
 	header.end = end;
+	header.nwk_type = 0;
+	header.nwk_secured = false;
+	if (header.type == 1 && p + 2 <= end) {
+		uint16_t nwk = static_cast<uint16_t>(p[0] | (p[1] << 8));
+		header.nwk_type = nwk & 0x3;
+		header.nwk_secured = (nwk & 0x0200) != 0;
+	}
 	return p <= end;
 }
 
@@ -131,13 +154,40 @@ IRAM_ATTR Entry* entry(uint16_t short_addr, bool create) {
 	return oldest;
 }
 
+IRAM_ATTR void record(Entry& e, ZigbeePolls::Event event, const Header& header, int64_t now) {
+	Entry::Timed& timed = e.events[e.next];
+	timed.event = event;
+	timed.mac_type = header.type;
+	timed.nwk_type = header.nwk_type;
+	timed.nwk_secured = header.nwk_secured;
+	timed.at_us = now;
+	e.next = static_cast<uint8_t>((e.next + 1) % ZigbeePolls::kEvents);
+}
+
 IRAM_ATTR void on_receive(uint8_t* frame, esp_ieee802154_frame_info_t* info) {
 	Header header;
-	if (parse(frame, header) && header.type == kFrameCommand && header.src != kNone && header.payload < header.end
-		&& header.payload[0] == kDataRequest) {
+	if (!parse(frame, header) || header.src == kNone) {
+		// not counted
+	} else if (!(header.type == kFrameCommand && header.payload < header.end && header.payload[0] == kDataRequest)) {
+		// Another frame from a counted address: what it sent besides its polls.
+		int64_t now = esp_timer_get_time();
+		portENTER_CRITICAL_ISR(&s_lock);
+		Entry* e = entry(header.src, false);
+		if (e != nullptr) {
+			++e->received;
+			e->last_heard_us = now;
+			record(*e, ZigbeePolls::Event::received, header, now);
+		}
+		portEXIT_CRITICAL_ISR(&s_lock);
+	} else {
 		int64_t now = esp_timer_get_time();
 		portENTER_CRITICAL_ISR(&s_lock);
 		Entry* e = entry(header.src, true);
+		if (e->awaiting_us != 0) {
+			// It polls again before the frame announced to it arrived: that frame missed it.
+			++e->undelivered;
+			e->awaiting_us = 0;
+		}
 		if (e->last_poll_us != 0) {
 			uint32_t gap = static_cast<uint32_t>((now - e->last_poll_us) / 1000);
 			for (size_t i = ZigbeePolls::kGaps - 1; i > 0; --i) {
@@ -151,9 +201,12 @@ IRAM_ATTR void on_receive(uint8_t* frame, esp_ieee802154_frame_info_t* info) {
 		e->last_poll_us = now;
 		e->last_heard_us = now;
 		++e->polls;
-		if (info != nullptr && info->pending) {
+		bool pending = info != nullptr && info->pending;
+		if (pending) {
 			++e->pending;
+			e->awaiting_us = now;
 		}
+		record(*e, pending ? ZigbeePolls::Event::poll_pending : ZigbeePolls::Event::poll, header, now);
 		portEXIT_CRITICAL_ISR(&s_lock);
 	}
 	esp_ieee802154_receive_done(frame, info);
@@ -162,11 +215,24 @@ IRAM_ATTR void on_receive(uint8_t* frame, esp_ieee802154_frame_info_t* info) {
 IRAM_ATTR void count_sent(const uint8_t* frame, esp_ieee802154_tx_error_t error) {
 	Header header;
 	uint16_t dst = parse(frame, header) ? header.dst : kNone;
+	int64_t now = esp_timer_get_time();
 	portENTER_CRITICAL_ISR(&s_lock);
 	Entry* e = dst != kNone ? entry(dst, false) : nullptr;
 	++s_totals.sent;
 	if (e != nullptr) {
 		++e->sent;
+		ZigbeePolls::Event event = ZigbeePolls::Event::sent;
+		switch (error) {
+			case ESP_IEEE802154_TX_ERR_NONE: event = ZigbeePolls::Event::sent; break;
+			case ESP_IEEE802154_TX_ERR_NO_ACK: event = ZigbeePolls::Event::sent_no_ack; break;
+			case ESP_IEEE802154_TX_ERR_COEXIST: event = ZigbeePolls::Event::sent_coexist; break;
+			default: event = ZigbeePolls::Event::sent_failed; break;
+		}
+		record(*e, event, header, now);
+		if (error == ESP_IEEE802154_TX_ERR_NONE && e->awaiting_us != 0) {
+			++e->delivered;
+			e->awaiting_us = 0;
+		}
 	}
 	switch (error) {
 		case ESP_IEEE802154_TX_ERR_NONE:
@@ -232,6 +298,20 @@ bool radio_tap_read(uint16_t short_addr, bool reset, ZigbeePolls& out) {
 		for (size_t i = 0; i < ZigbeePolls::kGaps; ++i) {
 			out.gaps_ms[i] = e->gaps_ms[i];
 		}
+		out.delivered = e->delivered;
+		out.undelivered = e->undelivered;
+		out.received = e->received;
+		for (size_t i = 0; i < ZigbeePolls::kEvents; ++i) {
+			const Entry::Timed& timed = e->events[(e->next + ZigbeePolls::kEvents - 1 - i) % ZigbeePolls::kEvents];
+			if (timed.event == ZigbeePolls::Event::none) {
+				break;
+			}
+			out.events[i].event = timed.event;
+			out.events[i].mac_type = timed.mac_type;
+			out.events[i].nwk_type = timed.nwk_type;
+			out.events[i].nwk_secured = timed.nwk_secured;
+			out.events[i].ago_ms = now > timed.at_us ? static_cast<uint32_t>((now - timed.at_us) / 1000) : 0;
+		}
 		out.sent = e->sent;
 		out.no_ack = e->no_ack;
 		out.coexist = e->coexist;
@@ -240,10 +320,12 @@ bool radio_tap_read(uint16_t short_addr, bool reset, ZigbeePolls& out) {
 			// The time of the last poll stays: the next gap is measured from it.
 			int64_t last_poll = e->last_poll_us;
 			int64_t last_heard = e->last_heard_us;
+			int64_t awaiting = e->awaiting_us;
 			*e = Entry{};
 			e->short_addr = short_addr;
 			e->last_poll_us = last_poll;
 			e->last_heard_us = last_heard;
+			e->awaiting_us = awaiting;
 		}
 	}
 	out.all_sent = s_totals.sent;
