@@ -263,6 +263,56 @@ TEST_CASE("KnxTunnel.AckTimeoutRepeatsOnceThenReconnects") {
 	CHECK(f.tunnel.channel() == 8);
 }
 
+TEST_CASE("KnxTunnel.ReceiveSequenceResynchronizedByRepetition") {
+	// homecontrol#120: frames of the gateway were lost; it repeats each unacknowledged frame once and
+	// goes on counting without closing the tunnel. Its repetition is the sequence to follow.
+	TunnelFixture f;
+	f.connect(7);
+	Bytes ind = bytes("29 00 BC D0 11 0A 08 01 01 00 81");
+
+	f.socket.inject(hc_test::tunneling_request(7, 0, ind));
+	CHECK(f.recorder.frames.size() == 1);
+	size_t sent = f.socket.sent.size();
+
+	// 1 to 12 lost. 13 arrives: discarded as a stray datagram, no ACK.
+	f.socket.inject(hc_test::tunneling_request(7, 13, ind));
+	CHECK(f.recorder.frames.size() == 1);
+	CHECK(f.socket.sent.size() == sent);
+	CHECK(f.capture.sink.contains("W hc.knx: ignoring TUNNELING_REQUEST with sequence 13 (expected 1)"));
+
+	// The gateway repeats 13: adopted, acknowledged and delivered.
+	f.socket.inject(hc_test::tunneling_request(7, 13, ind));
+	CHECK(f.recorder.frames.size() == 2);
+	CHECK(f.socket.last().data == hc_test::tunneling_ack(7, 13));
+	CHECK(f.capture.sink.contains(
+		"W hc.knx: receive sequence resynchronized to 13, which the gateway repeats: 12 frame(s) of it lost"));
+
+	// The next frame is in sequence again; a repetition of 13 is acknowledged, not delivered twice.
+	f.socket.inject(hc_test::tunneling_request(7, 14, ind));
+	CHECK(f.recorder.frames.size() == 3);
+	CHECK(f.socket.last().data == hc_test::tunneling_ack(7, 14));
+	f.socket.inject(hc_test::tunneling_request(7, 14, ind));
+	CHECK(f.recorder.frames.size() == 3);
+
+	// A stray datagram between frames in sequence does not resynchronize.
+	f.socket.inject(hc_test::tunneling_request(7, 3, ind));
+	f.socket.inject(hc_test::tunneling_request(7, 15, ind));
+	f.socket.inject(hc_test::tunneling_request(7, 16, ind));
+	CHECK(f.recorder.frames.size() == 5);
+	CHECK(f.socket.last().data == hc_test::tunneling_ack(7, 16));
+
+	// Across the wrap of the counter: lost 250 to 255, resynchronized at 1.
+	for (uint8_t seq = 17; seq < 250; ++seq) {
+		f.socket.inject(hc_test::tunneling_request(7, seq, ind));
+	}
+	size_t delivered = f.recorder.frames.size();
+	f.socket.inject(hc_test::tunneling_request(7, 1, ind));
+	f.socket.inject(hc_test::tunneling_request(7, 1, ind));
+	CHECK(f.recorder.frames.size() == delivered + 1);
+	CHECK(f.capture.sink.contains(
+		"W hc.knx: receive sequence resynchronized to 1, which the gateway repeats: 7 frame(s) of it lost"));
+}
+
 TEST_CASE("KnxTunnel.ReceiveSequenceRule") {
 	TunnelFixture f;
 	f.connect(7);

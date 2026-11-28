@@ -466,6 +466,7 @@ void KnxTunnel::handle_connect_response(const uint8_t* data, size_t length, cons
 	}
 	send_sequence_ = 0;
 	receive_sequence_ = 0;
+	ignored_sequence_ = -1;
 	heartbeat_misses_ = 0;
 	heartbeat_outstanding_ = false;
 	phase_ = Phase::up;
@@ -546,10 +547,22 @@ void KnxTunnel::handle_tunneling_request(const uint8_t* data, size_t length) {
 		return;
 	}
 	if (request.sequence != receive_sequence_) {
-		Log::warn(kTag, "ignoring TUNNELING_REQUEST with sequence %u (expected %u)",
-			static_cast<unsigned>(request.sequence), static_cast<unsigned>(receive_sequence_));
-		return;
+		if (ignored_sequence_ != request.sequence) {
+			// A single stray datagram (reordered, duplicated) is discarded, as KNXnet/IP says.
+			ignored_sequence_ = request.sequence;
+			Log::warn(kTag, "ignoring TUNNELING_REQUEST with sequence %u (expected %u)",
+				static_cast<unsigned>(request.sequence), static_cast<unsigned>(receive_sequence_));
+			return;
+		}
+		// The gateway repeats it: frames of the gateway were lost and it went on counting without
+		// closing the tunnel. Its sequence is the one to follow, or the tunnel would never hear the
+		// bus again.
+		Log::warn(kTag, "receive sequence resynchronized to %u, which the gateway repeats: %u frame(s) of it lost",
+			static_cast<unsigned>(request.sequence),
+			static_cast<unsigned>(static_cast<uint8_t>(request.sequence - receive_sequence_)));
+		receive_sequence_ = request.sequence;
 	}
+	ignored_sequence_ = -1;
 	transmit(data_, ack, "TUNNELING_ACK");
 	++receive_sequence_;
 	// The frame as it is, before the TPDU limit of LData: the bus session forwards indications of any

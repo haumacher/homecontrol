@@ -300,6 +300,10 @@ private:
 	IndividualAddress address_;
 	uint8_t send_sequence_ = 0;
 	uint8_t receive_sequence_ = 0;
+	/// The out-of-sequence number of the gateway's last frame discarded, -1 for none: its
+	/// repetition makes it the expected one (the gateway repeats only what it waits to have
+	/// acknowledged), so frames lost on the way do not leave the tunnel deaf.
+	int ignored_sequence_ = -1;
 	uint32_t heartbeat_misses_ = 0;
 	bool heartbeat_outstanding_ = false;
 	uint32_t attempts_ = 0;
